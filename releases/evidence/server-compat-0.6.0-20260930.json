@@ -1,0 +1,67 @@
+{
+  "at": "2026-09-30T14:08:26.885159+00:00",
+  "node": "v22.23.3",
+  "fixture": {
+    "hub_version": "0.5.0",
+    "protocol_wire_version": 1,
+    "hub_artifact": {
+      "path": "dist/remote_device_hub-0.5.0-py3-none-any.whl",
+      "sha256": "feec7bd48ec17d07220ddac01b4beeaea1d8c37a3be516a6bcf4a67c806b0f8c",
+      "bytes": 47212
+    },
+    "protocol_artifact": {
+      "path": "dist/remote_device_protocol-1.0.0-py3-none-any.whl",
+      "sha256": "d0d03577638ddd235ba351b1d8423de21051b16d373d7db8710dfbde34b4717e",
+      "bytes": 3584
+    },
+    "isolated_server_source_commit": "7093df9ae4d5a73bbb6791a62e093d0107ec0fca",
+    "verifier": {
+      "path": "scripts/check_agent_compat.py",
+      "sha256": "6433a123b37d45c3144f78345a7d1b4f885e7bc5ec8ef3f05fc3be2ba1e61a37",
+      "source_commit": "7bb4bb3ddcfdbd404bea7b1d648c2a1caf08122a"
+    }
+  },
+  "platform": "darwin",
+  "machine": "arm64",
+  "artifact": "remote-device-hub-0.6.0.tgz",
+  "agent_package": {
+    "name": "remote-device-hub",
+    "version": "0.6.0"
+  },
+  "artifact_sha256": "f9525a7991d38520446d2f6f2e52844e98c72e6e061a021c9a02aa33134a2919",
+  "compressed_bytes": 48899,
+  "request_paths": [
+    "/agent/:device_id",
+    "/api/pair/poll",
+    "/api/pair/start"
+  ],
+  "checks": {
+    "offline_help_version": "passed",
+    "extended_file_operations": "passed",
+    "device_operations": "passed",
+    "reconnect_preserves_long_job": "passed",
+    "reconnect_same_device_and_config": "passed",
+    "warm_samples": "passed",
+    "no_python_uv_runtime_cache": "passed",
+    "request_surface": "passed"
+  },
+  "limits": [
+    "Local fixture Hub only; no production OAuth/WSS tested.",
+    "No token, pairing code, or raw agent output is written to the summary.",
+    "Fresh-clone installed wheel fixture; no production OAuth/WSS or ChatGPT client test."
+  ],
+  "timings_ms": {
+    "fresh_npm_first_pair": 594,
+    "fresh_npm_ready": 3650,
+    "reconnect_ready": 611,
+    "warm_npm_pair_samples": [
+      620,
+      614,
+      590,
+      610,
+      596
+    ]
+  },
+  "config_sha256": "f663996de65d02dd7e9a971d24031ccb5b9d5ddd22dc1840df33fefe4bfb9c29",
+  "unpacked_bytes": 196632
+}

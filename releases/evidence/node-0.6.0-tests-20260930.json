@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-30",
+  "runtime_source_commit": "b1fcaba6272e8b206075b3486d72b30e355ba0e6",
+  "final_source_commit": "88715ab7e6c71b8a0f7448749241ed1b5cd602e0",
+  "runtime_source_unchanged_after_full_tests": true,
+  "final_changes": ["Normalize gzip OS byte to 255", "Add platform-independent header assertion to existing release test"],
+  "macos_arm64": {
+    "node": "v22.23.3",
+    "full_suite": {"command": "node --test test/*.test.mjs", "passed": 59, "failed": 0},
+    "final_packaging_suite": {"command": "node --test test/release.test.mjs", "passed": 5, "failed": 0}
+  },
+  "linux_x86_64_evidence": "releases/evidence/linux-0.6.0-20260930.json",
+  "artifact": {
+    "name": "remote-device-hub-0.6.0.tgz",
+    "sha256": "f9525a7991d38520446d2f6f2e52844e98c72e6e061a021c9a02aa33134a2919",
+    "bytes": 48899,
+    "unpacked_bytes": 196632
+  },
+  "publication": "not_performed",
+  "production_wss": "unverified",
+  "chatgpt_client": "unverified"
+}

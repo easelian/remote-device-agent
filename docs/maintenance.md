@@ -25,3 +25,21 @@ Node profile 使用目录锁。迁移前停止旧 Agent，随后复用相同配�
 普通网络断线时保留进程及有界输出最多 5 分钟并等待重连；授权撤销以及 HTTP 401/403 属于终止条件，必须停止并清理进程。后台搜索 API 使用 `start_search`、`get_search_results`、`stop_search` 和 `list_searches`：结果分页上限 200，active TTL 30 秒，完成任务最多保留 5 分钟，最多 2 个并发任务，遍历最多 30 层/10000 个条目，结果最多 1000 条或 256 KiB，并通过 `truncated`、`truncated_reason`、`skipped` 和 `status` 表示边界。
 
 这些是当前 `0.6.0` 接口和资源边界，搜索元数据最多保留 16 个任务；已取消的 worker 在文件描述符清理完成前仍占用并发额度。发布状态以本仓库的 release record 与 evidence 为准。Python Agent `0.4.0` 保留 legacy core operation 合同，并明确拒绝这些扩展 operation。
+
+## 2026-09-30 本地安装包验证
+
+`0.6.0` 已生成 [prepared record](../releases/remote-device-hub-0.6.0.json)：TGZ 48,899
+bytes，解包文件 196,632 bytes。macOS arm64 和 Linux x86_64 在 Node `22.23.3` 下分别
+通过完整 59 项测试；最后仅修正 gzip OS header，两端各通过最终打包器的 5 项 release
+测试。Linux 重建的 TGZ 与 macOS 正式产物逐字节一致。
+
+安装后的 Hub `0.5.0` wheel 与最终 TGZ 完成配对、基础与扩展工具操作、搜索、进程操作、
+相同配置重连；WebSocket 断线后同一 job 的 PID 保持，重连后可继续输入和读取输出。
+这项跨包验证在 macOS arm64 执行。测试与 Linux 重建、wheel 联调证据分别见
+[tests](../releases/evidence/node-0.6.0-tests-20260930.json)、
+[Linux](../releases/evidence/linux-0.6.0-20260930.json) 和
+[Server compatibility](../releases/evidence/server-compat-0.6.0-20260930.json)。
+
+这些是本地与 Linux 真机证明；没有执行 npm 发布、生产部署或真实 ChatGPT 验收，
+产物状态保持 `prepared`。CI 工作流已包含 Linux/macOS Node 22，但本批没有远端运行
+GitHub Actions。
