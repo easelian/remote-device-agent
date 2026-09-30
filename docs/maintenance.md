@@ -7,7 +7,7 @@
 ```bash
 node --test test/*.test.mjs
 node scripts/release.mjs build
-node scripts/release.mjs check releases/remote-device-hub-0.6.1.json
+node scripts/release.mjs check releases/remote-device-hub-0.6.2.json
 ```
 
 版本来自 `package.json`，TGZ 和 record 名称随版本生成。包名保持 `remote-device-hub`，两个 bin 别名保持 `remote-device-hub` 和 `remote-device-agent`。同版本不能覆盖不同源码或产物。
@@ -20,11 +20,11 @@ node scripts/release.mjs check releases/remote-device-hub-0.6.1.json
 
 Node profile 使用目录锁。迁移前停止旧 Agent，随后复用相同配置；异常退出留下的锁使用显式 `--recover-lock` 恢复，只有已退出 PID 的私有合法锁才可回收。恢复 guard 遗留时须先人工核对。旧 Python Agent 与 Node Agent 不共享锁协议。文件适配器的父目录检查仍有本机其他进程并发替换时的 TOCTOU 限制，维护更新不能把文件 roots 描述为系统沙箱。
 
-## Node 0.6.1 当前源码能力（发布待验）
+## Node 0.6.2 当前源码能力（发布待验）
 
 普通网络断线时保留进程及有界输出最多 5 分钟并等待重连；授权撤销以及 HTTP 401/403 属于终止条件，必须停止并清理进程。后台搜索 API 使用 `start_search`、`get_search_results`、`stop_search` 和 `list_searches`：结果分页上限 200，active TTL 30 秒，完成任务最多保留 5 分钟，最多 2 个并发任务，遍历最多 30 层/10000 个条目，结果最多 1000 条或 256 KiB，并通过 `truncated`、`truncated_reason`、`skipped` 和 `status` 表示边界。
 
-这些是当前 `0.6.1` 接口和资源边界，搜索元数据最多保留 16 个任务；已取消的 worker 在文件描述符清理完成前仍占用并发额度。发布状态以本仓库的 release record 与 evidence 为准。Python Agent `0.4.0` 保留 legacy core operation 合同，并明确拒绝这些扩展 operation。
+这些是当前 `0.6.2` 接口和资源边界，搜索元数据最多保留 16 个任务；已取消的 worker 在文件描述符清理完成前仍占用并发额度。发布状态以本仓库的 release record 与 evidence 为准。Python Agent `0.4.0` 保留 legacy core operation 合同，并明确拒绝这些扩展 operation。
 
 ## 2026-09-30 本地安装包验证
 
@@ -44,7 +44,7 @@ bytes，解包文件 196,632 bytes。macOS arm64 和 Linux x86_64 在 Node `22.2
 产物状态保持 `prepared`。CI 工作流已包含 Linux/macOS Node 22，但本批没有远端运行
 GitHub Actions。
 
-## 0.6.1 质量门槛
+## 0.6.2 质量门槛
 
 更新异步文件 I/O、分段输出缓冲、有界 WebSocket 发送队列、跨重连操作预算和显式锁恢复。
 `check_stability.mjs` 在真实 loopback WebSocket 上重复运行文件、搜索和进程操作，并检查

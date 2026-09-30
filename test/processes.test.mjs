@@ -165,6 +165,31 @@ test('termination reports pending cleanup until the actual watcher closes', asyn
   assert.equal(processes.read('pending').cleanup_pending, false);
 });
 
+test('pending process cleanup retains the actual concurrency slot', async () => {
+  const processes = new Processes(config({ max_processes: 1 }), files);
+  const pending = { process: { pid: null, exitCode: null }, status: 'terminated', closed: false,
+    task: new Promise(() => {}), segments: [], base_offset: 0, started: Date.now() };
+  processes.jobs.set('pending', pending);
+  await assert.rejects(() => processes.start('true', 'work', '.', 3, 0), /Maximum concurrent/);
+  pending.closed = true;
+  const job = await processes.start('true', 'work', '.', 3, 1);
+  assert.equal(job.status, 'exited');
+  await processes.close();
+});
+
+test('history eviction preserves a process whose watcher is still open', async () => {
+  const processes = new Processes(config(), files);
+  const pending = { process: { pid: null, exitCode: null }, status: 'terminated', closed: false,
+    task: Promise.resolve(), segments: [], base_offset: 0, started: Date.now() };
+  processes.jobs.set('pending', pending);
+  for (let index = 0; index < 63; index++) processes.jobs.set(`old-${index}`, { ...pending, closed: true });
+  await processes.start('true', 'work', '.', 3, 1);
+  assert.equal(processes.jobs.size, 64);
+  assert.equal(processes.jobs.get('pending'), pending);
+  pending.closed = true;
+  await processes.close();
+});
+
 async function jobWait(processes, id) {
   for (let i = 0; i < 50; i++) {
     if (processes.read(id).status !== 'running') return;

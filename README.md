@@ -1,6 +1,6 @@
 # Remote Device Hub Agent
 
-这是独立发布的 pure Node Agent，当前源码版本 `0.6.1`，npm 包名保持 `remote-device-hub`，两个
+这是独立发布的 pure Node Agent，当前源码版本 `0.6.2`，npm 包名保持 `remote-device-hub`，两个
 bin 别名保持 `remote-device-hub` 与 `remote-device-agent`。要求 Node.js 22+，运行时无 npm
 dependencies、安装 hook、原生 addon、Python/uv/wheel 下载或首次启动编译。
 
@@ -9,7 +9,7 @@ dependencies、安装 hook、原生 addon、Python/uv/wheel 下载或首次启�
 ```bash
 node --test test/*.test.mjs
 node scripts/release.mjs build
-node scripts/release.mjs check releases/remote-device-hub-0.6.1.json
+node scripts/release.mjs check releases/remote-device-hub-0.6.2.json
 ```
 
 构建只生成本仓库的 `dist/` 和 `releases/` 记录，不调用 Python builder、npm registry、
@@ -19,7 +19,7 @@ Server 或 ChatGPT。构建后的 TGZ 由 Server 通过显式绝对路径 artifa
 ## 使用
 
 ```bash
-npx --yes /absolute/path/remote-device-hub-0.6.1.tgz \
+npx --yes /absolute/path/remote-device-hub-0.6.2.tgz \
   --root projects=/home/alice/projects --name '开发机'
 ```
 
@@ -32,7 +32,7 @@ npx --yes /absolute/path/remote-device-hub-0.6.1.tgz \
 
 版本和记录规则见 [维护与发布](docs/maintenance.md)。`MIGRATION.json` 记录初始导入来源，`docs/history/` 保留分仓前的验证证据。
 
-## Node 0.6.1 当前源码能力
+## Node 0.6.2 当前源码能力
 
 进程输出中的 `cleanup_pending` 表示结束或终止后，实际进程 watcher 尚未关闭。检查它为
 `false` 后再确认清理完成；Agent 关闭时同样等待实际在途文件操作、搜索和进程资源完成，
