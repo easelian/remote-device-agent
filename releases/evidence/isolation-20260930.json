@@ -1,0 +1,49 @@
+{
+  "kind": "local-isolation-validation",
+  "date": "2026-09-30",
+  "repository": "remote-device-agent",
+  "source_commit": "3c03961a11a20093d2b29e4ed9e4c3a9c3fa5f00",
+  "git_status_clean": true,
+  "node": {
+    "version": "v22.23.3",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "tests": {
+    "command": "node --test test/*.test.mjs",
+    "total": 36,
+    "passed": 36,
+    "failed": 0
+  },
+  "isolated_build": {
+    "command": "node scripts/release.mjs build",
+    "check_command": "node scripts/release.mjs check",
+    "stage": "prepared",
+    "artifact_name": "remote-device-hub-0.5.1.tgz",
+    "artifact_sha256": "5e3b27f98eaf68a8caa44d5ab17e66f41839a263ba6a4b8abbab7e430e4d8549",
+    "artifact_bytes": 42583,
+    "unpacked_bytes": 168811,
+    "record_artifact_sha256": "5e3b27f98eaf68a8caa44d5ab17e66f41839a263ba6a4b8abbab7e430e4d8549",
+    "record_source_sha256": "b44fe013730c81bc744acaa4a3b2f95208fc2ab085d6536578957786e9554603",
+    "record_builder_sha256": "b9a464d023e2404a8520dcd0fe88eef73e1cabeb229cc6ae46567a6d4894bb6d",
+    "record_vendor_manifest_sha256": "bae14380694136ac362d64b624e9da14b590ef57ae14f11391c6346d853a19f7"
+  },
+  "root_formal_comparison": {
+    "artifact_sha256_equal": true,
+    "root_record_artifact_sha256": "5e3b27f98eaf68a8caa44d5ab17e66f41839a263ba6a4b8abbab7e430e4d8549",
+    "root_record_sha256": "a0b29eba1530d512a74189d8447e6516198b753faccf7d07cfeffe00955c2724",
+    "root_record_stage": "prepared",
+    "root_record_source_commit": "3c03961a11a20093d2b29e4ed9e4c3a9c3fa5f00"
+  },
+  "conditions": {
+    "isolated_clone_has_no_server_or_integrations_sibling": true,
+    "build_path_tools": ["node", "git", "sh"],
+    "python_used": false,
+    "npm_install_used": false,
+    "network_used": false,
+    "cloud_or_external_publish": false,
+    "raw_tokens_or_credentials_recorded": false,
+    "absolute_machine_paths_recorded": false,
+    "all_actions_local": true
+  }
+}
