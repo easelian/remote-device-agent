@@ -61,20 +61,25 @@ async function run() {
   const config = { gateway_url: `http://127.0.0.1:${server.address().port}/`, device_id: deviceId, token, roots: { work: root }, allow_shell: true, allow_write: true, shell: '/bin/sh', max_processes: 4, max_process_seconds: 3600 };
   const agent = new Agent(config, { operationTimeoutMs: 10000, shutdownTimeoutMs: 8000 });
   const baselineFd = await fdCount(); const baselineHandles = process._getActiveHandles().length;
-  const metrics = { ok: false, duration_seconds: durationSeconds, loops: 0, operations: 0, successful_operations: 0, network_skips: 0, rpc_errors: 0, search_ops: 0, errors: [], event_loop_lag_p99_ms: 0, event_loop_lag_max_ms: 0, rss_max_bytes: 0, fd_max: 0, active_handles_max: 0, jobs_max: 0, searches_max: 0, processes_max: 0, stdout_benchmark_bytes: 100 * MB, stdout_benchmark_completed: false, stdout_ring_bytes: 0, reconnect: null, cleanup: null };
+  const workloadStartedAt = performance.now();
+  const workloadStartedIso = new Date().toISOString();
+  const deadline = workloadStartedAt + durationSeconds * 1000;
+  const monotonicNow = () => performance.now();
+  const metrics = { ok: false, duration_seconds: durationSeconds, requested_duration_seconds: durationSeconds, actual_workload_elapsed_seconds: 0, workload_started_at: workloadStartedIso, workload_ended_at: null, loops: 0, operations: 0, successful_operations: 0, network_skips: 0, rpc_errors: 0, search_ops: 0, errors: [], event_loop_lag_p99_ms: 0, event_loop_lag_max_ms: 0, rss_max_bytes: 0, fd_max: 0, active_handles_max: 0, jobs_max: 0, searches_max: 0, processes_max: 0, stdout_benchmark_bytes: 100 * MB, stdout_benchmark_completed: false, stdout_ring_bytes: 0, reconnect: null, cleanup: null };
   const histogram = monitorEventLoopDelay({ resolution: 20 }); histogram.enable(); const lagSamples = []; let sampling = false; const sampleTasks = new Set();
   const sampleOne = async () => { if (sampling) return; sampling = true; try { const jobs = agent.processes.list().jobs; const lag = histogram.percentile(99) / 1e6; metrics.event_loop_lag_p99_ms = lag; metrics.event_loop_lag_max_ms = histogram.max / 1e6; if (lagSamples.length < MAX_SAMPLES) lagSamples.push(lag); metrics.rss_max_bytes = Math.max(metrics.rss_max_bytes, process.memoryUsage().rss); const fd = await fdCount(); if (fd !== null) metrics.fd_max = Math.max(metrics.fd_max, fd); metrics.active_handles_max = Math.max(metrics.active_handles_max, process._getActiveHandles().length); metrics.jobs_max = Math.max(metrics.jobs_max, jobs.filter((j) => j.status === 'running').length); metrics.processes_max = Math.max(metrics.processes_max, alive(jobs.map((j) => j.pid).filter(Boolean))); metrics.searches_max = Math.max(metrics.searches_max, agent.searches.inFlight.size); } finally { sampling = false; } };
   const sample = setInterval(() => { const task = sampleOne().catch((error) => recordError(`sample: ${error.message}`)); sampleTasks.add(task); task.finally(() => sampleTasks.delete(task)); }, 1000);
-  const controller = new AbortController(); let running; const deadline = Date.now() + durationSeconds * 1000;
+  const controller = new AbortController();
+  let running;
   const recordError = (message, flap = false) => { state.errorCount += 1; const target = flap ? state.flapErrors : state.errors; if (target.length < 64) target.push(message); };
-  const rpc = async (operation, params = {}, timeout = 10000) => { metrics.operations += 1; const waitUntil = Date.now() + timeout; while ((!state.active || !state.active.ready || state.active.socket.readyState !== 1) && Date.now() < waitUntil) await sleep(20); const peer = state.active; if (!peer || !peer.ready || peer.socket.readyState !== 1) { metrics.network_skips += 1; return null; } const result = await peer.rpc(operation, params, timeout); if (result.error) { if (result.error !== 'socket closed') { metrics.rpc_errors += 1; recordError(`${operation}: ${result.error}`); } return null; } metrics.successful_operations += 1; return result.result ?? null; };
+  const rpc = async (operation, params = {}, timeout = 10000) => { metrics.operations += 1; const waitUntil = monotonicNow() + timeout; while ((!state.active || !state.active.ready || state.active.socket.readyState !== 1) && monotonicNow() < waitUntil) await sleep(20); const peer = state.active; if (!peer || !peer.ready || peer.socket.readyState !== 1) { metrics.network_skips += 1; return null; } const result = await peer.rpc(operation, params, timeout); if (result.error) { if (result.error !== 'socket closed') { metrics.rpc_errors += 1; recordError(`${operation}: ${result.error}`); } return null; } metrics.successful_operations += 1; return result.result ?? null; };
   let flapTimer = null; const flapTasks = new Set(); let flapBusy = false;
   const flapStep = async () => {
-    if (flapBusy || Date.now() >= deadline || !state.active || state.active.socket.readyState !== 1) return;
+    if (flapBusy || monotonicNow() >= deadline || !state.active || state.active.socket.readyState !== 1) return;
     flapBusy = true;
     try {
-      state.flapCount += 1; state.active.socket.terminate(); const limit = Math.min(deadline, Date.now() + 10000);
-      while ((!state.active || !state.active.ready || state.active.socket.readyState !== 1) && Date.now() < limit) await sleep(20);
+      state.flapCount += 1; state.active.socket.terminate(); const limit = Math.min(deadline, monotonicNow() + 10000);
+      while ((!state.active || !state.active.ready || state.active.socket.readyState !== 1) && monotonicNow() < limit) await sleep(20);
       if (!state.active || !state.active.ready || state.active.socket.readyState !== 1) { recordError('reconnect timeout after scheduled flap', true); return; }
       const read = await rpc('read_process', { job_id: state.jobId, offset: 0, limit: 64 });
       if (read?.pid !== state.pid || read.status !== 'running') recordError('scheduled flap did not preserve running PID', true);
@@ -83,22 +88,33 @@ async function run() {
   try {
     for (let i = 0; i < 256; i += 1) { const d = path.join(root, `tree-${i % 16}`); await fs.mkdir(d, { recursive: true }); await fs.writeFile(path.join(d, `entry-${i}.txt`), `needle ${i}\n`); }
     running = agent.run(controller.signal).catch((e) => recordError(`agent: ${e.message}`));
-    while (!state.active || !state.active.ready || state.active.socket.readyState !== 1) { if (Date.now() >= deadline) throw new Error('initial connection timeout'); await sleep(20); }
+    while (!state.active || !state.active.ready || state.active.socket.readyState !== 1) { if (monotonicNow() >= deadline) throw new Error('initial connection timeout'); await sleep(20); }
     const first = await rpc('start_process', { command: "while :; do printf 'stability\\n'; sleep 0.05; done", root: 'work', timeout_seconds: 3600, wait_seconds: 0.25 }); state.jobId = first?.job_id; state.pid = first?.pid; if (!state.jobId || !state.pid) recordError('initial process did not return job_id/pid'); state.active.socket.terminate(); state.flapCount += 1;
-    while (!state.preserved && Date.now() < deadline) { await sleep(20); if (state.connections > 1 && state.active?.ready && state.active.socket.readyState === 1) { const read = await rpc('read_process', { job_id: state.jobId, offset: 0, limit: 64 }); if (read?.pid === state.pid && read.status === 'running') state.preserved = true; } }
+    while (!state.preserved && monotonicNow() < deadline) { await sleep(20); if (state.connections > 1 && state.active?.ready && state.active.socket.readyState === 1) { const read = await rpc('read_process', { job_id: state.jobId, offset: 0, limit: 64 }); if (read?.pid === state.pid && read.status === 'running') state.preserved = true; } }
     const flapInterval = Math.max(1000, Math.min(30000, Math.floor(durationSeconds * 1000 / 3))); flapTimer = setInterval(() => { const task = flapStep().catch((error) => recordError(`flap: ${error.message}`, true)); flapTasks.add(task); task.finally(() => flapTasks.delete(task)); }, flapInterval);
-    while (Date.now() < deadline) {
+    while (monotonicNow() < deadline) {
       metrics.loops += 1; await rpc('list_directory', { root: 'work' }); await rpc('read_file', { root: 'work', path: `tree-${metrics.loops % 16}/entry-${metrics.loops % 256}.txt` }); await rpc('read_file_chunk', { root: 'work', path: 'tree-0/entry-0.txt', offset: 0, length: 64 }); await rpc('read_multiple_files', { files: [{ root: 'work', path: 'tree-0/entry-0.txt' }, { root: 'work', path: 'tree-1/entry-1.txt' }] }); await sleep(100);
       const search = await rpc('start_search', { root: 'work', query: 'needle', content: true }); if (search?.search_id) { metrics.search_ops += 1; let status = 'queued'; for (let i = 0; i < 20 && ['queued', 'running'].includes(status); i += 1) { await sleep(10); const page = await rpc('get_search_results', { search_id: search.search_id, limit: 200 }); status = page?.status; } await rpc('stop_search', { search_id: search.search_id }); }
       if (metrics.loops % 4 === 0) { const read = await rpc('read_process', { job_id: state.jobId, offset: 0, limit: 64 }); if (read && (read.pid !== state.pid || read.status !== 'running')) recordError('job PID changed during soak'); }
-      if (metrics.loops > 1 && Date.now() + 15000 >= deadline) break;
+      if (metrics.loops > 1 && monotonicNow() + 15000 >= deadline) break;
     }
     const benchmarkStarted = Date.now();
-    if (Date.now() < deadline) {
-      const stdout = await rpc('start_process', { command: `head -c ${100 * MB} /dev/zero | tr '\\0' x`, root: 'work', timeout_seconds: 120, wait_seconds: 0.25 }, Math.min(15000, Math.max(1, deadline - Date.now())));
-      if (stdout?.job_id) { let final = stdout; const end = Math.min(deadline, Date.now() + 120000); while (final?.status === 'running' && Date.now() < end) { await sleep(Math.min(100, Math.max(1, end - Date.now()))); final = await rpc('read_process', { job_id: stdout.job_id, offset: 0, limit: 65536 }, Math.min(15000, Math.max(1, end - Date.now()))); } const job = agent.processes.jobs.get(stdout.job_id); metrics.stdout_benchmark_completed = final?.status === 'exited' && final?.exit_code === 0; metrics.stdout_ring_bytes = job?.output_length ?? 0; metrics.stdout_segments = job?.segments.length ?? 0; metrics.stdout_base_offset = job?.base_offset ?? 0; metrics.stdout_output_dropped = Boolean(final?.output_dropped); metrics.stdout_captured_bytes = metrics.stdout_base_offset + metrics.stdout_ring_bytes; if (metrics.stdout_ring_bytes > 256 * 1024) recordError('stdout ring exceeded 256 KiB'); }
+    if (monotonicNow() < deadline) {
+      const stdout = await rpc('start_process', { command: `head -c ${100 * MB} /dev/zero | tr '\\0' x`, root: 'work', timeout_seconds: 120, wait_seconds: 0.25 }, Math.min(15000, Math.max(1, deadline - monotonicNow())));
+      if (stdout?.job_id) { let final = stdout; const end = Math.min(deadline, monotonicNow() + 120000); while (final?.status === 'running' && monotonicNow() < end) { await sleep(Math.min(100, Math.max(1, end - monotonicNow()))); final = await rpc('read_process', { job_id: stdout.job_id, offset: 0, limit: 65536 }, Math.min(15000, Math.max(1, end - monotonicNow()))); } const job = agent.processes.jobs.get(stdout.job_id); metrics.stdout_benchmark_completed = final?.status === 'exited' && final?.exit_code === 0; metrics.stdout_ring_bytes = job?.output_length ?? 0; metrics.stdout_segments = job?.segments.length ?? 0; metrics.stdout_base_offset = job?.base_offset ?? 0; metrics.stdout_output_dropped = Boolean(final?.output_dropped); metrics.stdout_captured_bytes = metrics.stdout_base_offset + metrics.stdout_ring_bytes; if (metrics.stdout_ring_bytes > 256 * 1024) recordError('stdout ring exceeded 256 KiB'); }
     }
     metrics.stdout_benchmark_elapsed_ms = Date.now() - benchmarkStarted;
+    while (monotonicNow() < deadline) {
+      const remaining = deadline - monotonicNow();
+      if (remaining <= 250) { await sleep(remaining); break; }
+      await rpc('read_process', { job_id: state.jobId, offset: 0, limit: 64 }, Math.min(1000, remaining - 100));
+      await sleep(Math.min(100, Math.max(1, deadline - monotonicNow())));
+    }
+    const workloadEndedAt = monotonicNow();
+    metrics.requested_duration_seconds = durationSeconds;
+    metrics.actual_workload_elapsed_seconds = (workloadEndedAt - workloadStartedAt) / 1000;
+    metrics.workload_started_at = workloadStartedIso;
+    metrics.workload_ended_at = new Date().toISOString();
     clearInterval(flapTimer); flapTimer = null; await Promise.allSettled([...flapTasks]);
   } catch (e) { recordError(e.message); }
   if (flapTimer) clearInterval(flapTimer);
@@ -166,6 +182,7 @@ async function run() {
     metrics.cleanup.in_flight_operations === 0 &&
     metrics.cleanup.search_in_flight === 0 &&
     metrics.cleanup.live_processes === 0 &&
+    metrics.actual_workload_elapsed_seconds >= durationSeconds - 0.1 &&
     (metrics.cleanup.fd_delta === null || metrics.cleanup.fd_delta <= 2);
   const thresholds = {
     errors: 0,
@@ -179,6 +196,7 @@ async function run() {
     cleanup_peers_remaining: 0,
     cleanup_pending_rpc: 0,
     cleanup_live_processes: 0,
+    actual_workload_elapsed_seconds_min: Math.max(0, durationSeconds - 0.1),
   };
   const result = { ok: metrics.ok, thresholds, metrics };
   if (json) console.log(JSON.stringify(result));
