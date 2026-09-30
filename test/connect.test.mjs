@@ -103,7 +103,7 @@ test('real Node profile lock rejects duplicate, releases, and fails closed on st
   await fs.mkdir(`${config}.node-lock`, { recursive: true, mode: 0o700 });
   const staleOwner = JSON.stringify({ pid: 999999999, nonce: 'x'.repeat(43) }) + '\n';
   await fs.writeFile(`${config}.node-lock/owner.json`, staleOwner, { mode: 0o600 });
-  await assert.rejects(() => acquireProfileLocks([config]), /manual|人工清理/);
+  await assert.rejects(() => acquireProfileLocks([config]), /--recover-lock/);
   assert.equal(await fs.readFile(`${config}.node-lock/owner.json`, 'utf8'), staleOwner);
   await fs.rm(`${config}.node-lock`, { recursive: true });
 });
@@ -112,4 +112,37 @@ test('localRoots resolves existing directories', async () => {
   const base = await tmp();
   assert.deepEqual(await localRoots([`work=${base}`]), { work: await fs.realpath(base) });
   await assert.rejects(() => localRoots(['bad name=/tmp']), /名称无效/);
+});
+
+test('explicit recovery finishes before acquiring both profile locks', async () => {
+  const base = await tmp();
+  const destination = path.join(base, 'profile.json');
+  await writeConfig(destination, { gateway_url: 'https://example.test', device_id: 'd',
+    token: 'x'.repeat(32), roots: { work: base } });
+  const calls = [];
+  await connectDevice({ server: 'https://example.test', config: destination, recoverLock: true }, {
+    locks: {
+      reclaim: async (targets) => { calls.push(['recover', targets]); },
+      acquire: async (targets) => {
+        calls.push(['acquire', targets]);
+        return { release: async () => { calls.push(['release']); } };
+      },
+    },
+    runAgent: async () => { calls.push(['run']); },
+  });
+  assert.deepEqual(calls, [['recover', [destination]], ['acquire', [destination]], ['run'], ['release']]);
+});
+
+test('unfinished operations retain the profile lock until the Agent exits', async () => {
+  const base = await tmp();
+  const destination = path.join(base, 'profile.json');
+  await writeConfig(destination, { gateway_url: 'https://example.test', device_id: 'd',
+    token: 'x'.repeat(32), roots: { work: base } });
+  let released = false;
+  await connectDevice({ server: 'https://example.test', config: destination }, {
+    locks: { acquire: async () => ({ release: async () => { released = true; } }) },
+    runAgent: async () => {},
+    canReleaseLocks: () => false,
+  });
+  assert.equal(released, false);
 });

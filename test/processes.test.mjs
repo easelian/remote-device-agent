@@ -26,6 +26,32 @@ test('caps output in code points and marks discarded offsets', async () => {
   await processes.close();
 });
 
+test('keeps event loop responsive while bounding a 100 MiB stdout burst', { timeout: 30000 }, async () => {
+  const processes = new Processes(config(), files);
+  let maximumTickDelay = 0;
+  let previous = performance.now();
+  const ticker = setInterval(() => {
+    const now = performance.now();
+    maximumTickDelay = Math.max(maximumTickDelay, now - previous);
+    previous = now;
+  }, 10);
+  try {
+    const job = await processes.start("dd if=/dev/zero bs=65536 count=1600 2>/dev/null | tr '\\0' x", 'work', '.', 10, 0);
+    let result;
+    do { await new Promise((resolve) => setTimeout(resolve, 20)); result = processes.read(job.job_id); }
+    while (result.status === 'running');
+    const retained = processes.read(job.job_id, 0, 65536);
+    assert.equal(result.status, 'exited');
+    assert.equal(retained.output.length, 65536);
+    assert.equal(retained.output_dropped, true);
+    assert.ok(retained.offset > 0);
+    assert.ok(maximumTickDelay < 500, `event loop stalled for ${maximumTickDelay}ms`);
+  } finally {
+    clearInterval(ticker);
+    await processes.close();
+  }
+});
+
 test('sends stdin and closes it', async () => {
   const processes = new Processes(config(), files);
   const job = await processes.start('cat', 'work', '.', 3, 0);
@@ -99,6 +125,44 @@ test('close prevents a delayed start from spawning after directory validation', 
   await assert.rejects(starting, /closing|offline/);
   await closing;
   assert.equal(processes.jobs.size, 0);
+});
+
+test('close is bounded when directory validation never resolves', async () => {
+  let releaseDirectory;
+  const delayedFiles = { checkedDirectory: () => new Promise((resolve) => { releaseDirectory = resolve; }) };
+  const processes = new Processes(config(), delayedFiles);
+  const starting = processes.start('sleep 30', 'work', '.', 10, 0);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const started = performance.now();
+  await processes.close();
+  assert.ok(performance.now() - started < 600, 'close waited for directory validation');
+  releaseDirectory(process.cwd());
+  await assert.rejects(starting, /closing|offline/);
+  assert.equal(processes.jobs.size, 0);
+});
+
+test('close kills an existing job without waiting indefinitely for its watcher', async () => {
+  const processes = new Processes(config(), files);
+  const job = await processes.start('sleep 30', 'work', '.', 10, 0);
+  const started = performance.now();
+  await processes.close();
+  assert.ok(performance.now() - started < 1500, 'close exceeded bounded child cleanup');
+  assert.notEqual(processes.read(job.job_id).status, 'running');
+  assert.throws(() => process.kill(job.pid, 0), (error) => error.code === 'ESRCH');
+});
+
+test('termination reports pending cleanup until the actual watcher closes', async () => {
+  const processes = new Processes(config(), files);
+  let finish;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  processes.jobs.set('pending', { process: { pid: null, exitCode: null }, status: 'running',
+    closed: false, task: pending, segments: [], base_offset: 0, started: Date.now() });
+  const result = await processes.terminate('pending');
+  assert.equal(result.cleanup_pending, true);
+  assert.equal(processes.list().jobs[0].cleanup_pending, true);
+  processes.jobs.get('pending').closed = true;
+  finish();
+  assert.equal(processes.read('pending').cleanup_pending, false);
 });
 
 async function jobWait(processes, id) {

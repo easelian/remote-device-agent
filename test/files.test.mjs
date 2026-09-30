@@ -48,7 +48,7 @@ test('rejects a directory handle after its path is exchanged', async () => {
     await fs.rename(oldDir, path.join(dir, 'moved'));
     await fs.mkdir(oldDir);
     await fs.writeFile(path.join(oldDir, 'new.txt'), 'new');
-    assert.throws(() => native.listDirectory(fd), /changed|stale|directory/i);
+    await assert.rejects(() => native.listDirectory(fd), /changed|stale|directory/i);
   } finally {
     await native.close(fd);
   }
@@ -67,9 +67,9 @@ test('preserves existing file permissions and rejects invalid paths', async () =
   assert.equal((await fs.stat(target)).mode & 0o777, 0o640);
   await assert.rejects(() => files.read('workspace', '/etc/passwd'), /relative/);
   await assert.rejects(() => files.read('workspace', 'bad\0name'), /relative/);
-  assert.throws(() => native.openDirectory(files.roots.workspace, '/etc'), /relative/);
-  assert.throws(() => native.openDirectory(files.roots.workspace, '../outside'), /relative/);
-  assert.throws(() => native.openDirectory(files.roots.workspace, 'bad\0name'), /relative/);
+  await assert.rejects(() => native.openDirectory(files.roots.workspace, '/etc'), /relative/);
+  await assert.rejects(() => native.openDirectory(files.roots.workspace, '../outside'), /relative/);
+  await assert.rejects(() => native.openDirectory(files.roots.workspace, 'bad\0name'), /relative/);
 });
 
 test('rejects a configured root after replacing its canonical path with a symlink', async () => {
@@ -87,6 +87,22 @@ test('bounds directory enumeration at 10000 entries', { timeout: 15000 }, async 
   for (let index = 0; index < 10001; index++) await fs.mkdir(path.join(root, `directory-${index}`));
   const files = new Files({ workspace: root }, false);
   await assert.rejects(() => files.list('workspace'), /exceeds 10000 entries/);
+});
+
+test('async directory enumeration yields and honors maxEntries and abort', { timeout: 15000 }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (let index = 0; index < 1000; index++) await fs.mkdir(path.join(root, `entry-${index}`));
+  const handle = await native.openDirectory(await fs.realpath(root));
+  t.after(() => native.close(handle));
+  let ticked = false;
+  const timer = setImmediate(() => { ticked = true; });
+  await assert.rejects(() => native.listDirectory(handle, { maxEntries: 10 }), /exceeds 10 entries/);
+  clearImmediate(timer);
+  assert.equal(ticked, true);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(() => native.listDirectory(handle, { signal: controller.signal }), /cancel|aborted/i);
 });
 
 test('matches Python casefold semantics and sorts by Unicode code point', async () => {

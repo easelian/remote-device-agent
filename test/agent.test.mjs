@@ -263,3 +263,78 @@ test('device_info advertises the file, process, and search operations', async (t
   assert.equal((await agent.dispatch('file_info', { root: 'work', path: '.' })).type, 'directory');
   assert.equal(info.offline_process_grace_seconds, 300);
 });
+
+test('unresolved I/O keeps a global operation budget across reconnect and shutdown is bounded', { timeout: 5000 }, async (t) => {
+  const { server, agent } = await fixture(t);
+  agent.operationTimeoutMs = 20;
+  agent.shutdownTimeoutMs = 30;
+  let dispatched = 0;
+  agent.dispatch = () => { dispatched += 1; return new Promise(() => {}); };
+  let peer = waitConnection(server);
+  const first = agent.session(new AbortController().signal, () => {}, { preserveJobs: true });
+  let { socket } = await peer;
+  let next = messageQueue(socket);
+  await next();
+  socket.send(JSON.stringify({ type: 'ready' }));
+  for (let i = 0; i < 8; i++) socket.send(JSON.stringify({ type: 'request', id: `hung-${i}`, operation: 'hung' }));
+  for (let i = 0; i < 8; i++) assert.match((await next()).error, /deadline.*unknown/);
+  assert.equal(agent.inFlightOperations.size, 8);
+  socket.close();
+  await first;
+
+  peer = waitConnection(server);
+  const stop = new AbortController();
+  const second = agent.session(stop.signal, () => {}, { preserveJobs: true });
+  ({ socket } = await peer);
+  next = messageQueue(socket);
+  await next();
+  socket.send(JSON.stringify({ type: 'ready' }));
+  socket.send(JSON.stringify({ type: 'request', id: 'fresh', operation: 'hung' }));
+  assert.match((await next()).error, /Device busy/);
+  assert.equal(dispatched, 8);
+  const started = Date.now();
+  stop.abort();
+  await second;
+  assert.ok(Date.now() - started < 500);
+  assert.equal(agent.inFlightOperations.size, 8, 'I/O was not falsely reported as cancelled');
+});
+
+test('duplicate in-flight request IDs cannot execute a write twice', { timeout: 5000 }, async (t) => {
+  const { server, agent } = await fixture(t);
+  agent.shutdownTimeoutMs = 30;
+  let dispatched = 0;
+  agent.dispatch = () => { dispatched += 1; return new Promise(() => {}); };
+  const peer = waitConnection(server);
+  const session = agent.session(new AbortController().signal);
+  const { socket } = await peer;
+  const next = messageQueue(socket);
+  await next();
+  socket.send(JSON.stringify({ type: 'ready' }));
+  const request = JSON.stringify({ type: 'request', id: 'same', operation: 'write_file' });
+  socket.send(request);
+  socket.send(request);
+  await session;
+  assert.equal(dispatched, 1);
+});
+
+test('shutdown rejects new requests before dispatch', { timeout: 5000 }, async (t) => {
+  const { server, agent } = await fixture(t);
+  const peer = waitConnection(server);
+  const session = agent.session(new AbortController().signal);
+  const { socket } = await peer;
+  const next = messageQueue(socket);
+  await next();
+  socket.send(JSON.stringify({ type: 'ready' }));
+  // Ensure the ready frame has been consumed before beginning shutdown.
+  socket.send(JSON.stringify({ type: 'request', id: 'initial', operation: 'device_info' }));
+  assert.equal((await next()).id, 'initial');
+  await agent.close();
+  let dispatched = 0;
+  agent.dispatch = () => { dispatched += 1; return {}; };
+  socket.send(JSON.stringify({ type: 'request', id: 'late', operation: 'write_file' }));
+  assert.match((await next()).error, /shutting down/);
+  assert.equal(dispatched, 0);
+  assert.equal(agent.inFlightOperations.size, 0);
+  socket.close();
+  await session;
+});

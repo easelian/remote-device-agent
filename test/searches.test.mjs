@@ -107,6 +107,16 @@ test('result budget stops traversal with an explicit reason', async () => {
   await manager.close();
 });
 
+test('legacy maxEntries remains the result limit while nonmatching entries are traversed', async () => {
+  const root = await fixture();
+  const manager = new SearchTasks(new Files({ work: root }, false), { maxEntries: 1 });
+  const started = await manager.startSearch({ root: 'work', query: 'needle', content: true });
+  const result = await waitDone(manager, started.search_id);
+  assert.equal(result.results.length, 1);
+  assert.equal(result.truncated_reason, 'max_entries');
+  await manager.close();
+});
+
 test('retains only bounded completed task metadata and closes cancelled fds', async () => {
   const root = await fixture();
   const files = new Files({ work: root }, false);
@@ -148,5 +158,25 @@ test('stopped workers remain in concurrency budget until fd cleanup', async () =
   await manager.stopSearch({ search_id: started.search_id });
   await assert.rejects(() => manager.startSearch({ root: 'work', query: 'other' }), /concurrent/);
   await manager.close();
+  assert.equal(closed >= 1, true);
+});
+
+test('close has a bounded wait for non-cancellable filesystem I/O and late fd cleanup', async () => {
+  const root = await fixture();
+  let releaseEnumeration;
+  let closed = 0;
+  const filesystem = { ...native,
+    listDirectory: async () => new Promise((resolve) => { releaseEnumeration = resolve; }),
+    close: async (fd) => { closed += 1; return native.close(fd); },
+  };
+  const manager = new SearchTasks(new Files({ work: root }, false, filesystem), { closeTimeoutMs: 20 });
+  await manager.startSearch({ root: 'work', query: 'needle' });
+  for (let attempt = 0; attempt < 100 && !releaseEnumeration; attempt++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof releaseEnumeration, 'function');
+  const started = Date.now();
+  await manager.close();
+  assert.equal(Date.now() - started < 200, true);
+  releaseEnumeration([]);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(closed >= 1, true);
 });

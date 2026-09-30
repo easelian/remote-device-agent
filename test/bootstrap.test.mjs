@@ -32,10 +32,11 @@ test('gateway arguments reject credential-bearing or insecure remote origins', (
 test('repeated roots, profile and config survive argument parsing', () => {
   assert.deepEqual(parseArgs(['--root', 'work=/tmp/work', '--root=other=/tmp/other',
     '--profile', 'build', '--config=/tmp/agent.json', '--no-browser']),
-  { server: 'https://xdistribute.site:8090', profile: 'build', noBrowser: true,
+  { server: 'https://xdistribute.site:8090', profile: 'build', noBrowser: true, recoverLock: false,
     root: ['work=/tmp/work', 'other=/tmp/other'], config: '/tmp/agent.json' });
   for (const args of [['--unknown'], ['--root'], ['--profile', '--no-browser']])
     assert.throws(() => parseArgs(args));
+  assert.equal(parseArgs(['--recover-lock']).recoverLock, true);
 });
 
 test('help and version run offline with empty PATH and no runtime setup', () => {
