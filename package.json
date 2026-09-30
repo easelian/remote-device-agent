@@ -1,0 +1,22 @@
+{
+  "name": "remote-device-hub",
+  "version": "0.5.0",
+  "description": "Connect a Linux or macOS device to your Remote Device Hub gateway",
+  "type": "module",
+  "bin": {
+    "remote-device-hub": "bin/remote-device-hub.mjs",
+    "remote-device-agent": "bin/remote-device-hub.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "vendor/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

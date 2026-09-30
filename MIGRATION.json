@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "repository": "remote-device-agent",
+  "source_repository": "network",
+  "source_component": "remote-device-hub",
+  "source_commit": "73fc37bba94c6ba7faf9f26dc0fe28e0ded37ed3",
+  "strategy": "tracked-files snapshot; complete original history retained in source repository",
+  "files": [
+    {
+      "source_path": "remote-device-hub/npm/agent/README.md",
+      "path": "README.md",
+      "sha256": "c705d0d5a775b6cde7b5846113ca9b1a4424318682cb3d950bd0dc42542f0699"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/bin/remote-device-hub.mjs",
+      "path": "bin/remote-device-hub.mjs",
+      "sha256": "2b0f3b28a3ef49a1c104fb4fb724734f77395fab48ffa6446969848daa57ed17"
+    },
+    {
+      "source_path": "remote-device-hub/releases/evidence/2026-09-30/node-agent-0.5.0-runtime.json",
+      "path": "docs/history/evidence/node-agent-0.5.0-runtime.json",
+      "sha256": "0df8f68a8da27b9d72724f09ee02267931a24bf520ce8157257379c0092fc3bf"
+    },
+    {
+      "source_path": "remote-device-hub/releases/evidence/2026-09-30/node-agent-0.5.0-tests.json",
+      "path": "docs/history/evidence/node-agent-0.5.0-tests.json",
+      "sha256": "9ccdf194c1892329ec9f90099d20bba47d83cdba5a691fd1c4b2fc808b17f128"
+    },
+    {
+      "source_path": "remote-device-hub/docs/node-agent-validation-20260930.md",
+      "path": "docs/history/node-agent-validation-20260930.md",
+      "sha256": "a9badfae0654f6c5b9d6591a00b22dc23042f7d9419cbb9625ac15508b3054bc"
+    },
+    {
+      "source_path": "remote-device-hub/releases/agent-manual-0.4.1.json",
+      "path": "docs/history/release-records/agent-manual-0.4.1.json",
+      "sha256": "3d0da15f39194c6d87c3b47dff5e9495aa5fe708186fcf198d309b270edfe5d2"
+    },
+    {
+      "source_path": "remote-device-hub/releases/agent-manual-0.5.0.json",
+      "path": "docs/history/release-records/agent-manual-0.5.0.json",
+      "sha256": "c18fab879263986a3157cd9dc86a031f1b5ac7686394bbb90a71ee0e85fa6435"
+    },
+    {
+      "source_path": "remote-device-hub/releases/agent-private-0.3.0.json",
+      "path": "docs/history/release-records/agent-private-0.3.0.json",
+      "sha256": "1e6541cfcfae84342c154213a6a24c3ae21d5b197b6e0e0fa9354fd54ec3a97b"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/agent.mjs",
+      "path": "lib/agent.mjs",
+      "sha256": "f9de67be4141643a1da1131dfb6120c4dbc3181b3dd51d677d65ecd01a569c77"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/bootstrap.mjs",
+      "path": "lib/bootstrap.mjs",
+      "sha256": "b41e800804780d912721c96bd3eb3418ecf49ad3ac562eb6af942408903b699a"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/casefold.mjs",
+      "path": "lib/casefold.mjs",
+      "sha256": "6a9823029b57d8a91f03d60c15b544757cacd97b42f565b65caa087b98e1d31c"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/config.mjs",
+      "path": "lib/config.mjs",
+      "sha256": "ab4f6f5d1813ff0e49a7281e03b80b907f334b88a2f48e62f49c746abb962113"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/connect.mjs",
+      "path": "lib/connect.mjs",
+      "sha256": "197da67fc8b6768e833e4cf59b8c00bf89fc8990e31d1bb1538401e711dfa103"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/files.mjs",
+      "path": "lib/files.mjs",
+      "sha256": "359b9671c9f09b91ca2abdb98d51f1686b0e8e1524ad4c57d50af46efaf5cbf2"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/posix-fs.mjs",
+      "path": "lib/posix-fs.mjs",
+      "sha256": "83f09eb6227ead518a8057ff675672be07c503466a1474d97298191f7ba386c6"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/processes.mjs",
+      "path": "lib/processes.mjs",
+      "sha256": "bfb1a0418b9e5ecb5fe92ed7bfaa64361b8faa1f7964df6809ae27df510b17c5"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/lib/profile-lock.mjs",
+      "path": "lib/profile-lock.mjs",
+      "sha256": "15abcd175f11402e616d94ebcde499e6460709610a66cb5242dbb68ec5e283f0"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/package.json",
+      "path": "package.json",
+      "sha256": "ee9054d194d7a7c8b86b7a4cdf8cb4cc267da8ea551f8c142966c9a1e0df0ce6"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/test/agent.test.mjs",
+      "path": "test/agent.test.mjs",
+      "sha256": "ac13cfce62a0659e347e4e1127a47c5dca3ddffe186e7f871a66d1019c6fb5df"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/test/bootstrap.test.mjs",
+      "path": "test/bootstrap.test.mjs",
+      "sha256": "17c6fd77437b4d9e2451bf61c96478718ac1c2beec8144daa1336740bfa60852"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/test/connect.test.mjs",
+      "path": "test/connect.test.mjs",
+      "sha256": "1db595e1fd522a2f5a011cf419646d591038b6c56440ec149abc901a451e4dea"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/test/files.test.mjs",
+      "path": "test/files.test.mjs",
+      "sha256": "a510e47973c776e651dd5205e82f57687c376f8f6dd38e4ed172ee6ae17af651"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/test/processes.test.mjs",
+      "path": "test/processes.test.mjs",
+      "sha256": "0792a7d62095c25fc3cb8efd7728956bfcbd4a94ef587112d71be878fa3b7e5a"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/LICENSE",
+      "path": "vendor/ws/LICENSE",
+      "sha256": "2b29dcfe0d6471f7e8c92c5fb38c9f93edee10330937055440192f1832b1ecef"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/index.js",
+      "path": "vendor/ws/index.js",
+      "sha256": "924564d5be26d59b9682c4263f68320e48dde7240bd2d1ad17ec305537429dd2"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/buffer-util.js",
+      "path": "vendor/ws/lib/buffer-util.js",
+      "sha256": "8b0a45739132f82e25ea13163780abf547ccfe989267f3eb7abb475beec92da3"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/constants.js",
+      "path": "vendor/ws/lib/constants.js",
+      "sha256": "391e823142b8b370e55a2fd32b022deaf03b8415c56000009674ebc86a0b4f86"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/event-target.js",
+      "path": "vendor/ws/lib/event-target.js",
+      "sha256": "c45d3c6e12d170c860c0c3f1a050aa0f864d9806632b609a1e607d675aba128c"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/extension.js",
+      "path": "vendor/ws/lib/extension.js",
+      "sha256": "852564f0f6b460287043803eae732666fb5610f676874354fc89f06aa4e986ed"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/limiter.js",
+      "path": "vendor/ws/lib/limiter.js",
+      "sha256": "e0469d4b83f6ba764b15f80e1766b75c136fbff68f048f4c050f0b1c7f065f69"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/permessage-deflate.js",
+      "path": "vendor/ws/lib/permessage-deflate.js",
+      "sha256": "16a91536988a53c23047ee5882392068728a839a244178c3b09b8c54982f58b0"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/receiver.js",
+      "path": "vendor/ws/lib/receiver.js",
+      "sha256": "a6ada33c9a2d54eaf595824b821ea89ca2c6395f89aa06755c52142148274884"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/sender.js",
+      "path": "vendor/ws/lib/sender.js",
+      "sha256": "d0791d30c3defd44dcabbddb879a901c757993fea2c00a7ffea01d53b23b4b77"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/stream.js",
+      "path": "vendor/ws/lib/stream.js",
+      "sha256": "a56fcb6e2b152097ee820b6f5410b1f71e59819b45d08d9f8bda588fe39070ec"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/subprotocol.js",
+      "path": "vendor/ws/lib/subprotocol.js",
+      "sha256": "be3f6323d6f549568577dcba9004c1479d95c65a7abb0fe0c582875b9fac0b7c"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/validation.js",
+      "path": "vendor/ws/lib/validation.js",
+      "sha256": "41ce8e83d0d434132e1704895fedb91f6703a701b42d91c80954ab29b2845593"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/websocket-server.js",
+      "path": "vendor/ws/lib/websocket-server.js",
+      "sha256": "6d8dd89a841748c80445fd5fcdb5ba8005369b53cc3525135e11304c8b9c55e5"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/lib/websocket.js",
+      "path": "vendor/ws/lib/websocket.js",
+      "sha256": "7ccf305925f0cdb74e06b75b4c84de134b1bd771a220ef409b24520def08128f"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/package.json",
+      "path": "vendor/ws/package.json",
+      "sha256": "c1ef91ca04eb4754c011c5f0e7638b5078ff71104fada400c44ac761cf93e0b1"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/vendor.json",
+      "path": "vendor/ws/vendor.json",
+      "sha256": "bae14380694136ac362d64b624e9da14b590ef57ae14f11391c6346d853a19f7"
+    },
+    {
+      "source_path": "remote-device-hub/npm/agent/vendor/ws/wrapper.mjs",
+      "path": "vendor/ws/wrapper.mjs",
+      "sha256": "fe154662301fd558f935f9c217fccbe7a7dac02ff39e648a000589403ff27c7f"
+    }
+  ]
+}

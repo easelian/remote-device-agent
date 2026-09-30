@@ -1,0 +1,127 @@
+{
+  "schema_version": 2,
+  "component": "agent",
+  "channel": "manual",
+  "version": "0.5.0",
+  "created_at": "2026-09-30T04:39:47+00:00",
+  "stage": "prepared",
+  "source": {
+    "git_commit": "0f54e9b84cda470ccd3f7af98b704571a6441d2c",
+    "git_tree": "ee267d47343f43cc690c57fdb54bdd0d6adf49fe",
+    "working_tree": "clean",
+    "sha256": "181a04007caf162e434d4e8bf7517022122272432623a8a471bc436af671e5e7",
+    "files": {
+      "npm/agent/README.md": "c705d0d5a775b6cde7b5846113ca9b1a4424318682cb3d950bd0dc42542f0699",
+      "npm/agent/bin/remote-device-hub.mjs": "2b0f3b28a3ef49a1c104fb4fb724734f77395fab48ffa6446969848daa57ed17",
+      "npm/agent/lib/agent.mjs": "f9de67be4141643a1da1131dfb6120c4dbc3181b3dd51d677d65ecd01a569c77",
+      "npm/agent/lib/bootstrap.mjs": "b41e800804780d912721c96bd3eb3418ecf49ad3ac562eb6af942408903b699a",
+      "npm/agent/lib/casefold.mjs": "6a9823029b57d8a91f03d60c15b544757cacd97b42f565b65caa087b98e1d31c",
+      "npm/agent/lib/config.mjs": "ab4f6f5d1813ff0e49a7281e03b80b907f334b88a2f48e62f49c746abb962113",
+      "npm/agent/lib/connect.mjs": "197da67fc8b6768e833e4cf59b8c00bf89fc8990e31d1bb1538401e711dfa103",
+      "npm/agent/lib/files.mjs": "359b9671c9f09b91ca2abdb98d51f1686b0e8e1524ad4c57d50af46efaf5cbf2",
+      "npm/agent/lib/posix-fs.mjs": "83f09eb6227ead518a8057ff675672be07c503466a1474d97298191f7ba386c6",
+      "npm/agent/lib/processes.mjs": "bfb1a0418b9e5ecb5fe92ed7bfaa64361b8faa1f7964df6809ae27df510b17c5",
+      "npm/agent/lib/profile-lock.mjs": "15abcd175f11402e616d94ebcde499e6460709610a66cb5242dbb68ec5e283f0",
+      "npm/agent/package.json": "ee9054d194d7a7c8b86b7a4cdf8cb4cc267da8ea551f8c142966c9a1e0df0ce6",
+      "npm/agent/vendor/ws/LICENSE": "2b29dcfe0d6471f7e8c92c5fb38c9f93edee10330937055440192f1832b1ecef",
+      "npm/agent/vendor/ws/lib/buffer-util.js": "8b0a45739132f82e25ea13163780abf547ccfe989267f3eb7abb475beec92da3",
+      "npm/agent/vendor/ws/lib/constants.js": "391e823142b8b370e55a2fd32b022deaf03b8415c56000009674ebc86a0b4f86",
+      "npm/agent/vendor/ws/lib/event-target.js": "c45d3c6e12d170c860c0c3f1a050aa0f864d9806632b609a1e607d675aba128c",
+      "npm/agent/vendor/ws/lib/extension.js": "852564f0f6b460287043803eae732666fb5610f676874354fc89f06aa4e986ed",
+      "npm/agent/vendor/ws/lib/limiter.js": "e0469d4b83f6ba764b15f80e1766b75c136fbff68f048f4c050f0b1c7f065f69",
+      "npm/agent/vendor/ws/lib/permessage-deflate.js": "16a91536988a53c23047ee5882392068728a839a244178c3b09b8c54982f58b0",
+      "npm/agent/vendor/ws/lib/receiver.js": "a6ada33c9a2d54eaf595824b821ea89ca2c6395f89aa06755c52142148274884",
+      "npm/agent/vendor/ws/lib/sender.js": "d0791d30c3defd44dcabbddb879a901c757993fea2c00a7ffea01d53b23b4b77",
+      "npm/agent/vendor/ws/lib/validation.js": "41ce8e83d0d434132e1704895fedb91f6703a701b42d91c80954ab29b2845593",
+      "npm/agent/vendor/ws/lib/websocket.js": "7ccf305925f0cdb74e06b75b4c84de134b1bd771a220ef409b24520def08128f",
+      "npm/agent/vendor/ws/package.json": "c1ef91ca04eb4754c011c5f0e7638b5078ff71104fada400c44ac761cf93e0b1",
+      "npm/agent/vendor/ws/vendor.json": "bae14380694136ac362d64b624e9da14b590ef57ae14f11391c6346d853a19f7",
+      "scripts/build_agent.py": "225da9a7abd6ea5c917348eeba0b273deede23ed00e36101322b8d15b303b108"
+    }
+  },
+  "build": {
+    "python": "3.13.7",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "builder": "scripts/release.py",
+    "builder_sha256": "2a4960b6a198041909390f90f5d00cab1e69b6a14d7f18869b5b4745ad200fff",
+    "python-build": "1.3.0",
+    "node": "v26.7.0",
+    "npm": "11.19.0"
+  },
+  "artifact": {
+    "path": "dist/remote-device-hub-0.5.0.tgz",
+    "sha256": "5f5a5be581cc4449ea2a5fe3ec95e8d7ef5a1a0c4157ad3c11082b15cac5c3e3",
+    "bytes": 43045
+  },
+  "identities": {},
+  "checks": {
+    "package-integrity": "passed",
+    "install-cli": "passed",
+    "binding-reuse": "passed",
+    "reconnect": "passed",
+    "startup-no-runtime-download": "passed",
+    "device-operations": "passed",
+    "pure-node-runtime": "passed",
+    "production-wss": "unverified",
+    "chatgpt-client": "unverified"
+  },
+  "events": [
+    {
+      "stage": "prepared",
+      "at": "2026-09-30T04:39:48+00:00"
+    },
+    {
+      "stage": "prepared",
+      "at": "2026-09-30T04:46:01+00:00",
+      "host": "local-darwin-arm64-node-22",
+      "checks": {
+        "package-integrity": "passed",
+        "install-cli": "passed",
+        "binding-reuse": "passed",
+        "reconnect": "passed",
+        "startup-no-runtime-download": "passed",
+        "device-operations": "passed",
+        "pure-node-runtime": "passed",
+        "production-wss": "unverified",
+        "chatgpt-client": "unverified"
+      },
+      "evidence": [
+        {
+          "path": "releases/evidence/2026-09-30/node-agent-0.5.0-runtime.json",
+          "sha256": "0df8f68a8da27b9d72724f09ee02267931a24bf520ce8157257379c0092fc3bf"
+        },
+        {
+          "path": "releases/evidence/2026-09-30/node-agent-0.5.0-tests.json",
+          "sha256": "9ccdf194c1892329ec9f90099d20bba47d83cdba5a691fd1c4b2fc808b17f128"
+        },
+        {
+          "path": "docs/node-agent-validation-20260930.md",
+          "sha256": "a9badfae0654f6c5b9d6591a00b22dc23042f7d9419cbb9625ac15508b3054bc"
+        }
+      ],
+      "note": "Local offline TGZ validation only. Fresh npm cache to pairing code 688ms; saved binding to online 415ms. No publication or production deployment."
+    }
+  ],
+  "embedded": {
+    "name": "remote-device-hub",
+    "version": "0.5.0",
+    "description": "Connect a Linux or macOS device to your Remote Device Hub gateway",
+    "type": "module",
+    "bin": {
+      "remote-device-hub": "bin/remote-device-hub.mjs",
+      "remote-device-agent": "bin/remote-device-hub.mjs"
+    },
+    "engines": {
+      "node": ">=22"
+    },
+    "files": [
+      "bin/",
+      "lib/",
+      "vendor/",
+      "README.md"
+    ],
+    "scripts": {
+      "test": "node --test test/*.test.mjs"
+    }
+  }
+}

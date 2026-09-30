@@ -1,0 +1,40 @@
+{
+  "at": "2026-09-30T04:40:44.261796+00:00",
+  "node": "v22.23.3",
+  "platform": "darwin",
+  "machine": "arm64",
+  "artifact": "remote-device-hub-0.5.0.tgz",
+  "artifact_sha256": "5f5a5be581cc4449ea2a5fe3ec95e8d7ef5a1a0c4157ad3c11082b15cac5c3e3",
+  "compressed_bytes": 43045,
+  "request_paths": [
+    "/agent/:device_id",
+    "/api/pair/poll",
+    "/api/pair/start"
+  ],
+  "checks": {
+    "offline_help_version": "passed",
+    "device_operations": "passed",
+    "reconnect_same_device_and_config": "passed",
+    "warm_samples": "passed",
+    "no_python_uv_runtime_cache": "passed",
+    "request_surface": "passed"
+  },
+  "limits": [
+    "Local fixture Hub only; no production OAuth/WSS tested.",
+    "No token, pairing code, or raw agent output is written to the summary."
+  ],
+  "timings_ms": {
+    "fresh_npm_first_pair": 688,
+    "fresh_npm_ready": 3785,
+    "reconnect_ready": 415,
+    "warm_npm_pair_samples": [
+      329,
+      332,
+      325,
+      335,
+      328
+    ]
+  },
+  "config_sha256": "0445f3b3e0c3d9e376d87bf71c949aff99e50ca5de7b07fd6dc9025bbd5043cd",
+  "unpacked_bytes": 169950
+}

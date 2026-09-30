@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+node_modules/
+dist/
+state/
+workspace/
+.build/
+.env
+.env.*
+*.local.json
+*.local.txt
+client_secret_*.json
+.DS_Store
+releases/*.tmp

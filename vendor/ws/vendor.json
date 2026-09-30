@@ -1,0 +1,23 @@
+{
+  "name": "ws",
+  "version": "8.22.0",
+  "url": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
+  "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
+  "archiveSha256": "ca9b3798b2e11ce8fac6713f50ef0501aa12b09b330623c1dc409dff94e7abc8",
+  "license": "MIT",
+  "clientFiles": [
+    "LICENSE",
+    "package.json",
+    "vendor.json",
+    "lib/buffer-util.js",
+    "lib/constants.js",
+    "lib/event-target.js",
+    "lib/extension.js",
+    "lib/limiter.js",
+    "lib/permessage-deflate.js",
+    "lib/receiver.js",
+    "lib/sender.js",
+    "lib/validation.js",
+    "lib/websocket.js"
+  ]
+}

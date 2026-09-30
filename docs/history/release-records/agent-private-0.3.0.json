@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "component": "agent",
+  "channel": "private",
+  "version": "0.3.0",
+  "created_at": "2026-09-30T02:31:04+00:00",
+  "stage": "prepared",
+  "source": {
+    "git_commit": "bbe4881c64ecf319ac551fb20b5f23e4307ca185",
+    "sha256": "68ba1d12493123018a1949c0b29dbd75cbb176938e54831557c16a8fe0082bd2"
+  },
+  "artifact": {
+    "path": "dist/remote-device-hub-0.3.0.tgz",
+    "sha256": "65fd2369c478209ca5a48b1dae2d1987d65aa6a2bc588338e29b15a787731b7b",
+    "bytes": 57665
+  },
+  "identities": {},
+  "checks": {
+    "package-integrity": "passed"
+  },
+  "events": [
+    {
+      "stage": "prepared",
+      "at": "2026-09-30T02:31:05+00:00",
+      "note": "Imported existing published 0.3.0 artifact; npm source, embedded Python source and runtime checksums match current source. No rebuild or device upgrade."
+    }
+  ]
+}
