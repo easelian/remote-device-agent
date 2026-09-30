@@ -77,6 +77,30 @@ test('bounds stdin backpressure wait to three seconds', async () => {
   await processes.terminate(job.job_id);
 });
 
+test('offline grace starts before a late job and rejects it', async () => {
+  const processes = new Processes(config(), files);
+  processes.markOffline(80);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await assert.rejects(() => processes.start('sleep 30', 'work', '.', 10, 0), /offline/);
+  processes.markOffline(200);
+  await new Promise((resolve) => setTimeout(resolve, 130));
+  await processes.close();
+});
+
+test('close prevents a delayed start from spawning after directory validation', async () => {
+  const delayedFiles = { checkedDirectory: async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return process.cwd();
+  } };
+  const processes = new Processes(config(), delayedFiles);
+  const starting = processes.start('sleep 30', 'work', '.', 10, 0);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const closing = processes.close();
+  await assert.rejects(starting, /closing|offline/);
+  await closing;
+  assert.equal(processes.jobs.size, 0);
+});
+
 async function jobWait(processes, id) {
   for (let i = 0; i < 50; i++) {
     if (processes.read(id).status !== 'running') return;

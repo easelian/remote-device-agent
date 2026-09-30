@@ -8,7 +8,7 @@ import test from 'node:test';
 import { build, check, MAX_ARCHIVE, MAX_UNPACKED, recordPublication, ROOT, sourceFiles, WS_CLIENT_FILES } from '../scripts/release.mjs';
 const metadata = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
 
-test('build is deterministic, bounded, and records the 0.5.1 artifact', async () => {
+test('build is deterministic, bounded, and records the current artifact', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'rdh-release-'));
   try {
     const first = await build({ output: join(dir, 'dist'), record: join(dir, 'releases', 'agent.json') });

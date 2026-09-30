@@ -128,3 +128,138 @@ test('abort closes the session and terminates a running process', { timeout: 800
     if (i === 49) assert.fail(`process ${pid} is still running`);
   }
 });
+
+test('run preserves a managed job and output across a transient disconnect', { timeout: 12000 }, async (t) => {
+  const { server, config, agent } = await fixture(t);
+  let connections = 0;
+  let firstJob;
+  let reconnected;
+  const reconnectedResult = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Agent did not reconnect')), 9000);
+    server.on('connection', (socket) => {
+      connections++;
+      const next = messageQueue(socket);
+      void (async () => {
+        const hello = await next();
+        assert.equal(hello.type, 'hello');
+        socket.send(JSON.stringify({ type: 'ready', version: 1 }));
+        if (connections === 1) {
+          socket.send(JSON.stringify({ type: 'request', id: 'start', operation: 'start_process', params: {
+            command: "printf 'before'; sleep 30", root: 'work', cwd: '.', timeout_seconds: 30, wait_seconds: 0,
+          }}));
+          const started = await next();
+          firstJob = started.result;
+          setTimeout(() => socket.terminate(), 50);
+        } else {
+          socket.send(JSON.stringify({ type: 'request', id: 'read', operation: 'read_process', params: {
+            job_id: firstJob.job_id, offset: 0, limit: 100,
+          }}));
+          const read = await next();
+          clearTimeout(timer);
+          reconnected = read.result;
+          resolve(read.result);
+        }
+      })().catch(reject);
+    });
+  });
+  const controller = new AbortController();
+  const running = agent.run(controller.signal);
+  const result = await reconnectedResult;
+  assert.equal(connections, 2);
+  assert.equal(result.status, 'running');
+  assert.match(result.output, /before/);
+  const pid = firstJob.pid;
+  controller.abort();
+  await running;
+  for (let i = 0; i < 50; i++) {
+    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') return; throw error; }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`process ${pid} is still running`);
+});
+
+test('close 1008 stops reconnect and cleans managed jobs', { timeout: 8000 }, async (t) => {
+  const { server, config, agent } = await fixture(t);
+  let connections = 0;
+  let pid;
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Agent did not connect')), 3000);
+    server.once('connection', (socket) => {
+      connections++;
+      const next = messageQueue(socket);
+      void (async () => {
+        await next(); socket.send(JSON.stringify({ type: 'ready', version: 1 }));
+        socket.send(JSON.stringify({ type: 'request', id: 'start', operation: 'start_process', params: {
+          command: 'sleep 30', root: 'work', cwd: '.', timeout_seconds: 30, wait_seconds: 0,
+        }}));
+        pid = (await next()).result.pid;
+        clearTimeout(timer); socket.close(1008, 'revoked'); resolve();
+      })().catch(reject);
+    });
+  });
+  const running = agent.run(new AbortController().signal);
+  await ready;
+  await assert.rejects(running, /authorization|revoked/);
+  assert.equal(connections, 1);
+  for (let i = 0; i < 50; i++) {
+    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') return; throw error; }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`process ${pid} is still running`);
+});
+
+test('HTTP 401 handshake rejection stops reconnect', { timeout: 5000 }, async (t) => {
+  const rejected = new WebSocketServer({ port: 0, host: '127.0.0.1', verifyClient: (_info, done) => done(false, 401, 'Unauthorized') });
+  await new Promise((resolve) => rejected.once('listening', resolve));
+  const address = rejected.address();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-agent-401-'));
+  const agent = new Agent({ gateway_url: `http://127.0.0.1:${address.port}/`, device_id: 'test-device', token, roots: { work: root },
+    allow_shell: true, allow_write: true, shell: '/bin/sh', max_processes: 4, max_process_seconds: 30 });
+  t.after(async () => { await closeServer(rejected); await fs.rm(root, { recursive: true, force: true }); });
+  const started = Date.now();
+  await assert.rejects(agent.run(new AbortController().signal), /authorization|revoked/);
+  assert.ok(Date.now() - started < 2000);
+});
+
+test('HTTP 502 retries and a later accepted connection can be aborted', { timeout: 6000 }, async (t) => {
+  let attempts = 0;
+  const server = new WebSocketServer({ port: 0, host: '127.0.0.1', verifyClient: (_info, done) => {
+    attempts++;
+    if (attempts === 1) done(false, 502, 'Bad Gateway'); else done(true);
+  }});
+  await new Promise((resolve) => server.once('listening', resolve));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-agent-502-'));
+  const agent = new Agent({ gateway_url: `http://127.0.0.1:${server.address().port}/`, device_id: 'test-device', token,
+    roots: { work: root }, allow_shell: true, allow_write: true, shell: '/bin/sh', max_processes: 4, max_process_seconds: 30 });
+  const connected = new Promise((resolve) => server.once('connection', resolve));
+  const controller = new AbortController();
+  t.after(async () => { controller.abort(); await closeServer(server); await fs.rm(root, { recursive: true, force: true }); });
+  const running = agent.run(controller.signal);
+  await connected;
+  assert.ok(attempts >= 2);
+  controller.abort();
+  await running;
+});
+
+test('HTTP 403 handshake rejection stops reconnect', { timeout: 5000 }, async (t) => {
+  const rejected = new WebSocketServer({ port: 0, host: '127.0.0.1', verifyClient: (_info, done) => done(false, 403, 'Forbidden') });
+  await new Promise((resolve) => rejected.once('listening', resolve));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-agent-403-'));
+  const agent = new Agent({ gateway_url: `http://127.0.0.1:${rejected.address().port}/`, device_id: 'test-device', token,
+    roots: { work: root }, allow_shell: true, allow_write: true, shell: '/bin/sh', max_processes: 4, max_process_seconds: 30 });
+  t.after(async () => { await closeServer(rejected); await fs.rm(root, { recursive: true, force: true }); });
+  const started = Date.now();
+  await assert.rejects(agent.run(new AbortController().signal), /authorization|revoked/);
+  assert.ok(Date.now() - started < 2000);
+});
+
+test('device_info advertises the file, process, and search operations', async (t) => {
+  const { agent } = await fixture(t);
+  const info = agent.info();
+  for (const operation of ['file_info', 'read_file_chunk', 'read_multiple_files', 'move_file',
+    'start_search', 'get_search_results', 'stop_search', 'list_searches']) {
+    assert.ok(info.capabilities.operations.includes(operation), operation);
+  }
+  assert.equal((await agent.dispatch('file_info', { root: 'work', path: '.' })).type, 'directory');
+  assert.equal(info.offline_process_grace_seconds, 300);
+});

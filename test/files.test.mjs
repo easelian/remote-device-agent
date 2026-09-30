@@ -101,3 +101,129 @@ test('matches Python casefold semantics and sorts by Unicode code point', async 
   assert.equal((await files.search('workspace', 'Σ')).matches[0].path, 'ς');
   assert.equal((await files.search('workspace', 'ꭰ')).matches[0].path, 'Ꭰ');
 });
+
+test('reports file metadata and bounded UTF-8 chunks', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const data = Buffer.from('😀'.repeat(400000));
+  await fs.writeFile(path.join(root, 'large.txt'), data);
+  const files = new Files({ workspace: root }, false);
+  const info = await files.fileInfo({ root: 'workspace', path: 'large.txt' });
+  assert.equal(info.type, 'file');
+  assert.equal(info.size_bytes, data.length);
+  assert.equal(info.read_only, true);
+  const chunk = await files.readFileChunk({ root: 'workspace', path: 'large.txt', offset: 1, length: 17 });
+  assert.equal(chunk.offset, 1);
+  assert.equal(chunk.next_offset, 18);
+  assert.equal(chunk.size_bytes, data.length);
+  assert.match(chunk.content, /�/);
+  assert.equal(typeof chunk.content_base64, 'string');
+  assert.equal(chunk.utf8_valid, false);
+  assert.equal(chunk.content_encoding, 'utf-8-replacement');
+  const complete = await files.readFileChunk({ root: 'workspace', path: 'large.txt', offset: 0, length: 16 });
+  assert.equal(complete.utf8_valid, true);
+  assert.equal(complete.content_encoding, 'utf-8');
+  await assert.rejects(() => files.readFileChunk({ root: 'workspace', path: 'large.txt', from_end: 'yes' }), /Invalid byte offset|boolean/);
+  const fromEnd = await files.readFileChunk({ root: 'workspace', path: 'large.txt', offset: 4, length: 4, from_end: true });
+  assert.equal(fromEnd.offset, data.length - 8);
+  assert.equal(fromEnd.next_offset, data.length - 4);
+  assert.equal((await files.fileInfo({ root: 'workspace', path: '.' })).type, 'directory');
+  assert.equal(typeof chunk.fingerprint, 'string');
+  await fs.writeFile(path.join(root, 'short.txt'), '0123456789');
+  const partialEnd = await files.readFileChunk({ root: 'workspace', path: 'short.txt', offset: 8, length: 4, from_end: true });
+  assert.equal(partialEnd.content, '01');
+  assert.equal(partialEnd.offset, 0);
+  assert.equal(partialEnd.next_offset, 2);
+  const beyondEnd = await files.readFileChunk({ root: 'workspace', path: 'short.txt', offset: 99, length: 4, from_end: true });
+  assert.equal(beyondEnd.content, '');
+  assert.equal(beyondEnd.offset, 0);
+  assert.equal(beyondEnd.next_offset, 0);
+});
+
+test('multi-read returns local failures and respects the 256 KiB total cap', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'one.txt'), Buffer.alloc(180000, 0x61));
+  await fs.writeFile(path.join(root, 'two.txt'), Buffer.alloc(180000, 0x62));
+  await fs.writeFile(path.join(root, 'three.txt'), Buffer.alloc(180000, 0x63));
+  await fs.writeFile(path.join(root, 'four.txt'), Buffer.alloc(180000, 0x64));
+  await fs.writeFile(path.join(root, 'five.txt'), Buffer.alloc(180000, 0x65));
+  const files = new Files({ workspace: root }, false);
+  const result = await files.readMultipleFiles({ files: [
+    { root: 'workspace', path: 'one.txt', length: 65536 },
+    { root: 'workspace', path: 'missing.txt', length: 65536 },
+    { root: 'workspace', path: 'two.txt', length: 65536 },
+    { root: 'workspace', path: 'three.txt', length: 65536 },
+    { root: 'workspace', path: 'four.txt', length: 65536 },
+    { root: 'workspace', path: 'five.txt', length: 65536 },
+  ], total_limit: 256 * 1024 });
+  assert.ok(result.total_bytes <= 256 * 1024);
+  assert.equal(result.truncated, true);
+  assert.equal(result.files[1].path, 'missing.txt');
+  assert.match(result.files[1].error, /No such file|ENOENT|regular|not found/i);
+});
+
+test('multi-read budgets decoded replacement bytes, not source bytes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'invalid.bin'), Buffer.alloc(300000, 0xff));
+  const files = new Files({ workspace: root }, false);
+  const result = await files.readMultipleFiles({ files: [{ root: 'workspace', path: 'invalid.bin', length: 65536 }], total_limit: 65536 });
+  assert.ok(result.total_bytes <= 65536);
+  assert.equal(result.truncated, false);
+  assert.equal(result.total_bytes, 0);
+  assert.match(result.files[0].error, /valid UTF-8/);
+});
+
+test('multi-read keeps UTF-8 code point and byte budget boundaries', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'accent.txt'), 'éé');
+  await fs.writeFile(path.join(root, 'cjk.txt'), '你好');
+  const files = new Files({ workspace: root }, false);
+  const accent = await files.readMultipleFiles({ files: [{ root: 'workspace', path: 'accent.txt', length: 2 }], total_limit: 2 });
+  assert.equal(accent.total_bytes, 2);
+  assert.equal(accent.files[0].content, 'é');
+  assert.equal(accent.files[0].next_offset, 2);
+  const cjkShort = await files.readMultipleFiles({ files: [{ root: 'workspace', path: 'cjk.txt', length: 6 }], total_limit: 3 });
+  assert.equal(cjkShort.total_bytes, 3);
+  assert.equal(cjkShort.files[0].content, '你');
+  const cjkFull = await files.readMultipleFiles({ files: [{ root: 'workspace', path: 'cjk.txt', length: 6 }], total_limit: 6 });
+  assert.equal(cjkFull.total_bytes, 6);
+  assert.equal(cjkFull.files[0].content, '你好');
+  await fs.writeFile(path.join(root, 'emoji.txt'), '😀');
+  const partialEmoji = await files.readMultipleFiles({ files: [{ root: 'workspace', path: 'emoji.txt', length: 1 }], total_limit: 16 });
+  assert.match(partialEmoji.files[0].error, /complete UTF-8|invalid UTF-8/);
+  await fs.writeFile(path.join(root, 'too-large.bin'), Buffer.alloc(2 * 1024 * 1024));
+  const tooLarge = await files.readMultipleFiles({ files: [{ root: 'workspace', path: 'too-large.bin', length: 1 }], total_limit: 16 });
+  assert.match(tooLarge.files[0].error, /exceeds 1 MiB/);
+});
+
+test('moves only regular files within one root and refuses conflicts', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  const other = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-other-'));
+  t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await fs.rm(other, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(root, 'source.txt'), 'move me');
+  await fs.writeFile(path.join(root, 'existing.txt'), 'keep');
+  const files = new Files({ workspace: root, other }, true);
+  const moved = await files.moveFile({ root: 'workspace', source: 'source.txt', destination: 'moved.txt' });
+  assert.equal(moved.moved, true);
+  assert.equal(await fs.readFile(path.join(root, 'moved.txt'), 'utf8'), 'move me');
+  await assert.rejects(() => files.moveFile({ root: 'workspace', source: 'moved.txt', destination: 'existing.txt' }), /exists|Destination/);
+  assert.equal(await fs.readFile(path.join(root, 'existing.txt'), 'utf8'), 'keep');
+  await assert.rejects(() => files.moveFile({ root: 'workspace', source: 'moved.txt', destination: 'other/moved.txt' }), /Invalid|directory|not found/);
+  await assert.rejects(() => files.moveFile({ root: 'workspace', path: 'moved.txt', destination_root: 'other', destination_path: 'moved.txt' }), /across roots/);
+});
+
+test('serializes concurrent moves of the same source', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'source.txt'), 'one winner');
+  const files = new Files({ workspace: root }, true);
+  const outcomes = await Promise.allSettled([
+    files.moveFile({ root: 'workspace', path: 'source.txt', destination_root: 'workspace', destination_path: 'a.txt' }),
+    files.moveFile({ root: 'workspace', path: 'source.txt', destination_root: 'workspace', destination_path: 'b.txt' }),
+  ]);
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+});
