@@ -92,6 +92,8 @@ export function makeArchive(files) {
   if (unpackedBytes > MAX_UNPACKED) throw new Error(`Unpacked package exceeds ${MAX_UNPACKED} bytes`);
   const tar = Buffer.concat([...entries.map(([name, data]) => tarEntry(`package/${name}`, data)), Buffer.alloc(1024)]);
   const archive = gzipSync(tar, { level: 9, mtime: 0 });
+  // zlib writes a platform-specific OS byte; 255 keeps the gzip header portable.
+  archive[9] = 255;
   if (archive.length > MAX_ARCHIVE) throw new Error(`Compressed package exceeds ${MAX_ARCHIVE} bytes`);
   return { archive, unpackedBytes };
 }

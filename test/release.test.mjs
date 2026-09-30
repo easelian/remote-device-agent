@@ -15,6 +15,7 @@ test('build is deterministic, bounded, and records the current artifact', async 
     const bytes = await readFile(first.artifact);
     const second = await build({ output: join(dir, 'dist'), record: join(dir, 'releases', 'agent.json') });
     assert.deepEqual(await readFile(second.artifact), bytes);
+    assert.equal(bytes[9], 255, 'gzip OS must be platform independent');
     assert.equal(first.release.version, metadata.version);
     assert.equal(first.artifact.endsWith(`${metadata.name}-${metadata.version}.tgz`), true);
     assert.ok(bytes.length <= MAX_ARCHIVE);
