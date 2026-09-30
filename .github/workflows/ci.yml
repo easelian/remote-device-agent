@@ -1,0 +1,26 @@
+name: Agent CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test test/*.test.mjs
+      - id: metadata
+        run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('package.json')).version")" >> "$GITHUB_OUTPUT"
+      - run: node scripts/release.mjs build
+      - run: node scripts/release.mjs check "releases/remote-device-hub-${{ steps.metadata.outputs.version }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-device-hub-${{ steps.metadata.outputs.version }}
+          path: dist/remote-device-hub-${{ steps.metadata.outputs.version }}.tgz

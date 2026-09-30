@@ -1,3 +1,5 @@
+> 历史验证记录：本文保留迁移前的版本、环境和路径，不是当前分仓产物的验收。当前命令以本仓库 README 和维护文档为准。
+
 # Node Agent 0.5.0 本地验证
 
 `remote-device-hub` npm Agent 0.5.0 已改为直接运行 Node.js 22+。包不包含 Python、uv、wheel、原生 `.node` addon、平台预编译文件或安装 hook；WebSocket 只携带固定版本 `ws` 的客户端所需源码和 MIT 许可。Hub 与独立 Python Agent 仍按各自组件维护，不参与这个 npm 包的启动。

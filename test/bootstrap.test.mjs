@@ -9,7 +9,7 @@ import { parseArgs, serverFromArgs } from '../lib/bootstrap.mjs';
 
 test('package runs directly on Node with no runtime dependencies or install hooks', () => {
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(metadata.version, '0.5.0');
+  assert.equal(metadata.version, '0.5.1');
   assert.equal(metadata.engines.node, '>=22');
   assert.equal(metadata.private, undefined);
   assert.equal(metadata.bin['remote-device-agent'], 'bin/remote-device-hub.mjs');
@@ -43,7 +43,7 @@ test('help and version run offline with empty PATH and no runtime setup', () => 
   const cli = fileURLToPath(new URL('../bin/remote-device-hub.mjs', import.meta.url));
   try {
     const env = { ...process.env, PATH: '', XDG_CACHE_HOME: directory, XDG_CONFIG_HOME: directory };
-    assert.equal(execFileSync(process.execPath, [cli, '--version'], { env, cwd: directory, encoding: 'utf8' }).trim(), '0.5.0');
+    assert.equal(execFileSync(process.execPath, [cli, '--version'], { env, cwd: directory, encoding: 'utf8' }).trim(), '0.5.1');
     assert.match(execFileSync(process.execPath, [cli, '--help'], { env, cwd: directory, encoding: 'utf8' }), /直接运行 Node Agent/);
     assert.deepEqual(readdirSync(directory), []);
   } finally { rmSync(directory, { recursive: true, force: true }); }
