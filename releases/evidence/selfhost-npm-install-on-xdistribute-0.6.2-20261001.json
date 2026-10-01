@@ -1,0 +1,55 @@
+{
+  "agent_binding_started": false,
+  "checked_at": "2026-10-01T03:40:47.677236+00:00",
+  "checks": {
+    "https_npm_install": "passed",
+    "installed_source_match": "passed",
+    "two_cli_aliases_version_help": "passed"
+  },
+  "cli": {
+    "remote-device-agent": {
+      "bin_symlink": true,
+      "help_exit_code": 0,
+      "version": "0.6.2"
+    },
+    "remote-device-hub": {
+      "bin_symlink": true,
+      "help_exit_code": 0,
+      "version": "0.6.2"
+    }
+  },
+  "expected": {
+    "bytes": 53839,
+    "sha256": "39d36e8b51c8c1fd913ce4d357bb3ad9452a6718edce7763985db107864ded35",
+    "source_files": "27 frozen source files",
+    "version": "0.6.2"
+  },
+  "host": "xdistribute.site / raspberrypiex",
+  "install": {
+    "command": "npm install --prefix PRIVATE_TEMP --no-audit --no-fund https://mcp.xdistribute.site/downloads/remote-device-hub-0.6.2.tgz",
+    "exit_code": 0,
+    "stderr": "npm notice\nnpm notice New major version of npm available! 10.9.2 -> 12.2.0\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0\nnpm notice To update run: npm install -g npm@12.2.0\nnpm notice",
+    "stdout": "added 1 package in 6s"
+  },
+  "isolated_prefix": "/home/pi/projects/remote-device-agent/.build/selfhost-install-20261001-qmqf7blu/install",
+  "node": "/home/pi/.nvm/versions/node/v22.13.1/bin/node",
+  "node_version": "v22.13.1",
+  "npm_cli": "/home/pi/.nvm/versions/node/v22.13.1/lib/node_modules/npm/bin/npm-cli.js",
+  "package": {
+    "all_source_files_match": true,
+    "dependencies": {},
+    "integrity": null,
+    "name": "remote-device-hub",
+    "resolved": "https://mcp.xdistribute.site/downloads/remote-device-hub-0.6.2.tgz",
+    "runtime_hooks_absent": true,
+    "source_file_count": 27,
+    "version": "0.6.2"
+  },
+  "registry_publication": false,
+  "schema": "selfhost-npm-install/v1",
+  "service_change": false,
+  "status": "passed",
+  "temporary_directory_removed": true,
+  "tls_verification": "default",
+  "url": "https://mcp.xdistribute.site/downloads/remote-device-hub-0.6.2.tgz"
+}

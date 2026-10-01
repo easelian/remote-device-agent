@@ -60,7 +60,10 @@
     "production-client-running-job-kill": "unverified",
     "npm-publication": "unverified",
     "soak-24h": "unverified",
-    "final-service-active": "passed"
+    "final-service-active": "passed",
+    "selfhost-npm-https-install": "passed",
+    "selfhost-installed-source-match": "passed",
+    "selfhost-two-cli-aliases": "passed"
   },
   "identities": {},
   "events": [
@@ -151,6 +154,27 @@
         }
       ],
       "note": "Final PID 3643033 remains active/running, NRestarts=0. Original profile SHA-256 and 0600 mode unchanged; fixture absent and rollback retained. npm remains unpublished pending authentication."
+    },
+    {
+      "stage": "deployed",
+      "at": "2026-10-01T03:43:52.518Z",
+      "host": "xdistribute.site / raspberrypiex, self-hosted HTTPS TGZ distribution",
+      "checks": {
+        "selfhost-npm-https-install": "passed",
+        "selfhost-installed-source-match": "passed",
+        "selfhost-two-cli-aliases": "passed"
+      },
+      "evidence": [
+        {
+          "path": "releases/evidence/selfhost-download-0.6.2-20261001-fresh.json",
+          "sha256": "c97cdff4dde990647fc85204303530dc5a90dc2ad8f7b442103e3f11ce648b33"
+        },
+        {
+          "path": "releases/evidence/selfhost-npm-install-on-xdistribute-0.6.2-20261001.json",
+          "sha256": "e093a6563ec5ec8ae65ddbfdd60b3693a555a86f5554d0adee9f1e13cb7584a4"
+        }
+      ],
+      "note": "Latest user direction: first publish the npm package on xdistribute. Completed self-hosted HTTPS TGZ distribution; xdistribute Node22/npm installed the public URL into an isolated temporary prefix, all 27 frozen files matched, both aliases version/help passed, temporary prefix removed. No new Agent binding or service change. npmjs registry publication is deferred to later; historical npm-publication=unverified concerns that separate channel."
     }
   ]
 }
