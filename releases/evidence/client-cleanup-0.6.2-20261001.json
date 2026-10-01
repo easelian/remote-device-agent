@@ -1,0 +1,55 @@
+{
+  "connector": {
+    "list_processes_after": {
+      "matching_target_jobs": [],
+      "observed_jobs_unchanged": true
+    },
+    "list_processes_before": {
+      "jobs": [
+        {
+          "cleanup_pending": false,
+          "exit_code": 0,
+          "job_id": "e32b337b8ca13bc569617828",
+          "pid": 3648736,
+          "status": "exited"
+        },
+        {
+          "cleanup_pending": false,
+          "exit_code": 0,
+          "job_id": "022ba2418d667219fe8f0fc2",
+          "pid": 3655691,
+          "status": "exited"
+        },
+        {
+          "cleanup_pending": false,
+          "exit_code": 0,
+          "job_id": "af641c34294796411253db9d",
+          "pid": 3656983,
+          "status": "exited"
+        }
+      ],
+      "matching_target_jobs": []
+    },
+    "start_attempt": {
+      "command": "printf label; sleep 120",
+      "command_label": "rdh-live-termination-validation",
+      "error_class": "chatgpt.com/backend-api/ps/mcp transport send error",
+      "job_id_obtained": false,
+      "result": "transport_error"
+    }
+  },
+  "device_id": "kylin-pc-a5704092",
+  "readonly_ssh": {
+    "checked_job_pids": [
+      3648736,
+      3655691,
+      3656983
+    ],
+    "matching_processes": [],
+    "project_exists": false,
+    "validation_project": "/home/kylin/projects/rdh-release-validation-20261001-1790819694"
+  },
+  "status": "no_target_job_observed; start_outcome_indeterminate_due_to_connector_transport_error",
+  "target_label": "rdh-live-termination-validation",
+  "version": "0.6.2"
+}

@@ -1,0 +1,129 @@
+{
+  "schema": "remote-device-hub-client-smoke/v1",
+  "checked_at": "2026-10-01T02:48:36.707Z",
+  "hub_version": "0.5.2",
+  "agent_version": "0.6.2",
+  "device_id": "kylin-pc-a5704092",
+  "client": "actual connected Remote Device Hub MCP app",
+  "fixture": {
+    "root": "projects",
+    "path": "rdh-release-validation-20261001-1790819694",
+    "owned_by_this_validation": true
+  },
+  "results": {
+    "write_file": {
+      "path": "rdh-release-validation-20261001-1790819694/sample.txt",
+      "size_bytes": 71,
+      "sha256": "7e1e73efa695aabf054b95b012c32429c9c2a0372df0c214615df00139a1c907"
+    },
+    "edit_file": {
+      "path": "rdh-release-validation-20261001-1790819694/sample.txt",
+      "size_bytes": 71,
+      "sha256": "79ede7a9fe6f38aa998182e857ebf59bc9c3b9db95ac63f1f2ac173bba7a1faf"
+    },
+    "read_file": {
+      "path": "rdh-release-validation-20261001-1790819694/sample.txt",
+      "content": "Remote Device Hub 0.5.2 / Node Agent 0.6.2\nrelease_validation_verified\n",
+      "sha256": "79ede7a9fe6f38aa998182e857ebf59bc9c3b9db95ac63f1f2ac173bba7a1faf",
+      "size_bytes": 71,
+      "next_offset": 71,
+      "truncated": false
+    },
+    "search_files": {
+      "matches": [
+        {
+          "path": "rdh-release-validation-20261001-1790819694/sample.txt",
+          "line": 2,
+          "text": "release_validation_verified"
+        }
+      ],
+      "visited": 1,
+      "truncated": false
+    },
+    "start_process": {
+      "job_id": "e32b337b8ca13bc569617828",
+      "pid": 3648736,
+      "status": "exited",
+      "exit_code": 0,
+      "cleanup_pending": false,
+      "output": "rdh-agent-0.6.2-process-verified\nRemote Device Hub 0.5.2 / Node Agent 0.6.2\nrelease_validation_verified\n",
+      "offset": 0,
+      "next_offset": 104,
+      "output_dropped": false,
+      "started_at": 1790820002.277
+    },
+    "read_process": {
+      "job_id": "e32b337b8ca13bc569617828",
+      "pid": 3648736,
+      "status": "exited",
+      "exit_code": 0,
+      "cleanup_pending": false,
+      "output": "rdh-agent-0.6.2-process-verified\nRemote Device Hub 0.5.2 / Node Agent 0.6.2\nrelease_validation_verified\n",
+      "offset": 0,
+      "next_offset": 104,
+      "output_dropped": false,
+      "started_at": 1790820002.277
+    },
+    "cleanup_command": {
+      "job_id": "af641c34294796411253db9d",
+      "pid": 3656983,
+      "status": "exited",
+      "exit_code": 0,
+      "cleanup_pending": false,
+      "output": "",
+      "offset": 0,
+      "next_offset": 0,
+      "output_dropped": false,
+      "started_at": 1790821537.237
+    },
+    "make_directory": {
+      "created": "rdh-release-validation-20261001-1790819694"
+    }
+  },
+  "checks": {
+    "file_write_edit_read_hash_consistent": "passed",
+    "bounded_literal_search": "passed",
+    "process_start_read_exit_zero": "passed",
+    "fixture_cleanup_command_exit_zero": "passed",
+    "fixture_absent_ssh_followup": "passed",
+    "readonly_device_info_and_list_processes": "passed",
+    "running_job_termination_through_client": "unverified"
+  },
+  "terminate_existing_finished_job": {
+    "result": {
+      "job_id": "022ba2418d667219fe8f0fc2",
+      "pid": 3655691,
+      "status": "exited",
+      "exit_code": 0,
+      "cleanup_pending": false,
+      "output": "rdh-termination-fixture\n",
+      "offset": 0,
+      "next_offset": 24,
+      "output_dropped": false,
+      "started_at": 1790821235.098
+    },
+    "note": "The job had already exited naturally; this result does not prove termination of a running process."
+  },
+  "followup_evidence": [
+    {
+      "path": "client-readonly-0.6.2-20261001.json",
+      "sha256": "38fa92ee365be49e088e8c5b449f5a766ce13f83fa628ef0bd44afbcd6daf0d8"
+    },
+    {
+      "path": "client-cleanup-0.6.2-20261001.json",
+      "sha256": "4c8020c20fc1f4a281d203d675a6171ab7212fe71738baabffbd35f100ae4f93"
+    }
+  ],
+  "transport_observations": {
+    "endpoint": "https://chatgpt.com/backend-api/ps/mcp",
+    "error_class": "HTTP request send failure",
+    "root_readonly_failed_calls_not_marked_passed": true,
+    "independent_readonly_connection_passed": true,
+    "live_termination_start_outcome": "indeterminate; no job id returned; fresh connector list and read-only SSH found no matching live job or process"
+  },
+  "no_tokens_or_passwords_recorded": true,
+  "release_binding": {
+    "hub_wheel_sha256": "c2a1d94548f9b2f66a9c8cf1bbda50be2a34ae5f204d326399eeaa65e320b5c7",
+    "agent_tgz_sha256": "39d36e8b51c8c1fd913ce4d357bb3ad9452a6718edce7763985db107864ded35"
+  }
+}

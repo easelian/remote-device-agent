@@ -1,0 +1,275 @@
+{
+  "authorization_sent": false,
+  "checked_at": "2026-10-01",
+  "checks": [
+    {
+      "body_status": "ok",
+      "body_version": "0.5.2",
+      "bytes": 63,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "headers": {
+        "content-length": "63",
+        "content-type": "application/json",
+        "server": "cloudflare",
+        "x-content-type-options": "nosniff"
+      },
+      "json_keys": [
+        "service",
+        "status",
+        "version"
+      ],
+      "method": "GET",
+      "name": "canonical_health",
+      "sha256": "be7705df42efd1315072bccfa47754c1f7873e17dbcd27b001d7b0536864bddb",
+      "status": 200,
+      "url": "https://mcp.xdistribute.site/healthz"
+    },
+    {
+      "bytes": 182,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "curl_exit": 28,
+        "headers": {},
+        "status": 0,
+        "stderr": "curl: (28) Operation timed out after 30010 milliseconds with 0 bytes received"
+      },
+      "headers": {},
+      "method": "GET",
+      "name": "canonical_resource",
+      "sha256": "f8794297da57682af231651b30490056549c6a16fd4462879ba99c8e3c4f373e",
+      "status": 200,
+      "stderr": "curl: (28) Connection timed out after 30006 milliseconds",
+      "url": "https://mcp.xdistribute.site/.well-known/oauth-protected-resource/mcp"
+    },
+    {
+      "body_issuer": "https://mcp.xdistribute.site/",
+      "bytes": 711,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "headers": {
+        "content-length": "711",
+        "content-type": "application/json",
+        "server": "cloudflare",
+        "x-content-type-options": "nosniff"
+      },
+      "json_keys": [
+        "authorization_endpoint",
+        "authorization_response_iss_parameter_supported",
+        "code_challenge_methods_supported",
+        "grant_types_supported",
+        "issuer",
+        "registration_endpoint",
+        "response_types_supported",
+        "revocation_endpoint",
+        "revocation_endpoint_auth_methods_supported",
+        "scopes_supported",
+        "token_endpoint",
+        "token_endpoint_auth_methods_supported"
+      ],
+      "method": "GET",
+      "name": "canonical_issuer",
+      "sha256": "8680276fe4bfbfa30581fa9a1d185d958a66744421aa279147ef547773cc9f5c",
+      "status": 200,
+      "url": "https://mcp.xdistribute.site/.well-known/oauth-authorization-server"
+    },
+    {
+      "client": "curl-default-proxy",
+      "curl_exit": 28,
+      "headers": {},
+      "method": "GET",
+      "name": "canonical_mcp_unauth",
+      "observations": [
+        {
+          "bytes": 0,
+          "client": "curl-default-proxy",
+          "curl_exit": 28,
+          "status": 0
+        },
+        {
+          "client": "curl-default-proxy-http1.1",
+          "curl_exit": 0,
+          "status": 401
+        }
+      ],
+      "status": 0,
+      "stderr": "curl: (28) Operation timed out after 30006 milliseconds with 0 bytes received",
+      "url": "https://mcp.xdistribute.site/mcp"
+    },
+    {
+      "bytes": 55061,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "bytes": 55061,
+        "curl_exit": 0,
+        "headers": {
+          "content-length": "55061",
+          "content-type": "text/plain",
+          "etag": "\"6abdb91b-d715\"",
+          "server": "cloudflare"
+        },
+        "sha256": "c2a1d94548f9b2f66a9c8cf1bbda50be2a34ae5f204d326399eeaa65e320b5c7",
+        "status": 200
+      },
+      "headers": {
+        "content-length": "55061",
+        "content-type": "text/plain",
+        "etag": "\"6abdb91b-d715\"",
+        "server": "cloudflare"
+      },
+      "method": "GET",
+      "name": "hub_wheel",
+      "sha256": "c2a1d94548f9b2f66a9c8cf1bbda50be2a34ae5f204d326399eeaa65e320b5c7",
+      "status": 200,
+      "stderr": "curl: (28) Operation timed out after 30006 milliseconds with 0 out of 55061 bytes received",
+      "url": "https://mcp.xdistribute.site/releases/20261001/remote_device_hub-0.5.2-py3-none-any.whl"
+    },
+    {
+      "bytes": 47465,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "bytes": 47465,
+        "curl_exit": 0,
+        "headers": {
+          "content-length": "47465",
+          "content-type": "text/plain",
+          "etag": "\"6abdb91b-b969\"",
+          "server": "cloudflare"
+        },
+        "sha256": "696472287bd1875b6f2a95839a350e3b37ac68d8f145a159ca182256c4960871",
+        "status": 200
+      },
+      "headers": {},
+      "method": "GET",
+      "name": "hub_sdist",
+      "sha256": "696472287bd1875b6f2a95839a350e3b37ac68d8f145a159ca182256c4960871",
+      "status": 200,
+      "stderr": "curl: (28) Operation timed out after 30002 milliseconds with 0 bytes received",
+      "url": "https://mcp.xdistribute.site/releases/20261001/remote_device_hub-0.5.2.tar.gz"
+    },
+    {
+      "bytes": 3584,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "bytes": 3584,
+        "curl_exit": 0,
+        "headers": {
+          "content-length": "3584",
+          "content-type": "text/plain",
+          "etag": "\"6abdb91b-e00\"",
+          "server": "cloudflare"
+        },
+        "sha256": "d0d03577638ddd235ba351b1d8423de21051b16d373d7db8710dfbde34b4717e",
+        "status": 200
+      },
+      "headers": {
+        "content-length": "3584",
+        "content-type": "text/plain",
+        "etag": "\"6abdb91b-e00\"",
+        "server": "cloudflare"
+      },
+      "method": "GET",
+      "name": "protocol_wheel",
+      "sha256": "d0d03577638ddd235ba351b1d8423de21051b16d373d7db8710dfbde34b4717e",
+      "status": 200,
+      "stderr": "curl: (28) Operation timed out after 30004 milliseconds with 0 out of 3584 bytes received",
+      "url": "https://mcp.xdistribute.site/releases/20261001/remote_device_protocol-1.0.0-py3-none-any.whl"
+    },
+    {
+      "bytes": 2372,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "headers": {
+        "content-length": "2372",
+        "content-type": "text/plain",
+        "etag": "\"6abdb91b-944\"",
+        "server": "cloudflare"
+      },
+      "method": "GET",
+      "name": "protocol_sdist",
+      "sha256": "0bacdd731e8b28891826b5bc752e5ad6a416246d633bb4c90cba9497abdf3854",
+      "status": 200,
+      "url": "https://mcp.xdistribute.site/releases/20261001/remote_device_protocol-1.0.0.tar.gz"
+    },
+    {
+      "bytes": 53839,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "bytes": 53839,
+        "curl_exit": 0,
+        "headers": {
+          "content-length": "53839",
+          "content-type": "text/plain",
+          "etag": "\"6abdb91b-d24f\"",
+          "server": "cloudflare"
+        },
+        "sha256": "39d36e8b51c8c1fd913ce4d357bb3ad9452a6718edce7763985db107864ded35",
+        "status": 200
+      },
+      "headers": {},
+      "method": "GET",
+      "name": "node_tgz",
+      "sha256": "39d36e8b51c8c1fd913ce4d357bb3ad9452a6718edce7763985db107864ded35",
+      "status": 200,
+      "stderr": "curl: (28) Operation timed out after 30006 milliseconds with 0 bytes received",
+      "url": "https://mcp.xdistribute.site/releases/20261001/remote-device-hub-0.6.2.tgz"
+    },
+    {
+      "bytes": 424688,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "bytes": 424688,
+        "curl_exit": 0,
+        "headers": {
+          "content-length": "424688",
+          "content-type": "text/plain",
+          "etag": "\"6abdb91b-67af0\"",
+          "server": "cloudflare"
+        },
+        "sha256": "b9ae3f1f8a1947568d1f094a0cef9b4a450b5290bac640cc9bf0dd06f83680cc",
+        "status": 200
+      },
+      "headers": {},
+      "method": "GET",
+      "name": "standalone_zip",
+      "sha256": "b9ae3f1f8a1947568d1f094a0cef9b4a450b5290bac640cc9bf0dd06f83680cc",
+      "status": 200,
+      "stderr": "curl: (28) Operation timed out after 30005 milliseconds with 0 bytes received",
+      "url": "https://mcp.xdistribute.site/releases/20261001/remote-device-hub-plugin-standalone-1.1.1.zip"
+    },
+    {
+      "bytes": 57665,
+      "client": "curl-default-proxy",
+      "curl_exit": 0,
+      "curl_http1_1_retry": {
+        "bytes": 57665,
+        "curl_exit": 0,
+        "headers": {
+          "content-length": "57665",
+          "content-type": "application/gzip",
+          "etag": "\"bbefac161dd9c7d53cd57f4211d15c51\"",
+          "server": "cloudflare"
+        },
+        "sha256": "65fd2369c478209ca5a48b1dae2d1987d65aa6a2bc588338e29b15a787731b7b",
+        "status": 200
+      },
+      "headers": {},
+      "method": "GET",
+      "name": "old_node_tgz",
+      "sha256": "65fd2369c478209ca5a48b1dae2d1987d65aa6a2bc588338e29b15a787731b7b",
+      "status": 200,
+      "stderr": "curl: (28) Operation timed out after 30005 milliseconds with 0 bytes received",
+      "url": "https://mcp.xdistribute.site/downloads/remote-device-hub-0.3.0.tgz"
+    }
+  ],
+  "client": "curl default configured proxy; no proxy bypass or custom User-Agent",
+  "prior_urllib_evidence": "retained separately; scope is client-specific",
+  "read_only": true,
+  "tool_calls": 0
+}

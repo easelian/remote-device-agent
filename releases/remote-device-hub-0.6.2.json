@@ -2,7 +2,7 @@
   "component": "agent",
   "name": "remote-device-hub",
   "version": "0.6.2",
-  "stage": "prepared",
+  "stage": "deployed",
   "source": {
     "sha256": "22934717bfcca1c3df86c285f5f32871ccd7a606eb734c2d6e379fd32630ab9a",
     "files": {
@@ -50,12 +50,107 @@
       "status": "?? releases/remote-device-hub-0.6.1.json"
     }
   },
-  "checks": {},
+  "checks": {
+    "package-integrity": "passed",
+    "http-download-readback": "passed",
+    "install-cli": "passed",
+    "binding-reuse": "passed",
+    "protocol-compatibility": "passed",
+    "production-file-process-smoke": "passed",
+    "production-client-running-job-kill": "unverified",
+    "npm-publication": "unverified",
+    "soak-24h": "unverified",
+    "final-service-active": "passed"
+  },
   "identities": {},
   "events": [
     {
       "stage": "prepared",
       "at": "2026-09-30T16:23:33.906Z"
+    },
+    {
+      "stage": "published",
+      "at": "2026-10-01T02:52:56.734Z",
+      "host": "https://mcp.xdistribute.site/releases/20261001/remote-device-hub-0.6.2.tgz",
+      "checks": {
+        "package-integrity": "passed",
+        "http-download-readback": "passed"
+      },
+      "evidence": [
+        {
+          "path": "releases/evidence/public-downloads-curl-20261001.json",
+          "sha256": "14a0513dd2a42728d31607abcdc87bb418e6c2b3ce50ba515a09cdbbf5a4d230"
+        }
+      ],
+      "note": "Frozen Agent TGZ published to self-hosted HTTPS download channel and read back byte-identical. This publication event is HTTP download only; npm publication has not occurred."
+    },
+    {
+      "stage": "deployed",
+      "at": "2026-10-01T02:52:56.865Z",
+      "host": "master-192.168.10.158, user remote-device-host-agent.service",
+      "checks": {
+        "install-cli": "passed",
+        "binding-reuse": "passed",
+        "protocol-compatibility": "passed",
+        "production-file-process-smoke": "passed",
+        "production-client-running-job-kill": "unverified",
+        "npm-publication": "unverified",
+        "soak-24h": "unverified"
+      },
+      "evidence": [
+        {
+          "path": "releases/evidence/deployment-158-0.6.2-20261001.json",
+          "sha256": "8caab3ac0e67bb41dc820ef5f9462f991652ec6fe4cd092b7fd972d805d8d270"
+        },
+        {
+          "path": "releases/evidence/node-agent-0.6.2-runtime.json",
+          "sha256": "4846af9cde7b99c9efd87338d4f6d38422ef69cc895c8232daab3d6a22df834c"
+        },
+        {
+          "path": "releases/evidence/quality-agent-0.6.2-20261001.json",
+          "sha256": "b6efea5819ec970278316acdb62669e05fcc92222fd4c24d92de79f91cb1ac5e"
+        },
+        {
+          "path": "releases/evidence/lifecycle-0.6.2-macos-full.json",
+          "sha256": "884b5422f800726f5809d2fda386582949ae0527bb34110e42b6d64d5de65f5a"
+        },
+        {
+          "path": "releases/evidence/stability-0.6.2-macos-120s.json",
+          "sha256": "e9e365aeab630e0a19195258eda56d7abdaebd4a257fadfb4e78e1c494c59150"
+        },
+        {
+          "path": "releases/evidence/stability-0.6.2-linux-120s.json",
+          "sha256": "c91236a366823c8da7b27e9959d5741490a0166d29ba20e44902be86105e0fee"
+        },
+        {
+          "path": "releases/evidence/client-smoke-0.6.2-20261001.json",
+          "sha256": "c43f3ca0ef8156d4494fa4ffb03693c70140486f6bada8f10dd39ce5806c1dc0"
+        },
+        {
+          "path": "releases/evidence/client-cleanup-0.6.2-20261001.json",
+          "sha256": "4c8020c20fc1f4a281d203d675a6171ab7212fe71738baabffbd35f100ae4f93"
+        },
+        {
+          "path": "releases/evidence/npm-readiness-0.6.2-20261001.json",
+          "sha256": "58de7ecd3ce2c609006b4abc3eaece4ef6263bf29ab9086c2a6b889e173c1dd4"
+        }
+      ],
+      "note": "Actual Python 0.2.1 -> Node 0.6.2 cutover completed on 158 with same device ID/profile hash and zero restarts. Config remains 0600. Production fixture and known job PIDs cleaned up. Local macOS/Linux lifecycle tests passed; client live kill remains unverified due upstream PS transport failure. npm whoami is unauthenticated and registry 0.6.2 absent: no npm publish attempted. 24h soak deferred by user."
+    },
+    {
+      "stage": "deployed",
+      "at": "2026-10-01T03:04:41.978Z",
+      "host": "master-192.168.10.158, final read-only systemd/profile check",
+      "checks": {
+        "final-service-active": "passed"
+      },
+      "evidence": [
+        {
+          "path": "releases/evidence/deployment-final-status-20261001.json",
+          "sha256": "895f2b936b710f2a8c3fba23f38ec469ffa99580aac0436bb875e00c109f4a90"
+        }
+      ],
+      "note": "Final PID 3643033 remains active/running, NRestarts=0. Original profile SHA-256 and 0600 mode unchanged; fixture absent and rollback retained. npm remains unpublished pending authentication."
     }
   ]
 }
