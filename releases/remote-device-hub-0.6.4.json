@@ -1,0 +1,81 @@
+{
+  "component": "agent",
+  "name": "remote-device-hub",
+  "version": "0.6.4",
+  "stage": "deployed",
+  "source": {
+    "sha256": "d34af6ab913e1a12c9635049ec35599c38cdc74445796d51fae1ef2fb5d97586",
+    "files": {
+      "package.json": "b74208398925e03da9ad951eb3e3af093c4ffd25e761c65bea5608ea9d821566",
+      "README.md": "97339d00e175504446dd3d0f88dc1eec76e63798d94e287a95a256eb993afe4c",
+      "bin/remote-device-hub.mjs": "2b0f3b28a3ef49a1c104fb4fb724734f77395fab48ffa6446969848daa57ed17",
+      "lib/agent.mjs": "0597d21c296bf7bb29eec7bfa73f0b3538890fc494d86ca247dc8cca1d7cd179",
+      "lib/bootstrap.mjs": "e4543c3bd4f0a380cbe1aa34779c75ad6e7b822430c27460d7d875f345982b32",
+      "lib/casefold.mjs": "6a9823029b57d8a91f03d60c15b544757cacd97b42f565b65caa087b98e1d31c",
+      "lib/config.mjs": "ab4f6f5d1813ff0e49a7281e03b80b907f334b88a2f48e62f49c746abb962113",
+      "lib/connect.mjs": "a0e5e8a91047909adde7122d471f6a8ff65e367204d61b70c7471d8f8de949ec",
+      "lib/files.mjs": "43289bcf46049a6dbf7cbfd37bc5dc012eac3e0aa32b985f190e4141c62ae2e4",
+      "lib/posix-fs.mjs": "71443723e48193b64f5c7714089d25549091594fb10a13d78fbea4e5ddb4ee7f",
+      "lib/processes.mjs": "af77f70cba88a6373c08d0597bf595d19f75a1d1fd57037cd8426852354c49f8",
+      "lib/profile-lock.mjs": "1781ddc4571babbc3f359091c25c561eda30f76827302f221be0e4ff3a0609ce",
+      "lib/searches.mjs": "806e96cf8b213bdc77de6731a2ac58f3ab1cd2c90682f9fe0109e65a9af01486",
+      "lib/server-selection.mjs": "6869209504b9396d1d34f5af809df825ed38e9edf45457e45a24d3c360b86f15",
+      "lib/transport.mjs": "9867f8cc26b73e0467d9a293b382394068f02312d4dc7331962a1f99f2350a43",
+      "vendor/ws/LICENSE": "2b29dcfe0d6471f7e8c92c5fb38c9f93edee10330937055440192f1832b1ecef",
+      "vendor/ws/package.json": "c1ef91ca04eb4754c011c5f0e7638b5078ff71104fada400c44ac761cf93e0b1",
+      "vendor/ws/vendor.json": "bae14380694136ac362d64b624e9da14b590ef57ae14f11391c6346d853a19f7",
+      "vendor/ws/lib/buffer-util.js": "8b0a45739132f82e25ea13163780abf547ccfe989267f3eb7abb475beec92da3",
+      "vendor/ws/lib/constants.js": "391e823142b8b370e55a2fd32b022deaf03b8415c56000009674ebc86a0b4f86",
+      "vendor/ws/lib/event-target.js": "c45d3c6e12d170c860c0c3f1a050aa0f864d9806632b609a1e607d675aba128c",
+      "vendor/ws/lib/extension.js": "852564f0f6b460287043803eae732666fb5610f676874354fc89f06aa4e986ed",
+      "vendor/ws/lib/limiter.js": "e0469d4b83f6ba764b15f80e1766b75c136fbff68f048f4c050f0b1c7f065f69",
+      "vendor/ws/lib/permessage-deflate.js": "16a91536988a53c23047ee5882392068728a839a244178c3b09b8c54982f58b0",
+      "vendor/ws/lib/receiver.js": "a6ada33c9a2d54eaf595824b821ea89ca2c6395f89aa06755c52142148274884",
+      "vendor/ws/lib/sender.js": "d0791d30c3defd44dcabbddb879a901c757993fea2c00a7ffea01d53b23b4b77",
+      "vendor/ws/lib/validation.js": "41ce8e83d0d434132e1704895fedb91f6703a701b42d91c80954ab29b2845593",
+      "vendor/ws/lib/websocket.js": "7ccf305925f0cdb74e06b75b4c84de134b1bd771a220ef409b24520def08128f"
+    }
+  },
+  "artifact": {
+    "path": "dist/remote-device-hub-0.6.4.tgz",
+    "sha256": "2375bf62e4d782912fc3a775827217966726dbaa0779bd39491f142ea1499bc1",
+    "bytes": 54758,
+    "unpackedBytes": 216544
+  },
+  "build": {
+    "node": "v26.7.0",
+    "builderSha256": "ac5112f9edef93c77591a22a449e8165399da35d4aeef9a1f8960651a2523333",
+    "vendorManifestSha256": "bae14380694136ac362d64b624e9da14b590ef57ae14f11391c6346d853a19f7",
+    "git": {
+      "head": "ac0384af650c93b73feb2fb2389b356a372d01c1",
+      "status": "M lib/bootstrap.mjs\n M lib/connect.mjs\n M package.json\n M test/connect.test.mjs\n?? lib/server-selection.mjs\n?? releases/remote-device-hub-0.6.3.json\n?? test/server-selection.test.mjs"
+    }
+  },
+  "checks": {
+    "package-integrity": "passed",
+    "install-cli": "passed"
+  },
+  "identities": {},
+  "events": [
+    {
+      "stage": "prepared",
+      "at": "2026-10-13T07:49:54.170Z"
+    },
+    {
+      "stage": "deployed",
+      "at": "2026-10-13T07:52:18.409Z",
+      "host": "mcp.xdistribute.site",
+      "checks": {
+        "package-integrity": "passed",
+        "install-cli": "passed"
+      },
+      "evidence": [
+        {
+          "path": "releases/evidence/agent-0.6.4-origin-selection.json",
+          "sha256": "aaac656cf2a95869654cd9b6187c209b19297a7538175482f50738e4e5c26106"
+        }
+      ],
+      "note": "Oracle selected fallback and reached pairing confirmation; production binding and tool roundtrip await user approval."
+    }
+  ]
+}

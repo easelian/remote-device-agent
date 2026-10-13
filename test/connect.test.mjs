@@ -6,9 +6,40 @@ import path from 'node:path';
 import { configPath, configPaths, localRoots, readConfig, writeConfig } from '../lib/config.mjs';
 import { connectDevice, pairDevice } from '../lib/connect.mjs';
 import { acquireProfileLocks } from '../lib/profile-lock.mjs';
+import { DIRECT_SERVER, FALLBACK_SERVER } from '../lib/server-selection.mjs';
 
 const tmp = async () => fs.mkdtemp(path.join(os.tmpdir(), 'rdh-node-agent-'));
 const locks = { acquire: async () => ({ release: async () => {} }) };
+
+test('route changes reuse a private binding and lock both deployment origins', async () => {
+  const base = await tmp();
+  const previous = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = base;
+  try {
+    const destination = configPath(DIRECT_SERVER);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await writeConfig(destination, { gateway_url: DIRECT_SERVER, device_id: 'existing',
+      token: 'x'.repeat(32), roots: { work: base } });
+    let acquired;
+    for (const server of [FALLBACK_SERVER, DIRECT_SERVER]) {
+      await connectDevice({ server }, {
+        locks: { acquire: async (targets) => { acquired = targets; return { release: async () => {} }; } },
+        runAgent: async (config) => {
+          assert.equal(config.device_id, 'existing');
+          assert.equal(config.gateway_url, server);
+        },
+      });
+      assert.deepEqual(acquired, [...configPaths(FALLBACK_SERVER), ...configPaths(DIRECT_SERVER)]);
+    }
+    assert.equal((await readConfig(destination)).gateway_url, DIRECT_SERVER);
+    await assert.rejects(() => connectDevice({ server: 'https://unrelated.test', config: destination },
+      { locks }), /其他中心/);
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous;
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
 
 test('config path keeps server hash/profile and reuses legacy files', async () => {
   const base = await tmp();
@@ -37,6 +68,25 @@ test('pairing rejects redirected or cross-origin verification links', async () =
   globalThis.fetch = async () => new Response(JSON.stringify({ verification_uri_complete: 'https://evil.test/admin/pair?code=A', user_code: 'A' }), { status: 201 });
   await assert.rejects(() => pairDevice('https://example.test', { work: '/tmp' }, 'device', { openBrowser: false }), /无效的绑定地址/);
   globalThis.fetch = original;
+});
+
+test('direct transport accepts canonical binding URL but keeps polling the chosen transport', async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (url.pathname === '/api/pair/start') return Response.json({
+      verification_uri_complete: `${FALLBACK_SERVER}/admin/pair?code=TEST`, user_code: 'TEST',
+      device_code: 'pending-test', expires_in: 10, interval: 3,
+    }, { status: 201 });
+    return Response.json({ config: { gateway_url: FALLBACK_SERVER,
+      device_id: 'paired', roots: { work: '/tmp' } } });
+  };
+  try {
+    const config = await pairDevice(DIRECT_SERVER, { work: '/tmp' }, 'device', { openBrowser: false });
+    assert.equal(config.gateway_url, FALLBACK_SERVER);
+    assert.deepEqual(calls, [`${DIRECT_SERVER}/api/pair/start`, `${DIRECT_SERVER}/api/pair/poll`]);
+  } finally { globalThis.fetch = original; }
 });
 
 test('connectDevice injects pure Node profile lock and runAgent without Python', async () => {
