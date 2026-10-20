@@ -76,6 +76,16 @@ jobs:
           test -f dist/rdh-manifest.json
           ( cd dist && sha256sum -c SHA256SUMS )
 
+      - name: Install from the built artifacts
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          sh dist/install.sh --base "file://$PWD/dist" \
+            --prefix "$tmp/prefix" --bin-dir "$tmp/bin" \
+            --no-pair --no-service
+          "$tmp/bin/rdh" --version
+          test -x "$tmp/prefix/current/rdh"
+
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-bundles-${{ steps.meta.outputs.version }}
