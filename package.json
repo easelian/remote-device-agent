@@ -20,6 +20,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node scripts/test.mjs",
+    "pack:runtime": "sh packaging/build-runtime.sh",
     "prepack": "npm run typecheck && npm run build",
     "pack:check": "node scripts/check_package.mjs"
   },

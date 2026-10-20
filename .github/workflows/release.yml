@@ -1,0 +1,97 @@
+name: Release
+
+# Pushing a version tag publishes a release automatically; there is no manual
+# upload step. workflow_dispatch exists only to re-publish an existing tag after
+# a transient failure.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)publish, for example v0.7.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Resolve tag and version
+        id: meta
+        run: |
+          set -eu
+          tag="$GITHUB_REF_NAME"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then tag="${{ inputs.tag }}"; fi
+          version="${tag#v}"
+          pkg=$(node -p "require('./package.json').version")
+          [ "$version" = "$pkg" ] || { echo "tag $tag does not match package.json $pkg" >&2; exit 1; }
+          printf 'tag=%s\nversion=%s\n' "$tag" "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build runtime bundles
+        run: bash packaging/build-runtime.sh --version "${{ steps.meta.outputs.tag }}"
+
+      - name: Smoke test the linux-x64 bundle
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          tree="$tmp/rdh-${{ steps.meta.outputs.version }}-linux-x64-gnu"
+          tar -xzf "dist/rdh-${{ steps.meta.outputs.version }}-linux-x64-gnu.tar.gz" -C "$tmp"
+          out=$("$tree/rdh" --version)
+          test "$out" = "${{ steps.meta.outputs.version }}"
+          echo "bundle reports $out"
+
+      - name: Verify every platform artifact exists
+        run: |
+          set -eu
+          for platform in linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
+            test -f "dist/rdh-${{ steps.meta.outputs.version }}-$platform.tar.gz" || {
+              echo "missing dist/rdh-${{ steps.meta.outputs.version }}-$platform.tar.gz" >&2; exit 1; }
+          done
+          test -f dist/SHA256SUMS
+          test -f dist/rdh-manifest.json
+          ( cd dist && sha256sum -c SHA256SUMS )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-bundles-${{ steps.meta.outputs.version }}
+          path: dist
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          tag="${{ steps.meta.outputs.tag }}"
+          assets="dist/rdh-*.tar.gz dist/SHA256SUMS dist/rdh-manifest.json"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $assets --clobber
+          else
+            prerelease=""
+            case "$tag" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$tag" $assets \
+              --title "Remote Device Hub Agent $tag" \
+              --generate-notes $prerelease
+          fi
+          gh release view "$tag" --json assets --jq '.assets[].name'
