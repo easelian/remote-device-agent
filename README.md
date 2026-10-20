@@ -23,33 +23,26 @@ node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 
 ## 部署与使用
 
-将已构建的 `remote-device-hub-0.7.0.tgz` 分发到设备。在 TGZ 所在目录执行：
-
-```sh
-npm install --global --ignore-scripts --offline ./remote-device-hub-0.7.0.tgz
-remote-device-agent --version
-remote-device-agent --no-browser
-```
-
-### 自带运行时的一键安装
-
-发行页同时提供自带 Node 运行时的压缩包，目标设备不需要安装 Node，也不需要
-root 权限：
+唯一的分发入口是安装脚本。它自带 Node 运行时，所以设备不需要预装 Node，也不需要 root：
 
 ```sh
 curl -fsSL https://github.com/be-one-click/remote-device-agent/releases/latest/download/install.sh | sh
 ```
 
-安装脚本会探测平台（glibc/musl、x64/arm64）、核对 `SHA256SUMS`、解压到
+脚本会探测平台（glibc/musl、x64/arm64）、核对 `SHA256SUMS`、解压到
 `~/.local/lib/rdh/versions/<版本>`、切换 `current` 链接、在浏览器中完成配对，
-并注册 systemd 用户服务（macOS 为 launchd）。常用参数：
+并注册 systemd 用户服务（macOS 为 launchd）。重复执行即升级。
+
+常用参数：
 
 - `--server URL` 指定设备中心地址
 - `--root NAME=PATH` 指定暴露的目录，可重复
+- `--no-pair` 只安装，之后再运行 `rdh --pair-only` 配对
 - `--no-service` 只安装，不注册服务
+- `--offline FILE` 用本地压缩包安装
 - `--uninstall` 卸载安装目录，保留配置和审计日志
 
-如果设备无法访问 GitHub，用 `--base` 指向内部镜像目录：
+如果设备无法访问 GitHub，用 `--base` 指向内部镜像目录（目录结构与发行页一致）：
 
 ```sh
 sh install.sh --base https://mirror.example.com/rdh
@@ -57,7 +50,19 @@ sh install.sh --base https://mirror.example.com/rdh
 
 推送 `v*` 标签后由 CI 构建六个平台的发行包并自动发布，没有手工上传步骤。
 
-版本应输出 `0.7.0`。首次运行打印绑定链接与验证码；在网页核对设备及权限后确认。默认文件根为当前目录，再次运行会复用绑定。已有 Node.js 的设备无需下载编译器或其他 npm 包。批量部署可缓存同一份固定版本 TGZ；固定下载地址和产物摘要能避免重复解析 registry 元数据，实际下载耗时仍取决于网络与分发节点。
+### 已安装 Node.js 22+ 的机器
+
+这类环境可以直接用 npm 包，不必下载运行时：
+
+```sh
+npm install --global --ignore-scripts --offline ./remote-device-hub-0.7.0.tgz
+remote-device-agent --version
+remote-device-agent --no-browser
+```
+
+批量部署可缓存固定版本的 TGZ；固定下载地址和产物摘要能避免重复解析 registry 元数据。
+
+版本应输出 `0.7.0`。首次运行打印绑定链接与验证码；在网页核对设备及权限后确认。默认文件根为当前目录，再次运行会复用绑定。
 
 用 `--root NAME=PATH` 指定目录，可重复；路径包含空格时给整个参数加引号。`--profile NAME` 创建独立绑定，`--server URL` 固定 Hub 地址。Windows 使用原生盘符或 UNC 根，文件工具内部的相对路径仍统一用 `/`。Windows 配对需要 Hub 使用 Protocol 1.0.1 或更新兼容版本；既有服务器的模型会拒绝 Windows 提案。
 
