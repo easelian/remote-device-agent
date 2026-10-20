@@ -1,6 +1,6 @@
 {
   "name": "remote-device-hub",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "Connect a Linux or macOS device to your Remote Device Hub gateway",
   "type": "module",
   "bin": {
