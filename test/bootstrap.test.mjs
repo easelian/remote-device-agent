@@ -37,6 +37,7 @@ test('repeated roots, profile and config survive argument parsing', () => {
   for (const args of [['--unknown'], ['--root'], ['--profile', '--no-browser']])
     assert.throws(() => parseArgs(args));
   assert.equal(parseArgs(['--recover-lock']).recoverLock, true);
+  assert.equal(parseArgs(['--pair-only']).pairOnly, true);
 });
 
 test('help and version run offline with empty PATH and no runtime setup', () => {

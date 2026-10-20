@@ -16,6 +16,7 @@ export interface LaunchArgs {
   profile: string;
   noBrowser: boolean;
   recoverLock: boolean;
+  pairOnly?: boolean;
   root?: string[];
   config?: string;
   name?: string;

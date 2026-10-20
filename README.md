@@ -1,6 +1,6 @@
 # Remote Device Hub Agent
 
-使用 TypeScript 开发的设备 Agent，当前源码版本 `0.7.0`。目标平台为原生 Windows、Linux 和 macOS，三者共用 CLI、配对协议及文件/进程接口。设备需预装 Node.js 22+。
+使用 TypeScript 开发的设备 Agent，当前源码版本 `0.7.0`。目标平台为原生 Windows、Linux 和 macOS，三者共用 CLI、配对协议及文件/进程接口。原生包需要 Node.js 22+；`rdh-*.tar.gz` 发行包自带运行时，无需预装 Node。
 
 npm 包名为 `remote-device-hub`，命令别名为 `remote-device-agent` 和 `remote-device-hub`。最终包只包含编译压缩的 JavaScript、CLI 入口、README 和第三方许可证：无运行时 npm 依赖、原生 addon、安装脚本、首次启动编译或额外运行时下载。TypeScript、类型声明与构建工具仅用于开发，不进入发行包。
 
@@ -30,6 +30,32 @@ npm install --global --ignore-scripts --offline ./remote-device-hub-0.7.0.tgz
 remote-device-agent --version
 remote-device-agent --no-browser
 ```
+
+### 自带运行时的一键安装
+
+发行页同时提供自带 Node 运行时的压缩包，目标设备不需要安装 Node，也不需要
+root 权限：
+
+```sh
+curl -fsSL https://github.com/be-one-click/remote-device-agent/releases/latest/download/install.sh | sh
+```
+
+安装脚本会探测平台（glibc/musl、x64/arm64）、核对 `SHA256SUMS`、解压到
+`~/.local/lib/rdh/versions/<版本>`、切换 `current` 链接、在浏览器中完成配对，
+并注册 systemd 用户服务（macOS 为 launchd）。常用参数：
+
+- `--server URL` 指定设备中心地址
+- `--root NAME=PATH` 指定暴露的目录，可重复
+- `--no-service` 只安装，不注册服务
+- `--uninstall` 卸载安装目录，保留配置和审计日志
+
+如果设备无法访问 GitHub，用 `--base` 指向内部镜像目录：
+
+```sh
+sh install.sh --base https://mirror.example.com/rdh
+```
+
+推送 `v*` 标签后由 CI 构建六个平台的发行包并自动发布，没有手工上传步骤。
 
 版本应输出 `0.7.0`。首次运行打印绑定链接与验证码；在网页核对设备及权限后确认。默认文件根为当前目录，再次运行会复用绑定。已有 Node.js 的设备无需下载编译器或其他 npm 包。批量部署可缓存同一份固定版本 TGZ；固定下载地址和产物摘要能避免重复解析 registry 元数据，实际下载耗时仍取决于网络与分发节点。
 

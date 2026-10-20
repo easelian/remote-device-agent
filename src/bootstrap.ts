@@ -16,6 +16,7 @@ export function parseArgs(argv: string[]): LaunchArgs {
     if (item === '--') continue;
     if (item === '--no-browser') { result.noBrowser = true; continue; }
     if (item === '--recover-lock') { result.recoverLock = true; continue; }
+    if (item === '--pair-only') { result.pairOnly = true; continue; }
     const match = /^--([a-z-]+)(?:=(.*))?$/.exec(item);
     const key = match?.[1];
     if (key === undefined || !values.has(key)) throw new Error(`未知参数：${item}`);
@@ -34,7 +35,7 @@ export async function launch(argv: string[]) {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node Agent 需要 Node.js 22 或更新版本');
   if (argv.includes('--version')) { console.log(metadata.version); return; }
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log(`Remote Device Hub Agent ${metadata.version}\n\n直接运行 Node Agent，在浏览器中确认绑定此设备。\n\n--server URL       固定中心地址；省略时先探测 ${defaultServer}，500 ms 内失败切换 ${FALLBACK_SERVER}\n--root NAME=PATH   文件目录，可重复；默认当前目录\n--name NAME        设备显示名称\n--profile NAME     独立的设备配置，默认 default\n--config PATH      自定义私有配置文件位置\n--no-browser       仅显示链接，不自动打开浏览器\n--recover-lock     显式恢复已退出进程留下的配置锁\n\n再次执行相同命令会复用绑定；按 Ctrl+C 停止 Agent。`);
+    console.log(`Remote Device Hub Agent ${metadata.version}\n\n直接运行 Node Agent，在浏览器中确认绑定此设备。\n\n--server URL       固定中心地址；省略时先探测 ${defaultServer}，500 ms 内失败切换 ${FALLBACK_SERVER}\n--root NAME=PATH   文件目录，可重复；默认当前目录\n--name NAME        设备显示名称\n--profile NAME     独立的设备配置，默认 default\n--config PATH      自定义私有配置文件位置\n--no-browser       仅显示链接，不自动打开浏览器\n--recover-lock     显式恢复已退出进程留下的配置锁\n--pair-only        完成绑定后立即退出，不启动 Agent（供安装脚本使用）\n\n再次执行相同命令会复用绑定；按 Ctrl+C 停止 Agent。`);
     return;
   }
   const args = parseArgs(argv);

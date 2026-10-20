@@ -123,6 +123,10 @@ export async function connectDevice(args: LaunchArgs, { locks, runAgent = async 
       await writeConfig(destination, config);
       console.log(`绑定成功：${config.device_id}\n配置已保存在：${destination}`);
     }
+    if (args.pairOnly) {
+      console.log(`配对完成，配置保存在：${destination}`);
+      return config;
+    }
     console.log('正在连接设备中心；保持此终端运行，按 Ctrl+C 停止。');
     return await runAgent({ ...config, gateway_url: server }, signal, { configFile: destination });
   } finally {
