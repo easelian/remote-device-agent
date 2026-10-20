@@ -50,6 +50,38 @@ sh install.sh --base https://mirror.example.com/rdh
 
 推送 `v*` 标签后由 CI 构建六个平台的发行包并自动发布，没有手工上传步骤。
 
+## 发布与灰度
+
+发布是"打标签 + 移动通道指针"两件事，灰度不需要重新打包：
+
+1. **预发布**：打 `v0.8.0-rc.1` 标签，CI 构建并发布 GitHub Release（自动标记 prerelease）。
+2. **进 canary**：Actions → `Promote` → `channel=canary`、`version=0.8.0-rc.1`、`percent=100`。
+   想提前试用的设备执行 `rdh upgrade --channel canary`。
+3. **正式发布**：打 `v0.8.0` 标签。
+4. **灰度**：`Promote` → `channel=stable`、`version=0.8.0`、`percent=10`。
+   设备用安装时生成的 `install-id` 做哈希分桶，只有约 10% 会升级；把 `percent` 改成 50、100
+   再跑一次即可扩大范围，分桶稳定，不会来回抖动。
+5. **回退**：把 `stable` 指回上一个版本（再跑一次 `Promote`），或设备端执行 `rdh rollback`。
+
+设备侧检查与升级：
+
+```sh
+rdh upgrade --check                 # 只报告，不改动
+rdh upgrade                         # 按 stable 通道与灰度比例决定
+rdh upgrade --channel canary        # 主动加入 canary
+rdh rollback                        # 回到上一个版本
+```
+
+通道索引默认取自仓库的 `channels/<channel>.json`；内网环境用 `--index` 指向镜像：
+
+```sh
+rdh upgrade --index https://mirror.example.com/rdh/stable.json
+```
+
+索引里包含版本、`min_from`（阻止跨太多版本直接升级）与 `rollout.percent`；
+升级过程始终是"解压到新目录 → 校验 `--version` → 切换 `current` → 重启服务 →
+健康检查失败自动回滚"。
+
 ### 已安装 Node.js 22+ 的机器
 
 这类环境可以直接用 npm 包，不必下载运行时：
