@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Processes } from '../lib/processes.mjs';
+import { Processes } from '../.build/processes.mjs';
 
 const config = (overrides = {}) => ({ allow_shell: true, shell: '/bin/sh', max_processes: 4,
   max_process_seconds: 10, ...overrides });

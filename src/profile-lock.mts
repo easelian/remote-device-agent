@@ -2,42 +2,44 @@ import fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { assertPrivatePath, secureNewPath } from './platform.mjs';
 
 const ownerName = 'owner.json';
 const currentUid = () => typeof process.getuid === 'function' ? process.getuid() : null;
-const reclaimName = (lock) => `${lock}.reclaiming`;
+const reclaimName = (lock: any) => `${lock}.reclaiming`;
 
-function lockPath(config) { return `${config}.node-lock`; }
+function lockPath(config: any) { return `${config}.node-lock`; }
 
-function ownerError(lock) {
+function ownerError(lock: any) {
   return new Error(`设备配置锁已存在或正在恢复：${lock}；如确认旧 Agent 已停止，请手动清理（manual cleanup）或使用 --recover-lock`);
 }
 
-function assertPrivateDirectory(filename, stat, label) {
-  if (!stat.isDirectory() || stat.isSymbolicLink() ||
-      (currentUid() !== null && stat.uid !== currentUid()) || (stat.mode & 0o077)) {
+function assertPrivateDirectory(filename: any, stat: any, label: any) {
+  try { assertPrivatePath(filename, true); } catch { throw ownerError(filename); }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw ownerError(filename);
   }
   return stat;
 }
 
-function readOwner(lock) {
+function readOwner(lock: any) {
   const ownerFile = path.join(lock, ownerName);
-  const fd = fsSync.openSync(ownerFile, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW);
+  assertPrivatePath(ownerFile, false);
+  const fd = fsSync.openSync(ownerFile, fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW || 0));
   try {
     const stat = fsSync.fstatSync(fd);
-    if (!stat.isFile() || (currentUid() !== null && stat.uid !== currentUid()) || (stat.mode & 0o077)) throw ownerError(lock);
+    if (!stat.isFile() || (currentUid() !== null && stat.uid !== currentUid()) || (process.platform !== 'win32' && (stat.mode & 0o077))) throw ownerError(lock);
     const owner = JSON.parse(fsSync.readFileSync(fd, 'utf8'));
     if (!Number.isSafeInteger(owner.pid) || owner.pid < 1 || typeof owner.nonce !== 'string' || owner.nonce.length < 32) throw ownerError(lock);
     return { owner, stat };
   } finally { fsSync.closeSync(fd); }
 }
 
-function ownerIsDead(pid) {
+function ownerIsDead(pid: any) {
   try {
     process.kill(pid, 0);
     return false;
-  } catch (error) {
+  } catch (error: any) {
     // EPERM means a process exists but is not inspectable.  Only ESRCH proves
     // that the owner is gone; treating other errors as stale could break the
     // single-writer guarantee.
@@ -46,32 +48,32 @@ function ownerIsDead(pid) {
   }
 }
 
-function guardPath(lock) { return reclaimName(lock); }
+function guardPath(lock: any) { return reclaimName(lock); }
 
-function makeGuard(lock) {
+function makeGuard(lock: any) {
   const guard = guardPath(lock);
-  try { fsSync.mkdirSync(guard, 0o700); }
-  catch (error) { if (error.code === 'EEXIST') throw ownerError(lock); throw error; }
+  try { fsSync.mkdirSync(guard, 0o700); secureNewPath(guard, true); }
+  catch (error: any) { if (error.code === 'EEXIST') throw ownerError(lock); throw error; }
   try {
     const stat = fsSync.lstatSync(guard);
     assertPrivateDirectory(guard, stat, 'reclaim guard');
     return { path: guard, dev: stat.dev, ino: stat.ino };
-  } catch (error) {
+  } catch (error: any) {
     try { fsSync.rmdirSync(guard); } catch {}
     throw error;
   }
 }
 
-function releaseGuard(guard) {
+function releaseGuard(guard: any) {
   try {
     const stat = fsSync.lstatSync(guard.path);
     if (stat.isDirectory() && stat.dev === guard.dev && stat.ino === guard.ino) fsSync.rmdirSync(guard.path);
   } catch {}
 }
 
-export async function acquireProfileLocks(configPaths) {
+export async function acquireProfileLocks(configPaths: any) {
   const paths = [...new Set(configPaths)].sort();
-  const held = [];
+  const held: { lock: string; owner: {pid:number;nonce:string}; dev:number; ino:number }[] = [];
   try {
     for (const config of paths) {
       const lock = lockPath(config);
@@ -84,24 +86,24 @@ export async function acquireProfileLocks(configPaths) {
       const guard = makeGuard(lock);
       try {
         try {
-          fsSync.mkdirSync(lock, 0o700);
-        } catch (error) {
+          fsSync.mkdirSync(lock, 0o700); secureNewPath(lock, true);
+        } catch (error: any) {
           if (error.code === 'EEXIST') throw ownerError(lock);
           throw error;
         }
         const lockStat = fsSync.lstatSync(lock);
         assertPrivateDirectory(lock, lockStat, 'profile lock');
         const ownerFile = path.join(lock, ownerName);
-        const fd = fsSync.openSync(ownerFile, fsSync.constants.O_WRONLY | fsSync.constants.O_CREAT | fsSync.constants.O_EXCL | fsSync.constants.O_NOFOLLOW, 0o600);
-        try { fsSync.writeFileSync(fd, JSON.stringify(owner) + '\n', { encoding: 'utf8' }); }
+        const fd = fsSync.openSync(ownerFile, fsSync.constants.O_WRONLY | fsSync.constants.O_CREAT | fsSync.constants.O_EXCL | (fsSync.constants.O_NOFOLLOW || 0), 0o600);
+        try { secureNewPath(ownerFile, false); fsSync.writeFileSync(fd, JSON.stringify(owner) + '\n', { encoding: 'utf8' }); }
         finally { fsSync.closeSync(fd); }
-        fsSync.chmodSync(ownerFile, 0o600);
+        if (process.platform !== 'win32') fsSync.chmodSync(ownerFile, 0o600);
         held.push({ lock, owner, dev: lockStat.dev, ino: lockStat.ino });
       } finally {
         releaseGuard(guard);
       }
     }
-  } catch (error) {
+  } catch (error: any) {
     await releaseProfileLocks({ held });
     throw error;
   }
@@ -116,7 +118,7 @@ export async function acquireProfileLocks(configPaths) {
  * from racing the rename.  A crashed reclaimer leaves the guard behind and
  * therefore fails closed until it is manually inspected.
  */
-export async function reclaimProfileLocks(configPaths) {
+export async function reclaimProfileLocks(configPaths: any) {
   const paths = [...new Set(configPaths)].sort();
   const guards = [];
   try {
@@ -130,7 +132,7 @@ export async function reclaimProfileLocks(configPaths) {
       const lock = lockPath(config);
       let lockStat;
       try { lockStat = fsSync.lstatSync(lock); }
-      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      catch (error: any) { if (error.code === 'ENOENT') continue; throw error; }
       assertPrivateDirectory(lock, lockStat, 'profile lock');
       const { owner } = readOwner(lock);
       if (!ownerIsDead(owner.pid)) throw ownerError(lock);
@@ -144,7 +146,7 @@ export async function reclaimProfileLocks(configPaths) {
         if (moved.dev !== lockStat.dev || moved.ino !== lockStat.ino) throw ownerError(lock);
         fsSync.unlinkSync(path.join(quarantine, ownerName));
         fsSync.rmdirSync(quarantine);
-      } catch (error) {
+      } catch (error: any) {
         // The original lock path is already free; leave a non-active
         // quarantine for manual cleanup if its contents cannot be removed.
         throw error;
@@ -157,19 +159,20 @@ export async function reclaimProfileLocks(configPaths) {
   }
 }
 
-export async function releaseProfileLocks(handle) {
+export async function releaseProfileLocks(handle: any) {
   const held = handle?.held || [];
   for (const item of [...held].reverse()) {
     try {
       const stat = await fs.lstat(item.lock);
       if (!stat.isDirectory() || stat.dev !== item.dev || stat.ino !== item.ino) continue;
       const ownerFile = path.join(item.lock, ownerName);
-      const ownerHandle = await fs.open(ownerFile, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW);
+      assertPrivatePath(ownerFile, false);
+      const ownerHandle = await fs.open(ownerFile, fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW || 0));
       let ownerStat;
       let ownerText;
       try {
         ownerStat = await ownerHandle.stat();
-        if (!ownerStat.isFile() || (currentUid() !== null && ownerStat.uid !== currentUid()) || (ownerStat.mode & 0o077)) continue;
+        if (!ownerStat.isFile() || (currentUid() !== null && ownerStat.uid !== currentUid()) || (process.platform !== 'win32' && (ownerStat.mode & 0o077))) continue;
         ownerText = await ownerHandle.readFile('utf8');
       } finally { await ownerHandle.close(); }
       const owner = JSON.parse(ownerText);

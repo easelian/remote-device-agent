@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import WebSocketServer from '../vendor/ws/lib/websocket-server.js';
-import { Agent } from '../lib/agent.mjs';
+import { Agent } from '../.build/agent.mjs';
 
 const token = 't'.repeat(48);
 

@@ -1,5 +1,5 @@
 // Generated from Python 3.9.6 (Unicode 13.0.0): casefold() mappings that differ from lower().
-export const CASEFOLD_EXCEPTIONS = Object.freeze({
+export const CASEFOLD_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({
   "µ": "μ",
   "ß": "ss",
   "ŉ": "ʼn",

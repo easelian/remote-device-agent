@@ -3,9 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Files } from '../lib/files.mjs';
-import { SearchTasks } from '../lib/searches.mjs';
-import native from '../lib/posix-fs.mjs';
+import { Files } from '../.build/files.mjs';
+import { SearchTasks } from '../.build/searches.mjs';
+import native from '../.build/posix-fs.mjs';
 
 test('invalid requests retain prior results and shutdown rejects new searches', async (t) => {
   const root = await fixture();

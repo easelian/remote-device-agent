@@ -4,11 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { Agent } from '../lib/agent.mjs';
-import { AuditLog } from '../lib/audit.mjs';
-import { buildHardening, hardeningPath } from '../lib/hardening.mjs';
-import { Policy } from '../lib/policy.mjs';
-import { defaultHiddenPaths, probeBwrap } from '../lib/sandbox.mjs';
+import { Agent } from '../.build/agent.mjs';
+import { AuditLog } from '../.build/audit.mjs';
+import { buildHardening, hardeningPath } from '../.build/hardening.mjs';
+import { Policy } from '../.build/policy.mjs';
+import { defaultHiddenPaths, probeBwrap } from '../.build/sandbox.mjs';
 
 const mkdir = p => { fs.mkdirSync(p, { recursive: true, mode: 0o700 }); return p; };
 function temporary(t, parent = os.tmpdir()) {

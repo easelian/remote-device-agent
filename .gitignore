@@ -15,3 +15,7 @@ workspace/
 client_secret_*.json
 .DS_Store
 releases/*.tmp
+
+# Generated TypeScript release bundle; only prebuilt JS goes into npm.
+/bundle/
+/stability-quick.json

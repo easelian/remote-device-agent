@@ -1,4 +1,18 @@
-export const TRANSPORT_LIMITS = Object.freeze({
+export interface SenderSocket {
+  readyState: number;
+  bufferedAmount: number;
+  send(text: string, callback: (error?: Error) => void): void;
+  terminate(): void;
+}
+
+export interface TransportLimits {
+  maxFrameBytes: number;
+  maxBufferedBytes: number;
+  maxQueuedMessages: number;
+  sendTimeoutMs: number;
+}
+
+export const TRANSPORT_LIMITS: Readonly<TransportLimits> = Object.freeze({
   maxFrameBytes: 2 * 1024 * 1024,
   maxBufferedBytes: 4 * 1024 * 1024,
   maxQueuedMessages: 16,
@@ -7,7 +21,15 @@ export const TRANSPORT_LIMITS = Object.freeze({
 
 /** One bounded writer for results, handshake and heartbeats. */
 export class BoundedSender {
-  constructor(socket, limits = {}) {
+  readonly socket: SenderSocket;
+  readonly limits: TransportLimits;
+  tail: Promise<void>;
+  queuedBytes: number;
+  queuedMessages: number;
+  closed: boolean;
+  cancelWrite: (() => void) | null;
+
+  constructor(socket: SenderSocket, limits: Partial<TransportLimits> = {}) {
     this.socket = socket;
     this.limits = { ...TRANSPORT_LIMITS, ...limits };
     this.tail = Promise.resolve();
@@ -20,7 +42,7 @@ export class BoundedSender {
     }
   }
 
-  send(value) {
+  send(value: Record<string, unknown>): Promise<void> {
     if (this.closed || this.socket.readyState !== 1) return Promise.reject(new Error('Connection closed'));
     let text = JSON.stringify(value);
     let bytes = Buffer.byteLength(text);
@@ -43,12 +65,12 @@ export class BoundedSender {
     return released;
   }
 
-  write(text) {
+  write(text: string): Promise<void> {
     if (this.closed || this.socket.readyState !== 1) return Promise.reject(new Error('Connection closed'));
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       let finished = false;
-      let timer;
-      const done = (error) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (error?: unknown) => {
         if (finished) return;
         finished = true;
         clearTimeout(timer);

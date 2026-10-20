@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DIRECT_SERVER, FALLBACK_SERVER, sameHub, selectServer } from '../lib/server-selection.mjs';
+import { DIRECT_SERVER, FALLBACK_SERVER, sameHub, selectServer } from '../.build/server-selection.mjs';
 
 test('healthy direct endpoint wins without contacting fallback', async () => {
   const calls = [];

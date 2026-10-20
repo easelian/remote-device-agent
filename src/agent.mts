@@ -1,4 +1,10 @@
 import os from 'node:os';
+import type { IncomingMessage } from 'node:http';
+import type { DeviceConfig, SandboxSettings } from './types.mjs';
+import type { AuditLog, AuditRecord } from './audit.mjs';
+import type { Policy } from './policy.mjs';
+import type { TransportLimits } from './transport.mjs';
+import { platformName } from './platform.mjs';
 import { createHash } from 'node:crypto';
 import { KNOWN_OPERATIONS, WRITE_OPERATIONS, PolicyDeniedError } from './policy.mjs';
 import WebSocket from '../vendor/ws/lib/websocket.js';
@@ -7,7 +13,7 @@ import { Processes } from './processes.mjs';
 import { SearchTasks } from './searches.mjs';
 import { BoundedSender, TRANSPORT_LIMITS } from './transport.mjs';
 
-const pause = (milliseconds, signal) => new Promise((resolve) => {
+const pause = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
   if (signal?.aborted) return resolve();
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
   const timer = setTimeout(done, milliseconds);
@@ -15,10 +21,37 @@ const pause = (milliseconds, signal) => new Promise((resolve) => {
 });
 
 const FATAL_CLOSE_CODES = new Set([1008]);
-const fatalError = (message) => Object.assign(new Error(message), { fatal: true });
+const fatalError = (message: string) => Object.assign(new Error(message), { fatal: true });
+
+// Runtime operation methods validate each field after the protocol envelope check.
+type RpcParameters = Record<string, any>;
+export interface AgentOptions {
+  policy?: Pick<Policy, 'describe' | 'denial'> | null;
+  audit?: Pick<AuditLog, 'record' | 'close'> | null;
+  sandbox?: SandboxSettings | null;
+  transportLimits?: Partial<TransportLimits>;
+  operationTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
+}
+export interface AgentCloseResult { clean: boolean }
+interface ResponseWaiter { cancel: () => void; timer: ReturnType<typeof setTimeout> | undefined }
 
 export class Agent {
-  constructor(config, options = {}) {
+  readonly config: DeviceConfig;
+  readonly files: Files;
+  readonly policy: AgentOptions['policy'];
+  readonly audit: Pick<AuditLog, 'record' | 'close'> | null;
+  readonly sandbox: SandboxSettings | null;
+  readonly processes: Processes;
+  readonly searches: SearchTasks;
+  readonly inFlightOperations: Set<Promise<unknown>>;
+  readonly transportLimits: TransportLimits;
+  readonly operationTimeoutMs: number;
+  readonly shutdownTimeoutMs: number;
+  closing: boolean;
+  closeTask: Promise<AgentCloseResult> | null;
+  cleanShutdown: boolean;
+  constructor(config: DeviceConfig, options: AgentOptions = {}) {
     this.config = config;
     this.files = new Files(config.roots, config.allow_write);
     this.policy = options.policy ?? null;
@@ -65,14 +98,14 @@ export class Agent {
   }
 
   info() {
-    return { os: process.platform === 'darwin' ? 'Darwin' : 'Linux', release: os.release(), machine: os.machine(),
+    return { os: platformName(), release: os.release(), machine: os.machine(),
       hardening: this.hardeningInfo(),
       hostname: os.hostname(), roots: this.files.roots, allow_shell: this.config.allow_shell,
       allow_write: this.config.allow_write, max_processes: this.config.max_processes,
       max_process_seconds: this.config.max_process_seconds, shell: this.config.shell,
       file_limit_bytes: 1024 * 1024, process_output_limit_chars: 256 * 1024,
       shell_authority: 'Agent OS user; file roots do not sandbox shell commands',
-      capabilities: { operations: ['device_info', 'list_directory', 'read_file', 'write_file', 'edit_file',
+      capabilities: { process_tree_termination: process.platform === 'win32' ? 'taskkill-best-effort' : 'process-group', operations: ['device_info', 'list_directory', 'read_file', 'write_file', 'edit_file',
         'make_directory', 'search_files', 'file_info', 'read_file_chunk', 'read_multiple_files', 'move_file',
         'start_process', 'read_process', 'list_processes', 'write_process_stdin', 'terminate_process',
         'start_search', 'get_search_results', 'stop_search', 'list_searches'] },
@@ -86,9 +119,9 @@ export class Agent {
 
   // Policy is evaluated first and every outcome (ok, error, denied) is audited.
   // Policy and audit are optional; without them dispatch behaves as before.
-  async dispatch(operation, params, context = {}) {
+  async dispatch(operation: string, params: RpcParameters, context: { requestId?: string } = {}): Promise<unknown> {
     const started = performance.now();
-    const record = (status, extra) => this.audit?.record({ id: context.requestId, operation, status, params,
+    const record = (status: string, extra: Pick<AuditRecord, 'result' | 'error'>) => this.audit?.record({ id: context.requestId, operation, status, params,
       durationMs: performance.now() - started, ...extra });
     const denial = this.policy?.denial(operation, params);
     if (denial) { record('denied', { error: denial.message }); throw denial; }
@@ -97,13 +130,13 @@ export class Agent {
       record('ok', { result });
       return result;
     } catch (error) {
-      record('error', { error: error?.message });
+      record('error', { error: error && typeof error === 'object' && 'message' in error ? error.message : undefined });
       throw error;
     }
   }
 
-  async execute(operation, params) {
-    const files = { list_directory: 'list', read_file: 'read', write_file: 'write', edit_file: 'edit',
+  async execute(operation: string, params: RpcParameters): Promise<unknown> {
+    const files: Record<string, 'list' | 'read' | 'write' | 'edit' | 'mkdir' | 'search'> = { list_directory: 'list', read_file: 'read', write_file: 'write', edit_file: 'edit',
       make_directory: 'mkdir', search_files: 'search' };
     if (operation === 'device_info') return this.info();
     if (Object.hasOwn(files, operation)) return this.files[files[operation]](params);
@@ -126,7 +159,7 @@ export class Agent {
     }
   }
 
-  async session(signal, onReady = () => {}, { preserveJobs = false } = {}) {
+  async session(signal?: AbortSignal, onReady: () => void = () => {}, { preserveJobs = false } = {}) {
     if (this.closing) throw new Error('Agent is closing');
     const url = new URL(this.config.gateway_url);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -134,25 +167,25 @@ export class Agent {
     const ws = new WebSocket(url, { headers: { Authorization: 'Bearer ' + this.config.token },
       maxPayload: 2 * 1024 * 1024, handshakeTimeout: 15_000, perMessageDeflate: false, followRedirects: false });
     const sender = new BoundedSender(ws, this.transportLimits);
-    const activeIds = new Set();
-    const responseWaiters = new Set();
-    let heartbeat; let readyTimeout; let alive = true; let ready = false; let reason = 'network';
-    let closeCode = null;
+    const activeIds = new Set<string>();
+    const responseWaiters = new Set<ResponseWaiter>();
+    let heartbeat: ReturnType<typeof setInterval> | undefined; let readyTimeout: ReturnType<typeof setTimeout> | undefined; let alive = true; let ready = false; let reason = 'network';
+    let closeCode: number | null = null;
     let fatal = false;
     const stop = () => { sender.close(); ws.terminate(); };
-    const send = async (value) => { try { await sender.send(value); } catch { stop(); } };
+    const send = async (value: Record<string, unknown>) => { try { await sender.send(value); } catch { stop(); } };
     if (signal?.aborted) stop();
     signal?.addEventListener('abort', stop, { once: true });
     try {
-      await new Promise((resolve, reject) => {
-        ws.once('close', (code) => {
+      await new Promise<void>((resolve, reject) => {
+        ws.once('close', (code: number) => {
           closeCode = code;
           fatal ||= FATAL_CLOSE_CODES.has(code);
           if (fatal) reason = 'revoked';
           if (ready) resolve();
           else reject(fatal ? fatalError('Gateway authorization was rejected') : new Error('Gateway handshake failed'));
         });
-        ws.once('unexpected-response', (_request, response) => {
+        ws.once('unexpected-response', (_request: unknown, response: IncomingMessage) => {
           const authorizationRejected = response.statusCode === 401 || response.statusCode === 403;
           if (authorizationRejected) { fatal = true; reason = 'revoked'; }
           reject(authorizationRejected ? fatalError(`Gateway authorization rejected (HTTP ${response.statusCode})`)
@@ -165,8 +198,8 @@ export class Agent {
           send({ type: 'hello', version: 1, info: this.info() });
           readyTimeout = setTimeout(stop, 10_000);
         });
-        ws.on('message', (raw) => {
-          let message;
+        ws.on('message', (raw: Buffer) => {
+          let message: any;
           try { message = JSON.parse(raw.toString('utf8')); }
           catch { stop(); return; }
           if (!message || typeof message !== 'object' || Array.isArray(message)) { stop(); return; }
@@ -200,9 +233,9 @@ export class Agent {
             activeIds.delete(message.id);
           });
           completed.catch(() => undefined);
-          let operationTimer;
-          let cancelResponse;
-          const expired = new Promise((_, reject) => {
+          let operationTimer: ReturnType<typeof setTimeout> | undefined;
+          let cancelResponse!: () => void;
+          const expired = new Promise<never>((_, reject) => {
             cancelResponse = () => reject(new Error('Connection closed; operation outcome may be unknown. Inspect before retrying.'));
             operationTimer = setTimeout(() => reject(new Error('Operation deadline exceeded; outcome may be unknown. Inspect before retrying.')),
               this.operationTimeoutMs);
@@ -229,14 +262,14 @@ export class Agent {
     return { reason, code: closeCode, fatal: false };
   }
 
-  async run(signal) {
+  async run(signal?: AbortSignal): Promise<void> {
     let delay = 1000;
     try {
       while (!signal?.aborted) {
         try {
           await this.session(signal, () => { delay = 1000; console.log(`Device ${this.config.device_id} connected`); }, { preserveJobs: true });
         } catch (error) {
-          if (error.fatal) throw error;
+          if (error && typeof error === 'object' && 'fatal' in error && error.fatal) throw error;
           if (!signal?.aborted) console.error(`Gateway disconnected; retrying in ${(delay / 1000).toFixed(1)}s`);
         }
         if (signal?.aborted) break;
@@ -245,18 +278,18 @@ export class Agent {
     } finally { await this.close(); }
   }
 
-  async close() {
+  async close(): Promise<AgentCloseResult> {
     if (this.closeTask) return this.closeTask;
     this.closing = true;
     this.closeTask = this.finishClose();
     return this.closeTask;
   }
 
-  async finishClose() {
+  async finishClose(): Promise<AgentCloseResult> {
     const cleanup = Promise.allSettled([this.processes.close(), this.searches.close(),
       ...this.inFlightOperations]);
-    let timer;
-    const deadline = new Promise((resolve) => { timer = setTimeout(resolve, this.shutdownTimeoutMs); });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, this.shutdownTimeoutMs); });
     await Promise.race([cleanup, deadline]);
     clearTimeout(timer);
     this.cleanShutdown = this.inFlightOperations.size === 0 && this.searches.inFlight.size === 0 &&

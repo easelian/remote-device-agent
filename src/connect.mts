@@ -6,34 +6,36 @@ import { spawn } from 'node:child_process';
 import { AgentConfig, configPath, configPaths, localRoots, readConfig, validateGateway, writeConfig } from './config.mjs';
 import { acquireProfileLocks, reclaimProfileLocks } from './profile-lock.mjs';
 import { DIRECT_SERVER, FALLBACK_SERVER, sameHub } from './server-selection.mjs';
+import { defaultShell, platformName, ensurePrivatePath } from './platform.mjs';
+import type { LaunchArgs, DeviceConfig } from './types.mjs';
 
-const sleep = (ms, signal) => new Promise((resolve, reject) => {
+const sleep = (ms: any, signal: any) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) return reject(signal.reason || new Error('操作已取消'));
-  let onAbort;
+  let onAbort: (() => void) | undefined;
   const timer = setTimeout(() => {
-    signal?.removeEventListener('abort', onAbort);
+    signal?.removeEventListener('abort', onAbort!);
     resolve();
   }, ms);
   onAbort = () => { clearTimeout(timer); reject(signal.reason || new Error('操作已取消')); };
   signal?.addEventListener('abort', onAbort, { once: true });
 });
-const sameRoots = (left, right) => {
+const sameRoots = (left: Record<string, string>, right: Record<string, string>) => {
   const lk = Object.keys(left).sort();
   const rk = Object.keys(right).sort();
-  return lk.length === rk.length && lk.every((key, index) => key === rk[index] && left[key] === right[key]);
+  return lk.length === rk.length && lk.every((key: any, index: any) => key === rk[index] && left[key] === right[key]);
 };
 
-function requestSignal(signal) {
-  return AbortSignal.any([signal, AbortSignal.timeout(20_000)].filter(Boolean));
+function requestSignal(signal?: AbortSignal) {
+  return AbortSignal.any(signal ? [signal, AbortSignal.timeout(20_000)] : [AbortSignal.timeout(20_000)]);
 }
 
-export async function pairDevice(server, roots, name, { openBrowser = true, signal } = {}) {
+export async function pairDevice(server: string, roots: Record<string, string>, name: string, { openBrowser = true, signal }: { openBrowser?: boolean; signal?: AbortSignal } = {}): Promise<DeviceConfig> {
   const token = randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const proposal = { name, hostname: os.hostname() || 'device', os: process.platform === 'darwin' ? 'Darwin' : 'Linux',
+  const proposal = { name, hostname: os.hostname() || 'device', os: platformName(),
     machine: os.machine(), roots, token_hash: tokenHash };
   const origin = new URL(server);
-  const post = async (pathname, body) => fetch(new URL(pathname, origin), {
+  const post = async (pathname: any, body: any) => fetch(new URL(pathname, origin), {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     redirect: 'error', signal: requestSignal(signal),
   });
@@ -47,9 +49,11 @@ export async function pairDevice(server, roots, name, { openBrowser = true, sign
     throw new Error('中心返回了无效的绑定地址');
   console.log(`\n绑定验证码：${pending.user_code}\n打开页面：${verification.href}\n`);
   console.log('请在页面核对设备与验证码，选择权限并确认绑定。验证码 10 分钟内有效。');
-  if (openBrowser && !process.env.SSH_CONNECTION && (process.platform === 'darwin' || process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
-    const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    const child = spawn(command, [verification.href], { detached: true, stdio: 'ignore' });
+  if (openBrowser && !process.env.SSH_CONNECTION && (['darwin', 'win32'].includes(process.platform) || process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
+    const command = process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'rundll32.exe')
+      : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const browserArgs = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', verification.href] : [verification.href];
+    const child = spawn(command, browserArgs, { detached: true, stdio: 'ignore', windowsHide: true });
     child.on('error', () => {});
     child.unref();
   }
@@ -59,10 +63,12 @@ export async function pairDevice(server, roots, name, { openBrowser = true, sign
     await sleep(interval, signal);
     let result;
     try { result = await post('/api/pair/poll', { device_code: pending.device_code }); }
-    catch (error) { if (error.name === 'AbortError' || signal?.aborted) throw error; continue; }
+    catch (error: any) { if (error.name === 'AbortError' || signal?.aborted) throw error; continue; }
     if (result.status === 200) {
       const body = await result.json();
-      const model = AgentConfig.validate({ ...body.config, token });
+      // Older Hubs supply /bin/sh as a schema default even for Windows roots.
+      const model = AgentConfig.validate({ ...body.config, token,
+        ...(process.platform === 'win32' && body.config.shell === '/bin/sh' ? { shell: defaultShell() } : {}) });
       if (!sameHub(model.gateway_url, server) || !sameRoots(model.roots, roots))
         throw new Error('绑定响应中的中心或目录与本机请求不一致');
       return model;
@@ -75,9 +81,9 @@ export async function pairDevice(server, roots, name, { openBrowser = true, sign
   throw new Error('绑定已超时，请重新运行命令取得新验证码');
 }
 
-export async function connectDevice(args, { locks, runAgent = async () => {}, canReleaseLocks = () => true } = {}) {
+export async function connectDevice(args: LaunchArgs, { locks, runAgent = async () => {}, canReleaseLocks = () => true }: any = {}) {
   const signal = args.signal;
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('目前仅支持 Linux 和 macOS');
+  if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('仅支持 Windows、Linux 和 macOS');
   const server = validateGateway(args.server);
   const profile = args.profile || 'default';
   const profileServers = sameHub(server, FALLBACK_SERVER) ? [FALLBACK_SERVER, DIRECT_SERVER] : [server];
@@ -85,13 +91,16 @@ export async function connectDevice(args, { locks, runAgent = async () => {}, ca
   // when startup chooses a different route. Credentials never cross custom hubs.
   let destination = args.config ? path.resolve(args.config.replace(/^~(?=\/|$)/, os.homedir())) : configPath(profileServers[0], profile);
   if (!args.config) {
-    for (const candidate of profileServers.map((item) => configPath(item, profile))) {
+    for (const candidate of profileServers.map((item: any) => configPath(item, profile))) {
       try { await fs.lstat(candidate); destination = candidate; break; }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      catch (error: any) { if (error.code !== 'ENOENT') throw error; }
     }
   }
-  const lockTargets = args.config ? [destination] : profileServers.flatMap((item) => configPaths(item, profile));
-  for (const target of lockTargets) await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  const lockTargets = args.config ? [destination] : profileServers.flatMap((item: any) => configPaths(item, profile));
+  for (const target of lockTargets) {
+    if (process.platform === 'win32') ensurePrivatePath(path.dirname(target), true);
+    else await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+  }
   if (args.recoverLock) {
     if (locks?.reclaim) await locks.reclaim(lockTargets);
     else await reclaimProfileLocks(lockTargets);
@@ -105,7 +114,7 @@ export async function connectDevice(args, { locks, runAgent = async () => {}, ca
       if (args.root && !sameRoots(config.roots, await localRoots(args.root)))
         throw new Error('此配置已经绑定其他目录，请用 --profile 新建配置');
       console.log(`使用已保存的绑定：${config.device_id}`);
-    } catch (error) {
+    } catch (error: any) {
       if (error.code !== 'ENOENT') throw error;
       const roots = await localRoots(args.root);
       console.log(`目标设备：${os.hostname() || 'device'}`);

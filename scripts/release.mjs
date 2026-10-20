@@ -39,6 +39,9 @@ export function clientFiles() {
 }
 
 export function sourceFiles() {
+  const stamp = JSON.parse(readFileSync(join(ROOT, '.build/compilation.json'), 'utf8'));
+  if (stamp.inputs !== compilationFingerprint() || stamp.bundle !== sha256(readFileSync(join(ROOT, 'bundle/agent.mjs'))))
+    throw new Error('Compiled Agent is stale; run npm run build before packaging');
   const files = new Map();
   const add = (name) => {
     const path = join(ROOT, name);
@@ -49,14 +52,19 @@ export function sourceFiles() {
   add('package.json');
   add('README.md');
   add('bin/remote-device-hub.mjs');
-  for (const directory of ['lib']) {
-    for (const entry of readdirSync(join(ROOT, directory)).sort()) {
-      if (entry.endsWith('.mjs')) add(`${directory}/${entry}`);
-    }
-  }
+  add('bundle/agent.mjs');
+  add('THIRD_PARTY_LICENSES');
   const vendor = clientFiles();
-  for (const name of vendor.names) add(`vendor/ws/${name}`);
   return { files, vendorManifest: vendor.manifest };
+}
+
+// Build provenance includes TS sources and toolchain; package fingerprints still
+// describe exactly the bytes the consumer receives.
+export function compilationFingerprint() {
+  const names = ['scripts/build.mjs', 'tsconfig.json', 'package-lock.json',
+    ...readdirSync(join(ROOT, 'src')).filter(name => name.endsWith('.mts')).map(name => `src/${name}`),
+    ...WS_CLIENT_FILES.map(name => `vendor/ws/${name}`)];
+  return sha256(Buffer.from(JSON.stringify(Object.fromEntries(names.sort().map(name => [name, sha256(readFileSync(join(ROOT, name)))])))));
 }
 
 function gitState() {
@@ -130,6 +138,7 @@ export async function build({ output = join(ROOT, 'dist'), record = join(ROOT, '
     source: { sha256: sourceSha256, files: source },
     artifact: { path: relative(ROOT, artifact).split(sep).join('/'), sha256: sha256(archive), bytes: archive.length, unpackedBytes },
     build: { node: process.version, builderSha256: sha256(readFileSync(RELEASE_SCRIPT)),
+      compilationSha256: compilationFingerprint(),
       vendorManifestSha256: sha256(readFileSync(join(ROOT, 'vendor/ws/vendor.json'))), git: gitState() },
     checks: {}, identities: {}, events: [{ stage: 'prepared', at: new Date().toISOString() }] };
   if (existsSync(record)) {
@@ -152,6 +161,7 @@ export async function check(recordPath) {
   const currentVendorManifestSha256 = sha256(readFileSync(join(ROOT, 'vendor/ws/vendor.json')));
   if (record.build?.builderSha256 !== currentBuilderSha256 || record.build?.vendorManifestSha256 !== currentVendorManifestSha256)
     throw new Error('Recorded builder or vendor manifest fingerprint does not match');
+  if (record.build?.compilationSha256 !== compilationFingerprint()) throw new Error('Recorded TypeScript compilation inputs do not match');
   const source = Object.fromEntries([...files.entries()].map(([name, data]) => [name, sha256(data)]));
   const sourceSha256 = sha256(Buffer.from(JSON.stringify(source, Object.keys(source).sort()) + '\n'));
   const rebuilt = makeArchive(files);

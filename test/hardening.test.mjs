@@ -5,11 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Agent } from '../lib/agent.mjs';
-import { AuditLog, summarizeParams } from '../lib/audit.mjs';
-import { buildHardening, hardeningPath, readSidecar, validateHardening } from '../lib/hardening.mjs';
-import { Policy } from '../lib/policy.mjs';
-import { buildBwrapArgs, limitsPrefix, probeBwrap } from '../lib/sandbox.mjs';
+import { Agent } from '../.build/agent.mjs';
+import { AuditLog, summarizeParams } from '../.build/audit.mjs';
+import { buildHardening, hardeningPath, readSidecar, validateHardening } from '../.build/hardening.mjs';
+import { Policy } from '../.build/policy.mjs';
+import { buildBwrapArgs, limitsPrefix, probeBwrap } from '../.build/sandbox.mjs';
 
 function tempDir(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rdh-hardening-'));

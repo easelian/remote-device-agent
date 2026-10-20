@@ -5,14 +5,17 @@
 使用 Node.js 22+ 从仓库根目录运行：
 
 ```bash
-node --test test/*.test.mjs
+npm ci --ignore-scripts
+npm run typecheck
+npm test
+npm run pack:check
 node scripts/release.mjs build
-node scripts/release.mjs check releases/remote-device-hub-0.6.4.json
+node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 ```
 
 版本来自 `package.json`，TGZ 和 record 名称随版本生成。包名保持 `remote-device-hub`，两个 bin 别名保持 `remote-device-hub` 和 `remote-device-agent`。同版本不能覆盖不同源码或产物。
 
-构建器使用标准 Node 库生成确定性 tar/gzip，并严格打包已有的 vendored `ws` client 文件。TGZ 预算 64 KiB，解包内容预算 512 KiB；不包含测试、构建脚本、Server、Python、原生 addon、安装 hook 或 runtime npm dependencies。修改 vendored 库时同步审核来源、license、SHA 和 client allowlist。
+构建器使用标准 Node 库生成确定性 tar/gzip，打包预编译压缩的 TS 入口及 vendored `ws` client；完整 vendor 树仅留在源码中。TGZ 预算 64 KiB，解包内容预算 512 KiB；不包含 TS 源码、测试、构建脚本、Server、Python、原生 addon、安装 hook 或 runtime npm dependencies。修改 vendored 库时同步审核来源、license、SHA 和 client allowlist。
 
 发布记录包含实际 Node 版本、Git 状态、源码摘要、builder 摘要和产物摘要。`record` 命令只保存已执行动作的 host、检查结果和证据文件，不执行 npm 发布或设备部署；阶段不能倒退。`verified` 要求 package-integrity、install-cli、binding-reuse、protocol-compatibility 均通过。
 

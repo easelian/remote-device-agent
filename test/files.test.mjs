@@ -3,8 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Files } from '../lib/files.mjs';
-import native from '../lib/posix-fs.mjs';
+import { Files } from '../.build/files.mjs';
+import native from '../.build/posix-fs.mjs';
 
 test('read/write/edit/list/search preserve protocol fields', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));

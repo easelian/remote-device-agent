@@ -1,7 +1,3 @@
 #!/usr/bin/env node
-import { launch } from '../lib/bootstrap.mjs';
-
-launch(process.argv.slice(2)).catch((error) => {
-  console.error(`Remote Device Hub：${error.message}`);
-  process.exitCode = 1;
-});
+// Compiled during development/release; consumers execute JavaScript directly.
+import '../bundle/agent.mjs';

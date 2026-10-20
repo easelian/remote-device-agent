@@ -46,7 +46,9 @@ test('source allowlist excludes tests, scripts, runtime, and private files', asy
   }
   assert.equal(entries.includes('package/test/release.test.mjs'), false);
   assert.equal(entries.includes('package/vendor/ws/lib/websocket-server.js'), false);
-  assert.deepEqual(entries.filter((name) => name.startsWith('package/vendor/ws/')).map((name) => name.slice('package/vendor/ws/'.length)).sort(), [...WS_CLIENT_FILES].sort());
+  assert.deepEqual(entries.filter((name) => name.startsWith('package/vendor/')), []);
+  assert.ok(entries.includes('package/bundle/agent.mjs'));
+  assert.ok(entries.includes('package/THIRD_PARTY_LICENSES'));
   assert.deepEqual(entries.filter((name) => name.startsWith('package/')).map((name) => name.slice('package/'.length)).sort(), [...sourceFiles().files.keys()].sort());
   await rm(result.artifact, { force: true });
   await rm(result.record, { force: true });

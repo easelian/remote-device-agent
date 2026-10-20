@@ -1,7 +1,7 @@
 {
   "name": "remote-device-hub",
-  "version": "0.6.5",
-  "description": "Connect a Linux or macOS device to your Remote Device Hub gateway",
+  "version": "0.7.0",
+  "description": "Connect Windows, Linux and macOS devices to your Remote Device Hub gateway",
   "type": "module",
   "bin": {
     "remote-device-hub": "bin/remote-device-hub.mjs",
@@ -11,12 +11,21 @@
     "node": ">=22"
   },
   "files": [
-    "bin/",
-    "lib/",
-    "vendor/",
+    "bin/remote-device-hub.mjs",
+    "bundle/agent.mjs",
+    "THIRD_PARTY_LICENSES",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node scripts/test.mjs",
+    "prepack": "npm run typecheck && npm run build",
+    "pack:check": "node scripts/check_package.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
   }
 }

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertPrivatePath, ensurePrivatePath, secureNewPath } from './platform.mjs';
 
 export const AUDIT_DEFAULTS = Object.freeze({ maxBytes: 5 * 1024 * 1024, maxFiles: 3 });
 
@@ -15,13 +16,13 @@ const DIGEST_ONLY_KEYS = new Set(['content', 'old_text', 'new_text', 'text', 'qu
 const PLAIN_STRING_KEYS = new Set(['root', 'path', 'cwd', 'source', 'destination', 'destination_root',
   'destination_path', 'job_id', 'search_id', 'expected_sha256']);
 
-const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-const clip = (value, limit = MAX_FIELD) => (value.length > limit ? `${value.slice(0, limit)}…` : value);
+const sha256 = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+const clip = (value: string, limit = MAX_FIELD) => (value.length > limit ? `${value.slice(0, limit)}…` : value);
 
 // Default-deny summary of request parameters: unknown string fields are
 // reduced to their length so a new parameter can never leak into the log.
-export function summarizeParams(params) {
-  const out = {};
+export function summarizeParams(params: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   if (!params || typeof params !== 'object' || Array.isArray(params)) return out;
   for (const [key, value] of Object.entries(params)) {
     if (key === 'command' && typeof value === 'string') {
@@ -38,9 +39,11 @@ export function summarizeParams(params) {
       out.paths = value.slice(0, MAX_LIST).map((item) => (typeof item === 'string' ? clip(item, 256) : null));
       if (value.length > MAX_LIST) out.paths_total = value.length;
     } else if (key === 'files' && Array.isArray(value)) {
-      out.files = value.slice(0, MAX_LIST).map((item) => ({
-        root: typeof item?.root === 'string' ? clip(item.root, 64) : null,
-        path: typeof item?.path === 'string' ? clip(item.path, 256) : null }));
+      out.files = value.slice(0, MAX_LIST).map((item: unknown) => {
+        const file = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+        return { root: typeof file.root === 'string' ? clip(file.root, 64) : null,
+          path: typeof file.path === 'string' ? clip(file.path, 256) : null };
+      });
       if (value.length > MAX_LIST) out.files_total = value.length;
     } else if (typeof value === 'string') {
       out[key] = { chars: Array.from(value).length };
@@ -53,47 +56,112 @@ export function summarizeParams(params) {
 
 // Results are summarised by an allow-list; file contents and process output
 // are never copied into the audit log.
-export function summarizeResult(result) {
+export function summarizeResult(result: unknown): Record<string, unknown> | undefined {
   if (!result || typeof result !== 'object') return undefined;
-  const out = {};
+  const fields = result as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
   for (const key of ['size_bytes', 'sha256', 'exit_code', 'status', 'job_id', 'pid', 'total', 'truncated',
     'moved', 'created', 'sent', 'stdin_closed', 'total_bytes', 'visited', 'search_id']) {
-    const value = result[key];
+    const value = fields[key];
     if (['string', 'number', 'boolean'].includes(typeof value) || value === null) out[key] = typeof value === 'string' ? clip(value, 128) : value;
   }
   for (const key of ['entries', 'matches', 'files', 'jobs', 'searches']) {
-    if (Array.isArray(result[key])) out[`${key}_count`] = result[key].length;
+    const values = fields[key];
+    if (Array.isArray(values)) out[`${key}_count`] = values.length;
   }
   return Object.keys(out).length ? out : undefined;
 }
 
-function openAppend(file) {
-  const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW;
-  const fd = fs.openSync(file, flags, 0o600);
+function openAppend(file: string): { fd: number; size: number } {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW || 0);
+  let fd: number;
+  let created = false;
   try {
+    fd = fs.openSync(file, flags | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+    created = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    assertPrivatePath(file, false);
+    fd = fs.openSync(file, flags);
+  }
+  try {
+    if (created) secureNewPath(file, false);
     const stat = fs.fstatSync(fd);
+    const named = fs.lstatSync(file);
     const uid = typeof process.getuid === 'function' ? process.getuid() : stat.uid;
-    if (!stat.isFile() || stat.uid !== uid || (stat.mode & 0o077)) {
+    if (!stat.isFile() || named.isSymbolicLink() || stat.dev !== named.dev || stat.ino !== named.ino ||
+        (process.platform !== 'win32' && (stat.uid !== uid || (stat.mode & 0o077)))) {
       throw new Error('Audit log must be a regular file owned by this user with mode 0600');
     }
+    assertPrivatePath(file, false);
     return { fd, size: stat.size };
   } catch (error) { fs.closeSync(fd); throw error; }
 }
 
-function ensurePrivateDirectory(directory) {
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const stat = fs.lstatSync(directory);
-  const uid = typeof process.getuid === 'function' ? process.getuid() : stat.uid;
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o077)) {
-    throw new Error('Audit directory must be a real directory owned by this user with mode 0700');
+function ensurePrivateDirectory(directory: string): void {
+  try {
+    ensurePrivatePath(directory, true);
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Invalid audit directory');
+    assertPrivatePath(directory, true);
+  } catch (error) {
+    throw new Error('Audit directory must be a real directory owned by this user with mode 0700', { cause: error });
   }
+}
+
+export interface AuditOptions {
+  directory?: string;
+  name?: string;
+  maxBytes?: number;
+  maxFiles?: number;
+}
+export interface AuditRecord {
+  id?: unknown;
+  operation: string;
+  status: string;
+  durationMs?: number;
+  params?: unknown;
+  result?: unknown;
+  error?: unknown;
+}
+export interface AuditStats {
+  written: number;
+  dropped: number;
+  last_error: string | null;
+}
+interface AuditEntry {
+  ts: string;
+  boot: string;
+  seq: number;
+  prev: string;
+  id?: string;
+  op: string;
+  status: string;
+  ms: number;
+  params: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: string | { sha256: string; bytes: number };
 }
 
 // Append-only JSONL audit trail. Recording is best effort by design: an audit
 // failure must not turn into a denial of service for the device, but it is
 // counted in stats() so that silent loss is detectable.
 export class AuditLog {
-  constructor({ directory, name = 'agent', maxBytes = AUDIT_DEFAULTS.maxBytes, maxFiles = AUDIT_DEFAULTS.maxFiles } = {}) {
+  readonly directory: string;
+  readonly file: string;
+  readonly maxBytes: number;
+  readonly maxFiles: number;
+  readonly boot: string;
+  sequence: number;
+  previous: string;
+  written: number;
+  dropped: number;
+  lastError: string | null;
+  closed: boolean;
+  rollbackSize: number | null;
+  fd = -1;
+  size = 0;
+  constructor({ directory, name = 'agent', maxBytes = AUDIT_DEFAULTS.maxBytes, maxFiles = AUDIT_DEFAULTS.maxFiles }: AuditOptions = {}) {
     if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new TypeError('Audit directory must be an absolute path');
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) throw new TypeError('Invalid audit log name');
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 4096 || !Number.isSafeInteger(maxFiles) || maxFiles < 1 || maxFiles > 20) {
@@ -115,12 +183,12 @@ export class AuditLog {
     ({ fd: this.fd, size: this.size } = openAppend(this.file));
   }
 
-  record({ id, operation, status, durationMs, params, result, error }) {
+  record({ id, operation, status, durationMs, params, result, error }: AuditRecord): void {
     try {
       if (this.closed) throw new Error('Audit log is closed');
       if (this.fd < 0) ({ fd: this.fd, size: this.size } = openAppend(this.file));
       this.repairTail();
-      const entry = { ts: new Date().toISOString(), boot: this.boot, seq: ++this.sequence, prev: this.previous,
+      const entry: AuditEntry = { ts: new Date().toISOString(), boot: this.boot, seq: ++this.sequence, prev: this.previous,
         id: typeof id === 'string' ? clip(id, 128) : undefined, op: clip(String(operation), 64), status,
         ms: Math.round(durationMs ?? 0), params: summarizeParams(params), result: summarizeResult(result),
         error: error ? clip(String(error), MAX_ERROR) : undefined };
@@ -153,7 +221,7 @@ export class AuditLog {
       this.written += 1;
     } catch (failure) {
       this.dropped += 1;
-      this.lastError = failure?.code ?? 'ERROR';
+      this.lastError = typeof (failure as NodeJS.ErrnoException)?.code === 'string' ? (failure as NodeJS.ErrnoException).code! : 'ERROR';
       // Remove a partial record before any later append. If recovery itself
       // fails, keep the offset and retry before accepting another record.
       try { this.repairTail(); } catch { /* next record retries repair */ }
@@ -184,7 +252,7 @@ export class AuditLog {
     }
   }
 
-  stats() { return { written: this.written, dropped: this.dropped, last_error: this.lastError }; }
+  stats(): AuditStats { return { written: this.written, dropped: this.dropped, last_error: this.lastError }; }
 
   close() {
     this.closed = true;

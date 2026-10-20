@@ -1,8 +1,8 @@
-# 设备硬化配置（0.6.5）
+# 设备硬化配置
 
 Agent 的文件工具和 shell 工具默认以 Agent 的操作系统用户身份运行。0.6.5 增加三项**可选**的硬化能力：
 操作策略、shell 沙箱与资源限制、本地审计日志。本地审计默认关闭，没有旁路配置时不创建审计目录。
-Server 负责中央请求审计；设备本地日志用于按需排障。0.6.5 当前为源码草稿，尚未发布。
+Server 负责中央请求审计；设备本地日志用于按需排障。当前 0.7.0 源码保留这些规则，并增加原生 Windows 基础适配；不表示已发布或完成各平台验收。
 
 ## 为什么是旁路配置文件
 
@@ -14,7 +14,7 @@ Server 负责中央请求审计；设备本地日志用于按需排障。0.6.5 �
 例如 ~/.config/remote-device-hub/<hash>-default.policy.json
 ```
 
-文件要求与主配置相同：由当前用户持有、权限 `0600`、不能是符号链接，否则 Agent 拒绝启动。
+文件要求与主配置相同：Linux/macOS 由当前用户持有、权限 `0600`；Windows 使用当前用户持有且禁用继承的私有 ACL。不得使用符号链接或 Windows reparse 路径，否则 Agent 拒绝启动。
 字段严格校验，未知字段会报错。
 
 ## 完整示例
@@ -48,15 +48,14 @@ Server 负责中央请求审计；设备本地日志用于按需排障。0.6.5 �
 | `readonly_roots` | 这些根禁止 `write_file`、`edit_file`、`make_directory`、`move_file`。根名必须是主配置里已有的根。 |
 | `protected_paths` | 相对路径片段。任意写类操作的路径中只要连续包含该片段（任意深度）就被拒绝；`move_file` 同时检查来源和目标；两种参数格式不得混用。 |
 
-`protected_paths` 使用字面路径匹配。这是安全的，因为文件层逐级打开路径且不跟随符号链接
-（测试 `symlinks cannot be used to bypass protected paths` 覆盖了这一点）。
+`protected_paths` 使用字面路径匹配，Windows/macOS 比较时忽略大小写。文件层拒绝已观察到的符号链接和 Windows 路径别名；路径检查仍有本机其他进程并发替换时的 TOCTOU 边界，不能据此声称具有系统沙箱隔离。
 
 **文件路径策略不约束 shell。** `start_process` 以 Agent 用户身份运行，可以绕过 `readonly_roots` 和
 `protected_paths`。要约束 shell，请使用沙箱，或在 `allowed_operations` 中去掉 `start_process`。
 
 ## shell 沙箱
 
-`sandbox.mode`：`"none"`（默认）或 `"bwrap"`。选择 `bwrap` 需要系统有 bubblewrap 且能创建用户命名空间；
+`sandbox.mode`：`"none"`（默认）或 `"bwrap"`。`bwrap` 只适用于 Linux，需要系统有 bubblewrap 且能创建用户命名空间；
 启动时会探测，不可用则 Agent **拒绝启动**，不会静默降级为无隔离。
 
 `bwrap` 模式下，每个命令运行在：
@@ -69,7 +68,9 @@ Server 负责中央请求审计；设备本地日志用于按需排障。0.6.5 �
 - Agent 的配置目录和审计目录在工作根挂载完成后隐藏；自定义主配置及旁路配置文件也会被遮蔽。首次创建的审计目录同样受保护；
 - 文件根按 `allow_write` 和 `readonly_roots` 决定可写或只读；目录重叠或多个根指向同一路径时，只读约束优先，只读目录中的可写子根也保持只读。`expose` 目录同样保持只读。
 
-`limits` 通过 shell 的 `ulimit` 实现，`"mode": "none"` 时也可单独使用：
+Windows 不支持这里的 bubblewrap 和 POSIX 资源限制，显式配置会拒绝启动。macOS 不支持 bubblewrap。
+
+`limits` 在 POSIX 平台通过 shell 的 `ulimit` 实现，`"mode": "none"` 时也可单独使用：
 `cpu_seconds`、`memory_kb`（虚拟内存）、`open_files`、`file_size_blocks`（单位由 shell 的 `ulimit -f` 决定，
 dash 和 POSIX sh 为 512 字节块）。限制无法应用时命令以状态 126 退出，不会无限制地运行。
 

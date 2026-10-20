@@ -1,38 +1,82 @@
-import fs from 'node:fs';
+import fs, { type Stats } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { validateRelativePath } from './platform.mjs';
+import type { FileHandle } from 'node:fs/promises';
+
+interface DirectoryFile {
+  fd: number;
+  stat(): Promise<Stats>;
+  sync(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface DirectoryHandle {
+  file: DirectoryFile;
+  fd: number;
+  path: string;
+  root: string;
+  dev: number;
+  ino: number;
+}
+
+interface InodeIdentity {
+  dev: number;
+  ino: number;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  type: 'symlink' | 'directory' | 'file' | 'other';
+  size_bytes: number;
+}
+
+interface ListOptions {
+  maxEntries?: number;
+  signal?: AbortSignal;
+  allowTruncated?: boolean;
+}
+
+// Windows cannot open directory FileHandles through Node's fs.open API.
+// Retain a canonical-path/inode snapshot and revalidate around every operation.
+// This is a file-tool boundary, not an OS sandbox against local rename races.
+async function directoryFile(filename: string): Promise<DirectoryFile> {
+  if (process.platform !== 'win32') return fsp.open(filename, C.O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  return { fd: -1, stat: () => fsp.lstat(filename), sync: async () => {}, close: async () => {} };
+}
 
 const C = fs.constants;
 const O_DIRECTORY = C.O_DIRECTORY || 0;
 const O_NOFOLLOW = C.O_NOFOLLOW || 0;
 const O_NONBLOCK = C.O_NONBLOCK || 0;
-const error = (message, code) => Object.assign(new Error(message), { code });
-const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
-const contained = (root, value) => {
+const error = (message: string, code: string) => Object.assign(new Error(message), { code });
+const same = (a: InodeIdentity, b: InodeIdentity) => a.dev === b.dev && a.ino === b.ino;
+const contained = (root: string, value: string) => {
   const relative = path.relative(root, value);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 };
-const checkedName = (name) => {
+const checkedName = (name: string) => {
   if (typeof name !== 'string' || !name || name === '.' || name === '..' ||
       name.includes('\0') || name.includes('/') || name.includes(path.sep)) {
     throw error('Invalid directory entry name', 'EINVAL');
   }
+  if (process.platform === 'win32') validateRelativePath(name);
 };
-const kind = (stat) => stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other';
-const abortCheck = (signal) => {
+const kind = (stat: Stats): DirectoryEntry['type'] => stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other';
+const abortCheck = (signal?: AbortSignal) => {
   if (signal?.aborted) throw signal.reason || error('Operation cancelled', 'ECANCELED');
 };
 
-async function syncDirectory(handle) {
+async function syncDirectory(handle: DirectoryHandle) {
   try {
     await handle.file.sync();
   } catch (e) {
-    if (!['EINVAL', 'ENOTSUP'].includes(e.code)) throw e;
+    if (!['EINVAL', 'ENOTSUP'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e;
   }
 }
 
-async function verify(h) {
+async function verify(h: DirectoryHandle): Promise<Stats> {
   if (!h || !h.file || !Number.isInteger(h.fd)) {
     throw error('Invalid directory handle', 'EBADF');
   }
@@ -40,10 +84,10 @@ async function verify(h) {
   try {
     if (await fsp.realpath(h.path) !== h.path) throw error('Directory path changed', 'ESTALE');
   } catch (e) {
-    if (e.code === 'ESTALE') throw e;
+    if ((e as NodeJS.ErrnoException).code === 'ESTALE') throw e;
     throw error('Directory path changed', 'ESTALE');
   }
-  let current, named;
+  let current: Stats, named: Stats;
   try {
     [current, named] = await Promise.all([h.file.stat(), fsp.lstat(h.path)]);
   } catch {
@@ -55,14 +99,14 @@ async function verify(h) {
   return current;
 }
 
-async function openChild(parent, name) {
+async function openChild(parent: DirectoryHandle, name: string): Promise<DirectoryHandle> {
   checkedName(name);
   await verify(parent);
   const childPath = path.join(parent.path, name);
   if (!contained(parent.root, childPath)) throw error('Directory escaped its configured root', 'EACCES');
   const named = await fsp.lstat(childPath);
   if (!named.isDirectory() || named.isSymbolicLink()) throw error('Not a directory', 'ENOTDIR');
-  const file = await fsp.open(childPath, C.O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+  const file = await directoryFile(childPath);
   try {
     const opened = await file.stat();
     if (!opened.isDirectory() || !same(named, opened)) throw error('Directory path changed', 'ESTALE');
@@ -73,7 +117,7 @@ async function openChild(parent, name) {
   }
 }
 
-export async function openDirectory(baseAbsolute, relative = '.') {
+export async function openDirectory(baseAbsolute: string, relative = '.'): Promise<DirectoryHandle> {
   const requested = path.resolve(String(baseAbsolute));
   const root = await fsp.realpath(requested);
   if (root !== requested) throw error('Root must be a canonical directory', 'EACCES');
@@ -82,11 +126,9 @@ export async function openDirectory(baseAbsolute, relative = '.') {
   if (typeof relative !== 'string' || path.posix.isAbsolute(relative) || path.isAbsolute(relative) || relative.includes('\0')) {
     throw error('Invalid relative directory path', 'EINVAL');
   }
-  const raw = relative === '.' || relative === '' ? [] : relative.split('/');
-  if (raw.includes('..')) throw error('Invalid relative directory path', 'EINVAL');
-  const parts = raw.filter((part) => part && part !== '.');
-  const file = await fsp.open(root, C.O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
-  let handle;
+  const parts = validateRelativePath(relative);
+  const file = await directoryFile(root);
+  let handle: DirectoryHandle | undefined;
   try {
     const opened = await file.stat();
     if (!same(rootStat, opened)) throw error('Directory path changed', 'ESTALE');
@@ -104,11 +146,11 @@ export async function openDirectory(baseAbsolute, relative = '.') {
   }
 }
 
-export async function close(handle) {
-  if (handle?.file) await handle.file.close().catch((e) => { if (e.code !== 'EBADF') throw e; });
+export async function close(handle: DirectoryHandle | undefined) {
+  if (handle?.file) await handle.file.close().catch((e: unknown) => { if ((e as NodeJS.ErrnoException).code !== 'EBADF') throw e; });
 }
 
-export async function readFile(parent, name, maxBytes = 1024 * 1024) {
+export async function readFile(parent: DirectoryHandle, name: string, maxBytes = 1024 * 1024) {
   checkedName(name);
   await verify(parent);
   const target = path.join(parent.path, name);
@@ -134,7 +176,7 @@ export async function readFile(parent, name, maxBytes = 1024 * 1024) {
   }
 }
 
-export async function statAt(parent, name) {
+export async function statAt(parent: DirectoryHandle, name: string) {
   checkedName(name);
   await verify(parent);
   const stat = await fsp.lstat(path.join(parent.path, name));
@@ -142,12 +184,12 @@ export async function statAt(parent, name) {
   return { type: kind(stat), size_bytes: stat.size, mode: stat.mode, mtime_ms: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
 }
 
-export async function statDirectory(handle) {
+export async function statDirectory(handle: DirectoryHandle) {
   const stat = await verify(handle);
   return { type: 'directory', size_bytes: stat.size, mode: stat.mode, mtime_ms: stat.mtimeMs, dev: stat.dev, ino: stat.ino };
 }
 
-export async function readFileChunk(parent, name, offset, length, maxBytes = 64 * 1024 * 1024) {
+export async function readFileChunk(parent: DirectoryHandle, name: string, offset: number, length: number, maxBytes = 64 * 1024 * 1024) {
   checkedName(name);
   await verify(parent);
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 1024 * 1024) {
@@ -183,14 +225,17 @@ export async function readFileChunk(parent, name, offset, length, maxBytes = 64 
   }
 }
 
-export async function listDirectory(parent, options = {}) {
+export async function listDirectory(parent: DirectoryHandle, options?: ListOptions & { allowTruncated?: false }): Promise<DirectoryEntry[]>;
+export async function listDirectory(parent: DirectoryHandle, options: ListOptions & { allowTruncated: true }): Promise<{ entries: DirectoryEntry[]; truncated: boolean; reason?: string }>;
+export async function listDirectory(parent: DirectoryHandle, options: ListOptions): Promise<DirectoryEntry[] | { entries: DirectoryEntry[]; truncated: boolean; reason?: string }>;
+export async function listDirectory(parent: DirectoryHandle, options: ListOptions = {}) {
   const { maxEntries = 10000, signal, allowTruncated = false } = options;
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 0 || typeof allowTruncated !== 'boolean') {
     throw error('Invalid directory enumeration limits', 'EINVAL');
   }
   await verify(parent);
   const directory = await fsp.opendir(parent.path);
-  const entries = [];
+  const entries: DirectoryEntry[] = [];
   let truncated = false;
   try {
     while (true) {
@@ -213,20 +258,20 @@ export async function listDirectory(parent, options = {}) {
   return entries;
 }
 
-export async function writeAtomic(parent, name, bytes, mode = 0o600, createOnly = false) {
+export async function writeAtomic(parent: DirectoryHandle, name: string, bytes: Uint8Array, mode = 0o600, createOnly = false) {
   checkedName(name);
   await verify(parent);
   const target = path.join(parent.path, name);
-  let existing = null;
+  let existing: Stats | null = null;
   try { existing = await fsp.lstat(target); }
-  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   if (createOnly && existing) throw error('File already exists', 'EEXIST');
   if (existing?.isSymbolicLink() || (existing && !existing.isFile())) throw error('Only regular files are supported', 'EINVAL');
   const temporary = path.join(parent.path, `.rdh-${randomBytes(12).toString('hex')}`);
-  let file;
+  let file: FileHandle | null | undefined;
   try {
     file = await fsp.open(temporary, C.O_WRONLY | C.O_CREAT | C.O_EXCL | O_NOFOLLOW, mode & 0o777);
-    await file.chmod(mode & 0o777);
+    if (process.platform !== 'win32') await file.chmod(mode & 0o777);
     let offset = 0;
     while (offset < bytes.length) {
       const result = await file.write(bytes, offset, bytes.length - offset, offset);
@@ -242,12 +287,12 @@ export async function writeAtomic(parent, name, bytes, mode = 0o600, createOnly 
     await syncDirectory(parent);
   } finally {
     if (file) await file.close().catch(() => {});
-    await fsp.unlink(temporary).catch((e) => { if (e.code !== 'ENOENT') throw e; });
+    await fsp.unlink(temporary).catch((e: unknown) => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; });
   }
   await verify(parent);
 }
 
-export async function moveAtomic(sourceParent, sourceName, destinationParent, destinationName) {
+export async function moveAtomic(sourceParent: DirectoryHandle, sourceName: string, destinationParent: DirectoryHandle, destinationName: string) {
   checkedName(sourceName);
   checkedName(destinationName);
   await verify(sourceParent);
@@ -258,7 +303,7 @@ export async function moveAtomic(sourceParent, sourceName, destinationParent, de
   const sourceStat = await fsp.lstat(source);
   if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) throw error('Only regular files can be moved', 'EINVAL');
   try { await fsp.lstat(destination); throw error('Destination already exists', 'EEXIST'); }
-  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
   const file = await fsp.open(source, C.O_RDONLY | O_NOFOLLOW);
   try {
     const opened = await file.stat();
@@ -272,21 +317,21 @@ export async function moveAtomic(sourceParent, sourceName, destinationParent, de
     await verify(sourceParent);
     await verify(destinationParent);
   } catch (e) {
-    if (e.code === 'EXDEV') throw error('Moving files across filesystems is disabled', 'EXDEV');
+    if ((e as NodeJS.ErrnoException).code === 'EXDEV') throw error('Moving files across filesystems is disabled', 'EXDEV');
     throw e;
   } finally {
     await file.close();
   }
 }
 
-export async function mkdirAt(parent, name) {
+export async function mkdirAt(parent: DirectoryHandle, name: string) {
   checkedName(name);
   await verify(parent);
   await fsp.mkdir(path.join(parent.path, name), { mode: 0o700 });
   await verify(parent);
 }
 
-export async function dupDirChild(parent, name) {
+export async function dupDirChild(parent: DirectoryHandle, name: string) {
   return openChild(parent, name);
 }
 

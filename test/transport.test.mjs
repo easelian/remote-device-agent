@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BoundedSender } from '../lib/transport.mjs';
+import { BoundedSender } from '../.build/transport.mjs';
 
 function socket(write) {
   return { readyState: 1, bufferedAmount: 0, terminated: false, send: write,

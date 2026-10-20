@@ -12,17 +12,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test test/*.test.mjs
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - name: Check npm payload, offline install and CLI aliases
+        run: npm run pack:check
       - name: Check real Agent operations, reconnect and resource cleanup
+        if: runner.os != 'Windows'
         run: node scripts/check_stability.mjs --duration-seconds 30 --json > stability-quick.json
       - id: metadata
+        shell: bash
         run: echo "version=$(node -p "JSON.parse(require('fs').readFileSync('package.json')).version")" >> "$GITHUB_OUTPUT"
       - run: node scripts/release.mjs build
       - run: node scripts/release.mjs check "releases/remote-device-hub-${{ steps.metadata.outputs.version }}.json"

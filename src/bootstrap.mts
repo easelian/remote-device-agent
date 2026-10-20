@@ -1,3 +1,5 @@
+import type { LaunchArgs } from './types.mjs';
+import type { Agent } from './agent.mjs';
 import { readFileSync } from 'node:fs';
 import { validateGateway } from './config.mjs';
 import { DIRECT_SERVER, FALLBACK_SERVER, selectServer } from './server-selection.mjs';
@@ -5,8 +7,8 @@ import { DIRECT_SERVER, FALLBACK_SERVER, selectServer } from './server-selection
 const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const defaultServer = DIRECT_SERVER;
 
-export function parseArgs(argv) {
-  const result = { server: defaultServer, profile: 'default', noBrowser: false, recoverLock: false };
+export function parseArgs(argv: string[]): LaunchArgs {
+  const result: LaunchArgs = { server: defaultServer, profile: 'default', noBrowser: false, recoverLock: false };
   const values = new Set(['server', 'root', 'name', 'profile', 'config']);
   for (let index = 0; index < argv.length; index++) {
     const item = argv[index];
@@ -18,15 +20,15 @@ export function parseArgs(argv) {
     const value = match[2] ?? argv[++index];
     if (!value || value.startsWith('--')) throw new Error(`参数 --${match[1]} 需要一个值`);
     if (match[1] === 'root') (result.root ||= []).push(value);
-    else result[match[1]] = value;
+    else result[match[1] as 'server' | 'profile' | 'name' | 'config'] = value;
   }
   result.server = validateGateway(result.server);
   return result;
 }
 
-export function serverFromArgs(argv) { return parseArgs(argv).server; }
+export function serverFromArgs(argv: string[]) { return parseArgs(argv).server; }
 
-export async function launch(argv) {
+export async function launch(argv: string[]) {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node Agent 需要 Node.js 22 或更新版本');
   if (argv.includes('--version')) { console.log(metadata.version); return; }
   if (argv.includes('--help') || argv.includes('-h')) {
@@ -35,9 +37,9 @@ export async function launch(argv) {
   }
   const args = parseArgs(argv);
   const stop = new AbortController();
-  let shutdownTimer;
-  let runningAgent;
-  const setShutdownDeadline = (exitCode) => {
+  let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
+  const state: { agent?: Agent } = {};
+  const setShutdownDeadline = (exitCode: number) => {
     if (shutdownTimer) return;
     shutdownTimer = setTimeout(() => {
       console.error('Agent shutdown deadline exceeded; an operation outcome may be unknown. Inspect before retrying.');
@@ -45,7 +47,7 @@ export async function launch(argv) {
     }, 10_000);
     shutdownTimer.unref();
   };
-  const interrupt = (signal) => {
+  const interrupt = (signal: NodeJS.Signals) => {
     if (stop.signal.aborted) return;
     stop.abort(new Error('Agent stopped'));
     // Kernel filesystem I/O cannot always be cancelled. Stop accepting work
@@ -59,32 +61,31 @@ export async function launch(argv) {
   process.on('SIGTERM', interrupt);
   args.signal = stop.signal;
   try {
-    if (!argv.some((item) => item === '--server' || item.startsWith('--server='))) {
+    if (!argv.some((item: string) => item === '--server' || item.startsWith('--server='))) {
       args.autoServer = true;
       args.server = await selectServer({ signal: stop.signal });
       console.log(`设备中心：${args.server}${args.server === FALLBACK_SERVER ? '（直连入口 500 ms 内未通过健康检查，使用备用入口）' : '（直连入口）'}`);
     }
     // The bundled ws implementation must use its JavaScript paths even when
     // an unrelated package has installed optional native accelerators nearby.
-    process.env.WS_NO_BUFFER_UTIL = '1';
-    process.env.WS_NO_UTF_8_VALIDATE = '1';
+    Object.assign(process.env, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });
     const { connectDevice } = await import('./connect.mjs');
     const { Agent } = await import('./agent.mjs');
     const { buildHardening } = await import('./hardening.mjs');
     await connectDevice(args, {
-      runAgent: async (config, signal, { configFile } = {}) => {
+      runAgent: async (config: any, signal: AbortSignal, { configFile }: any = {}) => {
         // Throws (and the Agent does not start) when a configured sandbox or
         // required audit log cannot be provided.
-        runningAgent = new Agent(config, buildHardening(config, configFile));
-        return runningAgent.run(signal);
+        state.agent = new Agent(config, buildHardening(config, configFile));
+        return state.agent.run(signal);
       },
-      canReleaseLocks: () => !runningAgent || runningAgent.cleanShutdown,
+      canReleaseLocks: () => !state.agent || state.agent.cleanShutdown,
     });
-  } catch (error) {
-    if (runningAgent && !runningAgent.cleanShutdown) setShutdownDeadline(1);
+  } catch (error: any) {
+    if (state.agent && !state.agent.cleanShutdown) setShutdownDeadline(1);
     if (!stop.signal.aborted) throw error;
   } finally {
-    if (!stop.signal.aborted && (!runningAgent || runningAgent.cleanShutdown)) clearTimeout(shutdownTimer);
+    if (!stop.signal.aborted && (!state.agent || state.agent.cleanShutdown)) clearTimeout(shutdownTimer);
     process.removeListener('SIGINT', interrupt);
     process.removeListener('SIGTERM', interrupt);
   }

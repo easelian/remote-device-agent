@@ -9,7 +9,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { createHash, randomBytes } from 'node:crypto';
 import WebSocketServer from '../vendor/ws/lib/websocket-server.js';
-import { Agent } from '../lib/agent.mjs';
+import { Agent } from '../.build/agent.mjs';
 
 const NODE_VERSION = process.versions.node;
 const TOKEN = 'lifecycle-' + randomBytes(24).toString('hex');
@@ -30,7 +30,7 @@ const elapsed = (from, to) => Number(((to - from) / 1000).toFixed(3));
 const progress = (event, fields = {}) => process.stderr.write(`${JSON.stringify({ event, at: now(), pid: process.pid, ...fields })}\n`);
 const activeControllers = new Set();
 const activeFixtures = new Set();
-const RUNTIME_FILES = ['lib/agent.mjs', 'lib/processes.mjs', 'lib/searches.mjs', 'lib/transport.mjs', 'package.json', 'bin/remote-device-hub.mjs'];
+const RUNTIME_FILES = ['.build/agent.mjs', '.build/processes.mjs', '.build/searches.mjs', '.build/transport.mjs', 'package.json', 'bundle/agent.mjs'];
 async function runtimeFingerprint() {
   const hash = createHash('sha256');
   const files = {};

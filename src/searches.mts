@@ -1,7 +1,69 @@
 import { randomBytes } from 'node:crypto';
 import { CASEFOLD_EXCEPTIONS } from './casefold.mjs';
 
-const defaults = {
+// Handles are opaque to the search scheduler; the filesystem backend owns them.
+export type SearchDirectoryHandle = any;
+export interface SearchDirectoryEntry { name: string; type: string; size_bytes?: number }
+export interface SearchFiles {
+  parts?(root: string, path: string): unknown;
+  directory(root: string, path: string): Promise<SearchDirectoryHandle>;
+  close(handle: SearchDirectoryHandle): Promise<void>;
+  _read(handle: SearchDirectoryHandle, name: string): Promise<Uint8Array>;
+  filesystem: {
+    listDirectory(handle: SearchDirectoryHandle, options: { maxEntries: number; allowTruncated: boolean; signal: AbortSignal }):
+      Promise<SearchDirectoryEntry[] | { entries: SearchDirectoryEntry[]; truncated?: boolean; reason?: string }>;
+    dupDirChild(handle: SearchDirectoryHandle, name: string): Promise<SearchDirectoryHandle>;
+  };
+}
+export interface SearchParameters {
+  root?: string;
+  path?: string;
+  query?: string;
+  content?: boolean;
+  pattern?: string;
+}
+export interface SearchResultParameters { search_id?: string; offset?: number; limit?: number }
+export interface SearchResult { path: string; line?: number; text?: string }
+export interface SearchLimits {
+  maxEntries: number;
+  maxResults: number;
+  maxDepth: number;
+  maxVisited: number;
+  maxResultBytes: number;
+  taskTtlMs: number;
+  maxConcurrent: number;
+  maxRetainedTasks: number;
+  retentionTtlMs: number;
+  closeTimeoutMs: number;
+}
+interface SearchTask {
+  search_id: string;
+  root: string;
+  path: string;
+  query: string;
+  content: boolean;
+  pattern: string;
+  status: string;
+  results: SearchResult[];
+  resultBytes: number;
+  visited: number;
+  skipped: number;
+  truncated: boolean;
+  createdAt: number;
+  updatedAt: number;
+  controller: AbortController;
+  fds: Set<SearchDirectoryHandle>;
+  foldedQuery: string;
+  timer?: ReturnType<typeof setTimeout>;
+  retentionTimer?: ReturnType<typeof setTimeout>;
+  finishedAt?: number;
+  promise?: Promise<void>;
+  error?: string;
+  truncated_reason?: string;
+  budgetStop?: boolean;
+}
+
+const defaults: SearchLimits = {
   maxEntries: 1000,
   maxResults: 1000,
   maxDepth: 30,
@@ -14,10 +76,10 @@ const defaults = {
   closeTimeoutMs: 5_000,
 };
 
-const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
-const byteLength = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
-const fold = (value) => Array.from(value, (character) => CASEFOLD_EXCEPTIONS[character] ?? character.toLowerCase()).join('');
-const preview = (text, maxCodePoints = 500) => {
+const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+const byteLength = (value: SearchResult) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+const fold = (value: string) => Array.from(value, (character) => CASEFOLD_EXCEPTIONS[character] ?? character.toLowerCase()).join('');
+const preview = (text: string, maxCodePoints = 500) => {
   let end = 0; let count = 0;
   for (const character of text) {
     if (count++ >= maxCodePoints) break;
@@ -27,7 +89,14 @@ const preview = (text, maxCodePoints = 500) => {
 };
 
 export class SearchTasks {
-  constructor(files, options = {}) {
+  readonly files: SearchFiles;
+  readonly limits: SearchLimits;
+  readonly tasks: Map<string, SearchTask>;
+  readonly inFlight: Map<string, Promise<void>>;
+  closed: boolean;
+  readonly pruneTimer: ReturnType<typeof setInterval>;
+
+  constructor(files: SearchFiles, options: Partial<SearchLimits> = {}) {
     if (!files || typeof files.directory !== 'function') throw new TypeError('files must provide directory()');
     this.files = files;
     this.limits = { ...defaults, ...options };
@@ -39,7 +108,7 @@ export class SearchTasks {
     this.pruneTimer.unref?.();
   }
 
-  async startSearch(params = {}) {
+  async startSearch(params: SearchParameters = {}) {
     if (this.closed) throw new Error('Search manager is closed');
     this.#prune();
     const { root, path = '.', query, content = false, pattern = 'literal' } = params;
@@ -64,7 +133,7 @@ export class SearchTasks {
     if (typeof this.files.parts === 'function') this.files.parts(root, path);
     this.#reserveRetentionSlot();
     const searchId = randomBytes(16).toString('hex');
-    const task = { search_id: searchId, root, path, query, content, pattern, status: 'queued',
+    const task: SearchTask = { search_id: searchId, root, path, query, content, pattern, status: 'queued',
       results: [], resultBytes: 0, visited: 0, skipped: 0, truncated: false, createdAt: Date.now(),
       updatedAt: Date.now(), controller: new AbortController(), fds: new Set(), foldedQuery: fold(query) };
     this.tasks.set(searchId, task);
@@ -77,9 +146,9 @@ export class SearchTasks {
     return { search_id: searchId, status: task.status, offset: 0, next_offset: 0 };
   }
 
-  start_search(params = {}) { return this.startSearch(params); }
+  start_search(params: SearchParameters = {}) { return this.startSearch(params); }
 
-  async getSearchResults(params = {}) {
+  async getSearchResults(params: SearchResultParameters = {}) {
     this.#prune();
     const task = this.#task(params.search_id);
     const offset = params.offset ?? 0;
@@ -96,16 +165,16 @@ export class SearchTasks {
       ...(task.error ? { error: task.error } : {}) };
   }
 
-  get_search_results(params = {}) { return this.getSearchResults(params); }
+  get_search_results(params: SearchResultParameters = {}) { return this.getSearchResults(params); }
 
-  async stopSearch(params = {}) {
+  async stopSearch(params: Pick<SearchResultParameters, 'search_id'> = {}) {
     this.#prune();
     const task = this.#task(params.search_id);
     if (['queued', 'running'].includes(task.status)) { task.status = 'stopped'; task.finishedAt = Date.now(); clearTimeout(task.timer); task.controller.abort(); this.#prune(); }
     return { search_id: task.search_id, status: task.status };
   }
 
-  stop_search(params = {}) { return this.stopSearch(params); }
+  stop_search(params: Pick<SearchResultParameters, 'search_id'> = {}) { return this.stopSearch(params); }
 
   listSearches() {
     this.#prune();
@@ -123,17 +192,17 @@ export class SearchTasks {
     clearInterval(this.pruneTimer);
     for (const task of this.tasks.values()) { clearTimeout(task.timer); clearTimeout(task.retentionTimer); if (['queued', 'running'].includes(task.status)) { task.status = 'stopped'; task.controller.abort(); } }
     const pending = Promise.allSettled([...this.inFlight.values()]);
-    let timeout;
-    const deadline = new Promise((resolve) => { timeout = setTimeout(resolve, this.limits.closeTimeoutMs); });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => { timeout = setTimeout(resolve, this.limits.closeTimeoutMs); });
     await Promise.race([pending, deadline]);
     clearTimeout(timeout);
     for (const task of this.tasks.values()) if (this.inFlight.has(task.search_id)) task.status = 'blocked';
     this.tasks.clear();
   }
 
-  #task(searchId) {
+  #task(searchId: string | undefined): SearchTask {
     this.#prune();
-    const task = this.tasks.get(searchId);
+    const task = typeof searchId === 'string' ? this.tasks.get(searchId) : undefined;
     if (!task) throw new Error('Unknown search_id');
     return task;
   }
@@ -148,7 +217,7 @@ export class SearchTasks {
     const retained = [...this.tasks.values()].filter((task) => !this.inFlight.has(task.search_id))
       .sort((a, b) => (a.finishedAt || a.createdAt) - (b.finishedAt || b.createdAt));
     while (this.tasks.size > this.limits.maxRetainedTasks && retained.length) {
-      const task = retained.shift(); clearTimeout(task.timer); clearTimeout(task.retentionTimer); this.tasks.delete(task.search_id);
+      const task = retained.shift()!; clearTimeout(task.timer); clearTimeout(task.retentionTimer); this.tasks.delete(task.search_id);
     }
   }
 
@@ -161,7 +230,7 @@ export class SearchTasks {
     }
   }
 
-  #scheduleRetention(task) {
+  #scheduleRetention(task: SearchTask) {
     if (this.closed || task.retentionTimer || this.inFlight.has(task.search_id)) return;
     task.retentionTimer = setTimeout(() => {
       if (!this.inFlight.has(task.search_id)) this.tasks.delete(task.search_id);
@@ -169,7 +238,7 @@ export class SearchTasks {
     task.retentionTimer.unref?.();
   }
 
-  #add(task, result) {
+  #add(task: SearchTask, result: SearchResult) {
     const bytes = byteLength(result);
     if (task.results.length >= this.limits.maxResults || task.resultBytes + bytes > this.limits.maxResultBytes) {
       task.truncated = true; task.truncated_reason = task.results.length >= this.limits.maxResults ? 'max_entries' : 'max_result_bytes'; task.budgetStop = true;
@@ -179,7 +248,7 @@ export class SearchTasks {
     return true;
   }
 
-  async #run(task) {
+  async #run(task: SearchTask): Promise<void> {
     let rootfd;
     let scanned = false;
     try {
@@ -200,10 +269,10 @@ export class SearchTasks {
     }
   }
 
-  async #walk(task, fd, prefix, depth) {
+  async #walk(task: SearchTask, fd: SearchDirectoryHandle, prefix: string, depth: number): Promise<void> {
     if (task.controller.signal.aborted || task.status !== 'running') return;
     if (depth > this.limits.maxDepth) { task.truncated = true; task.truncated_reason = 'max_depth'; return; }
-    let entries;
+    let entries: SearchDirectoryEntry[];
     try {
       const response = await this.files.filesystem.listDirectory(fd, {
         maxEntries: Math.max(0, this.limits.maxVisited - task.visited),
@@ -213,7 +282,7 @@ export class SearchTasks {
       if (task.controller.signal.aborted || task.status !== 'running') return;
       entries = Array.isArray(response) ? response : response.entries;
       if (!Array.isArray(entries)) throw new Error('Invalid directory enumeration response');
-      if (response.truncated) { task.truncated = true; task.truncated_reason = response.reason || 'directory_budget'; }
+      if (!Array.isArray(response) && response.truncated) { task.truncated = true; task.truncated_reason = response.reason || 'directory_budget'; }
     } catch { task.truncated = true; task.truncated_reason = 'directory_error'; task.skipped += 1; return; }
     entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
     for (const entry of entries) {
@@ -241,5 +310,5 @@ export class SearchTasks {
   }
 }
 
-export const createSearchTasks = (files, options) => new SearchTasks(files, options);
+export const createSearchTasks = (files: SearchFiles, options?: Partial<SearchLimits>) => new SearchTasks(files, options);
 export default SearchTasks;

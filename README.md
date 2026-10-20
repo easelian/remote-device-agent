@@ -1,66 +1,55 @@
 # Remote Device Hub Agent
 
-这是独立发布的 pure Node Agent，当前源码版本 `0.6.2`，npm 包名保持 `remote-device-hub`，两个
-bin 别名保持 `remote-device-hub` 与 `remote-device-agent`。要求 Node.js 22+，运行时无 npm
-dependencies、安装 hook、原生 addon、Python/uv/wheel 下载或首次启动编译。
+使用 TypeScript 开发的设备 Agent，当前源码版本 `0.7.0`。目标平台为原生 Windows、Linux 和 macOS，三者共用 CLI、配对协议及文件/进程接口。设备需预装 Node.js 22+。
 
-## 本地验证和构建
+npm 包名为 `remote-device-hub`，命令别名为 `remote-device-agent` 和 `remote-device-hub`。最终包只包含编译压缩的 JavaScript、CLI 入口、README 和第三方许可证：无运行时 npm 依赖、原生 addon、安装脚本、首次启动编译或额外运行时下载。TypeScript、类型声明与构建工具仅用于开发，不进入发行包。
 
-```bash
-node --test test/*.test.mjs
+## 构建与验证
+
+从仓库根目录运行：
+
+```sh
+npm ci --ignore-scripts
+npm run typecheck
+npm test
+npm run pack:check
 node scripts/release.mjs build
-node scripts/release.mjs check releases/remote-device-hub-0.6.2.json
+node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 ```
 
-构建只生成本仓库的 `dist/` 和 `releases/` 记录，不调用 Python builder、npm registry、
-Server 或 ChatGPT。构建后的 TGZ 由 Server 通过显式绝对路径 artifact 检查；它不会被 Server
-自动发现或打包。
+`src/*.mts` 是源码；`npm run build` 生成测试用的 `.build/` 模块和发行用的 `bundle/agent.mjs`。`npm pack` 会先做类型检查及编译。发行 TGZ 上限为 64 KiB，解包内容上限为 512 KiB；打包检查同时核对文件清单、空缓存离线安装和两个命令别名。未重新编译的源码或被修改的 bundle 会阻止生成发行记录。
 
-## 使用
+构建只写本地文件，不执行 npm 发布、设备部署或账号绑定。版本记录及历史验证见 [维护与发布](docs/maintenance.md)。
 
-```bash
-npx --yes /absolute/path/remote-device-hub-0.6.2.tgz \
-  --root projects=/home/alice/projects --name '开发机'
+## 部署与使用
+
+将已构建的 `remote-device-hub-0.7.0.tgz` 分发到设备。在 TGZ 所在目录执行：
+
+```sh
+npm install --global --ignore-scripts --offline ./remote-device-hub-0.7.0.tgz
+remote-device-agent --version
+remote-device-agent --no-browser
 ```
 
-默认文件根是当前目录；`--no-browser` 用于 SSH，`--profile NAME` 建立另一份绑定。配置
-位于 `XDG_CONFIG_HOME` 下并使用 0600 权限。文件根限制属于 Agent 工具边界，不是对本机
-其他进程的 sandbox。
+版本应输出 `0.7.0`。首次运行打印绑定链接与验证码；在网页核对设备及权限后确认。默认文件根为当前目录，再次运行会复用绑定。已有 Node.js 的设备无需下载编译器或其他 npm 包。批量部署可缓存同一份固定版本 TGZ；固定下载地址和产物摘要能避免重复解析 registry 元数据，实际下载耗时仍取决于网络与分发节点。
 
-该仓库只维护 Node Agent；Python 兼容 Agent 和 Protocol 位于 `remote-device-server`。
-本地 prepared artifact 和运行验证不表示 npm 发布、设备部署或 ChatGPT 客户端已更新。实际发行状态与证据记录在本仓库的 `releases/`。
+用 `--root NAME=PATH` 指定目录，可重复；路径包含空格时给整个参数加引号。`--profile NAME` 创建独立绑定，`--server URL` 固定 Hub 地址。Windows 使用原生盘符或 UNC 根，文件工具内部的相对路径仍统一用 `/`。Windows 配对需要 Hub 使用 Protocol 1.0.1 或更新兼容版本；既有服务器的模型会拒绝 Windows 提案。
 
-版本和记录规则见 [维护与发布](docs/maintenance.md)。`MIGRATION.json` 记录初始导入来源，`docs/history/` 保留分仓前的验证证据。
+## 平台边界
 
-## Node 0.6.2 当前源码能力
+| 能力 | Linux / macOS | Windows |
+| --- | --- | --- |
+| 配对、文件、搜索和进程接口 | 共用接口 | 共用接口，校验盘符、保留名称及备用数据流 |
+| 默认 shell | `/bin/sh` | 系统 `cmd.exe`；命令内容使用对应系统语法 |
+| 私有配置与审计 | 当前用户持有，文件 0600、目录 0700 | 当前用户持有且禁用继承的私有 ACL；使用系统自带 PowerShell 校验 |
+| 进程终止 | POSIX 进程组 | `taskkill /T /F` 尽力终止存活命令树；父进程提前退出后的脱离子进程不保证清理 |
+| bubblewrap 沙箱 | 仅 Linux；需系统另行提供 bwrap | 不支持；配置后拒绝启动 |
+| shell 资源限制 | 按 shell 能力应用，失败退出 | 不支持 POSIX ulimit；配置后拒绝启动 |
 
-进程输出中的 `cleanup_pending` 表示结束或终止后，实际进程 watcher 尚未关闭。检查它为
-`false` 后再确认清理完成；Agent 关闭时同样等待实际在途文件操作、搜索和进程资源完成，
-超出关闭 deadline 时保留配置锁，供下一次显式 `--recover-lock` 检查已退出的 owner。
+默认配置目录为 Linux/macOS 的 `~/.config/remote-device-hub`，Windows 的 `%LOCALAPPDATA%\remote-device-hub`；可用 `XDG_CONFIG_HOME` 或 `--config` 显式指定。权限不合格的既有配置不会自动放宽或修复。操作策略与本地审计默认状态及配置方式见 [硬化配置](docs/hardening.md)。
 
-普通网络断线时保留进程和有界输出最多 5 分钟并等待重连；授权撤销或 HTTP 401/403 会立即停止并清理，并报告失败。超过离线期限或主动退出也会清理进程。
+文件 roots 和路径策略约束 Agent 文件工具，不是操作系统沙箱；本机其他进程并发替换路径仍有 TOCTOU 边界。shell 以 Agent 用户身份执行，不受文件路径策略约束。
 
-当前源码还包括后台有界搜索、`file_info`、`read_multiple_files`、`move_file` 和 `read_file_chunk`。这些是 Node `0.6.0` 扩展能力，不改变 Python Agent `0.4.0` 的 legacy core operation 合同。
+网络短断线最多保留进程与有界输出 5 分钟；撤销授权、持续离线或主动退出会触发清理。超时或断线后结果未知时先核对状态再重试。Linux/macOS 的 `cleanup_pending` 表示监督进程资源尚未收尾；Windows 的此字段不证明所有脱离后代已结束。异常退出留下的配置锁需在确认旧进程结束后使用 `--recover-lock` 恢复。
 
-搜索结果按 offset 分页，任务支持取消，最多保留 16 个任务的有界结果。文件移动仅限同一 root 内的普通文件，目标必须不存在。批量读取最多 16 个文件，每个文件不超过 1 MiB，返回有效 UTF-8 预览和局部错误。大文件 chunk 接口支持最大 64 MiB 的文件和最多 64 KiB 的 byte range；`from_end` 从尾部定位，`content_base64` 保留精确字节，`utf8_valid` 标明文本预览是否完整有效。批量预览与 chunk 的 fingerprint 不能替代写入所需的整文件 SHA-256。
-
-## 性能与稳定性检查
-
-文件工具使用异步 I/O，进程输出使用分段有界缓冲。每台 Agent 最多同时执行 8 个操作；
-操作超时或连接中断后，尚未结束的实际 I/O 继续占用名额。写入和命令出现未知结果时，
-先检查当前状态再决定是否重试。发送队列限制为 16 条消息和 4 MiB，单条响应最多 2 MiB。
-
-```bash
-node scripts/check_stability.mjs --duration-seconds 120 --json
-node scripts/check_stability.mjs --duration-seconds 86400 --json
-node scripts/check_lifecycle.mjs --full --json
-```
-
-这些检查使用私有临时目录和真实 loopback WebSocket。持续混合负载、100 MiB stdout、
-网络重连、实际进程/搜索/I/O 和 FD 清理均有机器可读结果；24 小时测试与公网客户端
-验收需要分别完成。CI 在 Linux/macOS 运行短检查，不等同于长时间 soak。
-
-异常退出后，可在相同命令中增加 `--recover-lock`：只有旧锁属于当前用户、格式有效、
-且 PID 明确不存在时才恢复。活进程、权限不明或恢复 guard 存在时会拒绝抢占。
-Ctrl+C/SIGTERM 停止接收操作并清理，10 秒后仍未退出则强制结束前台 Agent；
-进入内核的文件 I/O 可能无法取消，结果仍需核对。
+当前本地验证环境为 Linux。CI 已配置三系统测试，其中 Windows 使用独立的原生文件、ACL、配对和进程用例；尚未实际运行的 Windows/macOS CI 与实机结果属于未验证范围，不能用 Linux 上的纯路径测试替代。历史发行状态以 `releases/` 原始记录为准。
