@@ -3,8 +3,8 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { DeviceConfig } from './types.mjs';
-import { configBase, defaultShell, absoluteDeviceRoot, assertPrivatePath, ensurePrivatePath, secureNewPath } from './platform.mjs';
+import type { DeviceConfig } from './types.js';
+import { configBase, defaultShell, absoluteDeviceRoot, assertPrivatePath, ensurePrivatePath, secureNewPath } from './platform.js';
 
 const PROFILE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DEVICE_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -58,7 +58,7 @@ export function configPath(server: string, profile = 'default', env = process.en
   return current;
 }
 
-export function configPaths(server: string, profile = 'default', env = process.env) {
+export function configPaths(server: string, profile = 'default', env = process.env): [string, string] {
   if (!PROFILE_RE.test(profile)) throw new Error("Profile must contain only letters, numbers, '-' or '_'");
   const base = configBase(env);
   const filename = `${createHash('sha256').update(server).digest('hex').slice(0, 16)}-${profile}.json`;
@@ -72,7 +72,7 @@ function existsNoFollow(filename: string) {
 }
 
 export async function localRoots(items?: string[]): Promise<Record<string, string>> {
-  const entries = items?.length ? items.map((item) => {
+  const entries: [string, string][] = items?.length ? items.map((item): [string, string] => {
     const index = item.indexOf('=');
     if (index <= 0) throw new Error('每个 --root 都需要 NAME=PATH');
     return [item.slice(0, index), item.slice(index + 1)];

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { assertPrivatePath, ensurePrivatePath, secureNewPath } from './platform.mjs';
+import { assertPrivatePath, ensurePrivatePath, secureNewPath } from './platform.js';
 
 export const AUDIT_DEFAULTS = Object.freeze({ maxBytes: 5 * 1024 * 1024, maxFiles: 3 });
 
@@ -134,13 +134,13 @@ interface AuditEntry {
   boot: string;
   seq: number;
   prev: string;
-  id?: string;
+  id?: string | undefined;
   op: string;
   status: string;
   ms: number;
   params: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  error?: string | { sha256: string; bytes: number };
+  result?: Record<string, unknown> | undefined;
+  error?: string | { sha256: string; bytes: number } | undefined;
 }
 
 // Append-only JSONL audit trail. Recording is best effort by design: an audit

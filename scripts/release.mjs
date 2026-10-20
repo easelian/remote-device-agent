@@ -62,7 +62,7 @@ export function sourceFiles() {
 // describe exactly the bytes the consumer receives.
 export function compilationFingerprint() {
   const names = ['scripts/build.mjs', 'tsconfig.json', 'package-lock.json',
-    ...readdirSync(join(ROOT, 'src')).filter(name => name.endsWith('.mts')).map(name => `src/${name}`),
+    ...readdirSync(join(ROOT, 'src')).filter(name => name.endsWith('.ts')).map(name => `src/${name}`),
     ...WS_CLIENT_FILES.map(name => `vendor/ws/${name}`)];
   return sha256(Buffer.from(JSON.stringify(Object.fromEntries(names.sort().map(name => [name, sha256(readFileSync(join(ROOT, name)))])))));
 }

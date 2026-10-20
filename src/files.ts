@@ -1,10 +1,10 @@
-import { moveParameters } from './file-params.mjs';
+import { moveParameters } from './file-params.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import filesystemDefault, { type DirectoryEntry, type DirectoryHandle } from './posix-fs.mjs';
-import { CASEFOLD_EXCEPTIONS } from './casefold.mjs';
-import { validateRelativePath } from './platform.mjs';
+import filesystemDefault, { type DirectoryEntry, type DirectoryHandle } from './posix-fs.js';
+import { CASEFOLD_EXCEPTIONS } from './casefold.js';
+import { validateRelativePath } from './platform.js';
 
 const MAX_FILE = 1024 * 1024;
 const MAX_ENTRIES = 10000;
@@ -22,7 +22,7 @@ const compareCodePoints = (left: string, right: string) => {
   const a = Array.from(left);
   const b = Array.from(right);
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    const difference = a[i].codePointAt(0)! - b[i].codePointAt(0)!;
+    const difference = a[i]!.codePointAt(0)! - b[i]!.codePointAt(0)!;
     if (difference) return difference;
   }
   return a.length - b.length;
@@ -61,8 +61,9 @@ export class Files {
   }
 
   parts(root: string, value: string): [string, string[]] {
-    if (!Object.hasOwn(this.roots, root)) throw new Error('Unknown root; use device_info to discover configured roots');
-    return [this.roots[root], pathParts(value)];
+    const base = this.roots[root];
+    if (base === undefined) throw new Error('Unknown root; use device_info to discover configured roots');
+    return [base, pathParts(value)];
   }
 
   async directory(root: string, value = '.'): Promise<DirectoryHandle> {

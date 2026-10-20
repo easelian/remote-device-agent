@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { parseArgs, serverFromArgs } from '../.build/bootstrap.mjs';
+import { parseArgs, serverFromArgs } from '../.build/bootstrap.js';
 
 test('package runs directly on Node with no runtime dependencies or install hooks', () => {
   const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));

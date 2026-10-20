@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { StringDecoder } from 'node:string_decoder';
 import { randomBytes } from 'node:crypto';
-import { buildBwrapArgs, limitsPrefix } from './sandbox.mjs';
-import type { DeviceConfig, SandboxSettings } from './types.mjs';
+import { buildBwrapArgs, limitsPrefix } from './sandbox.js';
+import type { DeviceConfig, SandboxSettings } from './types.js';
 import type { ChildProcessByStdio } from 'node:child_process';
 import type { Writable, Readable } from 'node:stream';
 

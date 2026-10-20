@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { AgentConfig, readConfig, writeConfig } from '../.build/config.mjs';
-import { Files } from '../.build/files.mjs';
-import { Processes } from '../.build/processes.mjs';
-import { Agent } from '../.build/agent.mjs';
-import { acquireProfileLocks } from '../.build/profile-lock.mjs';
-import { pairDevice } from '../.build/connect.mjs';
-import { defaultShell, ensurePrivatePath, platformName } from '../.build/platform.mjs';
+import { AgentConfig, readConfig, writeConfig } from '../.build/config.js';
+import { Files } from '../.build/files.js';
+import { Processes } from '../.build/processes.js';
+import { Agent } from '../.build/agent.js';
+import { acquireProfileLocks } from '../.build/profile-lock.js';
+import { pairDevice } from '../.build/connect.js';
+import { defaultShell, ensurePrivatePath, platformName } from '../.build/platform.js';
 
 async function fixture(t) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-platform-')));

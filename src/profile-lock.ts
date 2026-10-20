@@ -2,7 +2,7 @@ import fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { assertPrivatePath, secureNewPath } from './platform.mjs';
+import { assertPrivatePath, secureNewPath } from './platform.js';
 
 const ownerName = 'owner.json';
 const currentUid = () => typeof process.getuid === 'function' ? process.getuid() : null;

@@ -17,7 +17,9 @@ export function limitsPrefix(limits: any = {}) {
   for (const [key, flag] of Object.entries(ULIMIT_FLAGS)) {
     const value = limits[key];
     if (value === undefined) continue;
-    const [low, high] = LIMIT_RANGES[key];
+    const range = LIMIT_RANGES[key];
+    if (range === undefined) throw new TypeError(`Invalid limit ${key}`);
+    const [low, high] = range;
     if (!Number.isSafeInteger(value) || value < low || value > high) throw new TypeError(`Invalid limit ${key}`);
     prefix += `ulimit -${flag} ${value} || exit 126; `;
   }
@@ -44,8 +46,9 @@ const within = (child: any, parent: any) => child === parent || child.startsWith
 // A read-only ancestor wins over writable aliases and descendants.
 export function buildBwrapArgs({ roots, writableRoots = new Set(), workdir, network, hideHome = true, home,
   expose = [], hiddenPaths = [], hiddenFiles = [], shell, script }: {
-    roots: Record<string, string>; writableRoots?: Set<string>; workdir: string; network?: boolean;
-    hideHome?: boolean; home?: string; expose?: string[]; hiddenPaths?: string[]; hiddenFiles?: string[];
+    roots: Record<string, string>; writableRoots?: Set<string> | undefined; workdir: string; network?: boolean | undefined;
+    hideHome?: boolean | undefined; home?: string | undefined; expose?: string[] | undefined;
+    hiddenPaths?: string[] | undefined; hiddenFiles?: string[] | undefined;
     shell: string; script: string;
   }) {
   if (typeof network !== 'boolean') throw new TypeError('sandbox network must be set explicitly');

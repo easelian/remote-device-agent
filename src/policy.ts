@@ -1,5 +1,5 @@
-import { moveParameters } from './file-params.mjs';
-import { validateRelativePath } from './platform.mjs';
+import { moveParameters } from './file-params.js';
+import { validateRelativePath } from './platform.js';
 const ROOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_PROTECTED = 64;
 

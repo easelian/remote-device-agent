@@ -1,8 +1,8 @@
-import type { LaunchArgs } from './types.mjs';
-import type { Agent } from './agent.mjs';
+import type { LaunchArgs } from './types.js';
+import type { Agent } from './agent.js';
 import { readFileSync } from 'node:fs';
-import { validateGateway } from './config.mjs';
-import { DIRECT_SERVER, FALLBACK_SERVER, selectServer } from './server-selection.mjs';
+import { validateGateway } from './config.js';
+import { DIRECT_SERVER, FALLBACK_SERVER, selectServer } from './server-selection.js';
 
 const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const defaultServer = DIRECT_SERVER;
@@ -12,15 +12,17 @@ export function parseArgs(argv: string[]): LaunchArgs {
   const values = new Set(['server', 'root', 'name', 'profile', 'config']);
   for (let index = 0; index < argv.length; index++) {
     const item = argv[index];
+    if (item === undefined) break;
     if (item === '--') continue;
     if (item === '--no-browser') { result.noBrowser = true; continue; }
     if (item === '--recover-lock') { result.recoverLock = true; continue; }
     const match = /^--([a-z-]+)(?:=(.*))?$/.exec(item);
-    if (!match || !values.has(match[1])) throw new Error(`未知参数：${item}`);
-    const value = match[2] ?? argv[++index];
-    if (!value || value.startsWith('--')) throw new Error(`参数 --${match[1]} 需要一个值`);
-    if (match[1] === 'root') (result.root ||= []).push(value);
-    else result[match[1] as 'server' | 'profile' | 'name' | 'config'] = value;
+    const key = match?.[1];
+    if (key === undefined || !values.has(key)) throw new Error(`未知参数：${item}`);
+    const value = match?.[2] ?? argv[++index];
+    if (!value || value.startsWith('--')) throw new Error(`参数 --${key} 需要一个值`);
+    if (key === 'root') (result.root ||= []).push(value);
+    else result[key as 'server' | 'profile' | 'name' | 'config'] = value;
   }
   result.server = validateGateway(result.server);
   return result;
@@ -69,9 +71,9 @@ export async function launch(argv: string[]) {
     // The bundled ws implementation must use its JavaScript paths even when
     // an unrelated package has installed optional native accelerators nearby.
     Object.assign(process.env, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });
-    const { connectDevice } = await import('./connect.mjs');
-    const { Agent } = await import('./agent.mjs');
-    const { buildHardening } = await import('./hardening.mjs');
+    const { connectDevice } = await import('./connect.js');
+    const { Agent } = await import('./agent.js');
+    const { buildHardening } = await import('./hardening.js');
     await connectDevice(args, {
       runAgent: async (config: any, signal: AbortSignal, { configFile }: any = {}) => {
         // Throws (and the Agent does not start) when a configured sandbox or

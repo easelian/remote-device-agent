@@ -17,7 +17,7 @@ node scripts/release.mjs build
 node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 ```
 
-`src/*.mts` 是源码；`npm run build` 生成测试用的 `.build/` 模块和发行用的 `bundle/agent.mjs`。`npm pack` 会先做类型检查及编译。发行 TGZ 上限为 64 KiB，解包内容上限为 512 KiB；打包检查同时核对文件清单、空缓存离线安装和两个命令别名。未重新编译的源码或被修改的 bundle 会阻止生成发行记录。
+`src/*.ts` 是源码；`npm run build` 生成测试用的 `.build/` 模块和发行用的 `bundle/agent.mjs`。`npm pack` 会先做类型检查及编译。发行 TGZ 上限为 64 KiB，解包内容上限为 512 KiB；打包检查同时核对文件清单、空缓存离线安装和两个命令别名。未重新编译的源码或被修改的 bundle 会阻止生成发行记录。
 
 构建只写本地文件，不执行 npm 发布、设备部署或账号绑定。版本记录及历史验证见 [维护与发布](docs/maintenance.md)。
 

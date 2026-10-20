@@ -6,15 +6,15 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const sources = (await readdir(path.join(root, 'src'))).filter(name => name.endsWith('.mts') && !name.endsWith('.d.mts'));
+const sources = (await readdir(path.join(root, 'src'))).filter(name => name.endsWith('.ts') && !name.endsWith('.d.ts'));
 // Readable modules are for tests and development only. They never enter npm.
 await build({ absWorkingDir: root, entryPoints: sources.map(name => path.join(root, 'src', name)), outdir: path.join(root, '.build'),
-  outExtension: { '.js': '.mjs' }, platform: 'node', format: 'esm', target: 'node22',
+  platform: 'node', format: 'esm', target: 'node22',
   sourcemap: false, logLevel: 'warning' });
 await mkdir(path.join(root, 'bundle'), { recursive: true });
 // Keep Node built-ins external. Inline only the audited, vendored ws client.
 // createRequire supports its CommonJS references to built-in Node modules.
-await build({ absWorkingDir: root, entryPoints: [path.join(root, 'src/cli.mts')], outfile: path.join(root, 'bundle/agent.mjs'),
+await build({ absWorkingDir: root, entryPoints: [path.join(root, 'src/cli.ts')], outfile: path.join(root, 'bundle/agent.mjs'),
   bundle: true, platform: 'node', format: 'esm', target: 'node22', minify: true, keepNames: true,
   sourcemap: false, legalComments: 'none',
   banner: { js: 'import { createRequire as __rdhCreateRequire } from "node:module"; const require = __rdhCreateRequire(import.meta.url);' },

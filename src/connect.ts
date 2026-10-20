@@ -3,11 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { AgentConfig, configPath, configPaths, localRoots, readConfig, validateGateway, writeConfig } from './config.mjs';
-import { acquireProfileLocks, reclaimProfileLocks } from './profile-lock.mjs';
-import { DIRECT_SERVER, FALLBACK_SERVER, sameHub } from './server-selection.mjs';
-import { defaultShell, platformName, ensurePrivatePath } from './platform.mjs';
-import type { LaunchArgs, DeviceConfig } from './types.mjs';
+import { AgentConfig, configPath, configPaths, localRoots, readConfig, validateGateway, writeConfig } from './config.js';
+import { acquireProfileLocks, reclaimProfileLocks } from './profile-lock.js';
+import { DIRECT_SERVER, FALLBACK_SERVER, sameHub } from './server-selection.js';
+import { defaultShell, platformName, ensurePrivatePath } from './platform.js';
+import type { LaunchArgs, DeviceConfig } from './types.js';
 
 const sleep = (ms: any, signal: any) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) return reject(signal.reason || new Error('操作已取消'));
@@ -29,7 +29,7 @@ function requestSignal(signal?: AbortSignal) {
   return AbortSignal.any(signal ? [signal, AbortSignal.timeout(20_000)] : [AbortSignal.timeout(20_000)]);
 }
 
-export async function pairDevice(server: string, roots: Record<string, string>, name: string, { openBrowser = true, signal }: { openBrowser?: boolean; signal?: AbortSignal } = {}): Promise<DeviceConfig> {
+export async function pairDevice(server: string, roots: Record<string, string>, name: string, { openBrowser = true, signal }: { openBrowser?: boolean; signal?: AbortSignal | undefined } = {}): Promise<DeviceConfig> {
   const token = randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const proposal = { name, hostname: os.hostname() || 'device', os: platformName(),
@@ -86,7 +86,7 @@ export async function connectDevice(args: LaunchArgs, { locks, runAgent = async 
   if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('仅支持 Windows、Linux 和 macOS');
   const server = validateGateway(args.server);
   const profile = args.profile || 'default';
-  const profileServers = sameHub(server, FALLBACK_SERVER) ? [FALLBACK_SERVER, DIRECT_SERVER] : [server];
+  const profileServers: [string, ...string[]] = sameHub(server, FALLBACK_SERVER) ? [FALLBACK_SERVER, DIRECT_SERVER] : [server];
   // Keep both entrances under the same lock set and reuse an existing binding
   // when startup chooses a different route. Credentials never cross custom hubs.
   let destination = args.config ? path.resolve(args.config.replace(/^~(?=\/|$)/, os.homedir())) : configPath(profileServers[0], profile);

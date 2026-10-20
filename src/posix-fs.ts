@@ -2,7 +2,7 @@ import fs, { type Stats } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { validateRelativePath } from './platform.mjs';
+import { validateRelativePath } from './platform.js';
 import type { FileHandle } from 'node:fs/promises';
 
 interface DirectoryFile {

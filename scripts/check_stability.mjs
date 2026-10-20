@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { Agent } from '../.build/agent.mjs';
+import { Agent } from '../.build/agent.js';
 import WebSocketServer from '../vendor/ws/lib/websocket-server.js';
 
 const MB = 1024 * 1024;

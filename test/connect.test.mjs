@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { configPath, configPaths, localRoots, readConfig, writeConfig } from '../.build/config.mjs';
-import { connectDevice, pairDevice } from '../.build/connect.mjs';
-import { acquireProfileLocks } from '../.build/profile-lock.mjs';
-import { DIRECT_SERVER, FALLBACK_SERVER } from '../.build/server-selection.mjs';
+import { configPath, configPaths, localRoots, readConfig, writeConfig } from '../.build/config.js';
+import { connectDevice, pairDevice } from '../.build/connect.js';
+import { acquireProfileLocks } from '../.build/profile-lock.js';
+import { DIRECT_SERVER, FALLBACK_SERVER } from '../.build/server-selection.js';
 
 const tmp = async () => fs.mkdtemp(path.join(os.tmpdir(), 'rdh-node-agent-'));
 const locks = { acquire: async () => ({ release: async () => {} }) };

@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { acquireProfileLocks, reclaimProfileLocks } from '../.build/profile-lock.mjs';
+import { acquireProfileLocks, reclaimProfileLocks } from '../.build/profile-lock.js';
 
 const temp = () => fs.mkdtemp(path.join(os.tmpdir(), 'rdh-profile-lock-'));
 const stale = (config, pid = 999999999) => fs.mkdir(`${config}.node-lock`, { mode: 0o700 }).then(() =>
@@ -61,7 +61,7 @@ test('acquire and reclaim race through the shared guard without moving a fresh l
 test('SIGKILL leaves a recoverable lock without an automatic reclaim race', async (t) => {
   const root = await temp(); t.after(() => fs.rm(root, { recursive: true, force: true }));
   const config = path.join(root, 'profile.json');
-  const modulePath = path.resolve('.build/profile-lock.mjs');
+  const modulePath = path.resolve('.build/profile-lock.js');
   const child = spawn(process.execPath, ['--input-type=module', '-e',
     `import { acquireProfileLocks } from ${JSON.stringify(modulePath)}; await acquireProfileLocks([${JSON.stringify(config)}]); console.log('ready'); setInterval(() => {}, 1000);`],
   { stdio: ['ignore', 'pipe', 'pipe'] });

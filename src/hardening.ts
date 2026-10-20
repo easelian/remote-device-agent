@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertPrivatePath, stateBase } from './platform.mjs';
-import type { DeviceConfig, SandboxSettings } from './types.mjs';
-import { AuditLog, AUDIT_DEFAULTS } from './audit.mjs';
-import { Policy } from './policy.mjs';
-import { LIMIT_RANGES, SANDBOX_MODES, defaultHiddenPaths, canonicalPath, probeBwrap } from './sandbox.mjs';
+import { assertPrivatePath, stateBase } from './platform.js';
+import type { DeviceConfig, SandboxSettings } from './types.js';
+import { AuditLog, AUDIT_DEFAULTS } from './audit.js';
+import { Policy } from './policy.js';
+import { LIMIT_RANGES, SANDBOX_MODES, defaultHiddenPaths, canonicalPath, probeBwrap } from './sandbox.js';
 
 // Hardening lives in a sidecar file next to the device config
 // (<name>.policy.json) instead of the shared device config. The device config

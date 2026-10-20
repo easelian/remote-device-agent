@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { platformName, defaultShell, configBase, stateBase, validateRelativePath,
-  privateStat, absoluteDeviceRoot, assertPrivatePath, ensurePrivatePath, secureNewPath } from '../.build/platform.mjs';
+  privateStat, absoluteDeviceRoot, assertPrivatePath, ensurePrivatePath, secureNewPath } from '../.build/platform.js';
 
 const windows = process.platform === 'win32';
 function temporary(t) {

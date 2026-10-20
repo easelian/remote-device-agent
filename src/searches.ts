@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { CASEFOLD_EXCEPTIONS } from './casefold.mjs';
+import { CASEFOLD_EXCEPTIONS } from './casefold.js';
 
 // Handles are opaque to the search scheduler; the filesystem backend owns them.
 export type SearchDirectoryHandle = any;
@@ -226,7 +226,7 @@ export class SearchTasks {
       .sort((a, b) => (a.finishedAt || a.createdAt) - (b.finishedAt || b.createdAt));
     if (this.tasks.size >= this.limits.maxRetainedTasks) {
       if (!retained.length) throw new Error('Maximum retained search tasks reached');
-      const task = retained[0]; clearTimeout(task.timer); clearTimeout(task.retentionTimer); this.tasks.delete(task.search_id);
+      const task = retained.shift()!; clearTimeout(task.timer); clearTimeout(task.retentionTimer); this.tasks.delete(task.search_id);
     }
   }
 

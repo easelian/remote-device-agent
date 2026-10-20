@@ -1,17 +1,17 @@
 import os from 'node:os';
 import type { IncomingMessage } from 'node:http';
-import type { DeviceConfig, SandboxSettings } from './types.mjs';
-import type { AuditLog, AuditRecord } from './audit.mjs';
-import type { Policy } from './policy.mjs';
-import type { TransportLimits } from './transport.mjs';
-import { platformName } from './platform.mjs';
+import type { DeviceConfig, SandboxSettings } from './types.js';
+import type { AuditLog, AuditRecord } from './audit.js';
+import type { Policy } from './policy.js';
+import type { TransportLimits } from './transport.js';
+import { platformName } from './platform.js';
 import { createHash } from 'node:crypto';
-import { KNOWN_OPERATIONS, WRITE_OPERATIONS, PolicyDeniedError } from './policy.mjs';
+import { KNOWN_OPERATIONS, WRITE_OPERATIONS, PolicyDeniedError } from './policy.js';
 import WebSocket from '../vendor/ws/lib/websocket.js';
-import { Files } from './files.mjs';
-import { Processes } from './processes.mjs';
-import { SearchTasks } from './searches.mjs';
-import { BoundedSender, TRANSPORT_LIMITS } from './transport.mjs';
+import { Files } from './files.js';
+import { Processes } from './processes.js';
+import { SearchTasks } from './searches.js';
+import { BoundedSender, TRANSPORT_LIMITS } from './transport.js';
 
 const pause = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
   if (signal?.aborted) return resolve();
@@ -139,7 +139,8 @@ export class Agent {
     const files: Record<string, 'list' | 'read' | 'write' | 'edit' | 'mkdir' | 'search'> = { list_directory: 'list', read_file: 'read', write_file: 'write', edit_file: 'edit',
       make_directory: 'mkdir', search_files: 'search' };
     if (operation === 'device_info') return this.info();
-    if (Object.hasOwn(files, operation)) return this.files[files[operation]](params);
+    const kind = files[operation];
+    if (kind !== undefined) return this.files[kind](params);
     if (operation === 'file_info') return this.files.fileInfo(params);
     if (operation === 'read_file_chunk') return this.files.readFileChunk(params);
     if (operation === 'read_multiple_files') return this.files.readMultipleFiles(params);

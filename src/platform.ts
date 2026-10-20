@@ -62,8 +62,9 @@ export function absoluteDeviceRoot(value: string, platform: string = process.pla
   if (/^\/(?:\/\?|\/\.|\?\?)(?:\/|$)/.test(normalized)) return false;
   if (/^[A-Za-z]:\//.test(normalized)) return true;
   const share = /^\/\/([^/]+)\/([^/]+)(?:\/|$)/.exec(normalized);
-  return Boolean(share && ![share[1], share[2]].some(part =>
-    ['.', '..', '?', '??'].includes(part) || /[<>:"|?*\x00-\x1f]/.test(part)));
+  const host = share?.[1], name = share?.[2];
+  if (host === undefined || name === undefined) return false;
+  return ![host, name].some(part => ['.', '..', '?', '??'].includes(part) || /[<>:"|?*\x00-\x1f]/.test(part));
 }
 
 // Windows Stats has no DACL information and must never authorize secret reads.
