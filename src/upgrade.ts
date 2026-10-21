@@ -15,7 +15,8 @@ import { compareVersions, decideUpgrade, hostPlatform, parseChannel } from './up
 import type { ChannelEntry, Decision } from './update.js';
 
 const DEFAULT_CHANNEL = 'stable';
-const DEFAULT_INDEX = 'https://raw.githubusercontent.com/be-one-click/remote-device-agent/main/channels';
+const DEFAULT_INDEX =
+  'https://raw.githubusercontent.com/be-one-click/remote-device-agent/main/channels';
 
 interface Options {
   channel: string;
@@ -41,30 +42,55 @@ function usage(): string {
 }
 
 function parseOptions(argv: string[]): Options {
-  const options: Options = { channel: DEFAULT_CHANNEL, check: false, force: false, dryRun: false, restart: true };
+  const options: Options = {
+    channel: DEFAULT_CHANNEL,
+    check: false,
+    force: false,
+    dryRun: false,
+    restart: true,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index];
-    if (item === undefined) break;
+    if (item === undefined) {
+      break;
+    }
     switch (item) {
       case '--channel': {
         const value = argv[++index];
-        if (value === undefined || value.startsWith('--')) throw new Error('--channel 需要一个值');
-        if (value !== 'stable' && value !== 'canary') throw new Error('--channel 只能是 stable 或 canary');
+        if (value === undefined || value.startsWith('--')) {
+          throw new Error('--channel 需要一个值');
+        }
+        if (value !== 'stable' && value !== 'canary') {
+          throw new Error('--channel 只能是 stable 或 canary');
+        }
         options.channel = value;
         break;
       }
       case '--index': {
         const value = argv[++index];
-        if (value === undefined || value.startsWith('--')) throw new Error('--index 需要一个值');
+        if (value === undefined || value.startsWith('--')) {
+          throw new Error('--index 需要一个值');
+        }
         options.index = value;
         break;
       }
-      case '--check': options.check = true; break;
-      case '--force': options.force = true; break;
-      case '--dry-run': options.dryRun = true; break;
-      case '--no-restart': options.restart = false; break;
-      case '--help': case '-h': throw new Error(usage());
-      default: throw new Error(`未知参数：${item}`);
+      case '--check':
+        options.check = true;
+        break;
+      case '--force':
+        options.force = true;
+        break;
+      case '--dry-run':
+        options.dryRun = true;
+        break;
+      case '--no-restart':
+        options.restart = false;
+        break;
+      case '--help':
+      case '-h':
+        throw new Error(usage());
+      default:
+        throw new Error(`未知参数：${item}`);
     }
   }
   return options;
@@ -88,9 +114,13 @@ async function installId(prefix: string): Promise<string> {
   const file = path.join(prefix, 'install-id');
   try {
     const existing = (await fs.readFile(file, 'utf8')).trim();
-    if (/^[0-9a-f]{32}$/.test(existing)) return existing;
+    if (/^[0-9a-f]{32}$/.test(existing)) {
+      return existing;
+    }
   } catch (error) {
-    if ((error as { code?: string }).code !== 'ENOENT') throw error;
+    if ((error as { code?: string }).code !== 'ENOENT') {
+      throw error;
+    }
   }
   const created = randomBytes(16).toString('hex');
   await fs.mkdir(prefix, { recursive: true, mode: 0o700 });
@@ -105,7 +135,9 @@ function localPath(location: string): string {
 async function readIndex(location: string): Promise<ChannelEntry> {
   if (/^https?:/i.test(location)) {
     const response = await fetch(location, { redirect: 'follow' });
-    if (!response.ok) throw new Error(`无法读取版本索引：HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`无法读取版本索引：HTTP ${response.status}`);
+    }
     return parseChannel(await response.json());
   }
   const raw = await fs.readFile(localPath(location), 'utf8');
@@ -113,15 +145,21 @@ async function readIndex(location: string): Promise<ChannelEntry> {
 }
 
 function resolveArtifact(location: string, url: string): string {
-  if (/^https?:/i.test(url) || url.startsWith('file:')) return url;
-  if (/^https?:/i.test(location)) return new URL(url, location).href;
+  if (/^https?:/i.test(url) || url.startsWith('file:')) {
+    return url;
+  }
+  if (/^https?:/i.test(location)) {
+    return new URL(url, location).href;
+  }
   return path.resolve(path.dirname(localPath(location)), url);
 }
 
 async function download(url: string, destination: string): Promise<void> {
   if (/^https?:/i.test(url)) {
     const response = await fetch(url, { redirect: 'follow' });
-    if (!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`下载失败：HTTP ${response.status}`);
+    }
     // Artifacts are ~40 MB; buffering keeps the error paths simple.
     await fs.writeFile(destination, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
     return;
@@ -134,7 +172,11 @@ async function sha256(file: string): Promise<string> {
   return createHash('sha256').update(data).digest('hex');
 }
 
-function run(command: string, args: string[], options: { cwd?: string } = {}): { status: number | null; stdout: string } {
+function run(
+  command: string,
+  args: string[],
+  options: { cwd?: string } = {},
+): { status: number | null; stdout: string } {
   const result = spawnSync(command, args, { encoding: 'utf8', cwd: options.cwd });
   return { status: result.status, stdout: (result.stdout ?? '').trim() };
 }
@@ -153,15 +195,21 @@ function unitFile(): string {
 }
 
 function restartService(): boolean {
-  if (!existsSync(unitFile())) return false;
+  if (!existsSync(unitFile())) {
+    return false;
+  }
   return run('systemctl', ['--user', 'restart', 'rdh']).status === 0;
 }
 
 async function waitForService(seconds: number): Promise<boolean> {
-  if (!existsSync(unitFile())) return true;
+  if (!existsSync(unitFile())) {
+    return true;
+  }
   const deadline = Date.now() + seconds * 1000;
   while (Date.now() < deadline) {
-    if (run('systemctl', ['--user', 'is-active', 'rdh']).stdout === 'active') return true;
+    if (run('systemctl', ['--user', 'is-active', 'rdh']).stdout === 'active') {
+      return true;
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
@@ -170,13 +218,18 @@ async function waitForService(seconds: number): Promise<boolean> {
 async function unpack(archive: string, staging: string): Promise<void> {
   await fs.mkdir(staging, { recursive: true });
   const result = run('tar', ['-xzf', archive, '-C', staging, '--strip-components=1']);
-  if (result.status !== 0) throw new Error('解压失败');
+  if (result.status !== 0) {
+    throw new Error('解压失败');
+  }
   await fs.chmod(path.join(staging, 'node'), 0o755);
   await fs.chmod(path.join(staging, 'rdh'), 0o755);
 }
 
 async function verifyTree(staging: string, version: string): Promise<void> {
-  const result = run(path.join(staging, 'node'), [path.join(staging, 'bin/remote-device-hub.mjs'), '--version']);
+  const result = run(path.join(staging, 'node'), [
+    path.join(staging, 'bin/remote-device-hub.mjs'),
+    '--version',
+  ]);
   if (result.status !== 0 || result.stdout !== version) {
     throw new Error(`新版本自检失败（输出：${result.stdout || '无'}）`);
   }
@@ -206,7 +259,9 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
   });
   console.log(`目标版本：${entry.version} — ${decision.reason}`);
 
-  if (decision.action !== 'upgrade') return;
+  if (decision.action !== 'upgrade') {
+    return;
+  }
   if (options.check || options.dryRun) {
     console.log(`将从 ${resolveArtifact(location, decision.artifact.url)} 下载`);
     return;
@@ -219,7 +274,9 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
     console.log('下载中…');
     await download(resolveArtifact(location, decision.artifact.url), archive);
     const digest = await sha256(archive);
-    if (digest !== decision.artifact.sha256) throw new Error('下载内容校验失败，已中止');
+    if (digest !== decision.artifact.sha256) {
+      throw new Error('下载内容校验失败，已中止');
+    }
 
     await fs.rm(staging, { recursive: true, force: true });
     await unpack(archive, staging);
@@ -251,17 +308,23 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
 
 async function rollback(prefix: string, argv: string[]): Promise<void> {
   for (const item of argv) {
-    if (item === '--help' || item === '-h') throw new Error(usage());
+    if (item === '--help' || item === '-h') {
+      throw new Error(usage());
+    }
     throw new Error(`未知参数：${item}`);
   }
   const previous = path.join(prefix, 'previous');
-  if (!existsSync(previous)) throw new Error('没有可回滚的版本记录');
+  if (!existsSync(previous)) {
+    throw new Error('没有可回滚的版本记录');
+  }
 
   const target = await fs.readlink(previous);
   const current = await fs.readlink(path.join(prefix, 'current'));
   const currentVersionName = path.basename(current);
   const targetVersion = path.basename(target);
-  if (compareVersions(targetVersion, currentVersionName) === 0) throw new Error('回滚目标与当前版本相同');
+  if (compareVersions(targetVersion, currentVersionName) === 0) {
+    throw new Error('回滚目标与当前版本相同');
+  }
 
   await pointTo(prefix, 'current', target);
   await pointTo(prefix, 'previous', current);

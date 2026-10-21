@@ -116,3 +116,10 @@ remote-device-agent --no-browser
 网络短断线最多保留进程与有界输出 5 分钟；撤销授权、持续离线或主动退出会触发清理。超时或断线后结果未知时先核对状态再重试。Linux/macOS 的 `cleanup_pending` 表示监督进程资源尚未收尾；Windows 的此字段不证明所有脱离后代已结束。异常退出留下的配置锁需在确认旧进程结束后使用 `--recover-lock` 恢复。
 
 当前本地验证环境为 Linux。CI 已配置三系统测试，其中 Windows 使用独立的原生文件、ACL、配对和进程用例；尚未实际运行的 Windows/macOS CI 与实机结果属于未验证范围，不能用 Linux 上的纯路径测试替代。历史发行状态以 `releases/` 原始记录为准。
+
+## 代码风格
+
+`npm run format` 格式化维护中的源码和测试；`npm run style:check` 检查格式及 Lint，
+`npm run lint` 只运行 Lint。Biome 以固定版本作为开发依赖。统一使用两空格、
+单引号、分号、尾逗号，一行一条语句；显式标记类型导入，禁止显式 `any` 和
+`@ts-ignore`。生成文件及第三方代码不参与格式化。

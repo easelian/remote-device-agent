@@ -38,21 +38,32 @@ export class BoundedSender {
     this.closed = false;
     this.cancelWrite = null;
     for (const value of Object.values(this.limits)) {
-      if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid transport limits');
+      if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error('Invalid transport limits');
+      }
     }
   }
 
   send(value: Record<string, unknown>): Promise<void> {
-    if (this.closed || this.socket.readyState !== 1) return Promise.reject(new Error('Connection closed'));
+    if (this.closed || this.socket.readyState !== 1) {
+      return Promise.reject(new Error('Connection closed'));
+    }
     let text = JSON.stringify(value);
     let bytes = Buffer.byteLength(text);
     if (bytes > this.limits.maxFrameBytes && value.type === 'result') {
-      text = JSON.stringify({ type: 'result', id: value.id,
-        error: 'Result exceeds the transport limit; request a smaller range or narrower directory' });
+      text = JSON.stringify({
+        type: 'result',
+        id: value.id,
+        error: 'Result exceeds the transport limit; request a smaller range or narrower directory',
+      });
       bytes = Buffer.byteLength(text);
     }
-    if (bytes > this.limits.maxFrameBytes || this.queuedMessages >= this.limits.maxQueuedMessages ||
-        Math.max(this.queuedBytes, this.socket.bufferedAmount || 0) + bytes > this.limits.maxBufferedBytes) {
+    if (
+      bytes > this.limits.maxFrameBytes ||
+      this.queuedMessages >= this.limits.maxQueuedMessages ||
+      Math.max(this.queuedBytes, this.socket.bufferedAmount || 0) + bytes >
+        this.limits.maxBufferedBytes
+    ) {
       this.close();
       this.socket.terminate();
       return Promise.reject(new Error('Connection send budget exceeded'));
@@ -60,22 +71,33 @@ export class BoundedSender {
     this.queuedBytes += bytes;
     this.queuedMessages += 1;
     const sent = this.tail.then(() => this.write(text));
-    const released = sent.finally(() => { this.queuedBytes -= bytes; this.queuedMessages -= 1; });
+    const released = sent.finally(() => {
+      this.queuedBytes -= bytes;
+      this.queuedMessages -= 1;
+    });
     this.tail = released.catch(() => undefined);
     return released;
   }
 
   write(text: string): Promise<void> {
-    if (this.closed || this.socket.readyState !== 1) return Promise.reject(new Error('Connection closed'));
+    if (this.closed || this.socket.readyState !== 1) {
+      return Promise.reject(new Error('Connection closed'));
+    }
     return new Promise<void>((resolve, reject) => {
       let finished = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const done = (error?: unknown) => {
-        if (finished) return;
+        if (finished) {
+          return;
+        }
         finished = true;
         clearTimeout(timer);
         this.cancelWrite = null;
-        if (error) reject(error); else resolve();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
       };
       this.cancelWrite = () => done(new Error('Connection closed'));
       timer = setTimeout(() => {
@@ -83,7 +105,11 @@ export class BoundedSender {
         this.close();
         this.socket.terminate();
       }, this.limits.sendTimeoutMs);
-      try { this.socket.send(text, done); } catch (error) { done(error); }
+      try {
+        this.socket.send(text, done);
+      } catch (error) {
+        done(error);
+      }
     });
   }
 

@@ -21,6 +21,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run style:check
       - run: npm run typecheck
       - run: npm test
       - name: Check npm payload, offline install and CLI aliases

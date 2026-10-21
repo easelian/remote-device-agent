@@ -13,10 +13,12 @@ test('package runs directly on Node with no runtime dependencies or install hook
   assert.equal(metadata.engines.node, '>=22');
   assert.equal(metadata.private, undefined);
   assert.equal(metadata.bin['remote-device-agent'], 'bin/remote-device-hub.mjs');
-  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies'])
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
     assert.deepEqual(metadata[field] ?? {}, {});
-  for (const name of ['preinstall', 'install', 'postinstall', 'prepare'])
+  }
+  for (const name of ['preinstall', 'install', 'postinstall', 'prepare']) {
     assert.equal(metadata.scripts?.[name], undefined);
+  }
   assert(!metadata.files.includes('runtime/'));
 });
 
@@ -24,18 +26,40 @@ test('gateway arguments reject credential-bearing or insecure remote origins', (
   assert.equal(serverFromArgs([]), 'https://xdistribute.site:8090');
   assert.equal(serverFromArgs(['--server', 'http://127.0.0.1:8765/']), 'http://127.0.0.1:8765');
   assert.equal(serverFromArgs(['--server=https://example.com']), 'https://example.com');
-  for (const url of ['http://example.com', 'https://user:password@example.com', 'https://example.com/path',
-    'https://example.com?token=secret', 'https://example.com#fragment'])
+  for (const url of [
+    'http://example.com',
+    'https://user:password@example.com',
+    'https://example.com/path',
+    'https://example.com?token=secret',
+    'https://example.com#fragment',
+  ]) {
     assert.throws(() => serverFromArgs(['--server', url]));
+  }
 });
 
 test('repeated roots, profile and config survive argument parsing', () => {
-  assert.deepEqual(parseArgs(['--root', 'work=/tmp/work', '--root=other=/tmp/other',
-    '--profile', 'build', '--config=/tmp/agent.json', '--no-browser']),
-  { server: 'https://xdistribute.site:8090', profile: 'build', noBrowser: true, recoverLock: false,
-    root: ['work=/tmp/work', 'other=/tmp/other'], config: '/tmp/agent.json' });
-  for (const args of [['--unknown'], ['--root'], ['--profile', '--no-browser']])
+  assert.deepEqual(
+    parseArgs([
+      '--root',
+      'work=/tmp/work',
+      '--root=other=/tmp/other',
+      '--profile',
+      'build',
+      '--config=/tmp/agent.json',
+      '--no-browser',
+    ]),
+    {
+      server: 'https://xdistribute.site:8090',
+      profile: 'build',
+      noBrowser: true,
+      recoverLock: false,
+      root: ['work=/tmp/work', 'other=/tmp/other'],
+      config: '/tmp/agent.json',
+    },
+  );
+  for (const args of [['--unknown'], ['--root'], ['--profile', '--no-browser']]) {
     assert.throws(() => parseArgs(args));
+  }
   assert.equal(parseArgs(['--recover-lock']).recoverLock, true);
   assert.equal(parseArgs(['--pair-only']).pairOnly, true);
 });
@@ -46,8 +70,20 @@ test('help and version run offline with empty PATH and no runtime setup', () => 
   try {
     const env = { ...process.env, PATH: '', XDG_CACHE_HOME: directory, XDG_CONFIG_HOME: directory };
     const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-    assert.equal(execFileSync(process.execPath, [cli, '--version'], { env, cwd: directory, encoding: 'utf8' }).trim(), metadata.version);
-    assert.match(execFileSync(process.execPath, [cli, '--help'], { env, cwd: directory, encoding: 'utf8' }), /直接运行 Node Agent/);
+    assert.equal(
+      execFileSync(process.execPath, [cli, '--version'], {
+        env,
+        cwd: directory,
+        encoding: 'utf8',
+      }).trim(),
+      metadata.version,
+    );
+    assert.match(
+      execFileSync(process.execPath, [cli, '--help'], { env, cwd: directory, encoding: 'utf8' }),
+      /直接运行 Node Agent/,
+    );
     assert.deepEqual(readdirSync(directory), []);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -4,8 +4,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import { platformName, defaultShell, configBase, stateBase, validateRelativePath,
-  privateStat, absoluteDeviceRoot, assertPrivatePath, ensurePrivatePath, secureNewPath } from '../.build/platform.js';
+import {
+  platformName,
+  defaultShell,
+  configBase,
+  stateBase,
+  validateRelativePath,
+  privateStat,
+  absoluteDeviceRoot,
+  assertPrivatePath,
+  ensurePrivatePath,
+  secureNewPath,
+} from '../.build/platform.js';
 
 const windows = process.platform === 'win32';
 function temporary(t) {
@@ -19,9 +29,15 @@ test('platform defaults use native names, explicit system executables and standa
   assert.equal(platformName('darwin'), 'Darwin');
   assert.equal(platformName('linux'), 'Linux');
   assert.throws(() => platformName('freebsd'), /Unsupported/);
-  assert.equal(defaultShell('win32', { SystemRoot: 'C:\\Windows', ComSpec: 'malicious.exe' }), 'C:\\Windows\\System32\\cmd.exe');
+  assert.equal(
+    defaultShell('win32', { SystemRoot: 'C:\\Windows', ComSpec: 'malicious.exe' }),
+    'C:\\Windows\\System32\\cmd.exe',
+  );
   assert.throws(() => defaultShell('win32', { SystemRoot: 'relative' }), /SystemRoot/);
-  assert.throws(() => defaultShell('win32', { SystemRoot: 'C:\\Windows\\..\\other' }), /SystemRoot/);
+  assert.throws(
+    () => defaultShell('win32', { SystemRoot: 'C:\\Windows\\..\\other' }),
+    /SystemRoot/,
+  );
   assert.equal(defaultShell('darwin', {}), '/bin/sh');
   assert.equal(configBase({}, '/home/me', 'linux'), '/home/me/.config');
   assert.equal(stateBase({}, '/Users/me', 'darwin'), '/Users/me/.local/state');
@@ -39,21 +55,52 @@ test('protocol paths reject traversal and Windows aliases while retaining POSIX 
       assert.throws(() => validateRelativePath(value, platform));
     }
   }
-  for (const value of ['C:/x', 'a\\b', '\\\\server\\share', 'x:stream', 'NUL', 'con.txt',
-    'aux', 'COM1.log', 'lpt9', 'LPT¹.txt', 'CONIN$', 'con .txt', 'file.', 'file ', 'a/b?', 'a/<b>', 'a/pipe|']) {
+  for (const value of [
+    'C:/x',
+    'a\\b',
+    '\\\\server\\share',
+    'x:stream',
+    'NUL',
+    'con.txt',
+    'aux',
+    'COM1.log',
+    'lpt9',
+    'LPT¹.txt',
+    'CONIN$',
+    'con .txt',
+    'file.',
+    'file ',
+    'a/b?',
+    'a/<b>',
+    'a/pipe|',
+  ]) {
     assert.throws(() => validateRelativePath(value, 'win32'), undefined, value);
   }
   for (const value of ['NUL', 'file.', 'file ', 'x:stream', 'a\\b', 'C:/x']) {
     assert.ok(validateRelativePath(value, 'linux').length);
   }
-  assert.deepEqual(validateRelativePath('console/com10.txt/a..b', 'win32'), ['console', 'com10.txt', 'a..b']);
+  assert.deepEqual(validateRelativePath('console/com10.txt/a..b', 'win32'), [
+    'console',
+    'com10.txt',
+    'a..b',
+  ]);
 });
 
 test('Windows device roots are fully qualified independently of the test host', () => {
-  for (const root of ['C:/work', 'C:\\work', '//host/share/work', '\\\\host\\share'])
+  for (const root of ['C:/work', 'C:\\work', '//host/share/work', '\\\\host\\share']) {
     assert.equal(absoluteDeviceRoot(root, 'win32'), true, root);
-  for (const root of ['C:work', '/work', '\\work', '//host', '//?/C:/work', '\\\\.\\pipe\\agent', '\\??\\C:\\work'])
+  }
+  for (const root of [
+    'C:work',
+    '/work',
+    '\\work',
+    '//host',
+    '//?/C:/work',
+    '\\\\.\\pipe\\agent',
+    '\\??\\C:\\work',
+  ]) {
     assert.equal(absoluteDeviceRoot(root, 'win32'), false, root);
+  }
 });
 
 test('private storage creation and validation preserve secret content', (t) => {
@@ -84,7 +131,9 @@ test('POSIX refuses preexisting permissions without repairing them', { skip: win
   assert.equal(fs.statSync(ownNew).mode & 0o777, 0o600);
 });
 
-test('POSIX refuses symlink files while preserving system directory aliases', { skip: windows }, (t) => {
+test('POSIX refuses symlink files while preserving system directory aliases', {
+  skip: windows,
+}, (t) => {
   const root = temporary(t);
   const real = path.join(root, 'real');
   ensurePrivatePath(real, true);
@@ -98,12 +147,29 @@ test('POSIX refuses symlink files while preserving system directory aliases', { 
 });
 
 function powershell(script, filename) {
-  const executable = path.win32.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const result = spawnSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive',
-    '-EncodedCommand', Buffer.from(`$ErrorActionPreference = 'Stop'\n${script}`, 'utf16le').toString('base64')], {
-    encoding: 'utf8', windowsHide: true, timeout: 15_000,
-    env: { ...process.env, RDH_TEST_PATH: filename },
-  });
+  const executable = path.win32.join(
+    process.env.SystemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const result = spawnSync(
+    executable,
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(`$ErrorActionPreference = 'Stop'\n${script}`, 'utf16le').toString('base64'),
+    ],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15_000,
+      env: { ...process.env, RDH_TEST_PATH: filename },
+    },
+  );
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
 }
@@ -113,22 +179,30 @@ test('Windows rejects broad ACL grants and leaves them unchanged', { skip: !wind
   const file = path.join(root, "literal ' $ & token.json");
   ensurePrivatePath(file, false);
   fs.writeFileSync(file, 'secret');
-  powershell(`
+  powershell(
+    `
 $acl = Get-Acl -LiteralPath $env:RDH_TEST_PATH
 $sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'Read', 'Allow'))
 Set-Acl -LiteralPath $env:RDH_TEST_PATH -AclObject $acl
-`, file);
+`,
+    file,
+  );
   assert.throws(() => assertPrivatePath(file, false), /another principal/);
   assert.throws(() => ensurePrivatePath(file, false), /another principal/);
-  powershell(`
+  powershell(
+    `
 $acl = Get-Acl -LiteralPath $env:RDH_TEST_PATH
 $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 if (-not ($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' })) { throw 'ACL was changed' }
-`, file);
+`,
+    file,
+  );
 });
 
-test('Windows secures exclusively created children and rejects junction ancestors', { skip: !windows }, (t) => {
+test('Windows secures exclusively created children and rejects junction ancestors', {
+  skip: !windows,
+}, (t) => {
   const root = temporary(t);
   const directory = path.join(root, 'private');
   ensurePrivatePath(directory, true);
@@ -138,19 +212,27 @@ test('Windows secures exclusively created children and rejects junction ancestor
   assertPrivatePath(filename, false);
   const alias = path.join(root, 'junction');
   fs.symlinkSync(directory, alias, 'junction');
-  assert.throws(() => ensurePrivatePath(path.join(alias, 'other'), false), /symbolic|redirected|reparse/);
+  assert.throws(
+    () => ensurePrivatePath(path.join(alias, 'other'), false),
+    /symbolic|redirected|reparse/,
+  );
   assert.equal(fs.existsSync(path.join(directory, 'other')), false);
 });
 
-test('Windows rejects deny ACLs rather than treating allow entries as effective access', { skip: !windows }, (t) => {
+test('Windows rejects deny ACLs rather than treating allow entries as effective access', {
+  skip: !windows,
+}, (t) => {
   const root = temporary(t);
   const filename = path.join(root, 'denied');
   ensurePrivatePath(filename, false);
-  powershell(`
+  powershell(
+    `
 $acl = Get-Acl -LiteralPath $env:RDH_TEST_PATH
 $sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-546')
 $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'WriteData', 'Deny'))
 Set-Acl -LiteralPath $env:RDH_TEST_PATH -AclObject $acl
-`, filename);
+`,
+    filename,
+  );
   assert.throws(() => assertPrivatePath(filename, false), /deny rule/);
 });

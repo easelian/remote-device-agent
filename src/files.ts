@@ -1,4 +1,13 @@
 import { moveParameters } from './file-params.js';
+import {
+  errorCode,
+  errorMessage,
+  isInteger,
+  isRecord,
+  isSafeInteger,
+  type UnknownRecord,
+} from './boundary.js';
+import type { BoundedFilesystem } from './filesystem.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -16,14 +25,19 @@ const MAX_MULTI_FILES = 16;
 const MAX_MULTI_BYTES = 256 * 1024;
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
-const asPromise = <T,>(value: T | PromiseLike<T>): Promise<T> => Promise.resolve(value);
-const casefold = (value: string) => Array.from(value, character => CASEFOLD_EXCEPTIONS[character] ?? character.toLowerCase()).join('');
+const asPromise = <T>(value: T | PromiseLike<T>): Promise<T> => Promise.resolve(value);
+const casefold = (value: string) =>
+  Array.from(value, (character) => CASEFOLD_EXCEPTIONS[character] ?? character.toLowerCase()).join(
+    '',
+  );
 const compareCodePoints = (left: string, right: string) => {
   const a = Array.from(left);
   const b = Array.from(right);
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
     const difference = a[i]!.codePointAt(0)! - b[i]!.codePointAt(0)!;
-    if (difference) return difference;
+    if (difference) {
+      return difference;
+    }
   }
   return a.length - b.length;
 };
@@ -32,21 +46,29 @@ function pathParts(value: string): string[] {
   return validateRelativePath(value);
 }
 
-function isParams(value: any) {
-  return value !== null && typeof value === 'object' && !Buffer.isBuffer(value);
+function isParams(value: unknown): value is UnknownRecord {
+  return isRecord(value) && !Buffer.isBuffer(value);
 }
 
 export class Files {
   roots: Record<string, string>;
   allowWrite: boolean;
-  filesystem: any; // Injected bounded filesystem interface, also used by fault tests.
+  filesystem: BoundedFilesystem;
   lock: Promise<void>;
-  constructor(roots: Record<string, string>, allowWrite: boolean, filesystem: any = filesystemDefault) {
-    if (!roots || typeof roots !== 'object') throw new TypeError('roots must be an object');
+  constructor(
+    roots: Record<string, string>,
+    allowWrite: boolean,
+    filesystem: BoundedFilesystem = filesystemDefault,
+  ) {
+    if (!roots || typeof roots !== 'object') {
+      throw new TypeError('roots must be an object');
+    }
     this.roots = {};
     for (const [name, root] of Object.entries(roots)) {
       const canonical = fs.realpathSync(String(root));
-      if (!fs.statSync(canonical).isDirectory()) throw new Error('Every root must be an existing directory');
+      if (!fs.statSync(canonical).isDirectory()) {
+        throw new Error('Every root must be an existing directory');
+      }
       this.roots[name] = canonical;
     }
     this.allowWrite = Boolean(allowWrite);
@@ -54,28 +76,43 @@ export class Files {
     this.lock = Promise.resolve();
   }
 
-  static async create(roots: Record<string, string>, allowWrite: boolean, filesystem: any = filesystemDefault) {
+  static async create(
+    roots: Record<string, string>,
+    allowWrite: boolean,
+    filesystem: BoundedFilesystem = filesystemDefault,
+  ) {
     const canonical: Record<string, string> = {};
-    for (const [name, root] of Object.entries(roots || {})) canonical[name] = await fs.promises.realpath(String(root));
+    for (const [name, root] of Object.entries(roots || {})) {
+      canonical[name] = await fs.promises.realpath(String(root));
+    }
     return new Files(canonical, allowWrite, filesystem);
   }
 
-  parts(root: string, value: string): [string, string[]] {
-    const base = this.roots[root];
-    if (base === undefined) throw new Error('Unknown root; use device_info to discover configured roots');
+  parts(root: unknown, value: unknown): [string, string[]] {
+    const base = typeof root === 'string' ? this.roots[root] : undefined;
+    if (base === undefined) {
+      throw new Error('Unknown root; use device_info to discover configured roots');
+    }
+    if (typeof value !== 'string') {
+      throw new Error('Path must be relative and contain no NUL bytes');
+    }
     return [base, pathParts(value)];
   }
 
-  async directory(root: string, value = '.'): Promise<DirectoryHandle> {
+  async directory(root: unknown, value: unknown = '.'): Promise<DirectoryHandle> {
     const [base, parts] = this.parts(root, value);
     return asPromise(this.filesystem.openDirectory(base, parts.length ? parts.join('/') : '.'));
   }
 
-  async close(fd: DirectoryHandle): Promise<void> { return asPromise(this.filesystem.close(fd)); }
+  async close(fd: DirectoryHandle): Promise<void> {
+    return asPromise(this.filesystem.close(fd));
+  }
 
-  async parent(root: string, value: string): Promise<{ fd: DirectoryHandle; name: string }> {
+  async parent(root: unknown, value: unknown): Promise<{ fd: DirectoryHandle; name: string }> {
     const [base, parts] = this.parts(root, value);
-    if (!parts.length) throw new Error('A file name is required');
+    if (!parts.length) {
+      throw new Error('A file name is required');
+    }
     const parentPath = parts.slice(0, -1).join('/') || '.';
     const fd = await asPromise(this.filesystem.openDirectory(base, parentPath));
     return { fd, name: parts.at(-1)! };
@@ -83,273 +120,567 @@ export class Files {
 
   async _read(parentfd: DirectoryHandle, name: string) {
     const data = Buffer.from(await asPromise(this.filesystem.readFile(parentfd, name, MAX_FILE)));
-    if (data.length > MAX_FILE) throw new Error('File exceeds 1 MiB; use a shell command to inspect a bounded portion');
+    if (data.length > MAX_FILE) {
+      throw new Error('File exceeds 1 MiB; use a shell command to inspect a bounded portion');
+    }
     return data;
   }
 
-  async read(arg: any, value?: any, offset: any = 0, length: any = 32768) {
+  async read(arg: unknown, value?: unknown, offset: unknown = 0, length: unknown = 32768) {
     const params = isParams(arg) ? arg : { root: arg, path: value, offset, length };
     ({ root: arg, path: value, offset = 0, length = 32768 } = params);
-    if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 65536) {
+    if (!isInteger(offset) || offset < 0 || !isInteger(length) || length < 1 || length > 65536) {
       throw new Error('Invalid byte offset or length (1..65536)');
     }
     const { fd, name } = await this.parent(arg, value);
     try {
       const data = await this._read(fd, name);
-      return { path: value, content: data.subarray(offset, offset + length).toString('utf8'),
-        sha256: sha256(data), size_bytes: data.length, next_offset: Math.min(offset + length, data.length),
-        truncated: offset + length < data.length };
-    } finally { await this.close(fd); }
+      return {
+        path: value,
+        content: data.subarray(offset, offset + length).toString('utf8'),
+        sha256: sha256(data),
+        size_bytes: data.length,
+        next_offset: Math.min(offset + length, data.length),
+        truncated: offset + length < data.length,
+      };
+    } finally {
+      await this.close(fd);
+    }
   }
 
-  async fileInfo(arg: any, value?: any) {
+  async fileInfo(arg: unknown, value?: unknown) {
     const params = isParams(arg) ? arg : { root: arg, path: value };
     ({ root: arg, path: value } = params);
     const parts = this.parts(arg, value)[1];
-    const fd = parts.length ? await this.directory(arg, parts.slice(0, -1).join('/') || '.') : await this.directory(arg, '.');
+    const fd = parts.length
+      ? await this.directory(arg, parts.slice(0, -1).join('/') || '.')
+      : await this.directory(arg, '.');
     try {
-      const info = parts.length ? await asPromise(this.filesystem.statAt(fd, parts.at(-1))) : await asPromise(this.filesystem.statDirectory(fd));
-      if (info.type !== 'file' && info.type !== 'directory') throw new Error('Only regular files and directories are supported');
-      return { path: value, type: info.type, size_bytes: info.size_bytes, mode: info.mode & 0o777,
-        mtime_ms: info.mtime_ms, read_only: !this.allowWrite,
-        fingerprint: `${info.dev}:${info.ino}:${info.size_bytes}:${info.mtime_ms}` };
-    } finally { await this.close(fd); }
+      const info = parts.length
+        ? await asPromise(this.filesystem.statAt(fd, parts.at(-1)!))
+        : await asPromise(this.filesystem.statDirectory(fd));
+      if (info.type !== 'file' && info.type !== 'directory') {
+        throw new Error('Only regular files and directories are supported');
+      }
+      return {
+        path: value,
+        type: info.type,
+        size_bytes: info.size_bytes,
+        mode: info.mode & 0o777,
+        mtime_ms: info.mtime_ms,
+        read_only: !this.allowWrite,
+        fingerprint: `${info.dev}:${info.ino}:${info.size_bytes}:${info.mtime_ms}`,
+      };
+    } finally {
+      await this.close(fd);
+    }
   }
 
-  async readFileChunk(arg: any, value?: any, offset: any = 0, length: any = 32768) {
+  async readFileChunk(arg: unknown, value?: unknown, offset: unknown = 0, length: unknown = 32768) {
     const params = isParams(arg) ? arg : { root: arg, path: value, offset, length };
     let { from_end = false } = params;
     ({ root: arg, path: value, offset = 0, length = 32768 } = params);
-    if (typeof from_end !== 'boolean' || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > MAX_CHUNK_LENGTH) {
+    if (
+      typeof from_end !== 'boolean' ||
+      !isSafeInteger(offset) ||
+      offset < 0 ||
+      !isSafeInteger(length) ||
+      length < 1 ||
+      length > MAX_CHUNK_LENGTH
+    ) {
       throw new Error('Invalid byte offset or length');
     }
     const { fd, name } = await this.parent(arg, value);
     try {
       const info = await asPromise(this.filesystem.statAt(fd, name));
-      if (info.type !== 'file') throw new Error('Only regular files are supported');
+      if (info.type !== 'file') {
+        throw new Error('Only regular files are supported');
+      }
       const end = from_end ? Math.max(0, info.size_bytes - offset) : info.size_bytes;
       const start = from_end ? Math.max(0, end - length) : offset;
       const actualLength = from_end ? end - start : length;
-      if (actualLength === 0) return { path: value, content: '', content_base64: '', utf8_valid: true, content_encoding: 'utf-8',
-        offset: start, next_offset: start, size_bytes: info.size_bytes, truncated: false, read_only: true,
-        fingerprint: `${info.dev}:${info.ino}:${info.size_bytes}:${info.mtime_ms}` };
-      const chunk = await asPromise(this.filesystem.readFileChunk(fd, name, start, actualLength, MAX_CHUNK_FILE));
+      if (actualLength === 0) {
+        return {
+          path: value,
+          content: '',
+          content_base64: '',
+          utf8_valid: true,
+          content_encoding: 'utf-8',
+          offset: start,
+          next_offset: start,
+          size_bytes: info.size_bytes,
+          truncated: false,
+          read_only: true,
+          fingerprint: `${info.dev}:${info.ino}:${info.size_bytes}:${info.mtime_ms}`,
+        };
+      }
+      const chunk = await asPromise(
+        this.filesystem.readFileChunk(fd, name, start, actualLength, MAX_CHUNK_FILE),
+      );
       let utf8Valid = true;
-      try { new TextDecoder('utf-8', { fatal: true }).decode(chunk.bytes); } catch { utf8Valid = false; }
-      return { path: value, content: chunk.bytes.toString('utf8'), content_base64: chunk.bytes.toString('base64'),
-        utf8_valid: utf8Valid, content_encoding: utf8Valid ? 'utf-8' : 'utf-8-replacement',
-        offset: start, next_offset: chunk.next_offset,
-        size_bytes: chunk.size_bytes, truncated: chunk.truncated, read_only: true,
-        fingerprint: `${chunk.dev}:${chunk.ino}:${chunk.size_bytes}:${chunk.mtime_ms}` };
-    } finally { await this.close(fd); }
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(chunk.bytes);
+      } catch {
+        utf8Valid = false;
+      }
+      return {
+        path: value,
+        content: chunk.bytes.toString('utf8'),
+        content_base64: chunk.bytes.toString('base64'),
+        utf8_valid: utf8Valid,
+        content_encoding: utf8Valid ? 'utf-8' : 'utf-8-replacement',
+        offset: start,
+        next_offset: chunk.next_offset,
+        size_bytes: chunk.size_bytes,
+        truncated: chunk.truncated,
+        read_only: true,
+        fingerprint: `${chunk.dev}:${chunk.ino}:${chunk.size_bytes}:${chunk.mtime_ms}`,
+      };
+    } finally {
+      await this.close(fd);
+    }
   }
 
-  async readMultipleFiles(arg: any) {
+  async readMultipleFiles(arg: unknown) {
     const params = isParams(arg) ? arg : { paths: arg };
-    const canonical = Array.isArray(params.paths);
-    const requests = canonical ? params.paths.map((filePath: any) => ({ root: params.root, path: filePath, offset: params.offset, length: params.length })) : params.files;
+    const paths = params.paths;
+    const canonical = Array.isArray(paths);
+    const requests: unknown = canonical
+      ? paths.map((filePath: unknown) => ({
+          root: params.root,
+          path: filePath,
+          offset: params.offset,
+          length: params.length,
+        }))
+      : params.files;
     const totalLimit = params.total_limit ?? MAX_MULTI_BYTES;
-    if (!Array.isArray(requests) || requests.length < 1 || requests.length > MAX_MULTI_FILES ||
-        !Number.isInteger(totalLimit) || totalLimit < 1 || totalLimit > MAX_MULTI_BYTES) throw new Error('Invalid files/total_limit');
-    const results = []; let used = 0; let truncated = false;
-    const readText = async (request: any, sourceLength: any) => {
+    if (
+      !Array.isArray(requests) ||
+      requests.length < 1 ||
+      requests.length > MAX_MULTI_FILES ||
+      !isInteger(totalLimit) ||
+      totalLimit < 1 ||
+      totalLimit > MAX_MULTI_BYTES
+    ) {
+      throw new Error('Invalid files/total_limit');
+    }
+    const results = [];
+    let used = 0;
+    let truncated = false;
+    const readText = async (
+      request: { root: string; path: string; offset: number },
+      sourceLength: number,
+    ) => {
       const { fd, name } = await this.parent(request.root, request.path);
       try {
         const info = await asPromise(this.filesystem.statAt(fd, name));
-        if (info.type !== 'file') throw new Error('Only regular files are supported');
-        if (info.size_bytes > MAX_FILE) throw new Error('File exceeds 1 MiB');
-        const start = request.offset ?? 0;
-        const chunk = await asPromise(this.filesystem.readFileChunk(fd, name, start, sourceLength, MAX_CHUNK_FILE));
-        let end = chunk.bytes.length; let text;
-        for (let trim = 0; trim <= 3; trim++) {
-          try { text = new TextDecoder('utf-8', { fatal: true }).decode(chunk.bytes.subarray(0, end)); break; }
-          catch { end -= 1; }
+        if (info.type !== 'file') {
+          throw new Error('Only regular files are supported');
         }
-        if (text === undefined || (chunk.bytes.length > 0 && end <= 0)) throw new Error('length cannot fit complete UTF-8 character or invalid UTF-8');
-        return { path: request.path, content: text, content_base64: chunk.bytes.subarray(0, end).toString('base64'),
-          utf8_valid: true, content_encoding: 'utf-8', offset: start, next_offset: start + end,
-          size_bytes: chunk.size_bytes, truncated: start + end < chunk.size_bytes,
-          read_only: true, fingerprint: `${chunk.dev}:${chunk.ino}:${chunk.size_bytes}:${chunk.mtime_ms}` };
-      } finally { await this.close(fd); }
+        if (info.size_bytes > MAX_FILE) {
+          throw new Error('File exceeds 1 MiB');
+        }
+        const start = request.offset ?? 0;
+        const chunk = await asPromise(
+          this.filesystem.readFileChunk(fd, name, start, sourceLength, MAX_CHUNK_FILE),
+        );
+        let end = chunk.bytes.length;
+        let text;
+        for (let trim = 0; trim <= 3; trim++) {
+          try {
+            text = new TextDecoder('utf-8', { fatal: true }).decode(chunk.bytes.subarray(0, end));
+            break;
+          } catch {
+            end -= 1;
+          }
+        }
+        if (text === undefined || (chunk.bytes.length > 0 && end <= 0)) {
+          throw new Error('length cannot fit complete UTF-8 character or invalid UTF-8');
+        }
+        return {
+          path: request.path,
+          content: text,
+          content_base64: chunk.bytes.subarray(0, end).toString('base64'),
+          utf8_valid: true,
+          content_encoding: 'utf-8',
+          offset: start,
+          next_offset: start + end,
+          size_bytes: chunk.size_bytes,
+          truncated: start + end < chunk.size_bytes,
+          read_only: true,
+          fingerprint: `${chunk.dev}:${chunk.ino}:${chunk.size_bytes}:${chunk.mtime_ms}`,
+        };
+      } finally {
+        await this.close(fd);
+      }
     };
     for (const request of requests) {
-      if (!isParams(request) || typeof request.root !== 'string' || typeof request.path !== 'string') {
-        results.push({ path: request?.path, error: 'Invalid file request' }); continue;
+      if (
+        !isParams(request) ||
+        typeof request.root !== 'string' ||
+        typeof request.path !== 'string'
+      ) {
+        results.push({
+          path: isParams(request) ? request.path : undefined,
+          error: 'Invalid file request',
+        });
+        continue;
       }
       const remaining = totalLimit - used;
-      if (remaining < 1) { truncated = true; results.push({ path: request.path, error: 'Total response limit exceeded' }); continue; }
+      if (remaining < 1) {
+        truncated = true;
+        results.push({ path: request.path, error: 'Total response limit exceeded' });
+        continue;
+      }
       const length = request.length ?? 32768;
       const offset = request.offset ?? 0;
-      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 65536 || (canonical && length > 16384)) {
-        results.push({ path: request.path, error: 'Invalid byte offset or length' }); continue;
+      if (
+        !isSafeInteger(offset) ||
+        offset < 0 ||
+        !isInteger(length) ||
+        length < 1 ||
+        length > 65536 ||
+        (canonical && length > 16384)
+      ) {
+        results.push({ path: request.path, error: 'Invalid byte offset or length' });
+        continue;
       }
       try {
-        const candidate = await readText(request, length);
+        const candidate = await readText(
+          { root: request.root, path: request.path, offset },
+          length,
+        );
         let result = candidate;
         let outputBytes = Buffer.byteLength(candidate.content, 'utf8');
         if (outputBytes > remaining) {
-          let text = ''; let bytes = 0;
+          let text = '';
+          let bytes = 0;
           for (const character of candidate.content) {
             const characterBytes = Buffer.byteLength(character, 'utf8');
-            if (bytes + characterBytes > remaining) break;
-            text += character; bytes += characterBytes;
+            if (bytes + characterBytes > remaining) {
+              break;
+            }
+            text += character;
+            bytes += characterBytes;
           }
-          if (!text) { truncated = true; results.push({ path: request.path, error: 'Output budget cannot fit the next UTF-8 character' }); continue; }
+          if (!text) {
+            truncated = true;
+            results.push({
+              path: request.path,
+              error: 'Output budget cannot fit the next UTF-8 character',
+            });
+            continue;
+          }
           const sourceBytes = Buffer.byteLength(text, 'utf8');
-          result = { ...candidate, content: text, content_base64: Buffer.from(text, 'utf8').toString('base64'),
-            next_offset: candidate.offset + sourceBytes, truncated: true };
-          outputBytes = bytes; truncated = true;
+          result = {
+            ...candidate,
+            content: text,
+            content_base64: Buffer.from(text, 'utf8').toString('base64'),
+            next_offset: candidate.offset + sourceBytes,
+            truncated: true,
+          };
+          outputBytes = bytes;
+          truncated = true;
         }
-        if (result.truncated) truncated = true;
+        if (result.truncated) {
+          truncated = true;
+        }
         used += outputBytes;
         results.push(result);
-      } catch (error) { results.push({ path: request.path, error: String((error as Error).message).slice(0, 1000) }); }
+      } catch (error) {
+        results.push({ path: request.path, error: errorMessage(error).slice(0, 1000) });
+      }
     }
     return { files: results, total_bytes: used, truncated };
   }
 
-  async moveFile(arg: any, value?: any, destinationRoot?: any, destinationPath?: any) {
-    const params = isParams(arg) ? arg : { root: arg, path: value, destination_root: destinationRoot, destination_path: destinationPath };
-    ({ root: arg, path: value, destination_root: destinationRoot, destination_path: destinationPath } = moveParameters(params));
-    if (!this.allowWrite) throw new Error("File writes are disabled in this device's configuration");
-    if (arg !== destinationRoot) throw new Error('Moving files across roots is disabled');
+  async moveFile(
+    arg: unknown,
+    value?: unknown,
+    destinationRoot?: unknown,
+    destinationPath?: unknown,
+  ) {
+    const params = isParams(arg)
+      ? arg
+      : {
+          root: arg,
+          path: value,
+          destination_root: destinationRoot,
+          destination_path: destinationPath,
+        };
+    ({
+      root: arg,
+      path: value,
+      destination_root: destinationRoot,
+      destination_path: destinationPath,
+    } = moveParameters(params));
+    if (!this.allowWrite) {
+      throw new Error("File writes are disabled in this device's configuration");
+    }
+    if (arg !== destinationRoot) {
+      throw new Error('Moving files across roots is disabled');
+    }
     const source = await this.parent(arg, value);
     let destination;
     try {
       destination = await this.parent(destinationRoot, destinationPath);
-      const previous = this.lock; let release!: () => void;
-      this.lock = new Promise<void>(resolve => { release = resolve; });
+      const previous = this.lock;
+      let release!: () => void;
+      this.lock = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       await previous;
       try {
-        await asPromise(this.filesystem.moveAtomic(source.fd, source.name, destination.fd, destination.name));
-      } finally { release(); }
+        await asPromise(
+          this.filesystem.moveAtomic(source.fd, source.name, destination.fd, destination.name),
+        );
+      } finally {
+        release();
+      }
       return { path: value, destination_path: destinationPath, moved: true };
     } finally {
       await this.close(source.fd);
-      if (destination) await this.close(destination.fd);
+      if (destination) {
+        await this.close(destination.fd);
+      }
     }
   }
 
-  async list(arg: any, value: any = '.', offset: any = 0, limit: any = 100) {
+  async list(arg: unknown, value: unknown = '.', offset: unknown = 0, limit: unknown = 100) {
     const params = isParams(arg) ? arg : { root: arg, path: value, offset, limit };
     ({ root: arg, path: value = '.', offset = 0, limit = 100 } = params);
-    if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    if (!isInteger(offset) || offset < 0 || !isInteger(limit) || limit < 1 || limit > 1000) {
       throw new Error('Invalid offset/limit');
     }
     const fd = await this.directory(arg, value);
     try {
       const entries = await asPromise(this.filesystem.listDirectory(fd));
-      if (entries.length > MAX_ENTRIES) throw new Error('Directory exceeds 10000 entries; narrow with a shell command');
+      if (entries.length > MAX_ENTRIES) {
+        throw new Error('Directory exceeds 10000 entries; narrow with a shell command');
+      }
       entries.sort((a: DirectoryEntry, b: DirectoryEntry) => compareCodePoints(a.name, b.name));
-      return { entries: entries.slice(offset, offset + limit), total: entries.length,
-        next_offset: offset + limit < entries.length ? offset + limit : null };
-    } finally { await this.close(fd); }
+      return {
+        entries: entries.slice(offset, offset + limit),
+        total: entries.length,
+        next_offset: offset + limit < entries.length ? offset + limit : null,
+      };
+    } finally {
+      await this.close(fd);
+    }
   }
 
-  async write(arg: any, value?: any, content?: any, expected_sha256: any = '') {
+  async write(arg: unknown, value?: unknown, content?: unknown, expected_sha256: unknown = '') {
     const params = isParams(arg) ? arg : { root: arg, path: value, content, expected_sha256 };
     ({ root: arg, path: value, content, expected_sha256 = '' } = params);
-    if (!this.allowWrite) throw new Error("File writes are disabled in this device's configuration");
-    if (typeof content !== 'string') throw new Error('content must be a string');
+    if (!this.allowWrite) {
+      throw new Error("File writes are disabled in this device's configuration");
+    }
+    if (typeof content !== 'string') {
+      throw new Error('content must be a string');
+    }
     const data = Buffer.from(content, 'utf8');
-    if (data.length > MAX_FILE) throw new Error('Content exceeds 1 MiB');
+    if (data.length > MAX_FILE) {
+      throw new Error('Content exceeds 1 MiB');
+    }
     const previous = this.lock;
     let release!: () => void;
-    this.lock = new Promise<void>(resolve => { release = resolve; });
+    this.lock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await previous;
     try {
       const { fd, name } = await this.parent(arg, value);
       try {
         let current = null;
-        try { current = await this._read(fd, name); } catch (error) {
-          const failure = error as NodeJS.ErrnoException | null | undefined;
-          if (failure?.code !== 'ENOENT' && !/not found|no such file/i.test(failure?.message || '')) throw error;
+        try {
+          current = await this._read(fd, name);
+        } catch (error) {
+          if (
+            errorCode(error) !== 'ENOENT' &&
+            !/not found|no such file/i.test(errorMessage(error))
+          ) {
+            throw error;
+          }
         }
-        if (current === null && expected_sha256) throw new Error('File no longer exists; read it again before updating');
+        if (current === null && expected_sha256) {
+          throw new Error('File no longer exists; read it again before updating');
+        }
         if (current !== null && sha256(current) !== expected_sha256) {
-          throw new Error('Content conflict: supply the SHA-256 from read_file; empty hash means create only');
+          throw new Error(
+            'Content conflict: supply the SHA-256 from read_file; empty hash means create only',
+          );
         }
         let mode = 0o600;
-        if (current !== null) mode = (await asPromise(this.filesystem.statAt(fd, name))).mode & 0o777;
+        if (current !== null) {
+          mode = (await asPromise(this.filesystem.statAt(fd, name))).mode & 0o777;
+        }
         await asPromise(this.filesystem.writeAtomic(fd, name, data, mode, current === null));
         return { path: value, size_bytes: data.length, sha256: sha256(data) };
-      } finally { await this.close(fd); }
-    } finally { release(); }
+      } finally {
+        await this.close(fd);
+      }
+    } finally {
+      release();
+    }
   }
 
-  async edit(arg: any, value?: any, old_text?: any, new_text?: any, expected_sha256?: any) {
-    const params = isParams(arg) ? arg : { root: arg, path: value, old_text, new_text, expected_sha256 };
+  async edit(
+    arg: unknown,
+    value?: unknown,
+    old_text?: unknown,
+    new_text?: unknown,
+    expected_sha256?: unknown,
+  ) {
+    const params = isParams(arg)
+      ? arg
+      : { root: arg, path: value, old_text, new_text, expected_sha256 };
     ({ root: arg, path: value, old_text, new_text, expected_sha256 } = params);
-    if (!old_text) throw new Error('old_text cannot be empty');
+    if (!old_text) {
+      throw new Error('old_text cannot be empty');
+    }
+    if (typeof old_text !== 'string' || typeof new_text !== 'string') {
+      throw new Error('old_text and new_text must be strings');
+    }
     const { fd, name } = await this.parent(arg, value);
     let data;
     try {
       data = await this._read(fd, name);
-      if (sha256(data) !== expected_sha256) throw new Error('Content conflict: read_file again');
+      if (sha256(data) !== expected_sha256) {
+        throw new Error('Content conflict: read_file again');
+      }
       let text;
-      try { text = new TextDecoder('utf-8', { fatal: true }).decode(data); }
-      catch { throw new Error('File is not valid UTF-8'); }
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+      } catch {
+        throw new Error('File is not valid UTF-8');
+      }
       const first = text.indexOf(old_text);
-      if (first < 0 || text.indexOf(old_text, first + old_text.length) >= 0) throw new Error('old_text must match exactly once');
-      return await this.write(arg, value, text.slice(0, first) + new_text + text.slice(first + old_text.length), expected_sha256);
-    } finally { await this.close(fd); }
+      if (first < 0 || text.indexOf(old_text, first + old_text.length) >= 0) {
+        throw new Error('old_text must match exactly once');
+      }
+      return await this.write(
+        arg,
+        value,
+        text.slice(0, first) + new_text + text.slice(first + old_text.length),
+        expected_sha256,
+      );
+    } finally {
+      await this.close(fd);
+    }
   }
 
-  async mkdir(arg: any, value?: any) {
+  async mkdir(arg: unknown, value?: unknown) {
     const params = isParams(arg) ? arg : { root: arg, path: value };
     ({ root: arg, path: value } = params);
-    if (!this.allowWrite) throw new Error('File writes are disabled');
+    if (!this.allowWrite) {
+      throw new Error('File writes are disabled');
+    }
     const { fd, name } = await this.parent(arg, value);
-    try { await asPromise(this.filesystem.mkdirAt(fd, name)); }
-    finally { await this.close(fd); }
+    try {
+      await asPromise(this.filesystem.mkdirAt(fd, name));
+    } finally {
+      await this.close(fd);
+    }
     return { created: value };
   }
 
-  async checkedDirectory(root: string, value = '.') {
+  async checkedDirectory(root: unknown, value: unknown = '.') {
     const [base, parts] = this.parts(root, value);
-    const fd = await asPromise(this.filesystem.openDirectory(base, parts.length ? parts.join('/') : '.'));
+    const fd = await asPromise(
+      this.filesystem.openDirectory(base, parts.length ? parts.join('/') : '.'),
+    );
     await this.close(fd);
     return path.join(base, ...parts);
   }
 
-  async search(arg: any, query?: any, value: any = '.', content: any = false, limit: any = 100) {
+  async search(
+    arg: unknown,
+    query?: unknown,
+    value: unknown = '.',
+    content: unknown = false,
+    limit: unknown = 100,
+  ) {
     const params = isParams(arg) ? arg : { root: arg, query, path: value, content, limit };
     ({ root: arg, query, path: value = '.', content = false, limit = 100 } = params);
-    if (typeof query !== 'string' || !query || query.length > 512 || !Number.isInteger(limit) || limit < 1 || limit > 200) {
+    if (
+      typeof query !== 'string' ||
+      !query ||
+      query.length > 512 ||
+      !isInteger(limit) ||
+      limit < 1 ||
+      limit > 200
+    ) {
       throw new Error('Query must be 1..512 characters; limit 1..200');
     }
+    if (typeof value !== 'string') {
+      throw new Error('Path must be relative and contain no NUL bytes');
+    }
+    const searchQuery = query;
     const matches: Array<{ path: string; line?: number; text?: string }> = [];
-    let visited = 0; let truncated = false;
+    let visited = 0;
+    let truncated = false;
     const deadline = Date.now() + 3000;
     const walk = async (fd: DirectoryHandle, prefix: string, depth: number): Promise<void> => {
-      if (depth > MAX_SEARCH_DEPTH) { truncated = true; return; }
+      if (depth > MAX_SEARCH_DEPTH) {
+        truncated = true;
+        return;
+      }
       let entries;
-      try { entries = await asPromise(this.filesystem.listDirectory(fd)); } catch { return; }
+      try {
+        entries = await asPromise(this.filesystem.listDirectory(fd));
+      } catch {
+        return;
+      }
       for (const entry of entries) {
         visited += 1;
-        if (visited > MAX_SEARCH_VISITED || Date.now() > deadline || matches.length >= limit) { truncated = true; return; }
+        if (visited > MAX_SEARCH_VISITED || Date.now() > deadline || matches.length >= limit) {
+          truncated = true;
+          return;
+        }
         const rel = `${prefix === '.' ? '' : `${prefix}/`}${entry.name}`;
-        if (entry.type === 'symlink') continue;
-        if (!content && casefold(entry.name).includes(casefold(query))) matches.push({ path: rel });
+        if (entry.type === 'symlink') {
+          continue;
+        }
+        if (!content && casefold(entry.name).includes(casefold(searchQuery))) {
+          matches.push({ path: rel });
+        }
         if (entry.type === 'directory') {
           let child;
-          try { child = await asPromise(this.filesystem.dupDirChild(fd, entry.name)); await walk(child, rel, depth + 1); }
-          catch { /* inaccessible entries are skipped, matching Python */ }
-          finally { if (child !== undefined) await this.close(child).catch(() => undefined); }
+          try {
+            child = await asPromise(this.filesystem.dupDirChild(fd, entry.name));
+            await walk(child, rel, depth + 1);
+          } catch {
+            /* inaccessible entries are skipped, matching Python */
+          } finally {
+            if (child !== undefined) {
+              await this.close(child).catch(() => undefined);
+            }
+          }
         } else if (content && entry.type === 'file') {
           try {
             const bytes = await this._read(fd, entry.name);
             const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
             for (const [index, line] of text.split(/\r?\n/).entries()) {
-              if (line.includes(query)) { matches.push({ path: rel, line: index + 1, text: line.slice(0, 500) }); if (matches.length >= limit) { truncated = true; return; } }
+              if (line.includes(searchQuery)) {
+                matches.push({ path: rel, line: index + 1, text: line.slice(0, 500) });
+                if (matches.length >= limit) {
+                  truncated = true;
+                  return;
+                }
+              }
             }
-          } catch { /* unreadable or non-UTF-8 files are skipped */ }
+          } catch {
+            /* unreadable or non-UTF-8 files are skipped */
+          }
         }
       }
     };
     const fd = await this.directory(arg, value);
-    try { await walk(fd, value === '.' ? '.' : value, 0); }
-    finally { await this.close(fd); }
+    try {
+      await walk(fd, value === '.' ? '.' : value, 0);
+    } finally {
+      await this.close(fd);
+    }
     return { matches: matches.slice(0, limit), visited, truncated };
   }
 }

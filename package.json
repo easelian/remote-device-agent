@@ -22,9 +22,14 @@
     "test": "npm run build && node scripts/test.mjs",
     "pack:runtime": "sh packaging/build-runtime.sh",
     "prepack": "npm run typecheck && npm run build",
-    "pack:check": "node scripts/check_package.mjs"
+    "pack:check": "node scripts/check_package.mjs",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "style:check": "biome check ."
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@types/node": "22.20.5",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"

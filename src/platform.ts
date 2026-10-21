@@ -6,71 +6,126 @@ import { spawnSync } from 'node:child_process';
 type Environment = NodeJS.ProcessEnv;
 
 export function platformName(platform: string = process.platform): string {
-  if (platform === 'win32') return 'Windows';
-  if (platform === 'darwin') return 'Darwin';
-  if (platform === 'linux') return 'Linux';
+  if (platform === 'win32') {
+    return 'Windows';
+  }
+  if (platform === 'darwin') {
+    return 'Darwin';
+  }
+  if (platform === 'linux') {
+    return 'Linux';
+  }
   throw new Error(`Unsupported platform: ${platform}`);
 }
 
 function systemRoot(env: Environment): string {
   const root = env.SystemRoot || env.SYSTEMROOT || env.windir;
-  if (!root || !/^[a-z]:\\/i.test(root) || /[\0\r\n]/.test(root) ||
-      root.slice(2).includes(':') || root.split(/[\\/]/).some(part => part === '..' || part === '.')) {
+  if (
+    !root ||
+    !/^[a-z]:\\/i.test(root) ||
+    /[\0\r\n]/.test(root) ||
+    root.slice(2).includes(':') ||
+    root.split(/[\\/]/).some((part) => part === '..' || part === '.')
+  ) {
     throw new Error('A trusted absolute SystemRoot is required on Windows');
   }
   return path.win32.normalize(root);
 }
 
-export function defaultShell(platform: string = process.platform, env: Environment = process.env): string {
+export function defaultShell(
+  platform: string = process.platform,
+  env: Environment = process.env,
+): string {
   return platform === 'win32' ? path.win32.join(systemRoot(env), 'System32', 'cmd.exe') : '/bin/sh';
 }
 
-export function configBase(env: Environment = process.env, home = os.homedir(), platform: string = process.platform): string {
-  if (env.XDG_CONFIG_HOME) return env.XDG_CONFIG_HOME;
+export function configBase(
+  env: Environment = process.env,
+  home = os.homedir(),
+  platform: string = process.platform,
+): string {
+  if (env.XDG_CONFIG_HOME) {
+    return env.XDG_CONFIG_HOME;
+  }
   return platform === 'win32'
     ? env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local')
     : path.posix.join(home, '.config');
 }
 
-export function stateBase(env: Environment = process.env, home = os.homedir(), platform: string = process.platform): string {
-  if (env.XDG_STATE_HOME) return env.XDG_STATE_HOME;
+export function stateBase(
+  env: Environment = process.env,
+  home = os.homedir(),
+  platform: string = process.platform,
+): string {
+  if (env.XDG_STATE_HOME) {
+    return env.XDG_STATE_HOME;
+  }
   return platform === 'win32'
     ? env.LOCALAPPDATA || path.win32.join(home, 'AppData', 'Local')
     : path.posix.join(home, '.local', 'state');
 }
 
 export function validateRelativePath(value: string, platform: string = process.platform): string[] {
-  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0') || path.posix.isAbsolute(value)) {
+  if (
+    typeof value !== 'string' ||
+    value.length > 4096 ||
+    value.includes('\0') ||
+    path.posix.isAbsolute(value)
+  ) {
     throw new Error('Path must be relative and contain no NUL bytes');
   }
   const parts = value.split('/');
-  if (parts.some(part => part === '..')) throw new Error("Path must be relative to a root, with no '..' or NUL");
+  if (parts.some((part) => part === '..')) {
+    throw new Error("Path must be relative to a root, with no '..' or NUL");
+  }
   if (platform === 'win32') {
-    if (/[\\:<>\"|?*\x00-\x1f]/.test(value) || parts.some(part =>
-      (part !== '.' && /[ .]$/.test(part)) ||
-      /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(?:[ .]|$)/i.test(part))) {
+    if (
+      /[\\:<>\"|?*\x00-\x1f]/.test(value) ||
+      parts.some(
+        (part) =>
+          (part !== '.' && /[ .]$/.test(part)) ||
+          /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(?:[ .]|$)/i.test(part),
+      )
+    ) {
       throw new Error('Path contains an invalid Windows name');
     }
   }
-  return parts.filter(part => part !== '' && part !== '.');
+  return parts.filter((part) => part !== '' && part !== '.');
 }
 
 export function absoluteDeviceRoot(value: string, platform: string = process.platform): boolean {
-  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) return false;
-  if (platform !== 'win32') return path.posix.isAbsolute(value);
+  if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) {
+    return false;
+  }
+  if (platform !== 'win32') {
+    return path.posix.isAbsolute(value);
+  }
   const normalized = value.replaceAll('\\', '/');
-  if (/^\/(?:\/\?|\/\.|\?\?)(?:\/|$)/.test(normalized)) return false;
-  if (/^[A-Za-z]:\//.test(normalized)) return true;
+  if (/^\/(?:\/\?|\/\.|\?\?)(?:\/|$)/.test(normalized)) {
+    return false;
+  }
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return true;
+  }
   const share = /^\/\/([^/]+)\/([^/]+)(?:\/|$)/.exec(normalized);
-  const host = share?.[1], name = share?.[2];
-  if (host === undefined || name === undefined) return false;
-  return ![host, name].some(part => ['.', '..', '?', '??'].includes(part) || /[<>:"|?*\x00-\x1f]/.test(part));
+  const host = share?.[1];
+  const name = share?.[2];
+  if (host === undefined || name === undefined) {
+    return false;
+  }
+  return ![host, name].some(
+    (part) => ['.', '..', '?', '??'].includes(part) || /[<>:"|?*\x00-\x1f]/.test(part),
+  );
 }
 
 // Windows Stats has no DACL information and must never authorize secret reads.
 export function privateStat(stat: Stats): boolean {
-  return process.platform !== 'win32' && typeof process.getuid === 'function' &&
-    stat.uid === process.getuid() && (stat.mode & 0o077) === 0;
+  return (
+    process.platform !== 'win32' &&
+    typeof process.getuid === 'function' &&
+    stat.uid === process.getuid() &&
+    (stat.mode & 0o077) === 0
+  );
 }
 
 function missing(error: unknown): boolean {
@@ -78,14 +133,22 @@ function missing(error: unknown): boolean {
 }
 
 function existingStat(filename: string): Stats | undefined {
-  try { return fs.lstatSync(filename); }
-  catch (error) { if (missing(error)) return undefined; throw error; }
+  try {
+    return fs.lstatSync(filename);
+  } catch (error) {
+    if (missing(error)) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function assertKind(filename: string, directory: boolean): Stats {
   const stat = fs.lstatSync(filename);
   if (stat.isSymbolicLink() || !(directory ? stat.isDirectory() : stat.isFile())) {
-    throw new Error(`Private storage must be a regular ${directory ? 'directory' : 'file'}: ${filename}`);
+    throw new Error(
+      `Private storage must be a regular ${directory ? 'directory' : 'file'}: ${filename}`,
+    );
   }
   return stat;
 }
@@ -104,9 +167,13 @@ function assertAncestors(filename: string): void {
   let current = path.resolve(filename);
   for (;;) {
     const stat = existingStat(current);
-    if (stat?.isSymbolicLink()) throw new Error(`Private storage cannot traverse symbolic links: ${current}`);
+    if (stat?.isSymbolicLink()) {
+      throw new Error(`Private storage cannot traverse symbolic links: ${current}`);
+    }
     const parent = path.dirname(current);
-    if (parent === current) break;
+    if (parent === current) {
+      break;
+    }
     if (stat && current !== path.resolve(filename) && !stat.isDirectory()) {
       throw new Error(`Private storage ancestor is not a directory: ${current}`);
     }
@@ -203,33 +270,63 @@ if (-not $userControl) { throw 'Private storage ACL does not grant the current u
 [Console]::Out.Write('RDH_PRIVATE_OK')
 `;
 
-function windowsAcl(filename: string, directory: boolean, action: 'assert' | 'create' | 'secure-new'): void {
-  const shellDirectory = path.win32.join(systemRoot(process.env), 'System32', 'WindowsPowerShell', 'v1.0');
+function windowsAcl(
+  filename: string,
+  directory: boolean,
+  action: 'assert' | 'create' | 'secure-new',
+): void {
+  const shellDirectory = path.win32.join(
+    systemRoot(process.env),
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+  );
   const executable = path.win32.join(shellDirectory, 'powershell.exe');
   const env: Environment = {};
   // PowerShell autoloads Get-Acl/Set-Acl. Do not search user-supplied modules.
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.toLowerCase() !== 'psmodulepath') env[key] = value;
+    if (key.toLowerCase() !== 'psmodulepath') {
+      env[key] = value;
+    }
   }
   env.PSModulePath = path.win32.join(shellDirectory, 'Modules');
   env.RDH_PRIVATE_PATH = path.resolve(filename);
   env.RDH_PRIVATE_ACTION = action;
   env.RDH_PRIVATE_DIRECTORY = directory ? '1' : '0';
-  const result = spawnSync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
-    Buffer.from(ACL_SCRIPT, 'utf16le').toString('base64')], {
-    encoding: 'utf8', windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024,
-    env,
-  });
+  const result = spawnSync(
+    executable,
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      Buffer.from(ACL_SCRIPT, 'utf16le').toString('base64'),
+    ],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15_000,
+      maxBuffer: 64 * 1024,
+      env,
+    },
+  );
   if (result.error || result.status !== 0 || result.stdout.trim() !== 'RDH_PRIVATE_OK') {
-    throw new Error(`Windows private storage ACL ${action} failed: ${result.error?.message || result.stderr.trim() || 'verification unavailable'}`);
+    throw new Error(
+      `Windows private storage ACL ${action} failed: ${result.error?.message || result.stderr.trim() || 'verification unavailable'}`,
+    );
   }
 }
 
 export function assertPrivatePath(filename: string, directory: boolean): void {
   assertAncestors(filename);
   const stat = assertKind(filename, directory);
-  if (process.platform === 'win32') windowsAcl(filename, directory, 'assert');
-  else if (!privateStat(stat)) throw new Error(`Private storage must be owned by the current user with no group/other access (${directory ? '0700' : '0600'}): ${filename}`);
+  if (process.platform === 'win32') {
+    windowsAcl(filename, directory, 'assert');
+  } else if (!privateStat(stat)) {
+    throw new Error(
+      `Private storage must be owned by the current user with no group/other access (${directory ? '0700' : '0600'}): ${filename}`,
+    );
+  }
 }
 
 // Only call immediately after the caller's successful exclusive creation, and
@@ -237,8 +334,9 @@ export function assertPrivatePath(filename: string, directory: boolean): void {
 export function secureNewPath(filename: string, directory: boolean): void {
   assertAncestors(filename);
   assertKind(filename, directory);
-  if (process.platform === 'win32') windowsAcl(filename, directory, 'secure-new');
-  else {
+  if (process.platform === 'win32') {
+    windowsAcl(filename, directory, 'secure-new');
+  } else {
     const stat = fs.lstatSync(filename);
     if (typeof process.getuid !== 'function' || stat.uid !== process.getuid()) {
       throw new Error('New private storage is not owned by the current user');
@@ -250,19 +348,36 @@ export function secureNewPath(filename: string, directory: boolean): void {
 
 export function ensurePrivatePath(filename: string, directory: boolean): void {
   assertAncestors(filename);
-  if (existingStat(filename)) return assertPrivatePath(filename, directory);
+  if (existingStat(filename)) {
+    return assertPrivatePath(filename, directory);
+  }
   const parent = path.dirname(path.resolve(filename));
-  if (!existingStat(parent)) ensurePrivatePath(parent, true);
+  if (!existingStat(parent)) {
+    ensurePrivatePath(parent, true);
+  }
   if (process.platform === 'win32') {
     windowsAcl(filename, directory, 'create');
     return;
   }
   try {
-    if (directory) fs.mkdirSync(filename, { mode: 0o700 });
-    else fs.closeSync(fs.openSync(filename, fs.constants.O_WRONLY | fs.constants.O_CREAT |
-      fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600));
+    if (directory) {
+      fs.mkdirSync(filename, { mode: 0o700 });
+    } else {
+      fs.closeSync(
+        fs.openSync(
+          filename,
+          fs.constants.O_WRONLY |
+            fs.constants.O_CREAT |
+            fs.constants.O_EXCL |
+            fs.constants.O_NOFOLLOW,
+          0o600,
+        ),
+      );
+    }
   } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) {
+      throw error;
+    }
   }
   assertPrivatePath(filename, directory);
 }
