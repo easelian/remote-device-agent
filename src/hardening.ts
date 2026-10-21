@@ -59,7 +59,7 @@ export function hardeningPath(configFile: string) {
 function rejectUnknown(value: UnknownRecord, allowed: ReadonlySet<string>, label: string) {
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) {
-      throw new Error(`${label}包含未知字段：${key}`);
+      throw new Error(`${label} contains an unknown field: ${key}`);
     }
   }
 }
@@ -73,16 +73,20 @@ export function readSidecar(filename: string): unknown {
     if (errorCode(error) === 'ENOENT') {
       return null;
     }
-    throw new Error('无法安全读取硬化配置（要求 0600；不允许符号链接）');
+    throw new Error(
+      'Cannot safely read the hardening configuration (mode 0600 required; symbolic links are not allowed)',
+    );
   }
   try {
     const stat = fs.fstatSync(fd);
     const uid = typeof process.getuid === 'function' ? process.getuid() : stat.uid;
     if (!stat.isFile() || stat.uid !== uid || (process.platform !== 'win32' && stat.mode & 0o077)) {
-      throw new Error('硬化配置必须由当前用户持有，且权限为 0600');
+      throw new Error(
+        'The hardening configuration must be owned by the current user with mode 0600',
+      );
     }
     if (stat.size > 64 * 1024) {
-      throw new Error('硬化配置过大');
+      throw new Error('The hardening configuration is too large');
     }
     return JSON.parse(fs.readFileSync(fd, 'utf8'));
   } finally {
@@ -95,16 +99,16 @@ export function validateHardening(
   rootNames: readonly string[] = [],
 ): ValidatedHardening {
   if (!isRecord(value)) {
-    throw new Error('硬化配置格式无效');
+    throw new Error('Invalid hardening configuration');
   }
-  rejectUnknown(value, TOP_KEYS, '硬化配置');
+  rejectUnknown(value, TOP_KEYS, 'Hardening configuration');
   if (value.version !== 1) {
-    throw new Error('硬化配置 version 必须为 1');
+    throw new Error('The hardening configuration version must be 1');
   }
   const readonlyRoots = policyStrings(value.readonly_roots ?? [], 'readonly_roots', 64);
   for (const root of readonlyRoots) {
     if (!rootNames.includes(root)) {
-      throw new Error(`readonly_roots 引用了未配置的目录：${root}`);
+      throw new Error(`readonly_roots references an unconfigured root: ${root}`);
     }
   }
   const hasPolicy = ['allowed_operations', 'readonly_roots', 'protected_paths'].some(
@@ -127,16 +131,16 @@ export function validateHardening(
   if (value.sandbox !== undefined) {
     const raw = value.sandbox;
     if (!isRecord(raw)) {
-      throw new Error('sandbox 配置格式无效');
+      throw new Error('Invalid sandbox configuration');
     }
-    rejectUnknown(raw, SANDBOX_KEYS, 'sandbox ');
+    rejectUnknown(raw, SANDBOX_KEYS, 'sandbox');
     if (raw.mode !== 'none' && raw.mode !== 'bwrap') {
-      throw new Error('sandbox.mode 必须是 "none" 或 "bwrap"');
+      throw new Error('sandbox.mode must be "none" or "bwrap"');
     }
     const rawLimits = raw.limits ?? {};
     const limits: Record<string, number> = {};
     if (!isRecord(rawLimits)) {
-      throw new Error('sandbox.limits 格式无效');
+      throw new Error('Invalid sandbox.limits');
     }
     for (const [key, limit] of Object.entries(rawLimits)) {
       const range = LIMIT_RANGES[key];
@@ -148,16 +152,16 @@ export function validateHardening(
         limit < range[0] ||
         limit > range[1]
       ) {
-        throw new Error(`sandbox.limits.${key} 无效`);
+        throw new Error(`Invalid sandbox.limits.${key}`);
       }
       limits[key] = limit;
     }
     if (raw.mode === 'bwrap') {
       if (typeof raw.network !== 'boolean') {
-        throw new Error('sandbox.network 必须显式设置为 true 或 false');
+        throw new Error('sandbox.network must be explicitly set to true or false');
       }
       if (raw.hide_home !== undefined && typeof raw.hide_home !== 'boolean') {
-        throw new Error('sandbox.hide_home 必须是布尔值');
+        throw new Error('sandbox.hide_home must be a boolean');
       }
       const expose = raw.expose ?? [];
       if (
@@ -165,7 +169,7 @@ export function validateHardening(
         expose.length > 32 ||
         expose.some((item) => !path.isAbsolute(item) || item.includes('\0'))
       ) {
-        throw new Error('sandbox.expose 必须是最多 32 个绝对路径');
+        throw new Error('sandbox.expose must contain at most 32 absolute paths');
       }
       sandbox = {
         mode: 'bwrap',
@@ -176,7 +180,9 @@ export function validateHardening(
       };
     } else {
       if (['network', 'hide_home', 'expose'].some((key) => raw[key] !== undefined)) {
-        throw new Error('sandbox.network、hide_home、expose 仅在 mode 为 "bwrap" 时有效');
+        throw new Error(
+          'sandbox.network, hide_home, and expose are only valid when mode is "bwrap"',
+        );
       }
       sandbox = { mode: 'none', limits };
     }
@@ -190,9 +196,9 @@ export function validateHardening(
   };
   if (value.audit !== undefined) {
     if (!isRecord(value.audit)) {
-      throw new Error('audit 配置格式无效');
+      throw new Error('Invalid audit configuration');
     }
-    rejectUnknown(value.audit, AUDIT_KEYS, 'audit ');
+    rejectUnknown(value.audit, AUDIT_KEYS, 'audit');
     const {
       enabled = false,
       max_bytes: maxBytes = audit.maxBytes,
@@ -208,10 +214,10 @@ export function validateHardening(
       maxFiles < 1 ||
       maxFiles > 20
     ) {
-      throw new Error('audit 配置参数无效');
+      throw new Error('Invalid audit configuration parameters');
     }
     if (required && !enabled) {
-      throw new Error('audit.required 需要 audit.enabled 为 true');
+      throw new Error('audit.required requires audit.enabled to be true');
     }
     Object.assign(audit, { enabled, maxBytes, maxFiles, required });
   }
@@ -265,7 +271,7 @@ export function buildHardening(
       });
     } catch (error) {
       if (loaded.audit.required) {
-        throw new Error(`审计日志不可用，且配置要求必须启用：${errorMessage(error)}`);
+        throw new Error(`The required audit log is unavailable: ${errorMessage(error)}`);
       }
       log.error(`Audit log disabled: ${errorMessage(error)}`);
     }

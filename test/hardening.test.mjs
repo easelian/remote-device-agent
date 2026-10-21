@@ -204,19 +204,22 @@ test('hardening sidecar is read and validated strictly', (t) => {
   assert.deepEqual(readSidecar(file), { version: 1 });
   const link = `${file}.link`;
   fs.symlinkSync(file, link);
-  assert.throws(() => readSidecar(link), /符号链接/);
+  assert.throws(() => readSidecar(link), /symbolic links/);
 
   const roots = ['work', 'docs'];
   assert.throws(() => validateHardening({ version: 2 }, roots), /version/);
-  assert.throws(() => validateHardening({ version: 1, extra: 1 }, roots), /未知字段/);
-  assert.throws(() => validateHardening({ version: 1, readonly_roots: ['nope'] }, roots), /未配置/);
+  assert.throws(() => validateHardening({ version: 1, extra: 1 }, roots), /unknown field/);
+  assert.throws(
+    () => validateHardening({ version: 1, readonly_roots: ['nope'] }, roots),
+    /unconfigured/,
+  );
   assert.throws(
     () => validateHardening({ version: 1, sandbox: { mode: 'bwrap' } }, roots),
     /network/,
   );
   assert.throws(
     () => validateHardening({ version: 1, sandbox: { mode: 'none', network: true } }, roots),
-    /仅在/,
+    /only valid/,
   );
   assert.throws(
     () =>

@@ -61,7 +61,7 @@ async function acquireLocks<Handle>(
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
-      return reject(signal?.reason || new Error('操作已取消'));
+      return reject(signal?.reason || new Error('Operation canceled'));
     }
     let onAbort: (() => void) | undefined;
     const timer = setTimeout(() => {
@@ -70,7 +70,7 @@ const sleep = (ms: number, signal?: AbortSignal) =>
     }, ms);
     onAbort = () => {
       clearTimeout(timer);
-      reject(signal?.reason || new Error('操作已取消'));
+      reject(signal?.reason || new Error('Operation canceled'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -116,7 +116,7 @@ export async function pairDevice(
     });
   const response = await post('/api/pair/start', proposal);
   if (response.status !== 201) {
-    throw new Error(`中心暂时无法创建绑定请求（HTTP ${response.status}）`);
+    throw new Error(`The Hub could not create a pairing request (HTTP ${response.status})`);
   }
   const pending: unknown = await response.json();
   if (
@@ -124,7 +124,7 @@ export async function pairDevice(
     typeof pending.verification_uri_complete !== 'string' ||
     typeof pending.user_code !== 'string'
   ) {
-    throw new Error('中心返回了无效的绑定地址');
+    throw new Error('The Hub returned an invalid pairing URL');
   }
   const verification = new URL(pending.verification_uri_complete);
   if (
@@ -136,7 +136,7 @@ export async function pairDevice(
     verification.searchParams.get('code') !== pending.user_code ||
     [...verification.searchParams.keys()].length !== 1
   ) {
-    throw new Error('中心返回了无效的绑定地址');
+    throw new Error('The Hub returned an invalid pairing URL');
   }
   if (
     typeof pending.device_code !== 'string' ||
@@ -147,10 +147,12 @@ export async function pairDevice(
     typeof pending.interval !== 'number' ||
     !Number.isFinite(pending.interval)
   ) {
-    throw new Error('中心返回了无效的绑定响应');
+    throw new Error('The Hub returned an invalid pairing response');
   }
-  console.log(`\n绑定验证码：${pending.user_code}\n打开页面：${verification.href}\n`);
-  console.log('请在页面核对设备与验证码，选择权限并确认绑定。验证码 10 分钟内有效。');
+  console.log(`\nPairing code: ${pending.user_code}\nOpen: ${verification.href}\n`);
+  console.log(
+    'Check the device and pairing code in your browser, choose permissions, and approve pairing. The code expires in 10 minutes.',
+  );
   if (
     openBrowser &&
     !process.env.SSH_CONNECTION &&
@@ -192,7 +194,7 @@ export async function pairDevice(
     if (result.status === 200) {
       const body: unknown = await result.json();
       if (!isRecord(body) || !isRecord(body.config)) {
-        throw new Error('设备配置格式无效');
+        throw new Error('Invalid device configuration');
       }
       // Older Hubs supply /bin/sh as a schema default even for Windows roots.
       const model = AgentConfig.validate({
@@ -203,7 +205,7 @@ export async function pairDevice(
           : {}),
       });
       if (!sameHub(model.gateway_url, server) || !sameRoots(model.roots, roots)) {
-        throw new Error('绑定响应中的中心或目录与本机请求不一致');
+        throw new Error('The pairing response does not match the requested Hub or file roots');
       }
       return model;
     }
@@ -211,14 +213,14 @@ export async function pairDevice(
       continue;
     }
     if (result.status === 403) {
-      throw new Error('绑定被拒绝或撤销，请重新运行命令');
+      throw new Error('Pairing was denied or revoked. Run the command again.');
     }
     if (result.status === 410) {
       break;
     }
-    throw new Error(`绑定请求失败（HTTP ${result.status}）`);
+    throw new Error(`Pairing request failed (HTTP ${result.status})`);
   }
-  throw new Error('绑定已超时，请重新运行命令取得新验证码');
+  throw new Error('Pairing timed out. Run the command again to get a new code.');
 }
 
 export async function connectDevice<Result = void, Handle = unknown>(
@@ -227,7 +229,7 @@ export async function connectDevice<Result = void, Handle = unknown>(
 ) {
   const signal = args.signal;
   if (!['linux', 'darwin', 'win32'].includes(process.platform)) {
-    throw new Error('仅支持 Windows、Linux 和 macOS');
+    throw new Error('Only Windows, Linux, and macOS are supported');
   }
   const server = validateGateway(args.server);
   const profile = args.profile || 'default';
@@ -275,31 +277,35 @@ export async function connectDevice<Result = void, Handle = unknown>(
     try {
       config = await readConfig(destination);
       if (!sameHub(config.gateway_url, server)) {
-        throw new Error('已有配置属于其他中心，请选择不同 --profile');
+        throw new Error(
+          'The existing configuration belongs to another Hub. Choose a different --profile.',
+        );
       }
       if (args.root && !sameRoots(config.roots, await localRoots(args.root))) {
-        throw new Error('此配置已经绑定其他目录，请用 --profile 新建配置');
+        throw new Error(
+          'This profile is paired with different file roots. Use --profile to create another profile.',
+        );
       }
-      console.log(`使用已保存的绑定：${config.device_id}`);
+      console.log(`Using saved pairing: ${config.device_id}`);
     } catch (error) {
       if (errorCode(error) !== 'ENOENT') {
         throw error;
       }
       const roots = await localRoots(args.root);
-      console.log(`目标设备：${os.hostname() || 'device'}`);
-      console.log(`文件目录：${Object.values(roots).join(', ')}`);
+      console.log(`Target device: ${os.hostname() || 'device'}`);
+      console.log(`File roots: ${Object.values(roots).join(', ')}`);
       config = await pairDevice(server, roots, args.name || os.hostname() || 'device', {
         openBrowser: !args.noBrowser,
         signal,
       });
       await writeConfig(destination, config);
-      console.log(`绑定成功：${config.device_id}\n配置已保存在：${destination}`);
+      console.log(`Device paired: ${config.device_id}\nConfiguration saved to: ${destination}`);
     }
     if (args.pairOnly) {
-      console.log(`配对完成，配置保存在：${destination}`);
+      console.log(`Pairing complete. Configuration saved to: ${destination}`);
       return config;
     }
-    console.log('正在连接设备中心；保持此终端运行，按 Ctrl+C 停止。');
+    console.log('Connecting to the Hub. Keep this terminal open; press Ctrl+C to stop.');
     return runAgent
       ? await runAgent({ ...config, gateway_url: server }, signal, { configFile: destination })
       : undefined;

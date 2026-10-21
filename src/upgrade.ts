@@ -58,10 +58,10 @@ function parseOptions(argv: string[]): Options {
       case '--channel': {
         const value = argv[++index];
         if (value === undefined || value.startsWith('--')) {
-          throw new Error('--channel 需要一个值');
+          throw new Error('--channel requires a value');
         }
         if (value !== 'stable' && value !== 'canary') {
-          throw new Error('--channel 只能是 stable 或 canary');
+          throw new Error('--channel must be stable or canary');
         }
         options.channel = value;
         break;
@@ -69,7 +69,7 @@ function parseOptions(argv: string[]): Options {
       case '--index': {
         const value = argv[++index];
         if (value === undefined || value.startsWith('--')) {
-          throw new Error('--index 需要一个值');
+          throw new Error('--index requires a value');
         }
         options.index = value;
         break;
@@ -90,7 +90,7 @@ function parseOptions(argv: string[]): Options {
       case '-h':
         throw new Error(usage());
       default:
-        throw new Error(`未知参数：${item}`);
+        throw new Error(`Unknown argument: ${item}`);
     }
   }
   return options;
@@ -100,7 +100,9 @@ function installedPrefix(moduleUrl: string): string {
   const bundle = fileURLToPath(moduleUrl);
   const prefix = path.resolve(path.dirname(bundle), '../../..');
   if (!existsSync(path.join(prefix, 'versions')) || !existsSync(path.join(prefix, 'current'))) {
-    throw new Error('当前命令不在已安装的目录中；请使用 install.sh 安装后再升级');
+    throw new Error(
+      'This command is not running from an installed directory. Install with install.sh before upgrading.',
+    );
   }
   return prefix;
 }
@@ -136,7 +138,7 @@ async function readIndex(location: string): Promise<ChannelEntry> {
   if (/^https?:/i.test(location)) {
     const response = await fetch(location, { redirect: 'follow' });
     if (!response.ok) {
-      throw new Error(`无法读取版本索引：HTTP ${response.status}`);
+      throw new Error(`Could not read the release index: HTTP ${response.status}`);
     }
     return parseChannel(await response.json());
   }
@@ -158,7 +160,7 @@ async function download(url: string, destination: string): Promise<void> {
   if (/^https?:/i.test(url)) {
     const response = await fetch(url, { redirect: 'follow' });
     if (!response.ok) {
-      throw new Error(`下载失败：HTTP ${response.status}`);
+      throw new Error(`Download failed: HTTP ${response.status}`);
     }
     // Artifacts are ~40 MB; buffering keeps the error paths simple.
     await fs.writeFile(destination, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
@@ -219,7 +221,7 @@ async function unpack(archive: string, staging: string): Promise<void> {
   await fs.mkdir(staging, { recursive: true });
   const result = run('tar', ['-xzf', archive, '-C', staging, '--strip-components=1']);
   if (result.status !== 0) {
-    throw new Error('解压失败');
+    throw new Error('Archive extraction failed');
   }
   await fs.chmod(path.join(staging, 'node'), 0o755);
   await fs.chmod(path.join(staging, 'rdh'), 0o755);
@@ -231,7 +233,7 @@ async function verifyTree(staging: string, version: string): Promise<void> {
     '--version',
   ]);
   if (result.status !== 0 || result.stdout !== version) {
-    throw new Error(`新版本自检失败（输出：${result.stdout || '无'}）`);
+    throw new Error(`The new version failed its self-check (output: ${result.stdout || 'none'})`);
   }
 }
 
@@ -248,7 +250,7 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
   const current = await currentVersion(prefix);
   const platform = hostPlatform();
 
-  console.log(`当前版本：${current}（${platform}）`);
+  console.log(`Current version: ${current} (${platform})`);
   const entry = await readIndex(location);
   const decision: Decision = decideUpgrade(entry, {
     current,
@@ -257,13 +259,13 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
     installId: await installId(prefix),
     ...(options.force ? { force: true } : {}),
   });
-  console.log(`目标版本：${entry.version} — ${decision.reason}`);
+  console.log(`Target version: ${entry.version} — ${decision.reason}`);
 
   if (decision.action !== 'upgrade') {
     return;
   }
   if (options.check || options.dryRun) {
-    console.log(`将从 ${resolveArtifact(location, decision.artifact.url)} 下载`);
+    console.log(`Will download from ${resolveArtifact(location, decision.artifact.url)}`);
     return;
   }
 
@@ -271,11 +273,11 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
   const archive = path.join(temporary, 'bundle.tar.gz');
   const staging = path.join(prefix, 'versions', `${decision.version}.new`);
   try {
-    console.log('下载中…');
+    console.log('Downloading…');
     await download(resolveArtifact(location, decision.artifact.url), archive);
     const digest = await sha256(archive);
     if (digest !== decision.artifact.sha256) {
-      throw new Error('下载内容校验失败，已中止');
+      throw new Error('Download verification failed; upgrade aborted');
     }
 
     await fs.rm(staging, { recursive: true, force: true });
@@ -288,17 +290,17 @@ export async function runUpgrade(command: 'upgrade' | 'rollback', argv: string[]
     await fs.rename(staging, destination);
     await pointTo(prefix, 'previous', `versions/${current}`);
     await pointTo(prefix, 'current', `versions/${decision.version}`);
-    console.log(`已切换到 ${decision.version}`);
+    console.log(`Switched to ${decision.version}`);
 
     if (options.restart && existsSync(unitFile())) {
       if (!restartService() || !(await waitForService(15))) {
         await pointTo(prefix, 'current', `versions/${current}`);
         restartService();
-        throw new Error(`服务未能启动，已回滚到 ${current}`);
+        throw new Error(`The service failed to start; rolled back to ${current}`);
       }
-      console.log('服务已重启并通过健康检查');
+      console.log('The service restarted and passed its health check');
     } else if (options.restart) {
-      console.log('未检测到 systemd 服务；手动重启后生效');
+      console.log('No systemd service found; restart manually to apply the update');
     }
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
@@ -311,11 +313,11 @@ async function rollback(prefix: string, argv: string[]): Promise<void> {
     if (item === '--help' || item === '-h') {
       throw new Error(usage());
     }
-    throw new Error(`未知参数：${item}`);
+    throw new Error(`Unknown argument: ${item}`);
   }
   const previous = path.join(prefix, 'previous');
   if (!existsSync(previous)) {
-    throw new Error('没有可回滚的版本记录');
+    throw new Error('No previous version is available for rollback');
   }
 
   const target = await fs.readlink(previous);
@@ -323,20 +325,20 @@ async function rollback(prefix: string, argv: string[]): Promise<void> {
   const currentVersionName = path.basename(current);
   const targetVersion = path.basename(target);
   if (compareVersions(targetVersion, currentVersionName) === 0) {
-    throw new Error('回滚目标与当前版本相同');
+    throw new Error('The rollback target is the current version');
   }
 
   await pointTo(prefix, 'current', target);
   await pointTo(prefix, 'previous', current);
-  console.log(`已回滚到 ${targetVersion}`);
+  console.log(`Rolled back to ${targetVersion}`);
 
   if (existsSync(unitFile())) {
     if (!restartService() || !(await waitForService(15))) {
       await pointTo(prefix, 'current', current);
       await pointTo(prefix, 'previous', target);
       restartService();
-      throw new Error(`回滚后的服务未能启动，已恢复到 ${currentVersionName}`);
+      throw new Error(`The service failed to start after rollback; restored ${currentVersionName}`);
     }
-    console.log('服务已重启并通过健康检查');
+    console.log('The service restarted and passed its health check');
   }
 }

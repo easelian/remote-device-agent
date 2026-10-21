@@ -1,12 +1,12 @@
 # Remote Device Hub Agent
 
-使用 TypeScript 开发的设备 Agent，当前源码版本 `0.7.0`。目标平台为原生 Windows、Linux 和 macOS，三者共用 CLI、配对协议及文件/进程接口。原生包需要 Node.js 22+；`rdh-*.tar.gz` 发行包自带运行时，无需预装 Node。
+A device Agent written in TypeScript. The current source version is `0.7.0`. Native Windows, Linux, and macOS share the CLI, pairing protocol, and file and process interfaces. The npm package requires Node.js 22+; `rdh-*.tar.gz` release archives include the runtime and do not require Node.js to be preinstalled.
 
-npm 包名为 `remote-device-hub`，命令别名为 `remote-device-agent` 和 `remote-device-hub`。最终包只包含编译压缩的 JavaScript、CLI 入口、README 和第三方许可证：无运行时 npm 依赖、原生 addon、安装脚本、首次启动编译或额外运行时下载。TypeScript、类型声明与构建工具仅用于开发，不进入发行包。
+The npm package is `remote-device-hub`, with two command aliases: `remote-device-agent` and `remote-device-hub`. The final package contains only bundled, minified JavaScript, the CLI entry point, this README, and third-party licenses. It has no runtime npm dependencies, native addons, installation scripts, first-run compilation, or additional runtime downloads. TypeScript, type declarations, and build tools are development dependencies and are excluded from the release package.
 
-## 构建与验证
+## Build and validate
 
-从仓库根目录运行：
+Run from the repository root:
 
 ```sh
 npm ci --ignore-scripts
@@ -17,74 +17,67 @@ node scripts/release.mjs build
 node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 ```
 
-`src/*.ts` 是源码；`npm run build` 生成测试用的 `.build/` 模块和发行用的 `bundle/agent.mjs`。`npm pack` 会先做类型检查及编译。发行 TGZ 上限为 64 KiB，解包内容上限为 512 KiB；打包检查同时核对文件清单、空缓存离线安装和两个命令别名。未重新编译的源码或被修改的 bundle 会阻止生成发行记录。
+Source files live in `src/*.ts`. `npm run build` generates modules in `.build/` for tests and `bundle/agent.mjs` for distribution. `npm pack` runs type checking and compilation first. The release TGZ must be no larger than 64 KiB, with at most 512 KiB of unpacked content. Package checks also verify the file manifest, offline installation with an empty cache, and both command aliases. Stale compiled code or a modified bundle prevents release-record generation.
 
-构建只写本地文件，不执行 npm 发布、设备部署或账号绑定。版本记录及历史验证见 [维护与发布](docs/maintenance.md)。
+Building writes local files only. It does not publish to npm, deploy to devices, or link an account. See [Maintenance and releases](docs/maintenance.md) for version records and historical validation.
 
-## 部署与使用
+## Install and run
 
-唯一的分发入口是安装脚本。它自带 Node 运行时，所以设备不需要预装 Node，也不需要 root：
+The installer is the primary distribution entry point. It includes the Node runtime, so devices do not need a preinstalled Node.js runtime or root access:
 
 ```sh
 curl -fsSL https://github.com/be-one-click/remote-device-agent/releases/latest/download/install.sh | sh
 ```
 
-脚本会探测平台（glibc/musl、x64/arm64）、核对 `SHA256SUMS`、解压到
-`~/.local/lib/rdh/versions/<版本>`、切换 `current` 链接、在浏览器中完成配对，
-并注册 systemd 用户服务（macOS 为 launchd）。重复执行即升级。
+The script detects the platform (glibc/musl and x64/arm64), verifies `SHA256SUMS`, extracts the release to `~/.local/lib/rdh/versions/<version>`, switches the `current` symlink, completes pairing in a browser, and registers a systemd user service (launchd on macOS). Run it again to upgrade.
 
-常用参数：
+Common options:
 
-- `--server URL` 指定设备中心地址
-- `--root NAME=PATH` 指定暴露的目录，可重复
-- `--no-pair` 只安装，之后再运行 `rdh --pair-only` 配对
-- `--no-service` 只安装，不注册服务
-- `--offline FILE` 用本地压缩包安装
-- `--uninstall` 卸载安装目录，保留配置和审计日志
+- `--server URL`: use a specific Hub URL.
+- `--root NAME=PATH`: expose a file root; repeat for multiple roots.
+- `--no-pair`: install only; run `rdh --pair-only` later to pair.
+- `--no-service`: install without registering a service.
+- `--offline FILE`: install from a local archive.
+- `--uninstall`: remove the installation while retaining configuration and audit logs.
 
-如果设备无法访问 GitHub，用 `--base` 指向内部镜像目录（目录结构与发行页一致）：
+If a device cannot reach GitHub, use `--base` to select an internal mirror with the same directory layout as the release page:
 
 ```sh
 sh install.sh --base https://mirror.example.com/rdh
 ```
 
-推送 `v*` 标签后由 CI 构建六个平台的发行包并自动发布，没有手工上传步骤。
+Pushing a `v*` tag triggers CI to build and publish archives for six platforms. No manual upload is required.
 
-## 发布与灰度
+## Releases and staged rollouts
 
-发布是"打标签 + 移动通道指针"两件事，灰度不需要重新打包：
+Publishing a version and moving a channel pointer are separate steps. Expanding a rollout does not require rebuilding the package:
 
-1. **预发布**：打 `v0.8.0-rc.1` 标签，CI 构建并发布 GitHub Release（自动标记 prerelease）。
-2. **进 canary**：Actions → `Promote` → `channel=canary`、`version=0.8.0-rc.1`、`percent=100`。
-   想提前试用的设备执行 `rdh upgrade --channel canary`。
-3. **正式发布**：打 `v0.8.0` 标签。
-4. **灰度**：`Promote` → `channel=stable`、`version=0.8.0`、`percent=10`。
-   设备用安装时生成的 `install-id` 做哈希分桶，只有约 10% 会升级；把 `percent` 改成 50、100
-   再跑一次即可扩大范围，分桶稳定，不会来回抖动。
-5. **回退**：把 `stable` 指回上一个版本（再跑一次 `Promote`），或设备端执行 `rdh rollback`。
+1. **Prerelease:** tag `v0.8.0-rc.1`. CI builds and publishes a GitHub Release marked as a prerelease.
+2. **Canary:** in Actions, run `Promote` with `channel=canary`, `version=0.8.0-rc.1`, and `percent=100`. Devices that opt in run `rdh upgrade --channel canary`.
+3. **Stable release:** tag `v0.8.0`.
+4. **Staged rollout:** run `Promote` with `channel=stable`, `version=0.8.0`, and `percent=10`. A hash of the `install-id` generated during installation selects approximately 10% of devices. Run it again with `percent=50` or `100` to expand the rollout. Bucket assignments remain stable.
+5. **Rollback:** point `stable` to the previous version by running `Promote` again, or run `rdh rollback` on a device.
 
-设备侧检查与升级：
+Check or upgrade on a device:
 
 ```sh
-rdh upgrade --check                 # 只报告，不改动
-rdh upgrade                         # 按 stable 通道与灰度比例决定
-rdh upgrade --channel canary        # 主动加入 canary
-rdh rollback                        # 回到上一个版本
+rdh upgrade --check                 # Report only; make no changes
+rdh upgrade                         # Follow the stable channel and rollout percentage
+rdh upgrade --channel canary        # Opt in to canary
+rdh rollback                        # Restore the previous version
 ```
 
-通道索引默认取自仓库的 `channels/<channel>.json`；内网环境用 `--index` 指向镜像：
+The default channel index is `channels/<channel>.json` in this repository. Use `--index` for an internal mirror:
 
 ```sh
 rdh upgrade --index https://mirror.example.com/rdh/stable.json
 ```
 
-索引里包含版本、`min_from`（阻止跨太多版本直接升级）与 `rollout.percent`；
-升级过程始终是"解压到新目录 → 校验 `--version` → 切换 `current` → 重启服务 →
-健康检查失败自动回滚"。
+The index contains the version, `min_from` (which prevents unsupported version jumps), and `rollout.percent`. Each upgrade extracts into a new directory, verifies `--version`, switches `current`, and restarts the service. A failed health check triggers an automatic rollback.
 
-### 已安装 Node.js 22+ 的机器
+### Devices with Node.js 22+ already installed
 
-这类环境可以直接用 npm 包，不必下载运行时：
+Use the npm package directly to avoid downloading another runtime:
 
 ```sh
 npm install --global --ignore-scripts --offline ./remote-device-hub-0.7.0.tgz
@@ -92,34 +85,31 @@ remote-device-agent --version
 remote-device-agent --no-browser
 ```
 
-批量部署可缓存固定版本的 TGZ；固定下载地址和产物摘要能避免重复解析 registry 元数据。
+For fleet deployments, cache a TGZ for a fixed version. A fixed download URL and artifact digest avoid repeated registry metadata resolution.
 
-版本应输出 `0.7.0`。首次运行打印绑定链接与验证码；在网页核对设备及权限后确认。默认文件根为当前目录，再次运行会复用绑定。
+The version command should print `0.7.0`. On first run, the Agent prints a pairing URL and code. Check the device and permissions on the page before approving. The current directory is the default file root. Subsequent runs reuse the saved pairing.
 
-用 `--root NAME=PATH` 指定目录，可重复；路径包含空格时给整个参数加引号。`--profile NAME` 创建独立绑定，`--server URL` 固定 Hub 地址。Windows 使用原生盘符或 UNC 根，文件工具内部的相对路径仍统一用 `/`。Windows 配对需要 Hub 使用 Protocol 1.0.1 或更新兼容版本；既有服务器的模型会拒绝 Windows 提案。
+Use `--root NAME=PATH` to configure roots; repeat it as needed and quote the entire argument when a path contains spaces. `--profile NAME` creates a separate pairing, and `--server URL` selects a specific Hub. Windows uses native drive-letter or UNC roots; relative paths in file tools still use `/`. Windows pairing requires a Hub with Protocol 1.0.1 or a newer compatible version. Older server models reject Windows pairing proposals.
 
-## 平台边界
+## Platform behavior and limits
 
-| 能力 | Linux / macOS | Windows |
+| Capability | Linux / macOS | Windows |
 | --- | --- | --- |
-| 配对、文件、搜索和进程接口 | 共用接口 | 共用接口，校验盘符、保留名称及备用数据流 |
-| 默认 shell | `/bin/sh` | 系统 `cmd.exe`；命令内容使用对应系统语法 |
-| 私有配置与审计 | 当前用户持有，文件 0600、目录 0700 | 当前用户持有且禁用继承的私有 ACL；使用系统自带 PowerShell 校验 |
-| 进程终止 | POSIX 进程组 | `taskkill /T /F` 尽力终止存活命令树；父进程提前退出后的脱离子进程不保证清理 |
-| bubblewrap 沙箱 | 仅 Linux；需系统另行提供 bwrap | 不支持；配置后拒绝启动 |
-| shell 资源限制 | 按 shell 能力应用，失败退出 | 不支持 POSIX ulimit；配置后拒绝启动 |
+| Pairing, files, search, and processes | Shared interfaces | Shared interfaces, with drive-letter, reserved-name, and alternate-data-stream validation |
+| Default shell | `/bin/sh` | System `cmd.exe`; commands must use the target system's syntax |
+| Private configuration and audit logs | Owned by the current user; files `0600`, directories `0700` | Private ACL owned by the current user with inheritance disabled; verified using system PowerShell |
+| Process termination | POSIX process groups | Best-effort termination of a live command tree with `taskkill /T /F`; detached descendants are not guaranteed to be cleaned up after the parent exits |
+| bubblewrap sandbox | Linux only; bwrap must be installed separately | Unsupported; configuring it prevents startup |
+| Shell resource limits | Applied when supported by the shell; failure stops execution | POSIX ulimit is unsupported; configuring it prevents startup |
 
-默认配置目录为 Linux/macOS 的 `~/.config/remote-device-hub`，Windows 的 `%LOCALAPPDATA%\remote-device-hub`；可用 `XDG_CONFIG_HOME` 或 `--config` 显式指定。权限不合格的既有配置不会自动放宽或修复。操作策略与本地审计默认状态及配置方式见 [硬化配置](docs/hardening.md)。
+The default configuration directory is `~/.config/remote-device-hub` on Linux/macOS and `%LOCALAPPDATA%\remote-device-hub` on Windows. Override it with `XDG_CONFIG_HOME` or `--config`. Existing configuration with insufficient privacy protections is not automatically repaired or made less restrictive. See [Hardening configuration](docs/hardening.md) for operation policies and local audit defaults.
 
-文件 roots 和路径策略约束 Agent 文件工具，不是操作系统沙箱；本机其他进程并发替换路径仍有 TOCTOU 边界。shell 以 Agent 用户身份执行，不受文件路径策略约束。
+File roots and path policies constrain the Agent's file tools; they are not an operating-system sandbox. Concurrent path replacement by another local process remains a TOCTOU limitation. Shell commands run as the Agent's operating-system user and are not constrained by file path policies.
 
-网络短断线最多保留进程与有界输出 5 分钟；撤销授权、持续离线或主动退出会触发清理。超时或断线后结果未知时先核对状态再重试。Linux/macOS 的 `cleanup_pending` 表示监督进程资源尚未收尾；Windows 的此字段不证明所有脱离后代已结束。异常退出留下的配置锁需在确认旧进程结束后使用 `--recover-lock` 恢复。
+Brief network interruptions retain processes and bounded output for up to five minutes. Revoked authorization, prolonged disconnection, or an explicit exit triggers cleanup. If a timeout or disconnect leaves an operation's outcome unknown, inspect its state before retrying. On Linux/macOS, `cleanup_pending` means supervisor resources have not finished closing. On Windows, this field does not prove that all detached descendants have exited. Recover a configuration lock left by an abnormal exit with `--recover-lock` only after confirming that the previous process has stopped.
 
-当前本地验证环境为 Linux。CI 已配置三系统测试，其中 Windows 使用独立的原生文件、ACL、配对和进程用例；尚未实际运行的 Windows/macOS CI 与实机结果属于未验证范围，不能用 Linux 上的纯路径测试替代。历史发行状态以 `releases/` 原始记录为准。
+Local validation currently runs on Linux. CI is configured for all three operating systems, including native Windows file, ACL, pairing, and process cases. Windows/macOS CI runs and physical-host results that have not actually been executed remain unverified; pure path tests on Linux are not substitutes. Historical release status is recorded in the original files under `releases/`.
 
-## 代码风格
+## Code style
 
-`npm run format` 格式化维护中的源码和测试；`npm run style:check` 检查格式及 Lint，
-`npm run lint` 只运行 Lint。Biome 以固定版本作为开发依赖。统一使用两空格、
-单引号、分号、尾逗号，一行一条语句；显式标记类型导入，禁止显式 `any` 和
-`@ts-ignore`。生成文件及第三方代码不参与格式化。
+`npm run format` formats maintained source and tests. `npm run style:check` checks formatting and lint rules; `npm run lint` runs only the linter. Biome is pinned as a development dependency. Use two-space indentation, single quotes, semicolons, trailing commas, one statement per line, and explicit type imports. Explicit `any` and `@ts-ignore` are prohibited. Generated files and third-party code are excluded from formatting.

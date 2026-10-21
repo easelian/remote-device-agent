@@ -192,7 +192,7 @@ export function probeBwrap(binary: string = 'bwrap') {
   );
   if (result.error || result.status !== 0) {
     throw new Error(
-      'bubblewrap (bwrap) 不可用或无法创建用户命名空间；sandbox.mode 为 "bwrap" 时拒绝在无隔离状态下启动',
+      'bubblewrap (bwrap) is unavailable or cannot create a user namespace; sandbox.mode "bwrap" requires isolation to start',
     );
   }
 }

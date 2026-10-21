@@ -34,7 +34,7 @@ test('reclaim refuses a live owner and never removes its lock', async (t) => {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const config = path.join(root, 'profile.json');
   await stale(config, process.pid);
-  await assert.rejects(() => reclaimProfileLocks([config]), /配置锁已存在/);
+  await assert.rejects(() => reclaimProfileLocks([config]), /configuration lock already exists/);
   assert.equal((await fs.stat(`${config}.node-lock`)).isDirectory(), true);
   await fs.rm(`${config}.node-lock`, { recursive: true });
 });
@@ -45,8 +45,8 @@ test('reclaim guard blocks a fresh acquire and a second reclaimer', async (t) =>
   const config = path.join(root, 'profile.json');
   await stale(config);
   await fs.mkdir(`${config}.node-lock.reclaiming`, { mode: 0o700 });
-  await assert.rejects(() => acquireProfileLocks([config]), /配置锁已存在/);
-  await assert.rejects(() => reclaimProfileLocks([config]), /配置锁已存在/);
+  await assert.rejects(() => acquireProfileLocks([config]), /configuration lock already exists/);
+  await assert.rejects(() => reclaimProfileLocks([config]), /configuration lock already exists/);
   await fs.rm(`${config}.node-lock.reclaiming`, { recursive: true });
   await reclaimProfileLocks([config]);
 });
@@ -94,7 +94,7 @@ test('SIGKILL leaves a recoverable lock without an automatic reclaim race', asyn
   await once(child.stdout, 'data');
   child.kill('SIGKILL');
   await once(child, 'close');
-  await assert.rejects(() => acquireProfileLocks([config]), /配置锁已存在/);
+  await assert.rejects(() => acquireProfileLocks([config]), /configuration lock already exists/);
   await reclaimProfileLocks([config]);
   const handle = await acquireProfileLocks([config]);
   await handle.release();

@@ -40,7 +40,7 @@ test('native platform configuration, private credentials and exclusive profile l
   assert.deepEqual(await readConfig(filename), config);
   const first = await acquireProfileLocks([filename]);
   try {
-    await assert.rejects(acquireProfileLocks([filename]), /锁|manual cleanup/);
+    await assert.rejects(acquireProfileLocks([filename]), /lock|manual cleanup/);
   } finally {
     await first.release();
   }

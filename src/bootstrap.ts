@@ -45,11 +45,11 @@ export function parseArgs(argv: string[]): LaunchArgs {
     const match = /^--([a-z-]+)(?:=(.*))?$/.exec(item);
     const key = match?.[1];
     if (key === undefined || !values.has(key)) {
-      throw new Error(`未知参数：${item}`);
+      throw new Error(`Unknown argument: ${item}`);
     }
     const value = match?.[2] ?? argv[++index];
     if (!value || value.startsWith('--')) {
-      throw new Error(`参数 --${key} 需要一个值`);
+      throw new Error(`Option --${key} requires a value`);
     }
     if (key === 'root') {
       (result.root ||= []).push(value);
@@ -67,7 +67,7 @@ export function serverFromArgs(argv: string[]) {
 
 export async function launch(argv: string[]) {
   if (Number(process.versions.node.split('.')[0]) < 22) {
-    throw new Error('Node Agent 需要 Node.js 22 或更新版本');
+    throw new Error('The Node Agent requires Node.js 22 or later');
   }
   if (argv.includes('--version')) {
     console.log(version);
@@ -75,7 +75,7 @@ export async function launch(argv: string[]) {
   }
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log(
-      `Remote Device Hub Agent ${version}\n\n直接运行 Node Agent，在浏览器中确认绑定此设备。\n\n--server URL       固定中心地址；省略时先探测 ${defaultServer}，500 ms 内失败切换 ${FALLBACK_SERVER}\n--root NAME=PATH   文件目录，可重复；默认当前目录\n--name NAME        设备显示名称\n--profile NAME     独立的设备配置，默认 default\n--config PATH      自定义私有配置文件位置\n--no-browser       仅显示链接，不自动打开浏览器\n--recover-lock     显式恢复已退出进程留下的配置锁\n--pair-only        完成绑定后立即退出，不启动 Agent（供安装脚本使用）\n\n命令：\n  rdh upgrade [--check] [--channel stable|canary]   升级到索引中的版本\n  rdh rollback                                      回到上一个版本\n\n再次执行相同命令会复用绑定；按 Ctrl+C 停止 Agent。`,
+      `Remote Device Hub Agent ${version}\n\nRun the Node Agent and approve device pairing in your browser.\n\n--server URL       Use a specific Hub; otherwise probe ${defaultServer} and fall back to ${FALLBACK_SERVER} after 500 ms\n--root NAME=PATH   Expose a file root; repeat as needed (default: current directory)\n--name NAME        Device display name\n--profile NAME     Separate device profile (default: default)\n--config PATH      Custom private configuration file\n--no-browser       Print the pairing URL without opening a browser\n--recover-lock     Recover a stale configuration lock after its process has exited\n--pair-only        Exit after pairing without starting the Agent (used by the installer)\n\nCommands:\n  rdh upgrade [--check] [--channel stable|canary]   Upgrade to the version in the release index\n  rdh rollback                                      Restore the previous version\n\nRun the same command again to reuse the pairing. Press Ctrl+C to stop the Agent.`,
     );
     return;
   }
@@ -115,7 +115,7 @@ export async function launch(argv: string[]) {
       args.autoServer = true;
       args.server = await selectServer({ signal: stop.signal });
       console.log(
-        `设备中心：${args.server}${args.server === FALLBACK_SERVER ? '（直连入口 500 ms 内未通过健康检查，使用备用入口）' : '（直连入口）'}`,
+        `Hub: ${args.server}${args.server === FALLBACK_SERVER ? ' (direct endpoint failed its health check within 500 ms; using the fallback)' : ' (direct endpoint)'}`,
       );
     }
     // The bundled ws implementation must use its JavaScript paths even when

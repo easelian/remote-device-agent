@@ -27,7 +27,7 @@ export function validateGateway(value: string): string {
     url.pathname !== '/' ||
     (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
   ) {
-    throw new Error('--server 必须是 HTTPS 中心地址（本机调试可使用 HTTP）');
+    throw new Error('--server must be an HTTPS Hub URL (HTTP is allowed for local debugging)');
   }
   return url.origin;
 }
@@ -35,7 +35,7 @@ export function validateGateway(value: string): string {
 export class AgentConfig {
   static validate(value: unknown): DeviceConfig {
     if (!isRecord(value)) {
-      throw new Error('设备配置格式无效');
+      throw new Error('Invalid device configuration');
     }
     const keys = new Set([
       'gateway_url',
@@ -50,7 +50,7 @@ export class AgentConfig {
     ]);
     for (const key of Object.keys(value)) {
       if (!keys.has(key)) {
-        throw new Error(`设备配置包含未知字段：${key}`);
+        throw new Error(`Unknown device configuration field: ${key}`);
       }
     }
     if (
@@ -60,7 +60,7 @@ export class AgentConfig {
       typeof value.roots !== 'object' ||
       value.roots === null
     ) {
-      throw new Error('设备配置字段类型无效');
+      throw new Error('Invalid device configuration field type');
     }
     const gateway_url = validateGateway(value.gateway_url);
     const { device_id, token } = value;
@@ -70,18 +70,18 @@ export class AgentConfig {
     const max_processes = value.max_processes ?? 4;
     const max_process_seconds = value.max_process_seconds ?? 3600;
     if (!DEVICE_RE.test(device_id)) {
-      throw new Error('设备 ID 无效');
+      throw new Error('Invalid device ID');
     }
     if (token.length < 32) {
-      throw new Error('设备令牌无效');
+      throw new Error('Invalid device token');
     }
     if (!isRecord(value.roots) || !Object.keys(value.roots).length) {
-      throw new Error('设备目录无效');
+      throw new Error('Invalid device roots');
     }
     const roots: Record<string, string> = Object.fromEntries(
       Object.entries(value.roots).map(([name, root]) => {
         if (!PROFILE_RE.test(name) || typeof root !== 'string' || !absoluteDeviceRoot(root)) {
-          throw new Error('设备目录无效');
+          throw new Error('Invalid device roots');
         }
         return [name, root] as const;
       }),
@@ -97,7 +97,7 @@ export class AgentConfig {
       max_process_seconds < 1 ||
       max_process_seconds > 86400
     ) {
-      throw new Error('设备配置参数无效');
+      throw new Error('Invalid device configuration parameters');
     }
     return {
       gateway_url,
@@ -156,7 +156,7 @@ export async function localRoots(items?: string[]): Promise<Record<string, strin
     ? items.map((item): [string, string] => {
         const index = item.indexOf('=');
         if (index <= 0) {
-          throw new Error('每个 --root 都需要 NAME=PATH');
+          throw new Error('Each --root must use NAME=PATH');
         }
         return [item.slice(0, index), item.slice(index + 1)];
       })
@@ -164,12 +164,12 @@ export async function localRoots(items?: string[]): Promise<Record<string, strin
   const result: Record<string, string> = {};
   for (const [name, value] of entries) {
     if (!PROFILE_RE.test(name)) {
-      throw new Error('文件目录名称无效');
+      throw new Error('Invalid file root name');
     }
     const resolved = await fs.realpath(path.resolve(value));
     const stat = await fs.stat(resolved);
     if (!stat.isDirectory()) {
-      throw new Error('每个文件目录都必须是已存在的目录');
+      throw new Error('Each file root must be an existing directory');
     }
     result[name] = resolved;
   }
@@ -185,7 +185,7 @@ export async function readConfig(filename: string) {
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
-      throw new Error('设备配置必须由当前用户持有，且权限为 0600');
+      throw new Error('The device configuration must be owned by the current user with mode 0600');
     }
     const value: unknown = JSON.parse(await handle.readFile('utf8'));
     return AgentConfig.validate(value);

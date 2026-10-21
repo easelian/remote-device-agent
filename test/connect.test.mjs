@@ -46,7 +46,7 @@ test('route changes reuse a private binding and lock both deployment origins', a
     assert.equal((await readConfig(destination)).gateway_url, DIRECT_SERVER);
     await assert.rejects(
       () => connectDevice({ server: 'https://unrelated.test', config: destination }, { locks }),
-      /其他中心/,
+      /another Hub/,
     );
   } finally {
     if (previous === undefined) {
@@ -97,7 +97,7 @@ test('pairing rejects redirected or cross-origin verification links', async () =
     );
   await assert.rejects(
     () => pairDevice('https://example.test', { work: '/tmp' }, 'device', { openBrowser: false }),
-    /无效的绑定地址/,
+    /invalid pairing URL/,
   );
   globalThis.fetch = original;
 });
@@ -176,13 +176,13 @@ test('current config cannot bypass an active legacy profile lock', async () => {
     });
     const lockingLocks = {
       acquire: async () => {
-        throw new Error('已有 Agent 正在运行');
+        throw new Error('Another Agent is already running');
       },
     };
     await assert.rejects(
       () =>
         connectDevice({ server: 'https://example.test', profile: 'same' }, { locks: lockingLocks }),
-      /已有 Agent/,
+      /Another Agent/,
     );
   } finally {
     if (previous === undefined) {
@@ -239,7 +239,7 @@ test('real Node profile lock rejects duplicate, releases, and fails closed on st
   const base = await tmp();
   const config = path.join(base, 'profile.json');
   const first = await acquireProfileLocks([config]);
-  await assert.rejects(() => acquireProfileLocks([config]), /配置锁已存在/);
+  await assert.rejects(() => acquireProfileLocks([config]), /configuration lock already exists/);
   await first.release();
   const second = await acquireProfileLocks([config]);
   await second.release();
@@ -254,7 +254,7 @@ test('real Node profile lock rejects duplicate, releases, and fails closed on st
 test('localRoots resolves existing directories', async () => {
   const base = await tmp();
   assert.deepEqual(await localRoots([`work=${base}`]), { work: await fs.realpath(base) });
-  await assert.rejects(() => localRoots(['bad name=/tmp']), /名称无效/);
+  await assert.rejects(() => localRoots(['bad name=/tmp']), /Invalid file root name/);
 });
 
 test('explicit recovery finishes before acquiring both profile locks', async () => {

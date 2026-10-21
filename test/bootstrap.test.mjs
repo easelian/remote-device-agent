@@ -80,7 +80,7 @@ test('help and version run offline with empty PATH and no runtime setup', () => 
     );
     assert.match(
       execFileSync(process.execPath, [cli, '--help'], { env, cwd: directory, encoding: 'utf8' }),
-      /直接运行 Node Agent/,
+      /Run the Node Agent/,
     );
     assert.deepEqual(readdirSync(directory), []);
   } finally {

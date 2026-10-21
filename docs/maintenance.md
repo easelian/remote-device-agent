@@ -1,8 +1,8 @@
-# Agent 维护与发布
+# Agent maintenance and releases
 
-本仓库只维护 Node Agent。源码、测试、构建器和 CI 都不依赖 Server、Integrations 或 Python。
+This repository maintains only the Node Agent. Its source, tests, builder, and CI do not depend on the Server, Integrations, or Python.
 
-使用 Node.js 22+ 从仓库根目录运行：
+With Node.js 22+, run from the repository root:
 
 ```bash
 npm ci --ignore-scripts
@@ -13,57 +13,42 @@ node scripts/release.mjs build
 node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 ```
 
-版本来自 `package.json`，TGZ 和 record 名称随版本生成。包名保持 `remote-device-hub`，两个 bin 别名保持 `remote-device-hub` 和 `remote-device-agent`。同版本不能覆盖不同源码或产物。
+The version comes from `package.json`; TGZ and record names are derived from it. The package remains `remote-device-hub`, with the `remote-device-hub` and `remote-device-agent` command aliases. A version must not be overwritten with different source or artifacts.
 
-构建器使用标准 Node 库生成确定性 tar/gzip，打包预编译压缩的 TS 入口及 vendored `ws` client；完整 vendor 树仅留在源码中。TGZ 预算 64 KiB，解包内容预算 512 KiB；不包含 TS 源码、测试、构建脚本、Server、Python、原生 addon、安装 hook 或 runtime npm dependencies。修改 vendored 库时同步审核来源、license、SHA 和 client allowlist。
+The builder uses standard Node libraries to generate deterministic tar/gzip archives containing the precompiled, minified TypeScript entry point and vendored `ws` client. The full vendor tree stays in the source repository. The TGZ budget is 64 KiB, with at most 512 KiB unpacked. The package excludes TypeScript source, tests, build scripts, the Server, Python, native addons, installation hooks, and runtime npm dependencies. When changing a vendored library, review its origin, license, SHA, and client allowlist together.
 
-发布记录包含实际 Node 版本、Git 状态、源码摘要、builder 摘要和产物摘要。`record` 命令只保存已执行动作的 host、检查结果和证据文件，不执行 npm 发布或设备部署；阶段不能倒退。`verified` 要求 package-integrity、install-cli、binding-reuse、protocol-compatibility 均通过。
+Release records include the actual Node version, Git state, source digest, builder digest, and artifact digest. The `record` command records the host, completed checks, and evidence files for actions already performed; it does not publish to npm or deploy to devices. Release stages cannot move backward. The `verified` stage requires successful package-integrity, install-cli, binding-reuse, and protocol-compatibility checks.
 
-跨仓库兼容性通过 Server 仓库的检查器显式传入这个 TGZ 验证，不让任一构建器读取兄弟工作树。公网 TLS、生产 OAuth 和 ChatGPT 工具调用需要单独记录真实环境证据。本次分仓的记录保留 `prepared` 状态。
+Cross-repository compatibility is verified by explicitly passing this TGZ to the checker in the Server repository; neither builder reads a sibling worktree. Public TLS, production OAuth, and ChatGPT tool calls require separate evidence from the real environment. The records from the repository split remain `prepared`.
 
-Node profile 使用目录锁。迁移前停止旧 Agent，随后复用相同配置；异常退出留下的锁使用显式 `--recover-lock` 恢复，只有已退出 PID 的私有合法锁才可回收。恢复 guard 遗留时须先人工核对。旧 Python Agent 与 Node Agent 不共享锁协议。文件适配器的父目录检查仍有本机其他进程并发替换时的 TOCTOU 限制，维护更新不能把文件 roots 描述为系统沙箱。
+Node profiles use directory locks. Stop the old Agent before migrating, then reuse the same configuration. Use explicit `--recover-lock` to recover a lock left by an abnormal exit; only a valid private lock whose PID has exited may be reclaimed. A leftover recovery guard requires manual inspection first. The legacy Python Agent and Node Agent do not share a lock protocol. Parent-directory checks in the file adapter still have a TOCTOU limitation when another local process replaces paths concurrently. Maintenance updates must not describe file roots as an operating-system sandbox.
 
-## 当前源码能力
+## Current source capabilities
 
-普通网络断线时保留进程及有界输出最多 5 分钟并等待重连；授权撤销以及 HTTP 401/403 属于终止条件，必须停止并清理进程。后台搜索 API 使用 `start_search`、`get_search_results`、`stop_search` 和 `list_searches`：结果分页上限 200，active TTL 30 秒，完成任务最多保留 5 分钟，最多 2 个并发任务，遍历最多 30 层/10000 个条目，结果最多 1000 条或 256 KiB，并通过 `truncated`、`truncated_reason`、`skipped` 和 `status` 表示边界。
+An ordinary network disconnect retains processes and bounded output for up to five minutes while awaiting reconnection. Revoked authorization and HTTP 401/403 are terminal: processes must be stopped and cleaned up. Background search uses `start_search`, `get_search_results`, `stop_search`, and `list_searches`. Limits are 200 results per page, a 30-second active TTL, up to five minutes of completed-task retention, two concurrent tasks, traversal depth 30, 10,000 entries visited, and at most 1,000 results or 256 KiB. `truncated`, `truncated_reason`, `skipped`, and `status` report these boundaries.
 
-这些接口和资源边界从 `0.6.2` 延续至 `0.6.4`，搜索元数据最多保留 16 个任务；已取消的 worker 在文件描述符清理完成前仍占用并发额度。发布状态以本仓库的 release record 与 evidence 为准。Python Agent `0.4.0` 保留 legacy core operation 合同，并明确拒绝这些扩展 operation。
+These interfaces and resource limits carry forward from `0.6.2` through `0.6.4`. Metadata is retained for at most 16 searches. Canceled workers continue to occupy concurrency slots until their file descriptors have closed. Release status is determined by this repository's release records and evidence. Python Agent `0.4.0` retains the legacy core-operation contract and explicitly rejects these extended operations.
 
-## 2026-09-30 本地安装包验证
+## Local package validation on 2026-09-30
 
-`0.6.0` 已生成 [prepared record](../releases/remote-device-hub-0.6.0.json)：TGZ 48,899
-bytes，解包文件 196,632 bytes。macOS arm64 和 Linux x86_64 在 Node `22.23.3` 下分别
-通过完整 59 项测试；最后仅修正 gzip OS header，两端各通过最终打包器的 5 项 release
-测试。Linux 重建的 TGZ 与 macOS 正式产物逐字节一致。
+The `0.6.0` [prepared record](../releases/remote-device-hub-0.6.0.json) contains a 48,899-byte TGZ with 196,632 bytes of unpacked files. The full 59-test suite passed on both macOS arm64 and Linux x86_64 with Node `22.23.3`. After the final gzip OS-header correction, all five release tests passed on each platform. The Linux rebuild matched the official macOS artifact byte for byte.
 
-安装后的 Hub `0.5.0` wheel 与最终 TGZ 完成配对、基础与扩展工具操作、搜索、进程操作、
-相同配置重连；WebSocket 断线后同一 job 的 PID 保持，重连后可继续输入和读取输出。
-这项跨包验证在 macOS arm64 执行。测试与 Linux 重建、wheel 联调证据分别见
-[tests](../releases/evidence/node-0.6.0-tests-20260930.json)、
-[Linux](../releases/evidence/linux-0.6.0-20260930.json) 和
-[Server compatibility](../releases/evidence/server-compat-0.6.0-20260930.json)。
+The installed Hub `0.5.0` wheel and final TGZ were tested for pairing, core and extended tools, searches, process operations, and reconnection with the same configuration. A job retained its PID across a WebSocket disconnect, and stdin and output remained usable after reconnection. This cross-package check ran on macOS arm64. Evidence: [tests](../releases/evidence/node-0.6.0-tests-20260930.json), [Linux rebuild](../releases/evidence/linux-0.6.0-20260930.json), and [Server compatibility](../releases/evidence/server-compat-0.6.0-20260930.json).
 
-这些是本地与 Linux 真机证明；没有执行 npm 发布、生产部署或真实 ChatGPT 验收，
-产物状态保持 `prepared`。CI 工作流已包含 Linux/macOS Node 22，但本批没有远端运行
-GitHub Actions。
+These results establish local and physical Linux-host behavior. They do not establish npm publication, production deployment, or acceptance in a real ChatGPT client. Artifact status remains `prepared`. CI is configured for Linux/macOS with Node 22, but remote GitHub Actions runs were not executed in this validation batch.
 
-## 0.6.2 质量门槛
+## Quality gates for 0.6.2
 
-更新异步文件 I/O、分段输出缓冲、有界 WebSocket 发送队列、跨重连操作预算和显式锁恢复。
-`check_stability.mjs` 在真实 loopback WebSocket 上重复运行文件、搜索和进程操作，并检查
-输出上限、网络重连和实际资源清理；`check_lifecycle.mjs --full` 使用真实时间验证
-1/10/60/299/301 秒离线样本及永久授权拒绝。测试脚本不进入 TGZ。
+Updates include asynchronous file I/O, segmented output buffers, a bounded WebSocket send queue, operation budgets that survive reconnection, and explicit lock recovery. `check_stability.mjs` repeatedly exercises files, searches, and processes over a real loopback WebSocket, checking output limits, network reconnection, and actual resource cleanup. `check_lifecycle.mjs --full` uses real elapsed time to test 1/10/60/299/301-second offline samples and permanent authorization denial. Test scripts are excluded from the TGZ.
 
-任何 24 小时 soak、生产 WSS/OAuth 或真实 ChatGPT 验收未完成时，候选不标为
-production ready。Server 1000 在线／100 并发结果必须与 Agent 本机执行性能分别记录，
-并绑定最终源码和 artifact SHA。既有 0.6.0 prepared artifact 与历史证据保留。
+A candidate must not be marked production-ready before completing a 24-hour soak, production WSS/OAuth validation, and real ChatGPT acceptance. Server results for 1,000 online devices and 100 concurrent operations must be recorded separately from local Agent execution performance and tied to the final source and artifact SHA. Existing 0.6.0 prepared artifacts and historical evidence are retained.
 
-## 0.6.4 地址选择与中央工作区
+## Address selection and the central workspace in 0.6.4
 
-维护目录为 `/home/kylin/projects/one-click/remote-device-agent`。2026-10-13 从 Mac 开发仓库迁入完整 Git 历史、未提交的 0.6.4 修改及发行记录，原目录保留为备份；后续开发从这里开始。同步来源和本地验收见 [Server 同步记录](../../remote-device-server/docs/cross-thread-sync-20261013.md)。
+The maintenance directory at the time of migration was `/home/kylin/projects/one-click/remote-device-agent`. On 2026-10-13, the full Git history, uncommitted 0.6.4 changes, and release records were imported from the Mac development repository. The original directory was retained as a backup; subsequent development moved here. See the [Server synchronization record](../../remote-device-server/docs/cross-thread-sync-20261013.md) for provenance and local acceptance checks.
 
-未传 `--server` 时，启动先检查 `https://xdistribute.site:8090/healthz`；连接、TLS 和响应体读取共用 500 ms 期限。健康检查失败或超时便选择 `https://mcp.xdistribute.site`，显式 `--server` 固定入口。此逻辑仅用于启动地址选择，运行期间的断线恢复继续使用原有 WebSocket 重连机制。
+Without `--server`, startup first probes `https://xdistribute.site:8090/healthz`. Connection setup, TLS, and response-body reads share a 500 ms deadline. Failure or timeout selects `https://mcp.xdistribute.site`; an explicit `--server` fixes the endpoint. This applies only to startup address selection. Runtime disconnects continue to use the existing WebSocket reconnection mechanism.
 
-这两个固定 HTTPS origin 复用已有绑定，并共同持有对应 profile 的新旧路径锁。配对链接和返回配置允许它们互为别名，自定义 Hub 保持同 origin 校验，凭据不会复用到其他 Hub。实际连接使用选定入口，磁盘中的既有绑定保持原样。
+The two fixed HTTPS origins reuse an existing pairing and jointly hold locks for the profile's old and new paths. Pairing URLs and returned configurations may treat them as aliases. Custom Hubs retain same-origin validation, and credentials are never reused with another Hub. Connections use the selected endpoint; existing on-disk pairing data remains unchanged.
 
-0.6.4 的发布 TGZ 与 source fingerprint 已固定，其中 README 保留发布时的 0.6.2 文案；更新打包输入需先提高版本，不能覆盖已发布的同版本文件。本次同步只更新包外维护文档，并保留原 release record 的阶段；历史生产操作见导入 evidence，本次本地测试不代表再次部署。
+The 0.6.4 release TGZ and source fingerprint are frozen. Its README retains the 0.6.2 wording used at publication. Updating packaging inputs requires a version increase; published files must not be replaced under the same version. That synchronization updated only maintenance documentation outside the package and preserved each original release record's stage. Imported evidence records historical production actions; the local checks do not imply another deployment.

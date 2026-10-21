@@ -45,7 +45,7 @@ function lockPath(config: string) {
 
 function ownerError(lock: string) {
   return new Error(
-    `设备配置锁已存在或正在恢复：${lock}；如确认旧 Agent 已停止，请手动清理（manual cleanup）或使用 --recover-lock`,
+    `The device configuration lock already exists or is being recovered: ${lock}. After confirming the previous Agent has stopped, perform manual cleanup or use --recover-lock.`,
   );
 }
 

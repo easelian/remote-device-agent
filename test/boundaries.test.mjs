@@ -42,7 +42,7 @@ test('config JSON validates field types and retains defaults and named roots', (
     { ...config, allow_write: 1 },
     { ...config, shell: {} },
   ]) {
-    assert.throws(() => AgentConfig.validate(input), /设备配置|设备目录/);
+    assert.throws(() => AgentConfig.validate(input), /Invalid device (configuration|roots)/);
   }
   const specialRoots = JSON.parse(JSON.stringify({ ...config, roots: { ['__proto__']: root } }));
   const validated = AgentConfig.validate(specialRoots);
@@ -79,7 +79,7 @@ test('malformed pairing JSON is rejected before browser launch or polling', asyn
     await assert.rejects(
       () =>
         pairDevice('https://example.test', { work: os.tmpdir() }, 'device', { openBrowser: false }),
-      /无效的绑定/,
+      /invalid pairing/,
     );
     assert.equal(requests, 1);
   }
@@ -178,7 +178,7 @@ test('malformed lock owners cannot be reclaimed or released', async (t) => {
   ]) {
     fs.mkdirSync(lock, { mode: 0o700 });
     fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify(owner), { mode: 0o600 });
-    await assert.rejects(() => reclaimProfileLocks([config]), /配置锁已存在/);
+    await assert.rejects(() => reclaimProfileLocks([config]), /configuration lock already exists/);
     assert.equal(fs.statSync(lock).isDirectory(), true);
     fs.rmSync(lock, { recursive: true });
   }

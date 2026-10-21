@@ -109,28 +109,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Validate a channel index; throws with a readable message when malformed. */
 export function parseChannel(raw: unknown): ChannelEntry {
   if (!isRecord(raw)) {
-    throw new Error('版本索引不是对象');
+    throw new Error('The release index must be an object');
   }
   const version = raw.version;
   if (typeof version !== 'string' || !VERSION_RE.test(version)) {
-    throw new Error('版本索引缺少有效 version');
+    throw new Error('The release index is missing a valid version');
   }
   const platforms = raw.platforms;
   if (!isRecord(platforms) || Object.keys(platforms).length === 0) {
-    throw new Error('版本索引缺少 platforms');
+    throw new Error('The release index is missing platforms');
   }
   const parsed: Record<string, PlatformArtifact> = {};
   for (const [key, value] of Object.entries(platforms)) {
     if (!isRecord(value)) {
-      throw new Error(`平台 ${key} 的条目无效`);
+      throw new Error(`Invalid release entry for platform ${key}`);
     }
     const url = value.url;
     const sha256 = value.sha256;
     if (typeof url !== 'string' || url === '') {
-      throw new Error(`平台 ${key} 缺少下载地址`);
+      throw new Error(`Missing download URL for platform ${key}`);
     }
     if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256)) {
-      throw new Error(`平台 ${key} 的 sha256 无效`);
+      throw new Error(`Invalid sha256 for platform ${key}`);
     }
     parsed[key] = {
       url,
@@ -155,7 +155,7 @@ export function parseChannel(raw: unknown): ChannelEntry {
   if (isRecord(raw.rollout)) {
     const percent = raw.rollout.percent;
     if (typeof percent !== 'number' || percent < 0 || percent > 100) {
-      throw new Error('rollout.percent 必须在 0 到 100 之间');
+      throw new Error('rollout.percent must be between 0 and 100');
     }
     entry.rollout = { percent };
   }
@@ -174,11 +174,11 @@ export interface UpgradeContext {
 export function decideUpgrade(entry: ChannelEntry, context: UpgradeContext): Decision {
   const artifact = entry.platforms[context.platform];
   if (artifact === undefined) {
-    return { action: 'blocked', reason: `该版本没有 ${context.platform} 的构建` };
+    return { action: 'blocked', reason: `This release has no build for ${context.platform}` };
   }
 
   if (compareVersions(entry.version, context.current) <= 0) {
-    return { action: 'none', reason: `已是 ${context.current}，无需更新` };
+    return { action: 'none', reason: `Already running ${context.current}; no update needed` };
   }
   if (
     context.force !== true &&
@@ -187,15 +187,23 @@ export function decideUpgrade(entry: ChannelEntry, context: UpgradeContext): Dec
   ) {
     return {
       action: 'blocked',
-      reason: `需要先升级到 ${entry.min_from}，再升级到 ${entry.version}`,
+      reason: `Upgrade to ${entry.min_from} before upgrading to ${entry.version}`,
     };
   }
   const percent = entry.rollout?.percent ?? 100;
   if (context.channel !== 'canary' && context.force !== true && percent < 100) {
     const bucket = cohortBucket(context.installId);
     if (bucket >= percent) {
-      return { action: 'none', reason: `灰度未覆盖本设备（${bucket} >= ${percent}%）` };
+      return {
+        action: 'none',
+        reason: `This device is outside the staged rollout (${bucket} >= ${percent}%)`,
+      };
     }
   }
-  return { action: 'upgrade', reason: `升级到 ${entry.version}`, version: entry.version, artifact };
+  return {
+    action: 'upgrade',
+    reason: `Upgrade to ${entry.version}`,
+    version: entry.version,
+    artifact,
+  };
 }
