@@ -1,6 +1,6 @@
 # Device hardening configuration
 
-By default, file and shell tools run as the Agent's operating-system user. Version 0.6.5 adds three **optional** hardening features: operation policies, shell sandboxing and resource limits, and local audit logs. Local auditing is disabled by default; without a sidecar configuration, no audit directory is created. The Server provides central request auditing; device-local logs support troubleshooting when needed. The current 0.7.0 source retains these rules and adds basic native Windows support. This does not imply publication or completed acceptance testing on every platform.
+By default, file and shell tools run as the Agent's operating-system user. Operation policies, shell sandboxing, and resource limits are optional. Local auditing is enabled by default and retains at most the latest 1,000 operation records per device, including records from earlier Agent runs. The Server also provides central request auditing. The current 0.7.0 source includes basic native Windows support. This does not imply publication or completed acceptance testing on every platform.
 
 ## Why use a sidecar file?
 
@@ -67,13 +67,15 @@ On POSIX systems, `limits` uses the shell's `ulimit` and can also be used indepe
 
 ## Audit logs
 
-Local auditing is enabled only by an explicit `audit.enabled: true`. Omitting the field or sidecar file leaves it disabled. Logs are written to `$XDG_STATE_HOME/remote-device-hub/audit/<device_id>.jsonl` (by default `~/.local/state/...`), with directory mode `0700` and file mode `0600`, and rotate by size.
+Local auditing is enabled even when the sidecar file or `audit.enabled` field is omitted. Set `"audit": { "enabled": false }` in the version 1 sidecar to disable it. Logs are written to `$XDG_STATE_HOME/remote-device-hub/audit/<device_id>.jsonl` (by default `~/.local/state/remote-device-hub/audit/<device_id>.jsonl` on Linux/macOS). Windows uses `%LOCALAPPDATA%\remote-device-hub\audit\<device_id>.jsonl`. Linux/macOS directories use mode `0700` and files `0600`; Windows uses private owner-only ACLs.
+
+The active JSONL file and its numbered rotation files retain at most 1,000 records **in total per device**. Startup and subsequent writes remove the oldest records as needed, so restarting the Agent does not reset the retention limit. Each line is one JSON object. The existing `max_bytes` and `max_files` limits also apply and may retain fewer records. Retention rewrites use a private temporary file and rename; an interrupted final append is removed on startup before new records are added.
 
 - Each operation produces one JSON line with its timestamp, request ID, operation, outcome (`ok`, `error`, or `denied`), duration, argument summary, and result summary.
 - **Allowlist-based redaction:** `content`, `old_text`, `new_text`, `text` (stdin), and `query` retain only byte counts and SHA-256 digests. Commands retain only byte counts, character counts, and SHA-256 digests, never command text. Unknown string fields retain only their lengths. File contents and process output are never logged.
 - Each record is limited by its UTF-8 byte length. Argument or result summaries are omitted when necessary to stay within `max_bytes`.
 - After a temporary rotation failure, the logger retries opening the file. It completes short writes and removes a partial record after failure before accepting subsequent records.
-- Each record contains a hash prefix of the preceding record (`prev`) to detect deletion or modification of intermediate lines.
+- Each record contains a hash prefix of the preceding record (`prev`) within the same Agent run (`boot`). Retention preserves these links between retained records; the first retained record may refer to a record that has expired. A new Agent run starts a new chain.
 - Audit writes are best effort: failures are counted but do not interrupt operations. With `audit.required: true`, the Agent refuses to start if it cannot open the audit log.
 
 **Limitations:** without a sandbox, shell commands run as the Agent's user and can potentially modify its audit logs. The hash chain detects intermediate changes but cannot prevent truncation at the end. For stronger guarantees, enable sandboxing and forward logs to a destination the Agent cannot modify.

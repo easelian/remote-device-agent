@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 // Native Windows gets its own real filesystem/process/pairing acceptance suite,
 // plus the platform-neutral transport, CLI, release and server-selection tests.
 const windowsSuites = new Set([
+  'audit.test.mjs',
   'bootstrap.test.mjs',
   'transport.test.mjs',
   'release.test.mjs',

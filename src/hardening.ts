@@ -19,7 +19,8 @@ import { LIMIT_RANGES, defaultHiddenPaths, canonicalPath, probeBwrap } from './s
 // (<name>.policy.json) instead of the shared device config. The device config
 // schema is a cross-implementation contract (unknown fields are rejected by
 // other implementations and by older Agents), so extending it would break
-// rollbacks. A missing sidecar means "behave exactly as before".
+// rollbacks. A missing sidecar keeps the default operation/sandbox settings
+// and enables the bounded local audit trail.
 const TOP_KEYS = new Set([
   'version',
   'allowed_operations',
@@ -189,7 +190,7 @@ export function validateHardening(
   }
 
   const audit: AuditSettings = {
-    enabled: false,
+    enabled: true,
     maxBytes: AUDIT_DEFAULTS.maxBytes,
     maxFiles: AUDIT_DEFAULTS.maxFiles,
     required: false,
@@ -200,7 +201,7 @@ export function validateHardening(
     }
     rejectUnknown(value.audit, AUDIT_KEYS, 'audit');
     const {
-      enabled = false,
+      enabled = audit.enabled,
       max_bytes: maxBytes = audit.maxBytes,
       max_files: maxFiles = audit.maxFiles,
       required = false,

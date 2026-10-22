@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { assertPrivatePath, ensurePrivatePath, secureNewPath } from './platform.js';
 
-export const AUDIT_DEFAULTS = Object.freeze({ maxBytes: 5 * 1024 * 1024, maxFiles: 3 });
+export const AUDIT_DEFAULTS = Object.freeze({
+  maxBytes: 5 * 1024 * 1024,
+  maxFiles: 3,
+  maxEntries: 1000,
+});
 
 const MAX_FIELD = 512;
 const MAX_LIST = 16;
@@ -167,6 +171,58 @@ function ensurePrivateDirectory(directory: string): void {
   }
 }
 
+function writeAll(fd: number, data: Buffer): void {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = fs.writeSync(fd, data, offset, data.length - offset);
+    if (!Number.isInteger(written) || written <= 0 || written > data.length - offset) {
+      throw new Error('Audit write made no progress');
+    }
+    offset += written;
+  }
+}
+
+// Read only a bounded tail, including one extra record for a partial leading
+// line. An interrupted final append is excluded before the next write.
+function readTail(file: string, limit: number): { lines: string[]; size: number } {
+  assertPrivatePath(file, false);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  try {
+    const stat = fs.fstatSync(fd);
+    const named = fs.lstatSync(file);
+    if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) {
+      throw new Error('Audit log changed while opening');
+    }
+    if (!limit) {
+      return { lines: [], size: stat.size };
+    }
+    const length = Math.min(stat.size, (limit + 1) * MAX_LINE);
+    const start = stat.size - length;
+    const data = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const read = fs.readSync(fd, data, offset, length - offset, start + offset);
+      if (!read) {
+        throw new Error('Audit log changed while reading');
+      }
+      offset += read;
+    }
+    const first = start ? data.indexOf(10) + 1 : 0;
+    const last = data.lastIndexOf(10);
+    const lines =
+      last < first
+        ? []
+        : data
+            .subarray(first, last + 1)
+            .toString('utf8')
+            .split('\n')
+            .slice(0, -1);
+    return { lines: lines.filter(Boolean).slice(-limit), size: stat.size };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export interface AuditOptions {
   directory?: string;
   name?: string;
@@ -201,7 +257,7 @@ interface AuditEntry {
   error?: string | { sha256: string; bytes: number } | undefined;
 }
 
-// Append-only JSONL audit trail. Recording is best effort by design: an audit
+// Bounded JSONL audit trail. Recording is best effort by design: an audit
 // failure must not turn into a denial of service for the device, but it is
 // counted in stats() so that silent loss is detectable.
 export class AuditLog {
@@ -219,6 +275,7 @@ export class AuditLog {
   rollbackSize: number | null;
   fd = -1;
   size = 0;
+  retained = 0;
   constructor({
     directory,
     name = 'agent',
@@ -253,7 +310,13 @@ export class AuditLog {
     this.closed = false;
     this.rollbackSize = null;
     ensurePrivateDirectory(directory);
-    ({ fd: this.fd, size: this.size } = openAppend(this.file));
+    try {
+      ({ fd: this.fd, size: this.size } = openAppend(this.file));
+      this.pruneEntries();
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
   record({ id, operation, status, durationMs, params, result, error }: AuditRecord): void {
@@ -298,19 +361,16 @@ export class AuditLog {
       if (this.size + data.length > this.maxBytes) {
         this.rotate();
       }
-      this.rollbackSize = this.size;
-      let offset = 0;
-      while (offset < data.length) {
-        const written = fs.writeSync(this.fd, data, offset, data.length - offset);
-        if (!Number.isInteger(written) || written <= 0 || written > data.length - offset) {
-          throw new Error('Audit write made no progress');
-        }
-        offset += written;
+      if (this.retained >= AUDIT_DEFAULTS.maxEntries) {
+        this.pruneEntries(1);
       }
+      this.rollbackSize = this.size;
+      writeAll(this.fd, data);
       this.rollbackSize = null;
       this.size += data.length;
       this.previous = sha256(line).slice(0, 16);
       this.written += 1;
+      this.retained += 1;
     } catch (failure) {
       this.dropped += 1;
       this.lastError =
@@ -324,6 +384,67 @@ export class AuditLog {
       } catch {
         /* next record retries repair */
       }
+    }
+  }
+
+  pruneEntries(reserve = 0): void {
+    let remaining = AUDIT_DEFAULTS.maxEntries - reserve;
+    let retained = 0;
+    // Include archives left by a previous max_files setting. Other devices'
+    // logs and unrelated files are never part of this retention operation.
+    for (let index = 0; index < 20; index++) {
+      const file = index ? `${this.file}.${index}` : this.file;
+      let tail: ReturnType<typeof readTail>;
+      try {
+        tail = readTail(file, remaining);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          continue;
+        }
+        throw error;
+      }
+      const data = tail.lines.length ? `${tail.lines.join('\n')}\n` : '';
+      if (index && !tail.lines.length) {
+        fs.unlinkSync(file);
+      } else if (Buffer.byteLength(data) !== tail.size) {
+        this.replaceFile(file, Buffer.from(data));
+      }
+      remaining -= tail.lines.length;
+      retained += tail.lines.length;
+    }
+    this.retained = retained;
+  }
+
+  replaceFile(file: string, data: Buffer): void {
+    const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+    let fd = -1;
+    try {
+      fd = fs.openSync(
+        temporary,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+        0o600,
+      );
+      secureNewPath(temporary, false);
+      writeAll(fd, data);
+      fs.closeSync(fd);
+      fd = -1;
+      // Windows cannot replace a file with our append handle still open.
+      if (file === this.file && this.fd >= 0) {
+        fs.closeSync(this.fd);
+        this.fd = -1;
+      }
+      try {
+        fs.renameSync(temporary, file);
+      } finally {
+        if (file === this.file) {
+          ({ fd: this.fd, size: this.size } = openAppend(this.file));
+        }
+      }
+    } finally {
+      if (fd >= 0) {
+        fs.closeSync(fd);
+      }
+      fs.rmSync(temporary, { force: true });
     }
   }
 

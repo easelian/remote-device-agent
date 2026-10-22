@@ -102,7 +102,7 @@ Use `--root NAME=PATH` to configure roots; repeat it as needed and quote the ent
 | bubblewrap sandbox | Linux only; bwrap must be installed separately | Unsupported; configuring it prevents startup |
 | Shell resource limits | Applied when supported by the shell; failure stops execution | POSIX ulimit is unsupported; configuring it prevents startup |
 
-The default configuration directory is `~/.config/remote-device-hub` on Linux/macOS and `%LOCALAPPDATA%\remote-device-hub` on Windows. Override it with `XDG_CONFIG_HOME` or `--config`. Existing configuration with insufficient privacy protections is not automatically repaired or made less restrictive. See [Hardening configuration](docs/hardening.md) for operation policies and local audit defaults.
+The default configuration directory is `~/.config/remote-device-hub` on Linux/macOS and `%LOCALAPPDATA%\remote-device-hub` on Windows. Override it with `XDG_CONFIG_HOME` or `--config`. Existing configuration with insufficient privacy protections is not automatically repaired or made less restrictive. Local audit logging is enabled by default and retains at most the latest 1,000 JSONL operation records per device across restarts. Logs live under `~/.local/state/remote-device-hub/audit/` on Linux/macOS (`XDG_STATE_HOME` overrides the state base) or `%LOCALAPPDATA%\remote-device-hub\audit\` on Windows. See [Hardening configuration](docs/hardening.md) for record fields, redaction, retention, and the explicit opt-out.
 
 File roots and path policies constrain the Agent's file tools; they are not an operating-system sandbox. Concurrent path replacement by another local process remains a TOCTOU limitation. Shell commands run as the Agent's operating-system user and are not constrained by file path policies.
 

@@ -458,7 +458,7 @@ test('bwrap sandbox hides HOME, enforces read-only roots, limits and kills throu
   assert.equal(leftover.stdout.trim(), '0');
 });
 
-test('local audit requires explicit opt-in and default creates no state', async (t) => {
+test('local audit is enabled without a sidecar or an explicit enabled field', async (t) => {
   const root = tempDir(t);
   const cfg = baseConfig({ work: root });
   const state = path.join(root, 'state');
@@ -469,11 +469,28 @@ test('local audit requires explicit opt-in and default creates no state', async 
     }
     const options = buildHardening(cfg, file, { env: { XDG_STATE_HOME: state } });
     const agent = new Agent(cfg, options);
-    assert.equal(agent.info().hardening.local_audit.enabled, false);
+    assert.equal(agent.info().hardening.local_audit.enabled, true);
     await agent.dispatch('device_info', {});
     await agent.close();
-    assert.equal(fs.existsSync(state), false);
+    const entries = fs.readFileSync(options.audit.file, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(entries.at(-1).op, 'device_info');
+    assert.equal(entries.at(-1).status, 'ok');
   }
+});
+
+test('local audit can be explicitly disabled without creating state', async (t) => {
+  const root = tempDir(t);
+  const file = path.join(root, 'agent.json');
+  const state = path.join(root, 'state');
+  fs.writeFileSync(hardeningPath(file), JSON.stringify({ version: 1, audit: { enabled: false } }), {
+    mode: 0o600,
+  });
+  const cfg = baseConfig({ work: root });
+  const agent = new Agent(cfg, buildHardening(cfg, file, { env: { XDG_STATE_HOME: state } }));
+  t.after(() => agent.close());
+  assert.equal(agent.info().hardening.local_audit.enabled, false);
+  await agent.dispatch('device_info', {});
+  assert.equal(fs.existsSync(state), false);
 });
 
 test('effective limits distinguish implementation capabilities and policy admission', async (t) => {
