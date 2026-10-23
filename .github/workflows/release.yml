@@ -37,7 +37,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-service-host:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: mtkennerly/shawl
+          ref: dbc4014c6d67027dc75a565d79fe9f493e897eb2 # v1.9.0
+          persist-credentials: false
+      - name: Build native Windows service host from locked upstream source
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE) { throw 'Rust installation failed' }
+          rustup target add ${{ matrix.target }} --toolchain stable
+          if ($LASTEXITCODE) { throw 'Rust target installation failed' }
+          cargo +stable build --locked --release --target ${{ matrix.target }}
+          if ($LASTEXITCODE) { throw 'Service host build failed' }
+          New-Item -ItemType Directory -Path output | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/shawl.exe output/
+          Invoke-WebRequest -UseBasicParsing https://github.com/mtkennerly/shawl/releases/download/v1.9.0/shawl-v1.9.0-legal.zip -OutFile legal.zip
+          if ((Get-FileHash legal.zip -Algorithm SHA256).Hash -ne 'a2a1743a64b79922062906eb32cdaf23db131769f8cabcc98e5d57bbf66eb0b0') { throw 'License checksum mismatch' }
+          Expand-Archive legal.zip output
+      - uses: actions/upload-artifact@v7
+        with:
+          name: service-host-${{ matrix.arch }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
+
   build:
+    needs: windows-service-host
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -75,8 +118,14 @@ jobs:
       - run: npm run style:check
       - run: npm run typecheck
       - run: npm test
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: service-host-*
+          path: service-hosts
       - name: Build all eight self-contained runtime archives
         run: bash packaging/build-runtime.sh
+        env:
+          RDH_SERVICE_HOSTS: ${{ github.workspace }}/service-hosts
       - name: Stage installers and verify manifest
         run: |
           cp packaging/install.sh packaging/install.ps1 dist/
@@ -134,6 +183,9 @@ jobs:
           path: dist
       - name: Test native runtime and install without system Node.js
         run: node scripts/check_runtime.mjs dist ${{ matrix.platform }}
+      - name: Verify Windows logon task and boot service lifecycle
+        if: runner.os == 'Windows'
+        run: node scripts/check_windows_startup.mjs dist
 
   musl:
     needs: build

@@ -98,6 +98,8 @@ if (platform) {
         '-BinDir',
         bin,
         '-NoPair',
+        '-Startup',
+        'None',
       ]);
       assert.equal(
         run(command, ['/d', '/c', 'rdh.cmd', '--version'], { cwd: bin, env }),
