@@ -187,6 +187,7 @@ build_platform() {
     host=${RDH_SERVICE_HOSTS:?RDH_SERVICE_HOSTS must contain native Windows service hosts}/service-host-$arch
     [ -f "$host/shawl.exe" ] || die "missing native service host: $host/shawl.exe"
     cp "$host/shawl.exe" "$tree/shawl.exe"
+    cp "$ROOT/packaging/windows-logon.ps1" "$tree/windows-logon.ps1"
     cp "$host/shawl-v1.9.0-legal.txt" "$tree/SHAWL_LICENSES.txt"
     printf '@echo off\r\n"%%~dp0node.exe" "%%~dp0bin\\remote-device-hub.mjs" %%*\r\nexit /b %%errorlevel%%\r\n' > "$tree/rdh.cmd"
   else

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,20 +34,40 @@ const server = new WebSocketServer({
 await new Promise((resolve) => server.once('listening', resolve));
 const gateway = `http://127.0.0.1:${server.address().port}`;
 const completed = new Map();
+const children = new Map();
+const commands = new Map();
+const manifest = JSON.parse(await readFile(path.join(directory, 'rdh-manifest.json'), 'utf8'));
 server.on('connection', (socket, request) => {
   const id = request.url.split('/').at(-1);
+  socket.deviceId = id;
   socket.on('message', (raw) => {
     const message = JSON.parse(raw);
     if (message.type === 'hello') {
       socket.send(JSON.stringify({ type: 'ready', version: 1, device_id: id }));
       socket.send(JSON.stringify({ type: 'request', id: 'info', operation: 'device_info' }));
+      socket.send(
+        JSON.stringify({
+          type: 'request',
+          id: 'child',
+          operation: 'start_process',
+          params: {
+            command: commands.get(id),
+            root: 'work',
+            cwd: '.',
+            timeout_seconds: 300,
+            wait_seconds: 0,
+          },
+        }),
+      );
     } else if (message.id === 'info' && message.type === 'result' && message.result?.roots?.work) {
       completed.set(id, (completed.get(id) || 0) + 1);
+    } else if (message.id === 'child' && message.result?.status === 'running') {
+      children.set(id, (children.get(id) || 0) + 1);
     }
   });
 });
 const waitFor = async (condition, description) => {
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 90_000;
   while (!(await condition())) {
     assert.ok(Date.now() < deadline, `Timed out: ${description}`);
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -64,6 +84,13 @@ try {
     const data =
       mode === 'Service' ? path.join(process.env.ProgramData, name) : path.join(prefix, 'data');
     const config = path.join(temporary, `${mode}.json`);
+    const bundledNode = path.join(
+      prefix,
+      'versions',
+      `rdh-${manifest.version}-win32-${process.arch}`,
+      'node.exe',
+    );
+    commands.set(name, `"${bundledNode}" -e "setInterval(() => {}, 1000)"`);
     // ProgramData is accessible to LocalService; no personal directory ACLs are broadened.
     await writeFile(
       config,
@@ -72,7 +99,7 @@ try {
         device_id: name,
         token,
         roots: { work: mode === 'Service' ? process.env.ProgramData : temporary },
-        allow_shell: false,
+        allow_shell: true,
         allow_write: false,
       }),
     );
@@ -105,7 +132,10 @@ try {
           '-NoPair',
         ]),
       );
-      await waitFor(() => completed.get(name) >= 1, `${mode} Agent handshake and request`);
+      await waitFor(
+        () => completed.get(name) >= 1 && children.get(name) >= 1,
+        `${mode} Agent handshake and request`,
+      );
       const definition = JSON.parse(
         await run(
           [
@@ -134,7 +164,10 @@ try {
       }
       await run(['-Command', stop], environment);
       await waitFor(
-        () => [...server.clients].every((socket) => socket.readyState !== 1),
+        () =>
+          [...server.clients].every(
+            (socket) => socket.deviceId !== name || socket.readyState !== 1,
+          ),
         `${mode} connection closes on stop`,
       );
       const processes = await run(
@@ -146,7 +179,10 @@ try {
       );
       assert.equal(processes, '0', `${mode} left a background process after stop`);
       await run(['-Command', start], environment);
-      await waitFor(() => completed.get(name) >= 2, `${mode} restart handshake and request`);
+      await waitFor(
+        () => completed.get(name) >= 2 && children.get(name) >= 2,
+        `${mode} restart handshake and request`,
+      );
       console.log(
         `${mode}: autostart definition, authenticated Agent request, stop with no remaining process, and restart passed.`,
       );
@@ -187,7 +223,7 @@ try {
       await run(
         [
           '-Command',
-          'Remove-Item -LiteralPath $env:RDH_TEST_PREFIX -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force -ErrorAction SilentlyContinue',
+          'if (Test-Path -LiteralPath $env:RDH_TEST_DATA) { & "$env:SystemRoot\\System32\\takeown.exe" /F $env:RDH_TEST_DATA /R /D Y /A | Out-Null; & "$env:SystemRoot\\System32\\icacls.exe" $env:RDH_TEST_DATA /grant "*S-1-5-32-544:(OI)(CI)F" /T /Q | Out-Null; Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force -ErrorAction Stop }; if (Test-Path -LiteralPath $env:RDH_TEST_PREFIX) { Remove-Item -LiteralPath $env:RDH_TEST_PREFIX -Recurse -Force -ErrorAction Stop }',
         ],
         environment,
       ).catch(console.error);

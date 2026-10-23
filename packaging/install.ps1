@@ -202,12 +202,14 @@ try {
     try {
         $backgroundArgs = $agentArgs + @('--no-browser', '--recover-lock')
         if ($Startup -eq 'User') {
+            $runner = "'" + (Join-Path $dest 'windows-logon.ps1').Replace("'", "''") + "'"
+            $nodeLiteral = "'" + $node.Replace("'", "''") + "'"
             $logLiteral = "'" + (Join-Path $data 'agent.log').Replace("'", "''") + "'"
-            $command = '$log = ' + $logLiteral + '; & ' + ((@($node) + $backgroundArgs | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ' ') +
-                ' 2>&1 | ForEach-Object { if ((Get-Item -LiteralPath $log -ErrorAction SilentlyContinue).Length -ge 2MB) { Move-Item -LiteralPath $log -Destination ($log + ".previous") -Force }; $_ | Out-File -LiteralPath $log -Encoding utf8 -Append }; exit $LASTEXITCODE'
+            $argumentLiterals = ($backgroundArgs | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ','
+            $command = "& $runner -Node $nodeLiteral -Log $logLiteral -AgentArguments @($argumentLiterals)"
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
             $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-            $action = New-ScheduledTaskAction -Execute $powershell -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $Prefix
+            $action = New-ScheduledTaskAction -Execute $powershell -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $Prefix
             $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
             $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
             $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable

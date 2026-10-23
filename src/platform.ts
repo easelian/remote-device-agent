@@ -305,7 +305,9 @@ function windowsAcl(
     {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 15_000,
+      // Cold Windows/ARM64 PowerShell startup can exceed 15 seconds. Keep the
+      // check bounded and fail closed; never retry a potentially applied ACL write.
+      timeout: 60_000,
       maxBuffer: 64 * 1024,
       env,
     },
