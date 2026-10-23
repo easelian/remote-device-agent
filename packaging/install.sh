@@ -389,6 +389,7 @@ if [ "$STARTUP" != none ]; then
       if [ -n "${XDG_STATE_HOME:-}" ]; then printf 'export XDG_STATE_HOME='; shell_quote "$XDG_STATE_HOME"; printf '\n'; fi
     fi
     if [ -n "$DATA" ]; then printf 'export XDG_STATE_HOME='; shell_quote "$DATA"; printf '\n'; fi
+    printf 'cd '; shell_quote "${DATA:-$HOME}"; printf ' || exit 1\n'
     printf 'exec '; shell_quote "$PREFIX/current/rdh"
     for arg in "$@"; do printf ' '; shell_quote "$arg"; done
     printf ' --recover-lock\n'
@@ -401,7 +402,6 @@ if [ "$STARTUP" != none ]; then
         printf '[Unit]\nDescription=Remote Device Hub Agent\nAfter=network-online.target\n\n[Service]\n'
         if [ "$STARTUP" = service ]; then printf 'User=%s\nGroup=%s\n' "$SERVICE_USER" "$service_gid"; fi
         printf 'ExecStart="%s"\n' "$(unit_quote "$wrapper")"
-        printf 'WorkingDirectory="%s"\n' "$(unit_quote "${DATA:-$HOME}")"
         printf 'Restart=on-failure\nRestartSec=5\nKillMode=mixed\nTimeoutStopSec=30\n\n[Install]\n'
         if [ "$STARTUP" = service ]; then printf 'WantedBy=multi-user.target\n'; else printf 'WantedBy=default.target\n'; fi
       } > "$UNIT"
@@ -433,6 +433,8 @@ if [ "$STARTUP" != none ]; then
         rm -f "$PLIST"
         die 'launchd registration failed'
       fi
+      log "Stop: launchctl kill SIGTERM $(launch_domain)/$LAUNCHD_LABEL"
+      log "Start: launchctl kickstart $(launch_domain)/$LAUNCHD_LABEL"
       log "Stop and disable automatic startup: launchctl bootout $(launch_domain) '$PLIST'; remove '$PLIST'"
       ;;
   esac

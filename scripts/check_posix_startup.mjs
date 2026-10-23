@@ -84,7 +84,11 @@ try {
   const suffix = `${mac ? 'darwin' : 'linux'}-${process.arch}${mac ? '' : '-gnu'}.tar.gz`;
   const archive = (await readdir(directory)).find((name) => name.endsWith(suffix));
   assert.ok(archive, `Missing archive for ${suffix}`);
-  for (const mode of system ? ['none', 'user', 'service'] : ['none']) {
+  for (const mode of system
+    ? ['none', 'user', 'service']
+    : process.argv.includes('--user')
+      ? ['none', 'user']
+      : ['none']) {
     const name = `posix-${mode}-${process.pid}`;
     const prefix = mode === 'service' ? servicePrefix : path.join(temporary, mode);
     const config = path.join(temporary, `${mode}.json`);
@@ -166,7 +170,7 @@ try {
         const definition = await readFile(mode === 'service' ? systemUnit : userUnit, 'utf8');
         if (mac) {
           assert.equal(definition.includes('<key>UserName</key>'), mode === 'service');
-          await manager('bootout', `${serviceDomain}/${label}`);
+          await manager('kill', 'SIGTERM', `${serviceDomain}/${label}`);
         } else {
           assert.match(
             definition,
@@ -191,7 +195,7 @@ try {
       }, `${mode} process exits after stop`);
       if (mode !== 'none') {
         if (mac) {
-          await manager('bootstrap', serviceDomain, mode === 'service' ? systemUnit : userUnit);
+          await manager('kickstart', `${serviceDomain}/${label}`);
         } else {
           await manager('start', 'rdh');
         }
@@ -202,6 +206,23 @@ try {
       );
     } catch (error) {
       console.error(diagnostics);
+      if (mode !== 'none') {
+        if (mac) {
+          console.error(await manager('print', `${serviceDomain}/${label}`).catch(String));
+        } else {
+          console.error(await manager('status', 'rdh', '--no-pager', '--full').catch(String));
+          console.error(
+            await run('journalctl', [
+              ...(mode === 'user' ? ['--user'] : []),
+              '-u',
+              'rdh',
+              '-n',
+              '50',
+              '--no-pager',
+            ]).catch(String),
+          );
+        }
+      }
       throw error;
     } finally {
       if (foreground && foreground.exitCode === null && foreground.signalCode === null) {
