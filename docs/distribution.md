@@ -1,24 +1,35 @@
-# Self-hosted npm package distribution
+# Agent distribution
 
-As requested on 2026-10-01, the frozen `remote-device-hub@0.6.2` TGZ is initially distributed through xdistribute's HTTPS download endpoint. Publishing to the npmjs registry is deferred; self-hosted installation does not require npm publisher authentication.
+The Agent supports runtime archives for Linux/macOS and an npm package for devices with Node.js 22 or later. Both contain the same bundled Agent implementation.
 
-On Linux/macOS with Node.js 22 or later, run:
+| Format | Supported targets | Runtime requirement |
+| --- | --- | --- |
+| `rdh-<version>-<platform>.tar.gz` | Linux glibc/musl on x64/arm64; macOS on x64/arm64 | Includes Node.js |
+| `remote-device-hub-<version>.tgz` | Windows, Linux, and macOS | Node.js 22+ already installed |
+
+## Runtime archives
+
+The release workflow publishes runtime archives, `SHA256SUMS`, `rdh-manifest.json`, and `install.sh` as GitHub Release assets. Install with:
 
 ```sh
-npm install -g https://mcp.xdistribute.site/downloads/remote-device-hub-0.6.2.tgz
+curl -fsSL https://github.com/be-one-click/remote-device-agent/releases/latest/download/install.sh | sh
+```
+
+The installer selects the platform archive, verifies its checksum, extracts it into a version directory, and switches the `current` symlink. Pairing and service registration follow unless disabled with `--no-pair` or `--no-service`. Linux uses a systemd user service; macOS uses launchd. See the [installation options](../README.md#install-and-run) for offline installation and removal.
+
+## npm packages
+
+Distribute the TGZ built by `scripts/release.mjs` through an internal artifact service or copy it to the device. For the current package version:
+
+```sh
+npm install --global --ignore-scripts --offline ./remote-device-hub-0.7.0.tgz
 remote-device-agent --version
 ```
 
-The version command should print `0.6.2`. `remote-device-hub` is another command alias provided by the same package.
+The command should print the installed package version. The `remote-device-hub` alias starts the same Agent. The package has no runtime npm dependencies or installation scripts, so installing a local TGZ requires no registry access. Keep an immutable download URL and a digest for each distributed version.
 
-The package is 53,839 bytes. Its SHA-256 digest is:
+## Internal mirrors and rollout channels
 
-```text
-39d36e8b51c8c1fd913ce4d357bb3ad9452a6718edce7763985db107864ded35
-```
+An internal mirror for runtime installation must serve the release files together. Set the installer's `--base` to that directory. Devices with an existing runtime installation can use `rdh upgrade --index URL` to read an internal channel index.
 
-The same frozen package is archived at [2026-10-01 TGZ](https://mcp.xdistribute.site/releases/20261001/remote-device-hub-0.6.2.tgz). It is also available through the existing port-based endpoint: [xdistribute:8090 TGZ](https://xdistribute.site:8090/downloads/remote-device-hub-0.6.2.tgz).
-
-Installation from the canonical HTTPS URL was verified on xdistribute with Node v22.13.1 and npm 10.9.2, using a separate temporary prefix. All 27 installed source files matched the frozen release record. `--version` and `--help` succeeded for both command aliases. The temporary installation directory was removed. This check did not initiate a new Agent pairing.
-
-Evidence: [download readback](../releases/evidence/selfhost-download-0.6.2-20261001-fresh.json) and [xdistribute installation validation](../releases/evidence/selfhost-npm-install-on-xdistribute-0.6.2-20261001.json). See the [0.6.2 release record](../releases/remote-device-hub-0.6.2.json) for each distribution channel's status.
+The `Promote` workflow writes `channels/stable.json` or `channels/canary.json` with artifact URLs, checksums, an optional minimum source version, and a rollout percentage. A device's installation ID determines its rollout bucket. Promotion changes the index; it does not create another package. See the [upgrade and rollback commands](../README.md#releases-and-staged-rollouts).

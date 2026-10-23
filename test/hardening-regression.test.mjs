@@ -363,15 +363,16 @@ test('enabled audit never records inline command or query secrets on success err
   assert.ok(!raw.includes('FAKE-INLINE-SECRET'));
   assert.ok(!raw.includes('FAKE-QUERY-SECRET'));
   const records = lines(options.audit);
+  const calls = records.filter((record) => record.op !== 'process_exit');
   assert.deepEqual(
-    records.slice(0, 3).map((record) => record.status),
+    calls.slice(0, 3).map((record) => record.status),
     ['ok', 'error', 'denied'],
   );
-  assert.equal(
-    records[0].params.command_sha256,
-    createHash('sha256').update(command).digest('hex'),
-  );
-  assert.equal(records[0].params.command_bytes, Buffer.byteLength(command));
+  assert.equal(calls[0].params.command_sha256, createHash('sha256').update(command).digest('hex'));
+  assert.equal(calls[0].params.command_bytes, Buffer.byteLength(command));
+  const completed = records.find((record) => record.op === 'process_exit');
+  assert.equal(completed.result.exit_code, 0);
+  assert.equal(completed.params.command, undefined);
 });
 
 test(

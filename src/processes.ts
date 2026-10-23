@@ -7,14 +7,35 @@ import type { DeviceConfig, SandboxSettings } from './types.js';
 import type { ChildProcessByStdio } from 'node:child_process';
 import type { Writable, Readable } from 'node:stream';
 import { errorCode, isInteger, type Awaitable } from './boundary.js';
+import { processEnvironment, validateInheritedEnv } from './process-environment.js';
+
+export interface ProcessFailure {
+  name: string;
+  code: string;
+  errno?: number;
+  syscall?: string;
+  path?: string;
+}
+
+export class ProcessStartError extends Error {
+  readonly code = 'process_start_failed';
+  constructor(
+    readonly jobId: string,
+    readonly details: ProcessFailure,
+  ) {
+    super(`Process launch failed: ${JSON.stringify(details)}; job_id=${jobId}`);
+    this.name = 'ProcessStartError';
+  }
+}
 
 interface ProcessJob {
-  process: ChildProcessByStdio<Writable, Readable, null>;
+  process: ChildProcessByStdio<Writable, Readable, Readable>;
   started: number;
   segments: { text: string; length: number }[];
   output_length: number;
   base_offset: number;
-  status: 'running' | 'exited' | 'timed_out' | 'terminated';
+  status: 'running' | 'exited' | 'timed_out' | 'terminated' | 'failed';
+  error: ProcessFailure | null;
   task: Promise<void> | null;
   closed: boolean;
   stdinLock: Promise<void>;
@@ -43,10 +64,18 @@ export class Processes {
   startTail: Promise<void>;
   offlineTimer: ReturnType<typeof setTimeout> | null;
   accepting: boolean;
+  readonly inheritEnv: string[];
+  readonly onExit:
+    | ((result: ReturnType<Processes['read']>, requestId?: string) => void)
+    | undefined;
   constructor(
     config: DeviceConfig,
     files: Processes['files'],
-    options: { sandbox?: SandboxSettings | null } = {},
+    options: {
+      sandbox?: SandboxSettings | null;
+      inheritEnv?: readonly string[];
+      onExit?: (result: ReturnType<Processes['read']>, requestId?: string) => void;
+    } = {},
   ) {
     this.config = config;
     this.files = files;
@@ -55,14 +84,17 @@ export class Processes {
     this.startTail = Promise.resolve();
     this.offlineTimer = null;
     this.accepting = true;
+    this.inheritEnv = validateInheritedEnv([...(options.inheritEnv ?? [])]);
+    this.onExit = options.onExit;
   }
 
   async start(
     command: unknown,
     root: unknown,
     cwd: unknown = '.',
-    timeout_seconds: unknown = 300,
+    timeout_seconds: unknown = Math.min(300, this.config.max_process_seconds),
     wait_seconds: unknown = 1,
+    requestId?: string,
   ) {
     if (!this.config.allow_shell) {
       throw new Error("Shell execution is disabled in this device's configuration");
@@ -116,43 +148,10 @@ export class Processes {
       if (!this.accepting) {
         throw new Error('Process manager is closing or offline');
       }
-      const env: NodeJS.ProcessEnv = {};
-      for (const key of [
-        'PATH',
-        'HOME',
-        'USER',
-        'LANG',
-        'LC_ALL',
-        'TMPDIR',
-        ...(process.platform === 'win32'
-          ? [
-              'Path',
-              'SystemRoot',
-              'SYSTEMROOT',
-              'WINDIR',
-              'COMSPEC',
-              'PATHEXT',
-              'TEMP',
-              'TMP',
-              'USERPROFILE',
-              'APPDATA',
-              'LOCALAPPDATA',
-            ]
-          : []),
-      ]) {
-        if (process.env[key] !== undefined) {
-          env[key] = process.env[key];
-        }
-      }
-      if (!env.PATH && !env.Path) {
-        env.PATH =
-          process.platform === 'win32'
-            ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32`
-            : '/usr/local/bin:/usr/bin:/bin';
-      }
-      // Python's subprocess uses stderr=STDOUT, so use one pipe to preserve
-      // the arrival order of stdout and stderr chunks.
-      // Without sandbox settings this is exactly the previous behaviour.
+      const env = processEnvironment({
+        inherit: this.inheritEnv,
+        session: this.sandbox?.mode !== 'bwrap',
+      });
       if (
         process.platform === 'win32' &&
         (this.sandbox?.mode === 'bwrap' || Object.keys(this.sandbox?.limits ?? {}).length)
@@ -171,7 +170,7 @@ export class Processes {
         throw new Error('Windows shell must be cmd.exe, powershell.exe or pwsh.exe');
       }
       const script = windows
-        ? `${command} 2>&1`
+        ? command
         : `${limitsPrefix(this.sandbox?.limits)}exec 2>&1; ${command}`;
       let executable = this.config.shell;
       let argv = windows
@@ -209,7 +208,7 @@ export class Processes {
         windowsHide: true,
         windowsVerbatimArguments: windows && !powershell,
         shell: false,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       // Prevent an asynchronous EPIPE from becoming an uncaught exception;
       // writeStdin installs a scoped listener when it is waiting for drain.
@@ -221,18 +220,42 @@ export class Processes {
         output_length: 0,
         base_offset: 0,
         status: 'running',
+        error: null,
         task: null,
         closed: false,
         stdinLock: Promise.resolve(),
       };
       const jobId = randomBytes(12).toString('hex');
       this.jobs.set(jobId, job);
+      const spawned = new Promise<void>((resolve, reject) => {
+        const onSpawn = () => {
+          child.removeListener('error', onError);
+          resolve();
+        };
+        const onError = (error: NodeJS.ErrnoException) => {
+          child.removeListener('spawn', onSpawn);
+          const details: ProcessFailure = {
+            name: error.name.slice(0, 64),
+            code: String(error.code ?? 'UNKNOWN').slice(0, 64),
+            ...(typeof error.errno === 'number' ? { errno: error.errno } : {}),
+            ...(typeof error.syscall === 'string' ? { syscall: error.syscall.slice(0, 256) } : {}),
+            ...(typeof error.path === 'string' ? { path: error.path.slice(0, 256) } : {}),
+          };
+          job.error = details;
+          job.status = 'failed';
+          reject(new ProcessStartError(jobId, details));
+        };
+        child.once('spawn', onSpawn);
+        child.once('error', onError);
+      });
       job.task = this.watch(job, timeout_seconds).finally(() => {
         job.closed = true;
+        this.onExit?.(this.read(jobId), requestId);
       });
       // The creation lock must not serialize the caller's optional wait.
       release.value!();
       release.value = null;
+      await spawned;
       if (wait_seconds) {
         await Promise.race([job.task, sleep(wait_seconds * 1000)]);
       }
@@ -290,8 +313,10 @@ export class Processes {
   }
 
   async watch(job: ProcessJob, timeoutSeconds: number) {
-    const decoder = new StringDecoder('utf8');
-    job.process.stdout.on('data', (chunk: Buffer) => this.append(job, decoder.write(chunk)));
+    const stdout = new StringDecoder('utf8');
+    const stderr = new StringDecoder('utf8');
+    job.process.stdout.on('data', (chunk: Buffer) => this.append(job, stdout.write(chunk)));
+    job.process.stderr.on('data', (chunk: Buffer) => this.append(job, stderr.write(chunk)));
     const closed = new Promise<number | null>((resolve) => {
       job.process.once('close', resolve);
       job.process.once('error', () => resolve(null));
@@ -318,7 +343,8 @@ export class Processes {
       throw error;
     } finally {
       clearTimeout(timer);
-      this.append(job, decoder.end());
+      this.append(job, stdout.end());
+      this.append(job, stderr.end());
       await this.kill(job);
       await closed;
     }
@@ -399,6 +425,7 @@ export class Processes {
       next_offset: start + codePoints(content).length,
       output_dropped: offset < job.base_offset,
       started_at: job.started,
+      ...(job.error ? { error: job.error } : {}),
     };
   }
 
@@ -411,6 +438,7 @@ export class Processes {
         exit_code: job.process.exitCode,
         started_at: job.started,
         cleanup_pending: job.status !== 'running' && !job.closed,
+        ...(job.error ? { error: job.error } : {}),
       })),
     };
   }

@@ -50,6 +50,52 @@ function isParams(value: unknown): value is UnknownRecord {
   return isRecord(value) && !Buffer.isBuffer(value);
 }
 
+function textRange(data: Buffer, offset: number, length: number) {
+  const encoding =
+    data[0] === 0xff && data[1] === 0xfe
+      ? 'utf-16le'
+      : data[0] === 0xfe && data[1] === 0xff
+        ? 'utf-16be'
+        : 'utf-8';
+  const decoder = new TextDecoder(encoding, { fatal: true, ignoreBOM: true });
+  try {
+    decoder.decode(data);
+  } catch {
+    throw new Error(
+      `File is not valid ${encoding.toUpperCase()}; use read_file_chunk for exact bytes`,
+    );
+  }
+  const start = Math.min(offset, data.length);
+  if (encoding !== 'utf-8' && start % 2) {
+    throw new Error('offset must be aligned to a UTF-16 code unit');
+  }
+  const requestedEnd = Math.min(start + length, data.length);
+  for (let trim = 0; trim <= 3 && requestedEnd - trim >= start; trim++) {
+    const end = requestedEnd - trim;
+    try {
+      const content = decoder.decode(data.subarray(start, end));
+      if (end === start && start < data.length) {
+        break;
+      }
+      return {
+        content,
+        content_base64: data.subarray(start, end).toString('base64'),
+        content_encoding: encoding,
+        utf8_valid: encoding === 'utf-8',
+        offset: start,
+        next_offset: end,
+        size_bytes: data.length,
+        truncated: end < data.length,
+      };
+    } catch {
+      // A byte range may end inside an otherwise valid encoded character.
+    }
+  }
+  throw new Error(
+    `Byte range cannot fit complete ${encoding.toUpperCase()} characters; align offset or increase length`,
+  );
+}
+
 export class Files {
   roots: Record<string, string>;
   allowWrite: boolean;
@@ -99,22 +145,59 @@ export class Files {
     return [base, pathParts(value)];
   }
 
-  async directory(root: unknown, value: unknown = '.'): Promise<DirectoryHandle> {
+  async directory(root: unknown, value: unknown = '.', create = false): Promise<DirectoryHandle> {
     const [base, parts] = this.parts(root, value);
-    return asPromise(this.filesystem.openDirectory(base, parts.length ? parts.join('/') : '.'));
+    if (!create) {
+      return asPromise(this.filesystem.openDirectory(base, parts.length ? parts.join('/') : '.'));
+    }
+    if (parts.length > 128) {
+      throw new Error('Directory creation exceeds 128 path components');
+    }
+    let fd = await asPromise(this.filesystem.openDirectory(base, '.'));
+    try {
+      for (const part of parts) {
+        let next;
+        try {
+          next = await asPromise(this.filesystem.dupDirChild(fd, part));
+        } catch (error) {
+          if (errorCode(error) !== 'ENOENT') {
+            throw error;
+          }
+          try {
+            await asPromise(this.filesystem.mkdirAt(fd, part));
+          } catch (creationError) {
+            if (errorCode(creationError) !== 'EEXIST') {
+              throw creationError;
+            }
+          }
+          next = await asPromise(this.filesystem.dupDirChild(fd, part));
+        }
+        const previous = fd;
+        fd = next;
+        await this.close(previous);
+      }
+      return fd;
+    } catch (error) {
+      await this.close(fd);
+      throw error;
+    }
   }
 
   async close(fd: DirectoryHandle): Promise<void> {
     return asPromise(this.filesystem.close(fd));
   }
 
-  async parent(root: unknown, value: unknown): Promise<{ fd: DirectoryHandle; name: string }> {
-    const [base, parts] = this.parts(root, value);
+  async parent(
+    root: unknown,
+    value: unknown,
+    create = false,
+  ): Promise<{ fd: DirectoryHandle; name: string }> {
+    const [, parts] = this.parts(root, value);
     if (!parts.length) {
       throw new Error('A file name is required');
     }
     const parentPath = parts.slice(0, -1).join('/') || '.';
-    const fd = await asPromise(this.filesystem.openDirectory(base, parentPath));
+    const fd = await this.directory(root, parentPath, create);
     return { fd, name: parts.at(-1)! };
   }
 
@@ -129,7 +212,13 @@ export class Files {
   async read(arg: unknown, value?: unknown, offset: unknown = 0, length: unknown = 32768) {
     const params = isParams(arg) ? arg : { root: arg, path: value, offset, length };
     ({ root: arg, path: value, offset = 0, length = 32768 } = params);
-    if (!isInteger(offset) || offset < 0 || !isInteger(length) || length < 1 || length > 65536) {
+    if (
+      !isSafeInteger(offset) ||
+      offset < 0 ||
+      !isInteger(length) ||
+      length < 1 ||
+      length > 65536
+    ) {
       throw new Error('Invalid byte offset or length (1..65536)');
     }
     const { fd, name } = await this.parent(arg, value);
@@ -137,11 +226,8 @@ export class Files {
       const data = await this._read(fd, name);
       return {
         path: value,
-        content: data.subarray(offset, offset + length).toString('utf8'),
+        ...textRange(data, offset, length),
         sha256: sha256(data),
-        size_bytes: data.length,
-        next_offset: Math.min(offset + length, data.length),
-        truncated: offset + length < data.length,
       };
     } finally {
       await this.close(fd);
@@ -281,34 +367,12 @@ export class Files {
           throw new Error('File exceeds 1 MiB');
         }
         const start = request.offset ?? 0;
-        const chunk = await asPromise(
-          this.filesystem.readFileChunk(fd, name, start, sourceLength, MAX_CHUNK_FILE),
-        );
-        let end = chunk.bytes.length;
-        let text;
-        for (let trim = 0; trim <= 3; trim++) {
-          try {
-            text = new TextDecoder('utf-8', { fatal: true }).decode(chunk.bytes.subarray(0, end));
-            break;
-          } catch {
-            end -= 1;
-          }
-        }
-        if (text === undefined || (chunk.bytes.length > 0 && end <= 0)) {
-          throw new Error('length cannot fit complete UTF-8 character or invalid UTF-8');
-        }
+        const data = await this._read(fd, name);
         return {
           path: request.path,
-          content: text,
-          content_base64: chunk.bytes.subarray(0, end).toString('base64'),
-          utf8_valid: true,
-          content_encoding: 'utf-8',
-          offset: start,
-          next_offset: start + end,
-          size_bytes: chunk.size_bytes,
-          truncated: start + end < chunk.size_bytes,
+          ...textRange(data, start, sourceLength),
           read_only: true,
-          fingerprint: `${chunk.dev}:${chunk.ino}:${chunk.size_bytes}:${chunk.mtime_ms}`,
+          fingerprint: `${info.dev}:${info.ino}:${info.size_bytes}:${info.mtime_ms}`,
         };
       } finally {
         await this.close(fd);
@@ -332,7 +396,7 @@ export class Files {
         results.push({ path: request.path, error: 'Total response limit exceeded' });
         continue;
       }
-      const length = request.length ?? 32768;
+      const length = request.length ?? (canonical ? 16384 : 32768);
       const offset = request.offset ?? 0;
       if (
         !isSafeInteger(offset) ||
@@ -371,11 +435,16 @@ export class Files {
             });
             continue;
           }
-          const sourceBytes = Buffer.byteLength(text, 'utf8');
+          const sourceBytes = Buffer.byteLength(
+            text,
+            candidate.content_encoding === 'utf-8' ? 'utf8' : 'utf16le',
+          );
           result = {
             ...candidate,
             content: text,
-            content_base64: Buffer.from(text, 'utf8').toString('base64'),
+            content_base64: Buffer.from(candidate.content_base64, 'base64')
+              .subarray(0, sourceBytes)
+              .toString('base64'),
             next_offset: candidate.offset + sourceBytes,
             truncated: true,
           };
@@ -478,6 +547,9 @@ export class Files {
     if (typeof content !== 'string') {
       throw new Error('content must be a string');
     }
+    if (typeof expected_sha256 !== 'string') {
+      throw new Error('expected_sha256 must be a string');
+    }
     const data = Buffer.from(content, 'utf8');
     if (data.length > MAX_FILE) {
       throw new Error('Content exceeds 1 MiB');
@@ -489,7 +561,7 @@ export class Files {
     });
     await previous;
     try {
-      const { fd, name } = await this.parent(arg, value);
+      const { fd, name } = await this.parent(arg, value, expected_sha256 === '');
       try {
         let current = null;
         try {
@@ -550,7 +622,7 @@ export class Files {
       }
       let text;
       try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data);
       } catch {
         throw new Error('File is not valid UTF-8');
       }
@@ -575,12 +647,8 @@ export class Files {
     if (!this.allowWrite) {
       throw new Error('File writes are disabled');
     }
-    const { fd, name } = await this.parent(arg, value);
-    try {
-      await asPromise(this.filesystem.mkdirAt(fd, name));
-    } finally {
-      await this.close(fd);
-    }
+    const fd = await this.directory(arg, value, true);
+    await this.close(fd);
     return { created: value };
   }
 

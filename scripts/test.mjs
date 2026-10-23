@@ -13,6 +13,7 @@ const windowsSuites = new Set([
   'server-selection.test.mjs',
   'platform-storage.test.mjs',
   'platform-runtime.test.mjs',
+  'runtime-regression.test.mjs',
 ]);
 const files = readdirSync(new URL('../test/', import.meta.url))
   .filter((name) => name.endsWith('.test.mjs'))

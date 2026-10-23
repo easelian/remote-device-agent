@@ -14,6 +14,7 @@ import {
   type UnknownRecord,
 } from './boundary.js';
 import { LIMIT_RANGES, defaultHiddenPaths, canonicalPath, probeBwrap } from './sandbox.js';
+import { validateInheritedEnv } from './process-environment.js';
 
 // Hardening lives in a sidecar file next to the device config
 // (<name>.policy.json) instead of the shared device config. The device config
@@ -28,6 +29,7 @@ const TOP_KEYS = new Set([
   'protected_paths',
   'sandbox',
   'audit',
+  'inherit_env',
 ]);
 const SANDBOX_KEYS = new Set(['mode', 'network', 'hide_home', 'expose', 'limits']);
 const AUDIT_KEYS = new Set(['enabled', 'max_bytes', 'max_files', 'required']);
@@ -42,6 +44,7 @@ export interface ValidatedHardening {
   sandbox: SandboxSettings | null;
   readonlyRoots: string[];
   audit: AuditSettings;
+  inheritEnv: string[];
 }
 
 function policyStrings(value: unknown, label: string, limit: number): string[] {
@@ -222,7 +225,8 @@ export function validateHardening(
     }
     Object.assign(audit, { enabled, maxBytes, maxFiles, required });
   }
-  return { policy, sandbox, readonlyRoots, audit };
+  const inheritEnv = validateInheritedEnv(value.inherit_env ?? []);
+  return { policy, sandbox, readonlyRoots, audit, inheritEnv };
 }
 
 export function auditDirectory(env: NodeJS.ProcessEnv = process.env) {
@@ -269,6 +273,7 @@ export function buildHardening(
         name: config.device_id,
         maxBytes: loaded.audit.maxBytes,
         maxFiles: loaded.audit.maxFiles,
+        required: loaded.audit.required,
       });
     } catch (error) {
       if (loaded.audit.required) {
@@ -277,5 +282,5 @@ export function buildHardening(
       log.error(`Audit log disabled: ${errorMessage(error)}`);
     }
   }
-  return { policy: loaded.policy, sandbox, audit };
+  return { policy: loaded.policy, sandbox, audit, inheritEnv: loaded.inheritEnv };
 }

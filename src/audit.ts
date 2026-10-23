@@ -228,6 +228,14 @@ export interface AuditOptions {
   name?: string;
   maxBytes?: number;
   maxFiles?: number;
+  required?: boolean;
+}
+export class AuditWriteError extends Error {
+  readonly code = 'audit_write_failed';
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuditWriteError';
+  }
 }
 export interface AuditRecord {
   id?: unknown;
@@ -257,14 +265,14 @@ interface AuditEntry {
   error?: string | { sha256: string; bytes: number } | undefined;
 }
 
-// Bounded JSONL audit trail. Recording is best effort by design: an audit
-// failure must not turn into a denial of service for the device, but it is
-// counted in stats() so that silent loss is detectable.
+// Optional auditing counts dropped records; required auditing reports write
+// failures so dispatch can refuse unaudited work.
 export class AuditLog {
   readonly directory: string;
   readonly file: string;
   readonly maxBytes: number;
   readonly maxFiles: number;
+  readonly required: boolean;
   readonly boot: string;
   sequence: number;
   previous: string;
@@ -281,6 +289,7 @@ export class AuditLog {
     name = 'agent',
     maxBytes = AUDIT_DEFAULTS.maxBytes,
     maxFiles = AUDIT_DEFAULTS.maxFiles,
+    required = false,
   }: AuditOptions = {}) {
     if (typeof directory !== 'string' || !path.isAbsolute(directory)) {
       throw new TypeError('Audit directory must be an absolute path');
@@ -293,7 +302,8 @@ export class AuditLog {
       maxBytes < 4096 ||
       !Number.isSafeInteger(maxFiles) ||
       maxFiles < 1 ||
-      maxFiles > 20
+      maxFiles > 20 ||
+      typeof required !== 'boolean'
     ) {
       throw new TypeError('Invalid audit log limits');
     }
@@ -301,6 +311,7 @@ export class AuditLog {
     this.file = path.join(directory, `${name}.jsonl`);
     this.maxBytes = maxBytes;
     this.maxFiles = maxFiles;
+    this.required = required;
     this.boot = randomBytes(4).toString('hex');
     this.sequence = 0;
     this.previous = '0'.repeat(16);
@@ -366,11 +377,15 @@ export class AuditLog {
       }
       this.rollbackSize = this.size;
       writeAll(this.fd, data);
+      if (this.required) {
+        fs.fsyncSync(this.fd);
+      }
       this.rollbackSize = null;
       this.size += data.length;
       this.previous = sha256(line).slice(0, 16);
       this.written += 1;
       this.retained += 1;
+      this.lastError = null;
     } catch (failure) {
       this.dropped += 1;
       this.lastError =
@@ -383,6 +398,9 @@ export class AuditLog {
         this.repairTail();
       } catch {
         /* next record retries repair */
+      }
+      if (this.required) {
+        throw new AuditWriteError(`Required local audit write failed (${this.lastError})`);
       }
     }
   }

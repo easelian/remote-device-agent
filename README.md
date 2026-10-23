@@ -19,7 +19,14 @@ node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 
 Source files live in `src/*.ts`. `npm run build` generates modules in `.build/` for tests and `bundle/agent.mjs` for distribution. `npm pack` runs type checking and compilation first. The release TGZ must be no larger than 64 KiB, with at most 512 KiB of unpacked content. Package checks also verify the file manifest, offline installation with an empty cache, and both command aliases. Stale compiled code or a modified bundle prevents release-record generation.
 
-Building writes local files only. It does not publish to npm, deploy to devices, or link an account. See [Maintenance and releases](docs/maintenance.md) for version records and historical validation.
+Building writes local files only. It does not publish to npm, deploy to devices, or link an account. See [Maintenance and releases](docs/maintenance.md) for build checks and the release workflow.
+
+## Documentation
+
+- [Architecture](docs/architecture.md): component responsibilities, connection flow, and operation lifetimes.
+- [Hardening configuration](docs/hardening.md): operation policies, sandboxing, environment inheritance, and local auditing.
+- [Distribution](docs/distribution.md): runtime archives, npm packages, and internal mirrors.
+- [Maintenance and releases](docs/maintenance.md): development checks, package constraints, and release preparation.
 
 ## Install and run
 
@@ -104,11 +111,13 @@ Use `--root NAME=PATH` to configure roots; repeat it as needed and quote the ent
 
 The default configuration directory is `~/.config/remote-device-hub` on Linux/macOS and `%LOCALAPPDATA%\remote-device-hub` on Windows. Override it with `XDG_CONFIG_HOME` or `--config`. Existing configuration with insufficient privacy protections is not automatically repaired or made less restrictive. Local audit logging is enabled by default and retains at most the latest 1,000 JSONL operation records per device across restarts. Logs live under `~/.local/state/remote-device-hub/audit/` on Linux/macOS (`XDG_STATE_HOME` overrides the state base) or `%LOCALAPPDATA%\remote-device-hub\audit\` on Windows. See [Hardening configuration](docs/hardening.md) for record fields, redaction, retention, and the explicit opt-out.
 
+The same guide documents explicit application environment inheritance, audit health and required audit writes, character-safe UTF-8/UTF-16 text reads, and recursive parent-directory creation. Process launch errors retain bounded OS diagnostics, and local audit records also track final process status.
+
 File roots and path policies constrain the Agent's file tools; they are not an operating-system sandbox. Concurrent path replacement by another local process remains a TOCTOU limitation. Shell commands run as the Agent's operating-system user and are not constrained by file path policies.
 
 Brief network interruptions retain processes and bounded output for up to five minutes. Revoked authorization, prolonged disconnection, or an explicit exit triggers cleanup. If a timeout or disconnect leaves an operation's outcome unknown, inspect its state before retrying. On Linux/macOS, `cleanup_pending` means supervisor resources have not finished closing. On Windows, this field does not prove that all detached descendants have exited. Recover a configuration lock left by an abnormal exit with `--recover-lock` only after confirming that the previous process has stopped.
 
-Local validation currently runs on Linux. CI is configured for all three operating systems, including native Windows file, ACL, pairing, and process cases. Windows/macOS CI runs and physical-host results that have not actually been executed remain unverified; pure path tests on Linux are not substitutes. Historical release status is recorded in the original files under `releases/`.
+CI is configured for all three operating systems, including native Windows file, ACL, pairing, and process cases. Validate changes on the affected operating system; pure path tests on Linux do not establish Windows ACL, shell, or process behavior.
 
 ## Code style
 

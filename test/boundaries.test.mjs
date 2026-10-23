@@ -134,7 +134,7 @@ test('bounded filesystem adapters support synchronous and asynchronous operation
     );
     assert.deepEqual(await files.list('work'), await files.list({ root: 'work' }));
     assert.equal(openHandles.size, 0);
-    adapter.readFileChunk = () => {
+    adapter.readFile = () => {
       throw { code: 'EIO', message: 'injected read failure' };
     };
     const result = await files.readMultipleFiles({

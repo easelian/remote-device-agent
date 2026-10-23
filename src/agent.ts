@@ -1,7 +1,7 @@
 import os from 'node:os';
 import type { IncomingMessage } from 'node:http';
 import type { DeviceConfig, SandboxSettings } from './types.js';
-import type { AuditLog, AuditRecord } from './audit.js';
+import { AuditWriteError, type AuditLog, type AuditRecord } from './audit.js';
 import type { Policy } from './policy.js';
 import type { TransportLimits } from './transport.js';
 import { platformName } from './platform.js';
@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { KNOWN_OPERATIONS, WRITE_OPERATIONS, PolicyDeniedError } from './policy.js';
 import WebSocket from '../vendor/ws/lib/websocket.js';
 import { Files } from './files.js';
-import { Processes } from './processes.js';
+import { Processes, ProcessStartError } from './processes.js';
 import { SearchTasks } from './searches.js';
 import { BoundedSender, TRANSPORT_LIMITS } from './transport.js';
 
@@ -35,7 +35,10 @@ const fatalError = (message: string) => Object.assign(new Error(message), { fata
 type RpcParameters = Record<string, unknown>;
 export interface AgentOptions {
   policy?: Pick<Policy, 'describe' | 'denial'> | null;
-  audit?: Pick<AuditLog, 'record' | 'close'> | null;
+  audit?:
+    | (Pick<AuditLog, 'record' | 'close'> & Partial<Pick<AuditLog, 'stats' | 'required'>>)
+    | null;
+  inheritEnv?: readonly string[];
   sandbox?: SandboxSettings | null;
   transportLimits?: Partial<TransportLimits>;
   operationTimeoutMs?: number;
@@ -53,7 +56,7 @@ export class Agent {
   readonly config: DeviceConfig;
   readonly files: Files;
   readonly policy: AgentOptions['policy'];
-  readonly audit: Pick<AuditLog, 'record' | 'close'> | null;
+  readonly audit: AgentOptions['audit'];
   readonly sandbox: SandboxSettings | null;
   readonly processes: Processes;
   readonly searches: SearchTasks;
@@ -70,7 +73,24 @@ export class Agent {
     this.policy = options.policy ?? null;
     this.audit = options.audit ?? null;
     this.sandbox = options.sandbox ?? null;
-    this.processes = new Processes(config, this.files, { sandbox: options.sandbox ?? null });
+    this.processes = new Processes(config, this.files, {
+      sandbox: options.sandbox ?? null,
+      inheritEnv: options.inheritEnv ?? [],
+      onExit: (result, requestId) => {
+        try {
+          this.audit?.record({
+            id: requestId,
+            operation: 'process_exit',
+            status: result.status,
+            durationMs: Math.max(0, Date.now() - result.started_at * 1000),
+            result,
+            error: result.error ? JSON.stringify(result.error) : undefined,
+          });
+        } catch {
+          console.error('Local audit could not record process completion; inspect audit health');
+        }
+      },
+    });
     this.searches = new SearchTasks(this.files);
     this.inFlightOperations = new Set();
     this.transportLimits = { ...TRANSPORT_LIMITS, ...options.transportLimits };
@@ -110,7 +130,8 @@ export class Agent {
         hide_home: sandbox?.mode === 'bwrap' ? sandbox.hideHome : false,
         limits: sandbox?.limits ?? {},
       },
-      local_audit: { enabled: this.audit !== null },
+      inherit_env: [...this.processes.inheritEnv].sort(),
+      local_audit: { enabled: this.audit !== null, required: this.audit?.required ?? false },
     };
     const revision = createHash('sha256')
       .update(
@@ -135,6 +156,7 @@ export class Agent {
     return {
       version: 1,
       ...effective,
+      local_audit: { ...effective.local_audit, ...this.audit?.stats?.() },
       protected_paths: paths,
       protected_paths_count: effective.protected_paths.length,
       protected_paths_truncated: paths.length !== effective.protected_paths.length,
@@ -224,19 +246,40 @@ export class Agent {
       record('denied', { error: denial.message });
       throw denial;
     }
+    if (this.audit?.required && operation !== 'device_info') {
+      record('started', {});
+    }
+    let result;
     try {
-      const result = await this.execute(operation, params);
-      record('ok', { result });
-      return result;
+      result = await this.execute(operation, params, context);
     } catch (error) {
-      record('error', {
-        error: error && typeof error === 'object' && 'message' in error ? error.message : undefined,
-      });
+      try {
+        record('error', { error: errorMessage(error) });
+      } catch {
+        throw new AuditWriteError(
+          'Operation failed and its outcome could not be audited; inspect before retrying',
+        );
+      }
       throw error;
     }
+    try {
+      record('ok', { result });
+    } catch (error) {
+      if (operation === 'device_info' && error instanceof AuditWriteError) {
+        return this.info();
+      }
+      throw new AuditWriteError(
+        'Operation completed but its outcome could not be audited; inspect before retrying',
+      );
+    }
+    return result;
   }
 
-  async execute(operation: string, params: RpcParameters): Promise<unknown> {
+  async execute(
+    operation: string,
+    params: RpcParameters,
+    context: { requestId?: string } = {},
+  ): Promise<unknown> {
     const files: Record<string, 'list' | 'read' | 'write' | 'edit' | 'mkdir' | 'search'> = {
       list_directory: 'list',
       read_file: 'read',
@@ -273,6 +316,7 @@ export class Agent {
           params.cwd,
           params.timeout_seconds,
           params.wait_seconds,
+          context.requestId,
         );
       case 'read_process':
         return p.read(params.job_id, params.offset, params.limit);
@@ -484,7 +528,11 @@ export class Agent {
                   type: 'result',
                   id: requestId,
                   error: errorMessage(error).slice(0, 1000),
-                  ...(error instanceof PolicyDeniedError ? { error_code: error.code } : {}),
+                  ...(error instanceof PolicyDeniedError ||
+                  error instanceof ProcessStartError ||
+                  error instanceof AuditWriteError
+                    ? { error_code: error.code }
+                    : {}),
                 }),
             )
             .finally(() => {
