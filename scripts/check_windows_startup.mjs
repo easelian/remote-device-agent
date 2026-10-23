@@ -219,14 +219,43 @@ try {
             : 'Stop-ScheduledTask -TaskName $env:RDH_TEST_NAME -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName $env:RDH_TEST_NAME -Confirm:$false -ErrorAction SilentlyContinue',
         ],
         environment,
-      ).catch(console.error);
-      await run(
-        [
-          '-Command',
-          'if (Test-Path -LiteralPath $env:RDH_TEST_DATA) { & "$env:SystemRoot\\System32\\takeown.exe" /F $env:RDH_TEST_DATA /R /D Y /A | Out-Null; & "$env:SystemRoot\\System32\\icacls.exe" $env:RDH_TEST_DATA /grant "*S-1-5-32-544:(OI)(CI)F" /T /Q | Out-Null; Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force -ErrorAction Stop }; if (Test-Path -LiteralPath $env:RDH_TEST_PREFIX) { Remove-Item -LiteralPath $env:RDH_TEST_PREFIX -Recurse -Force -ErrorAction Stop }',
-        ],
-        environment,
-      ).catch(console.error);
+      ).catch((error) => failures.push(error));
+      await waitFor(
+        async () =>
+          (await run(
+            [
+              '-Command',
+              '@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:RDH_TEST_PREFIX, [StringComparison]::OrdinalIgnoreCase) }).Count',
+            ],
+            environment,
+          )) === '0',
+        `${mode} cleanup waits for all processes`,
+      ).catch((error) => failures.push(error));
+      const cleanup = () =>
+        run(
+          [
+            '-Command',
+            'if (Test-Path -LiteralPath $env:RDH_TEST_DATA) { & "$env:SystemRoot\\System32\\takeown.exe" /F $env:RDH_TEST_DATA /R /D Y /A | Out-Null; & "$env:SystemRoot\\System32\\icacls.exe" $env:RDH_TEST_DATA /grant "*S-1-5-32-544:(OI)(CI)F" /T /Q | Out-Null; Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force -ErrorAction Stop }; if (Test-Path -LiteralPath $env:RDH_TEST_PREFIX) { Remove-Item -LiteralPath $env:RDH_TEST_PREFIX -Recurse -Force -ErrorAction Stop }',
+          ],
+          environment,
+        );
+      // Windows can retain executable/file handles briefly after process exit.
+      // Retry only disposable test-file removal, never installation or pairing.
+      let cleanupError;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await cleanup();
+          cleanupError = undefined;
+          break;
+        } catch (error) {
+          cleanupError = error;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      if (cleanupError) {
+        console.error(cleanupError);
+        failures.push(cleanupError);
+      }
     }
   }
   if (failures.length) {
