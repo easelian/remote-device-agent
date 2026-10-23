@@ -246,29 +246,33 @@ test('hardening sidecar is read and validated strictly', (t) => {
   assert.equal(validateHardening({ version: 1 }, roots).policy, null);
 });
 
-test('bwrap arguments hide HOME before binding roots and mark read-only roots', () => {
+test('bwrap arguments hide HOME before binding roots and mark read-only roots', (t) => {
+  const home = fs.realpathSync(tempDir(t));
   const args = buildBwrapArgs({
     roots: { work: '/r/work', docs: '/r/docs' },
     writableRoots: new Set(['work']),
     workdir: '/r/work/sub',
     network: false,
     hideHome: true,
-    home: '/home/u',
-    expose: ['/home/u/.nvm'],
-    hiddenPaths: ['/home/u/.config/remote-device-hub'],
+    home: home,
+    expose: [path.join(home, '.nvm')],
+    hiddenPaths: [path.join(home, '.config', 'remote-device-hub')],
     shell: '/bin/sh',
     script: 'echo hi',
   });
   const at = (...sequence) =>
     args.findIndex((_, index) => sequence.every((value, offset) => args[index + offset] === value));
   assert.ok(args.includes('--unshare-net') && args.includes('--die-with-parent'));
-  assert.ok(at('--tmpfs', '/home/u') < at('--ro-bind', '/home/u/.nvm', '/home/u/.nvm'));
   assert.ok(
-    at('--ro-bind', '/home/u/.nvm', '/home/u/.nvm') <
-      at('--tmpfs', '/home/u/.config/remote-device-hub'),
+    at('--tmpfs', home) < at('--ro-bind', path.join(home, '.nvm'), path.join(home, '.nvm')),
   );
   assert.ok(
-    at('--tmpfs', '/home/u/.config/remote-device-hub') > at('--bind', '/r/work', '/r/work'),
+    at('--ro-bind', path.join(home, '.nvm'), path.join(home, '.nvm')) <
+      at('--tmpfs', path.join(home, '.config', 'remote-device-hub')),
+  );
+  assert.ok(
+    at('--tmpfs', path.join(home, '.config', 'remote-device-hub')) >
+      at('--bind', '/r/work', '/r/work'),
   );
   assert.notEqual(at('--ro-bind', '/r/docs', '/r/docs'), -1);
   assert.equal(at('--bind', '/r/docs', '/r/docs'), -1);
