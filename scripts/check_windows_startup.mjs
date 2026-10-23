@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
@@ -110,6 +110,101 @@ const waitFor = async (condition, description) => {
 };
 const failures = [];
 try {
+  // With redirected input and no -Startup argument, the default must remain temporary.
+  const temporaryName = `RDH-Test-None-${process.pid}`;
+  const temporaryPrefix = path.join(temporary, 'temporary installation');
+  const temporaryConfig = path.join(temporary, 'temporary.json');
+  const temporaryNode = path.join(
+    temporaryPrefix,
+    'versions',
+    `rdh-${manifest.version}-win32-${process.arch}`,
+    'node.exe',
+  );
+  commands.set(temporaryName, `"${temporaryNode}" -e "setInterval(() => {}, 1000)"`);
+  await writeFile(
+    temporaryConfig,
+    JSON.stringify({
+      gateway_url: gateway,
+      device_id: temporaryName,
+      token,
+      roots: { work: temporary },
+      allow_shell: true,
+      allow_write: false,
+    }),
+  );
+  await run(
+    [
+      '-Command',
+      String.raw`
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    foreach ($p in @($env:RDH_TEST_PARENT, $env:RDH_TEST_CONFIG)) {
+      $item = Get-Item -LiteralPath $p
+      $acl = if ($item.PSIsContainer) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
+      $acl.SetOwner($sid)
+      $acl.SetAccessRuleProtection($true, $false)
+      $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+      Set-Acl -LiteralPath $p -AclObject $acl
+    }
+  `,
+    ],
+    { RDH_TEST_PARENT: temporary, RDH_TEST_CONFIG: temporaryConfig },
+  );
+  const foreground = spawn(
+    shell,
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      path.join(directory, 'install.ps1'),
+      '-Base',
+      directory,
+      '-Prefix',
+      temporaryPrefix,
+      '-Name',
+      temporaryName,
+      '-Config',
+      temporaryConfig,
+      '-Server',
+      gateway,
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const foregroundExit = new Promise((resolve) => foreground.once('exit', resolve));
+  let foregroundLog = '';
+  foreground.stdout.on('data', (data) => {
+    foregroundLog += data;
+  });
+  foreground.stderr.on('data', (data) => {
+    foregroundLog += data;
+  });
+  try {
+    await waitFor(
+      () => completed.get(temporaryName) >= 1 && children.get(temporaryName) >= 1,
+      'default temporary Agent request',
+    );
+    assert.match(foregroundLog, /Running this time only/);
+    assert.equal(
+      await run(
+        [
+          '-Command',
+          '@(Get-ScheduledTask -TaskName $env:RDH_TEST_NAME -ErrorAction SilentlyContinue).Count; @(Get-Service -Name $env:RDH_TEST_NAME -ErrorAction SilentlyContinue).Count',
+        ],
+        { RDH_TEST_NAME: temporaryName },
+      ),
+      '0\r\n0',
+    );
+    console.log('None: default foreground Agent connects without registering automatic startup.');
+  } catch (error) {
+    console.error(foregroundLog);
+    throw error;
+  } finally {
+    if (foreground.exitCode === null) {
+      await execute('taskkill.exe', ['/PID', String(foreground.pid), '/T', '/F']);
+      await foregroundExit;
+    }
+  }
   for (const mode of ['User', 'Service']) {
     const name = `RDH-Test-${mode}-${process.pid}`;
     const prefix =

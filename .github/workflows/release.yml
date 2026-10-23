@@ -185,6 +185,9 @@ jobs:
           path: dist
       - name: Test native runtime and install without system Node.js
         run: node scripts/check_runtime.mjs dist ${{ matrix.platform }}
+      - name: Verify POSIX temporary session, logon and boot service lifecycle
+        if: runner.os != 'Windows'
+        run: node scripts/check_posix_startup.mjs dist --system
       - name: Verify Windows logon task and boot service lifecycle
         if: runner.os == 'Windows'
         run: node scripts/check_windows_startup.mjs dist

@@ -98,8 +98,6 @@ if (platform) {
         '-BinDir',
         bin,
         '-NoPair',
-        '-Startup',
-        'None',
       ]);
       assert.equal(
         run(command, ['/d', '/c', 'rdh.cmd', '--version'], { cwd: bin, env }),
@@ -115,7 +113,6 @@ if (platform) {
         '--bin-dir',
         bin,
         '--no-pair',
-        '--no-service',
       ]);
       assert.equal(run(path.join(bin, 'rdh'), ['--version'], { env }), manifest.version);
     }

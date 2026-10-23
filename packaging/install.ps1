@@ -24,17 +24,26 @@ $arch = switch ($cpu.ToUpperInvariant()) {
 }
 $platform = "win32-$arch"
 if ($Startup -eq 'Choose') {
-    Write-Host '1. Run in the background after this user logs on (no administrator required)'
-    Write-Host '2. Run at boot as LocalService (administrator required; separate pairing/workspace)'
-    Write-Host '3. Foreground only'
-    switch (Read-Host 'Startup mode [1/2/3]') {
-        '1' { $Startup = 'User' }
-        '2' { $Startup = 'Service' }
-        '3' { $Startup = 'None' }
-        default { throw 'Select 1, 2 or 3, or specify -Startup User/Service/None.' }
+    $Startup = 'None'
+    if (!$NoPair -and ![Console]::IsInputRedirected) {
+        Write-Host '1. This time only (default; no automatic startup)'
+        Write-Host '2. Run in the background now and after this user logs on'
+        switch (Read-Host 'Startup mode [1/2, Enter = 1]') {
+            '' { }
+            '1' { }
+            '2' { $Startup = 'User' }
+            default { throw 'Select 1 or 2. Advanced deployment: -Startup Service (administrator required).' }
+        }
     }
 }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($Startup -eq 'None') {
+    $existingTask = Get-ScheduledTask -TaskName "RemoteDeviceHub-$($identity.User.Value)" -ErrorAction SilentlyContinue
+    $existingService = Get-Service -Name 'RemoteDeviceHub' -ErrorAction SilentlyContinue
+    if ($existingTask -or $existingService) {
+        throw 'Automatic startup is already configured. Stop and remove the existing registration before selecting this time only.'
+    }
+}
 if (!$Name) {
     $Name = if ($Startup -eq 'User') { "RemoteDeviceHub-$($identity.User.Value)" } else { 'RemoteDeviceHub' }
 }
@@ -162,6 +171,7 @@ try {
     $cli = Join-Path $dest 'bin\remote-device-hub.mjs'
     $agentArgs = @($cli)
     if ($Startup -eq 'None' -and $Config) { $agentArgs += @('--config', $Config) }
+    if ($Startup -eq 'None' -and $Root) { $agentArgs += @('--root', [IO.Path]::GetFullPath($Root)) }
     $data = ''
     if ($Startup -ne 'None') {
         $data = if ($Startup -eq 'Service') { Join-Path $env:ProgramData $Name } else { Join-Path $Prefix 'data' }
@@ -251,7 +261,13 @@ try {
             Write-Host "Stop/start: Stop-Service '$Name'; Start-Service '$Name'"
             Write-Host "Remove startup after stopping: sc.exe delete $Name"
         } else {
-            Write-Host 'Run rdh.cmd to start the Agent.'
+            if ($NoPair) {
+                Write-Host 'Installed only. Run rdh.cmd to pair and start the Agent.'
+            } else {
+                Write-Host 'Running this time only. Press Ctrl+C to disconnect; automatic startup is disabled.'
+                & $node @agentArgs
+                if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 130) { throw "Agent exited with code $LASTEXITCODE." }
+            }
         }
     } catch {
         if ($registered -and $Startup -eq 'User') {
