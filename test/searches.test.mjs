@@ -210,15 +210,22 @@ test('stopped workers remain in concurrency budget until fd cleanup', async () =
   assert.equal(closed >= 1, true);
 });
 
-test('close has a bounded wait for non-cancellable filesystem I/O and late fd cleanup', async () => {
+test('close has a bounded wait for non-cancellable filesystem I/O and late fd cleanup', {
+  timeout: 5000,
+}, async () => {
   const root = await fixture();
   let releaseEnumeration;
+  let enumerationStarted;
+  const enteredEnumeration = new Promise((resolve) => {
+    enumerationStarted = resolve;
+  });
   let closed = 0;
   const filesystem = {
     ...native,
     listDirectory: async () =>
       new Promise((resolve) => {
         releaseEnumeration = resolve;
+        enumerationStarted();
       }),
     close: async (fd) => {
       closed += 1;
@@ -229,9 +236,7 @@ test('close has a bounded wait for non-cancellable filesystem I/O and late fd cl
     closeTimeoutMs: 20,
   });
   await manager.startSearch({ root: 'work', query: 'needle' });
-  for (let attempt = 0; attempt < 100 && !releaseEnumeration; attempt++) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await enteredEnumeration;
   assert.equal(typeof releaseEnumeration, 'function');
   const started = Date.now();
   await manager.close();
