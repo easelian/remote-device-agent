@@ -109,6 +109,7 @@ if [ "$STARTUP" != none ] && [ "$PAIR" -eq 0 ] && [ -z "$CONFIG" ] && [ "$UNINST
 fi
 if [ "$STARTUP" = service ]; then
   [ "$(id -u)" -eq 0 ] || die '--startup service requires administrator privileges'
+  umask 022
   case $SERVICE_USER in ''|*[!a-zA-Z0-9_-]*) die '--service-user must name an existing non-root account' ;; esac
   service_uid=$(id -u "$SERVICE_USER") || die 'service account does not exist'
   [ "$service_uid" -ne 0 ] || die 'the Agent service must not run as root'
@@ -320,6 +321,11 @@ if [ "$need_install" -eq 1 ]; then
   rm -rf "$staging"
   mkdir -p "$staging"
   tar -xzf "$archive" -C "$staging" --strip-components=1
+  if [ "$STARTUP" = service ]; then
+    # Root extraction may preserve the build machine's archive owners.
+    chown -R 0:0 "$staging"
+    chmod -R go-w "$staging"
+  fi
   chmod +x "$staging/node" "$staging/rdh" "$staging/bin/remote-device-hub.mjs"
 
   installed=$("$staging/node" "$staging/bin/remote-device-hub.mjs" --version)

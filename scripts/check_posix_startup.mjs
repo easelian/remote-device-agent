@@ -163,6 +163,21 @@ try {
         () => completed.get(name) >= 1,
         `${mode} authenticated Agent request: ${diagnostics}`,
       );
+      if (mode === 'service') {
+        for (const executable of [
+          'run-agent',
+          'current/node',
+          'current/bin/remote-device-hub.mjs',
+        ]) {
+          const metadata = await stat(path.join(prefix, executable));
+          assert.equal(metadata.uid, 0, 'boot service executables must belong to root');
+          assert.equal(
+            metadata.mode & 0o022,
+            0,
+            'boot service executables must not be group/world writable',
+          );
+        }
+      }
       if (mode === 'none') {
         assert.equal(existsSync(userUnit), false);
         assert.equal(existsSync(systemUnit), false);
