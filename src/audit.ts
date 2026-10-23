@@ -470,7 +470,24 @@ export class AuditLog {
     if (this.rollbackSize === null) {
       return;
     }
-    fs.ftruncateSync(this.fd, this.rollbackSize);
+    if (process.platform === 'win32') {
+      // Windows append handles cannot truncate. Open a writable handle and
+      // verify it still identifies the active log before repairing its tail.
+      assertPrivatePath(this.file, false);
+      const repairFd = fs.openSync(this.file, fs.constants.O_WRONLY);
+      try {
+        const active = fs.fstatSync(this.fd);
+        const repair = fs.fstatSync(repairFd);
+        if (!repair.isFile() || active.dev !== repair.dev || active.ino !== repair.ino) {
+          throw new Error('Audit log changed during tail repair');
+        }
+        fs.ftruncateSync(repairFd, this.rollbackSize);
+      } finally {
+        fs.closeSync(repairFd);
+      }
+    } else {
+      fs.ftruncateSync(this.fd, this.rollbackSize);
+    }
     this.size = this.rollbackSize;
     this.rollbackSize = null;
   }
