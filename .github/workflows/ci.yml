@@ -28,6 +28,9 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Preserve LF line endings on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
