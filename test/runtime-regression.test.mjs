@@ -8,14 +8,14 @@ import { AuditLog } from '../.build/audit.js';
 import { AgentConfig } from '../.build/config.js';
 import { Files } from '../.build/files.js';
 import { buildHardening, hardeningPath, validateHardening } from '../.build/hardening.js';
-import { ensurePrivatePath } from '../.build/platform.js';
+import { ensurePrivatePath, secureNewPath } from '../.build/platform.js';
 import { processEnvironment } from '../.build/process-environment.js';
 import { Processes } from '../.build/processes.js';
 import { Policy } from '../.build/policy.js';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'rdh-runtime-'));
-  ensurePrivatePath(root, true);
+  secureNewPath(root, true);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const config = AgentConfig.validate({
     gateway_url: 'http://127.0.0.1:9',
