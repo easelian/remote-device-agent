@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, writeFile, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile, readdir, stat } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -58,6 +58,7 @@ const server = new WebSocketServer({
 await new Promise((resolve) => server.once('listening', resolve));
 const gateway = `http://127.0.0.1:${server.address().port}`;
 const completed = new Map();
+let originalOpt;
 server.on('connection', (socket, request) => {
   const id = request.url.split('/').at(-1);
   socket.deviceId = id;
@@ -78,6 +79,14 @@ try {
     assert.equal(existsSync(servicePrefix), false);
     assert.equal(existsSync(serviceData), false);
     if (!mac) {
+      // Hosted runners make /opt group-writable for tool installation. The
+      // production installer must reject that. Normalize only this disposable
+      // fixture, then restore it; never relax the installer's ownership checks.
+      if (process.env.GITHUB_ACTIONS === 'true') {
+        originalOpt = await stat('/opt');
+        await run('sudo', ['chown', '0:0', '/opt']);
+        await run('sudo', ['chmod', '0755', '/opt']);
+      }
       await run('sudo', ['systemctl', 'start', `user@${uid}.service`]);
     }
   }
@@ -195,6 +204,13 @@ try {
       }, `${mode} process exits after stop`);
       if (mode !== 'none') {
         if (mac) {
+          // Process exit and launchd's completion of the stop are separate.
+          // kickstart is a no-op while launchd still considers the job running.
+          await waitFor(
+            async () =>
+              /state = not running/.test(await manager('print', `${serviceDomain}/${label}`)),
+            `${mode} launchd acknowledges stop`,
+          );
           await manager('kickstart', `${serviceDomain}/${label}`);
         } else {
           await manager('start', 'rdh');
@@ -248,6 +264,10 @@ try {
     }
   }
 } finally {
+  if (originalOpt) {
+    await run('sudo', ['chown', `${originalOpt.uid}:${originalOpt.gid}`, '/opt']);
+    await run('sudo', ['chmod', (originalOpt.mode & 0o7777).toString(8), '/opt']);
+  }
   for (const socket of server.clients) {
     socket.terminate();
   }
