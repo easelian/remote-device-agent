@@ -19,7 +19,7 @@ import {
 
 const windows = process.platform === 'win32';
 function temporary(t) {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'rdh-private-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'rdh-private-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }

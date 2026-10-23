@@ -11,7 +11,7 @@ import { buildHardening, hardeningPath } from '../.build/hardening.js';
 import { assertPrivatePath, ensurePrivatePath } from '../.build/platform.js';
 
 function fixture(t, options = {}) {
-  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'rdh-audit-'));
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'rdh-audit-'));
   ensurePrivatePath(directory, true);
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const open = () => {

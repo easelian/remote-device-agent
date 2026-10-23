@@ -14,7 +14,7 @@ import { Processes } from '../.build/processes.js';
 import { Policy } from '../.build/policy.js';
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'rdh-runtime-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'rdh-runtime-'));
   ensurePrivatePath(root, true);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const config = AgentConfig.validate({
@@ -273,7 +273,7 @@ test('recursive directories and new-file parents stay within validated roots', a
     }),
   );
   assert.equal(fs.existsSync(path.join(root, 'absent')), false);
-  const outside = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'rdh-outside-'));
+  const outside = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'rdh-outside-'));
   t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
   fs.symlinkSync(
     outside,

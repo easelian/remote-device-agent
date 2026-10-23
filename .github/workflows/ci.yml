@@ -27,6 +27,9 @@ jobs:
           - os: windows-11-arm
             arch: arm64
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ runner.os == 'Windows' && 'powershell' || 'bash' }}
     steps:
       - name: Preserve LF line endings on Windows
         if: runner.os == 'Windows'
