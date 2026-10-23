@@ -168,13 +168,18 @@ try {
         Private-Directory $data
         $configPath = Join-Path $data 'agent.json'
         if ($Config) {
-            Copy-Item -LiteralPath $Config -Destination $configPath
-            # Copied secrets must have a protected DACL owned by the installing user.
-            $acl = [Security.AccessControl.FileSecurity]::new()
-            $acl.SetOwner($identity.User)
-            $acl.SetAccessRuleProtection($true, $false)
-            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'FullControl', 'Allow'))
-            Set-Acl -LiteralPath $configPath -AclObject $acl
+            $copies = ,@($Config, $configPath)
+            $policy = if ($Config.EndsWith('.json')) { $Config.Substring(0, $Config.Length - 5) + '.policy.json' } else { $Config + '.policy.json' }
+            if (Test-Path -LiteralPath $policy) { $copies += ,@($policy, (Join-Path $data 'agent.policy.json')) }
+            foreach ($copy in $copies) {
+                Copy-Item -LiteralPath $copy[0] -Destination $copy[1]
+                # Preserve the paired profile's policy and protect every copied file.
+                $acl = [Security.AccessControl.FileSecurity]::new()
+                $acl.SetOwner($identity.User)
+                $acl.SetAccessRuleProtection($true, $false)
+                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'FullControl', 'Allow'))
+                Set-Acl -LiteralPath $copy[1] -AclObject $acl
+            }
         }
         $agentArgs += @('--config', $configPath)
         if (!$Config) {
@@ -191,13 +196,15 @@ try {
     if (!$NoPair -or $Startup -ne 'None') {
         $pairArgs = $agentArgs + @('--pair-only')
         & (Join-Path $dest 'node.exe') @pairArgs
-        if ($LASTEXITCODE -ne 0) { throw 'Pairing failed; rerun rdh.cmd --pair-only.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Pairing failed. Background startup was not registered; inspect the configuration in the installation data directory.' }
     }
     $registered = $false
     try {
         $backgroundArgs = $agentArgs + @('--no-browser', '--recover-lock')
         if ($Startup -eq 'User') {
-            $command = '& ' + ((@($node) + $backgroundArgs | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ' ') + '; exit $LASTEXITCODE'
+            $logLiteral = "'" + (Join-Path $data 'agent.log').Replace("'", "''") + "'"
+            $command = '$log = ' + $logLiteral + '; & ' + ((@($node) + $backgroundArgs | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ' ') +
+                ' 2>&1 | ForEach-Object { if ((Get-Item -LiteralPath $log -ErrorAction SilentlyContinue).Length -ge 2MB) { Move-Item -LiteralPath $log -Destination ($log + ".previous") -Force }; $_ | Out-File -LiteralPath $log -Encoding utf8 -Append }; exit $LASTEXITCODE'
             $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
             $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             $action = New-ScheduledTaskAction -Execute $powershell -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $Prefix

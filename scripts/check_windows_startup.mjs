@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocketServer from '../vendor/ws/lib/websocket-server.js';
@@ -10,7 +11,7 @@ import WebSocketServer from '../vendor/ws/lib/websocket-server.js';
 assert.equal(process.platform, 'win32');
 const execute = promisify(execFile);
 const directory = path.resolve(process.argv[2] || 'dist');
-const temporary = await mkdtemp(path.join(os.tmpdir(), 'rdh startup '));
+const temporary = realpathSync.native(await mkdtemp(path.join(os.tmpdir(), 'rdh startup ')));
 const shell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const run = async (args, env = {}) => {
   const result = await execute(
@@ -40,7 +41,7 @@ server.on('connection', (socket, request) => {
     if (message.type === 'hello') {
       socket.send(JSON.stringify({ type: 'ready', version: 1, device_id: id }));
       socket.send(JSON.stringify({ type: 'request', id: 'info', operation: 'device_info' }));
-    } else if (message.id === 'info') {
+    } else if (message.id === 'info' && message.type === 'result' && message.result?.roots?.work) {
       completed.set(id, (completed.get(id) || 0) + 1);
     }
   });
@@ -52,6 +53,7 @@ const waitFor = async (condition, description) => {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 };
+const failures = [];
 try {
   for (const mode of ['User', 'Service']) {
     const name = `RDH-Test-${mode}-${process.pid}`;
@@ -148,7 +150,21 @@ try {
       console.log(
         `${mode}: autostart definition, authenticated Agent request, stop with no remaining process, and restart passed.`,
       );
+    } catch (error) {
+      console.error(error);
+      failures.push(error);
     } finally {
+      if (mode === 'User') {
+        console.log(
+          await run(
+            [
+              '-Command',
+              'Get-ScheduledTaskInfo -TaskName $env:RDH_TEST_NAME | Format-List; Get-ScheduledTask -TaskName $env:RDH_TEST_NAME | Select-Object State | Format-List',
+            ],
+            environment,
+          ).catch(String),
+        );
+      }
       // Dump only diagnostics, never the pairing configuration.
       await run(
         [
@@ -167,20 +183,25 @@ try {
             : 'Stop-ScheduledTask -TaskName $env:RDH_TEST_NAME -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName $env:RDH_TEST_NAME -Confirm:$false -ErrorAction SilentlyContinue',
         ],
         environment,
-      );
+      ).catch(console.error);
       await run(
         [
           '-Command',
           'Remove-Item -LiteralPath $env:RDH_TEST_PREFIX -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force -ErrorAction SilentlyContinue',
         ],
         environment,
-      );
+      ).catch(console.error);
     }
+  }
+  if (failures.length) {
+    throw new AggregateError(failures, 'Windows startup verification failed');
   }
 } finally {
   for (const socket of server.clients) {
     socket.terminate();
   }
   await new Promise((resolve) => server.close(resolve));
-  await rm(temporary, { recursive: true, force: true });
+  await rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }).catch(
+    console.error,
+  );
 }

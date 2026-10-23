@@ -60,6 +60,8 @@ jobs:
           ref: dbc4014c6d67027dc75a565d79fe9f493e897eb2 # v1.9.0
           persist-credentials: false
       - name: Build native Windows service host from locked upstream source
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: |
           rustup toolchain install stable --profile minimal
           if ($LASTEXITCODE) { throw 'Rust installation failed' }
