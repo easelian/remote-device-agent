@@ -25,6 +25,41 @@ const run = async (args, env = {}) => {
   );
   return result.stdout.trim();
 };
+const serviceCleanup = String.raw`$ErrorActionPreference = 'Stop'
+if (!(Test-Path -LiteralPath $env:RDH_TEST_DATA)) { exit 0 }
+$owner = (Get-Acl -LiteralPath $env:RDH_TEST_DATA).GetOwner([Security.Principal.SecurityIdentifier]).Value
+if ($owner -ne 'S-1-5-19') {
+    Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force
+    exit 0
+}
+# Private runtime-created files intentionally belong only to LocalService.
+# Remove test data as its owner rather than weakening the production ACLs.
+$name = $env:RDH_TEST_NAME + '-cleanup'
+$literal = "'" + $env:RDH_TEST_DATA.Replace("'", "''") + "'"
+$body = '$ErrorActionPreference = "Stop"; Remove-Item -LiteralPath ' + $literal + ' -Recurse -Force'
+$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -EncodedCommand $encoded"
+$principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-19' -LogonType ServiceAccount
+Register-ScheduledTask -TaskName $name -Action $action -Principal $principal | Out-Null
+try {
+    Start-ScheduledTask -TaskName $name
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Milliseconds 250
+        $task = Get-ScheduledTask -TaskName $name
+        $info = Get-ScheduledTaskInfo -TaskName $name
+        if ($task.State -eq 'Ready' -and $info.LastRunTime.Year -gt 2000) {
+            if ($info.LastTaskResult -ne 0) { throw "Cleanup task failed: $($info.LastTaskResult)" }
+            if (Test-Path -LiteralPath $env:RDH_TEST_DATA) { throw 'Service test data remains' }
+            exit 0
+        }
+    } while ((Get-Date) -lt $deadline)
+    throw 'Service test data cleanup timed out'
+} finally {
+    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $name -Confirm:$false
+}
+`;
 const token = 'startup-test-token-'.repeat(3);
 const server = new WebSocketServer({
   port: 0,
@@ -231,14 +266,12 @@ try {
           )) === '0',
         `${mode} cleanup waits for all processes`,
       ).catch((error) => failures.push(error));
-      const cleanup = () =>
-        run(
-          [
-            '-Command',
-            'if (Test-Path -LiteralPath $env:RDH_TEST_DATA) { & "$env:SystemRoot\\System32\\takeown.exe" /F $env:RDH_TEST_DATA /R /D Y /A | Out-Null; & "$env:SystemRoot\\System32\\icacls.exe" $env:RDH_TEST_DATA /grant "*S-1-5-32-544:(OI)(CI)F" /T /Q | Out-Null; Remove-Item -LiteralPath $env:RDH_TEST_DATA -Recurse -Force -ErrorAction Stop }; if (Test-Path -LiteralPath $env:RDH_TEST_PREFIX) { Remove-Item -LiteralPath $env:RDH_TEST_PREFIX -Recurse -Force -ErrorAction Stop }',
-          ],
-          environment,
-        );
+      const cleanup = async () => {
+        if (mode === 'Service') {
+          await run(['-Command', serviceCleanup], environment);
+        }
+        await rm(prefix, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+      };
       // Windows can retain executable/file handles briefly after process exit.
       // Retry only disposable test-file removal, never installation or pairing.
       let cleanupError;
