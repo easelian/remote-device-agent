@@ -1,111 +1,198 @@
 name: Release
 
-# Pushing a version tag publishes a release automatically; there is no manual
-# upload step. workflow_dispatch exists only to re-publish an existing tag after
-# a transient failure.
 on:
   push:
+    branches: [main]
     tags: ['v*']
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'scripts/**'
+      - 'src/**'
+      - 'bin/**'
+      - 'package*.json'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'scripts/**'
+      - 'src/**'
+      - 'bin/**'
+      - 'package*.json'
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to (re)publish, for example v0.7.0
-        required: true
+        description: Existing version tag (leave empty to validate this branch)
+        required: false
+      publish:
+        description: Publish the specified existing tag after all checks pass
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
-
+      - name: Resolve source and release version
+        id: meta
+        shell: node {0}
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
+        run: |
+          const fs = require('node:fs');
+          const cp = require('node:child_process');
+          const version = JSON.parse(fs.readFileSync('package.json')).version;
+          const tag = process.env.REQUESTED_TAG || (process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : '');
+          const sha = cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (process.env.REQUESTED_PUBLISH === 'true' && !tag) throw new Error('Publishing requires an existing version tag');
+          if (tag) {
+            if (tag !== `v${version}`) throw new Error('Tag must match package.json');
+            const tagged = cp.execFileSync('git', ['rev-parse', `refs/tags/${tag}^{commit}`], { encoding: 'utf8' }).trim();
+            if (tagged !== sha) throw new Error('Checkout does not match the release tag');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\nsha=${sha}\n`);
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run style:check
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
-
-      - name: Resolve tag and version
-        id: meta
+      - name: Build all eight self-contained runtime archives
+        run: bash packaging/build-runtime.sh
+      - name: Stage installers and verify manifest
         run: |
-          set -eu
-          tag="$GITHUB_REF_NAME"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then tag="${{ inputs.tag }}"; fi
-          version="${tag#v}"
-          pkg=$(node -p "require('./package.json').version")
-          [ "$version" = "$pkg" ] || { echo "tag $tag does not match package.json $pkg" >&2; exit 1; }
-          printf 'tag=%s\nversion=%s\n' "$tag" "$version" >> "$GITHUB_OUTPUT"
-
-      - name: Build runtime bundles
-        run: bash packaging/build-runtime.sh --version "${{ steps.meta.outputs.tag }}"
-
-      - name: Stage the installer
-        run: cp packaging/install.sh dist/install.sh
-
-      - name: Smoke test the linux-x64 bundle
-        run: |
-          set -euo pipefail
-          tmp=$(mktemp -d)
-          tree="$tmp/rdh-${{ steps.meta.outputs.version }}-linux-x64-gnu"
-          tar -xzf "dist/rdh-${{ steps.meta.outputs.version }}-linux-x64-gnu.tar.gz" -C "$tmp"
-          out=$("$tree/rdh" --version)
-          test "$out" = "${{ steps.meta.outputs.version }}"
-          echo "bundle reports $out"
-
-      - name: Verify every platform artifact exists
-        run: |
-          set -eu
-          for platform in linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
-            test -f "dist/rdh-${{ steps.meta.outputs.version }}-$platform.tar.gz" || {
-              echo "missing dist/rdh-${{ steps.meta.outputs.version }}-$platform.tar.gz" >&2; exit 1; }
-          done
-          test -f dist/SHA256SUMS
-          test -f dist/install.sh
-          test -f dist/rdh-manifest.json
-          ( cd dist && sha256sum -c SHA256SUMS )
-
-      - name: Install from the built artifacts
-        run: |
-          set -eu
-          tmp=$(mktemp -d)
-          sh dist/install.sh --base "file://$PWD/dist" \
-            --prefix "$tmp/prefix" --bin-dir "$tmp/bin" \
-            --no-pair --no-service
-          "$tmp/bin/rdh" --version
-          test -x "$tmp/prefix/current/rdh"
-
-      - uses: actions/upload-artifact@v4
+          cp packaging/install.sh packaging/install.ps1 dist/
+          node scripts/check_runtime.mjs dist
+          node scripts/promote.mjs --channel canary --version "$(node -p "require('./package.json').version")" --base "https://example.test" --from dist --out "$RUNNER_TEMP/channel-check.json"
+      - uses: actions/upload-artifact@v7
         with:
-          name: runtime-bundles-${{ steps.meta.outputs.version }}
-          path: dist
+          name: runtime-bundles
+          path: dist/
           if-no-files-found: error
+          retention-days: 7
 
-      - name: Publish GitHub release
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+            platform: linux-x64-gnu
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux-arm64-gnu
+          - os: macos-15-intel
+            arch: x64
+            platform: darwin-x64
+          - os: macos-latest
+            arch: arm64
+            platform: darwin-arm64
+          - os: windows-latest
+            arch: x64
+            platform: win32-x64
+          - os: windows-11-arm
+            arch: arm64
+            platform: win32-arm64
+    name: Runtime (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: ${{ startsWith(matrix.os, 'windows-') && 'powershell' || 'bash' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          architecture: ${{ matrix.arch }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-bundles
+          path: dist
+      - name: Test native runtime and install without system Node.js
+        run: node scripts/check_runtime.mjs dist ${{ matrix.platform }}
+
+  musl:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64-musl
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64-musl
+    name: Runtime (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-bundles
+          path: dist
+      - name: Execute the bundled runtime in native Alpine
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker run --rm -e PLATFORM -v "$PWD/dist:/dist:ro" alpine:3.22 sh -ec '
+            apk add --no-cache libstdc++ libgcc
+            archive=$(find /dist -name "rdh-*-$PLATFORM.tar.gz")
+            test -n "$archive"
+            cd /dist && sha256sum -c SHA256SUMS
+            mkdir /runtime
+            tar -xzf "$archive" -C /runtime --strip-components=1
+            expected=$(/runtime/node -p "require(\"/runtime/package.json\").version")
+            test "$(PATH= /runtime/rdh --version)" = "$expected"
+            sh /dist/install.sh --offline "$archive" --prefix /installed --bin-dir /commands --no-pair --no-service
+            test "$(/commands/rdh --version)" = "$expected"
+          '
+
+  publish:
+    needs: [build, smoke, musl]
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-bundles
+          path: dist
+      - name: Publish verified runtime archives
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
         run: |
-          set -eu
-          tag="${{ steps.meta.outputs.tag }}"
-          assets="dist/rdh-*.tar.gz dist/SHA256SUMS dist/rdh-manifest.json dist/install.sh"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" $assets --clobber
+          set -euo pipefail
+          assets=(dist/rdh-*.tar.gz dist/rdh-*.zip dist/SHA256SUMS dist/rdh-manifest.json dist/install.sh dist/install.ps1)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           else
-            prerelease=""
-            case "$tag" in *-*) prerelease="--prerelease" ;; esac
-            gh release create "$tag" $assets \
-              --title "Remote Device Hub Agent $tag" \
-              --generate-notes $prerelease
+            flags=()
+            case "$RELEASE_TAG" in *-*) flags+=(--prerelease) ;; esac
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --title "Remote Device Hub Agent $RELEASE_TAG" --generate-notes "${flags[@]}"
           fi
-          gh release view "$tag" --json assets --jq '.assets[].name'

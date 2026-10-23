@@ -11,7 +11,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-ALL_PLATFORMS="linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64"
+ALL_PLATFORMS="linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64 win32-x64 win32-arm64"
 
 OUT=$ROOT/dist
 VERSION=
@@ -35,7 +35,7 @@ usage: packaging/build-runtime.sh [options]
   -h, --help           show this help
 
 platforms: linux-x64-gnu linux-arm64-gnu linux-x64-musl
-           linux-arm64-musl darwin-x64 darwin-arm64
+           linux-arm64-musl darwin-x64 darwin-arm64 win32-x64 win32-arm64
 USAGE
 }
 
@@ -75,6 +75,7 @@ if [ -n "$NODE_BINARY" ]; then
 fi
 
 mkdir -p "$OUT"
+OUT=$(CDPATH= cd -- "$OUT" && pwd -P)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/rdh-runtime.XXXXXX")
 cleanup() { if [ "$KEEP_WORK" -eq 1 ]; then log "staging kept at $WORK"; else rm -rf "$WORK"; fi; }
 trap cleanup EXIT INT TERM
@@ -95,6 +96,8 @@ platform_parts() {
     linux-arm64-musl) echo "linux arm64 musl" ;;
     darwin-x64)       echo "darwin x64 none" ;;
     darwin-arm64)     echo "darwin arm64 none" ;;
+    win32-x64)       echo "win x64 none" ;;
+    win32-arm64)     echo "win arm64 none" ;;
     *) die "unknown platform: $1" ;;
   esac
 }
@@ -108,7 +111,9 @@ node_base_url() {
 }
 
 node_asset_candidates() {
-  if [ "$3" = musl ]; then
+  if [ "$1" = win ]; then
+    printf 'node-v%s-win-%s.zip\n' "$NODE_VERSION" "$2"
+  elif [ "$3" = musl ]; then
     printf 'node-v%s-linux-%s-musl.tar.xz\n' "$NODE_VERSION" "$2"
     printf 'node-v%s-linux-%s-musl.tar.gz\n' "$NODE_VERSION" "$2"
   else
@@ -151,15 +156,23 @@ build_platform() {
   tree=$stage/$name
   mkdir -p "$tree/bin" "$tree/bundle"
 
+  runtime=node
+  [ "$os" != win ] || runtime=node.exe
   if [ -n "$NODE_BINARY" ]; then
-    cp "$NODE_BINARY" "$tree/node"
+    cp "$NODE_BINARY" "$tree/$runtime"
   else
     obtain_runtime "$os" "$arch" "$libc"
-    prefix=$(tar -tf "$PKG" | sed -n '1p' | cut -d/ -f1)
-    tar -xf "$PKG" -C "$WORK" --strip-components=1 "$prefix/bin/node" "$prefix/LICENSE"
-    mv "$WORK/bin/node" "$tree/node"
-    mv "$WORK/LICENSE" "$tree/LICENSE.node"
-    rmdir "$WORK/bin"
+    if [ "$os" = win ]; then
+      prefix=node-v$NODE_VERSION-win-$arch
+      unzip -p "$PKG" "$prefix/node.exe" > "$tree/node.exe"
+      unzip -p "$PKG" "$prefix/LICENSE" > "$tree/LICENSE.node"
+    else
+      prefix=$(tar -tf "$PKG" | sed -n '1p' | cut -d/ -f1)
+      tar -xf "$PKG" -C "$WORK" --strip-components=1 "$prefix/bin/node" "$prefix/LICENSE"
+      mv "$WORK/bin/node" "$tree/node"
+      mv "$WORK/LICENSE" "$tree/LICENSE.node"
+      rmdir "$WORK/bin"
+    fi
     rm -f "$PKG" "$WORK/SHASUMS256.txt"
   fi
 
@@ -170,6 +183,9 @@ build_platform() {
   if [ -f "$ROOT/LICENSE" ]; then cp "$ROOT/LICENSE" "$tree/LICENSE"; fi
   if [ -f "$ROOT/README.md" ]; then cp "$ROOT/README.md" "$tree/README.md"; fi
 
+  if [ "$os" = win ]; then
+    printf '@echo off\r\n"%%~dp0node.exe" "%%~dp0bin\\remote-device-hub.mjs" %%*\r\nexit /b %%errorlevel%%\r\n' > "$tree/rdh.cmd"
+  else
   cat > "$tree/rdh" <<'WRAPPER'
 #!/bin/sh
 # Run the bundled Agent with the bundled runtime, independent of PATH.
@@ -185,15 +201,22 @@ done
 dir=$(CDPATH= cd -- "${target%/*}" && pwd -P)
 exec "$dir/node" "$dir/bin/remote-device-hub.mjs" "$@"
 WRAPPER
+  fi
   # Normalise modes so the artifact does not inherit the builder's umask: a
   # 077 umask would otherwise ship files that other local users cannot read.
   find "$tree" -type d -exec chmod 755 {} +
   find "$tree" -type f -exec chmod 644 {} +
-  chmod 755 "$tree/node" "$tree/rdh" "$tree/bin/remote-device-hub.mjs"
-
-  artifact=$OUT/$name.tar.gz
-  ( cd "$stage" && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - "$name" ) |
-    gzip -9 > "$artifact"
+  chmod 755 "$tree/$runtime" "$tree/bin/remote-device-hub.mjs"
+  if [ "$os" = win ]; then
+    artifact=$OUT/$name.zip
+    ( cd "$stage" && zip -qr "$WORK/$name.zip" "$name" )
+    mv "$WORK/$name.zip" "$artifact"
+  else
+    chmod 755 "$tree/rdh"
+    artifact=$OUT/$name.tar.gz
+    ( cd "$stage" && tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - "$name" ) |
+      gzip -9 > "$artifact"
+  fi
 
   size=$(bytes_of "$artifact")
   digest=$(hash_file "$artifact")

@@ -170,3 +170,54 @@ test('CLI record accepts repeated evidence and check options', async () => {
     await rm(evidenceDir, { recursive: true, force: true });
   }
 });
+
+test('promotion requires Windows archives and preserves platform-specific download names', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'rdh-promote-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const platforms = [
+    'linux-x64-gnu',
+    'linux-arm64-gnu',
+    'linux-x64-musl',
+    'linux-arm64-musl',
+    'darwin-x64',
+    'darwin-arm64',
+    'win32-x64',
+    'win32-arm64',
+  ];
+  const lines = platforms.map((platform) => {
+    const extension = platform.startsWith('win32-') ? 'zip' : 'tar.gz';
+    return `${'a'.repeat(64)}  rdh-0.7.0-${platform}.${extension}`;
+  });
+  const sums = join(directory, 'SHA256SUMS');
+  const output = join(directory, 'channel.json');
+  const args = [
+    'scripts/promote.mjs',
+    '--channel',
+    'canary',
+    '--version',
+    '0.7.0',
+    '--base',
+    'https://example.test/releases',
+    '--from',
+    directory,
+    '--out',
+    output,
+  ];
+  await writeFile(sums, lines.slice(0, 6).join('\n') + '\n');
+  assert.throws(
+    () => execFileSync(process.execPath, args, { cwd: ROOT, stdio: 'pipe' }),
+    /missing artifacts for: win32-x64, win32-arm64/,
+  );
+  await writeFile(sums, lines.join('\n') + '\n');
+  execFileSync(process.execPath, args, { cwd: ROOT, stdio: 'pipe' });
+  const index = JSON.parse(await readFile(output, 'utf8'));
+  assert.deepEqual(Object.keys(index.platforms).sort(), platforms.sort());
+  assert.equal(
+    index.platforms['win32-arm64'].url,
+    'https://example.test/releases/rdh-0.7.0-win32-arm64.zip',
+  );
+  assert.equal(
+    index.platforms['linux-arm64-gnu'].url,
+    'https://example.test/releases/rdh-0.7.0-linux-arm64-gnu.tar.gz',
+  );
+});

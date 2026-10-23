@@ -17,6 +17,8 @@ const PLATFORMS = [
   'linux-arm64-musl',
   'darwin-x64',
   'darwin-arm64',
+  'win32-x64',
+  'win32-arm64',
 ];
 
 function usage() {
@@ -110,9 +112,9 @@ for (const line of sums) {
   if (!file) {
     continue;
   }
-  const match = new RegExp(`^rdh-${options.version.replace(/\./g, '\\.')}-(.+)\\.tar\\.gz$`).exec(
-    file,
-  );
+  const match = new RegExp(
+    `^rdh-${options.version.replace(/\./g, '\\.')}-(.+)(?:\\.tar\\.gz|\\.zip)$`,
+  ).exec(file);
   if (!match) {
     continue;
   }

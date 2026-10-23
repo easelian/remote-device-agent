@@ -43,6 +43,8 @@ test('platform detection follows libc, architecture and OS', () => {
   assert.equal(detectPlatform('linux', 'x64', '2.17'), 'linux-x64-musl');
   assert.equal(detectPlatform('linux', 'x64', undefined), 'linux-x64-musl');
   assert.equal(detectPlatform('darwin', 'arm64', undefined), 'darwin-arm64');
+  assert.equal(detectPlatform('win32', 'x64', undefined), 'win32-x64');
+  assert.equal(detectPlatform('win32', 'arm64', undefined), 'win32-arm64');
 });
 
 test('channel indexes are validated', () => {
