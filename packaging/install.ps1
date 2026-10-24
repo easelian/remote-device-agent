@@ -211,6 +211,13 @@ try {
     if ($Startup -ne 'None') {
         $binding = @{ version = 1; binding = @{ mode = $Startup.ToLowerInvariant(); name = $Name }; pending = $null }
         [IO.File]::WriteAllText(($configPath + '.startup.json'), ($binding | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+        # Elevated installers may otherwise create a file owned by Administrators.
+        # User-mode Agents require the current user's SID, even with inherited private ACLs.
+        $startupAcl = [Security.AccessControl.FileSecurity]::new()
+        $startupAcl.SetOwner($identity.User)
+        $startupAcl.SetAccessRuleProtection($true, $false)
+        $startupAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'FullControl', 'Allow'))
+        Set-Acl -LiteralPath ($configPath + '.startup.json') -AclObject $startupAcl
     }
     $registered = $false
     try {
