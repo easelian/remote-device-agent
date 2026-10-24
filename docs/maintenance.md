@@ -42,7 +42,7 @@ node scripts/release.mjs build
 node scripts/release.mjs check releases/remote-device-hub-0.7.0.json
 ```
 
-Use the version from `package.json` in the check path. Release records bind the Node version, Git state, source and builder digests, and artifact digest. Stale compiled code or a modified bundle prevents record generation. The `record` command describes actions already completed; it does not perform publication or deployment. A published version must not be replaced with different source or artifacts.
+Use the version from `package.json` in the check path. Records in `releases/` are generated build outputs and are not committed. Release records bind the Node version, Git state, source and builder digests, and artifact digest. Stale compiled code or a modified bundle prevents record generation. The `record` command describes actions already completed; it does not perform publication or deployment. A published version must not be replaced with different source or artifacts.
 
 Pushing a matching `v*` tag runs the release workflow, which builds runtime archives, verifies their checksums, performs a Linux installation smoke test, and publishes GitHub Release assets. Channel promotion is a separate workflow that changes rollout metadata without rebuilding artifacts. See [Distribution](distribution.md) and the [rollout instructions](../README.md#releases-and-staged-rollouts).
 

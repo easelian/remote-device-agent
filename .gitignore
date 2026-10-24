@@ -14,7 +14,8 @@ workspace/
 *.local.txt
 client_secret_*.json
 .DS_Store
-releases/*.tmp
+# Local release records and validation evidence are generated outputs.
+/releases/
 
 # Generated TypeScript release bundle; only prebuilt JS goes into npm.
 /bundle/

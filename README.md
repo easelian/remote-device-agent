@@ -16,7 +16,7 @@ npm run pack:check
 node scripts/release.mjs build
 ```
 
-The release builder derives artifact and record names from `package.json`. Verify a generated record by passing its path to `node scripts/release.mjs check`.
+The release builder derives artifact and record names from `package.json`. Records in `releases/` are generated build outputs and are not committed. Verify a generated record by passing its path to `node scripts/release.mjs check`.
 
 Source files live in `src/*.ts`. `npm run build` generates modules in `.build/` for tests and `bundle/agent.mjs` for distribution. `npm pack` runs type checking and compilation first. The release TGZ must be no larger than 64 KiB, with at most 512 KiB of unpacked content. Package checks also verify the file manifest, offline installation with an empty cache, and both command aliases. Stale compiled code or a modified bundle prevents release-record generation.
 
