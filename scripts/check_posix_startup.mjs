@@ -59,6 +59,25 @@ await new Promise((resolve) => server.once('listening', resolve));
 const gateway = `http://127.0.0.1:${server.address().port}`;
 const completed = new Map();
 let originalOpt;
+const requestStartup = (socket, operation, params = {}) =>
+  new Promise((resolve, reject) => {
+    const id = `startup-${Date.now()}-${Math.random()}`;
+    const timer = setTimeout(() => {
+      socket.off('message', receive);
+      reject(new Error('Startup RPC timed out'));
+    }, 30_000);
+    const receive = (raw) => {
+      const message = JSON.parse(raw);
+      if (message.id !== id) {
+        return;
+      }
+      clearTimeout(timer);
+      socket.off('message', receive);
+      resolve(message);
+    };
+    socket.on('message', receive);
+    socket.send(JSON.stringify({ type: 'request', id, operation, params }));
+  });
 server.on('connection', (socket, request) => {
   const id = request.url.split('/').at(-1);
   socket.deviceId = id;
@@ -163,6 +182,40 @@ try {
         () => completed.get(name) >= 1,
         `${mode} authenticated Agent request: ${diagnostics}`,
       );
+      if (mode !== 'none') {
+        const socket = [...server.clients].find(
+          (item) => item.deviceId === name && item.readyState === 1,
+        );
+        const current = await requestStartup(socket, 'get_startup');
+        assert.equal(current.result?.mode, mode.toLowerCase(), JSON.stringify(current));
+        const pending = await requestStartup(socket, 'set_startup', { mode: mode.toLowerCase() });
+        assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
+        const rejected = await requestStartup(socket, 'set_startup', {
+          mode: mode.toLowerCase(),
+          approved: true,
+        });
+        assert.ok(rejected.error, 'remote caller cannot self-approve');
+        const disabled = await requestStartup(socket, 'set_startup', { mode: 'none' });
+        if (mode.toLowerCase() === 'user') {
+          assert.equal(disabled.result?.mode, 'none', JSON.stringify(disabled));
+        } else {
+          assert.ok(
+            disabled.result?.mode === 'none' ||
+              disabled.error_code === 'startup_permission_required',
+            JSON.stringify(disabled),
+          );
+        }
+        assert.equal(socket.readyState, 1, 'disable must preserve the original socket');
+        const after = await requestStartup(socket, 'device_info');
+        assert.ok(after.result?.roots?.work, JSON.stringify(after));
+        const state = await requestStartup(socket, 'get_startup');
+        assert.equal(state.result?.pending, null, JSON.stringify(state));
+        if (mac) {
+          await manager('enable', `${serviceDomain}/${label}`);
+        } else {
+          await manager('enable', 'rdh');
+        }
+      }
       if (mode === 'service') {
         for (const executable of [
           'run-agent',
@@ -181,6 +234,35 @@ try {
       if (mode === 'none') {
         assert.equal(existsSync(userUnit), false);
         assert.equal(existsSync(systemUnit), false);
+        if (system) {
+          const socket = [...server.clients].find(
+            (item) => item.deviceId === name && item.readyState === 1,
+          );
+          const cli = path.join(prefix, 'current/bin/remote-device-hub.mjs');
+          const node = path.join(prefix, 'current/node');
+          try {
+            await run('sudo', [node, cli, 'startup', 'grant', 'user', '--config', config]);
+            const enabled = await requestStartup(socket, 'set_startup', { mode: 'user' });
+            assert.equal(enabled.result?.mode, 'user', JSON.stringify(enabled));
+            assert.equal(existsSync(userUnit), true);
+            const off = await requestStartup(socket, 'set_startup', { mode: 'none' });
+            assert.equal(off.result?.mode, 'none', JSON.stringify(off));
+            assert.equal(socket.readyState, 1);
+            await run('sudo', [node, cli, 'startup', 'revoke', '--config', config]);
+            const pending = await requestStartup(socket, 'set_startup', { mode: 'user' });
+            assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
+            await requestStartup(socket, 'set_startup', { mode: 'none' });
+          } finally {
+            await run('sudo', [node, cli, 'startup', 'revoke', '--config', config]);
+            await rm(userUnit, { force: true });
+            await rm(`${config}.startup-run`, { force: true });
+            if (!mac) {
+              await run('systemctl', ['--user', 'daemon-reload']);
+            } else {
+              await run('launchctl', ['enable', `${domain}/${label}`]);
+            }
+          }
+        }
         foreground.kill('SIGINT');
         const ended = await Promise.race([
           foregroundExit,

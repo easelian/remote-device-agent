@@ -208,6 +208,10 @@ try {
         & (Join-Path $dest 'node.exe') @pairArgs
         if ($LASTEXITCODE -ne 0) { throw 'Pairing failed. Background startup was not registered; inspect the configuration in the installation data directory.' }
     }
+    if ($Startup -ne 'None') {
+        $binding = @{ version = 1; binding = @{ mode = $Startup.ToLowerInvariant(); name = $Name }; pending = $null }
+        [IO.File]::WriteAllText(($configPath + '.startup.json'), ($binding | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    }
     $registered = $false
     try {
         $backgroundArgs = $agentArgs + @('--no-browser', '--recover-lock')

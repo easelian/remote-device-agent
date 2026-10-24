@@ -13,6 +13,7 @@
   "files": [
     "bin/remote-device-hub.mjs",
     "bundle/agent.mjs",
+    "packaging/windows-logon.ps1",
     "THIRD_PARTY_LICENSES",
     "README.md"
   ],

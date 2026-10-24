@@ -1,3 +1,4 @@
+import { StartupError, startupMode, type Startup } from './startup.js';
 import os from 'node:os';
 import type { IncomingMessage } from 'node:http';
 import type { DeviceConfig, SandboxSettings } from './types.js';
@@ -34,6 +35,7 @@ const fatalError = (message: string) => Object.assign(new Error(message), { fata
 // Runtime operation methods validate each field after the protocol envelope check.
 type RpcParameters = Record<string, unknown>;
 export interface AgentOptions {
+  startup?: Pick<Startup, 'status' | 'set'>;
   policy?: Pick<Policy, 'describe' | 'denial'> | null;
   audit?:
     | (Pick<AuditLog, 'record' | 'close'> & Partial<Pick<AuditLog, 'stats' | 'required'>>)
@@ -53,6 +55,7 @@ interface ResponseWaiter {
 }
 
 export class Agent {
+  readonly startup: AgentOptions['startup'];
   readonly config: DeviceConfig;
   readonly files: Files;
   readonly policy: AgentOptions['policy'];
@@ -69,6 +72,7 @@ export class Agent {
   cleanShutdown: boolean;
   constructor(config: DeviceConfig, options: AgentOptions = {}) {
     this.config = config;
+    this.startup = options.startup;
     this.files = new Files(config.roots, config.allow_write);
     this.policy = options.policy ?? null;
     this.audit = options.audit ?? null;
@@ -185,6 +189,7 @@ export class Agent {
           process.platform === 'win32' ? 'taskkill-best-effort' : 'process-group',
         operations: [
           'device_info',
+          ...(this.startup ? ['get_startup', 'set_startup'] : []),
           'list_directory',
           'read_file',
           'write_file',
@@ -290,6 +295,18 @@ export class Agent {
     };
     if (operation === 'device_info') {
       return this.info();
+    }
+    if (operation === 'get_startup' || operation === 'set_startup') {
+      if (!this.startup) {
+        throw new Error('Startup management is unavailable for this Agent');
+      }
+      const keys = Object.keys(params);
+      if (keys.some((key) => operation === 'get_startup' || key !== 'mode')) {
+        throw new Error('Unknown startup parameter');
+      }
+      return operation === 'get_startup'
+        ? this.startup.status()
+        : this.startup.set(startupMode(params.mode));
     }
     const kind = files[operation];
     if (kind !== undefined) {
@@ -528,7 +545,8 @@ export class Agent {
                   type: 'result',
                   id: requestId,
                   error: errorMessage(error).slice(0, 1000),
-                  ...(error instanceof PolicyDeniedError ||
+                  ...(error instanceof StartupError ||
+                  error instanceof PolicyDeniedError ||
                   error instanceof ProcessStartError ||
                   error instanceof AuditWriteError
                     ? { error_code: error.code }

@@ -1,3 +1,4 @@
+import { Startup } from './startup.js';
 import type { LaunchArgs } from './types.js';
 import type { Agent } from './agent.js';
 import { isRecord } from './boundary.js';
@@ -75,7 +76,7 @@ export async function launch(argv: string[]) {
   }
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log(
-      `Remote Device Hub Agent ${version}\n\nRun the Node Agent and approve device pairing in your browser.\n\n--server URL       Use a specific Hub; otherwise probe ${defaultServer} and fall back to ${FALLBACK_SERVER} after 500 ms\n--root NAME=PATH   Expose a file root; repeat as needed (default: current directory)\n--name NAME        Device display name\n--profile NAME     Separate device profile (default: default)\n--config PATH      Custom private configuration file\n--no-browser       Print the pairing URL without opening a browser\n--recover-lock     Recover a stale configuration lock after its process has exited\n--pair-only        Exit after pairing without starting the Agent (used by the installer)\n\nCommands:\n  rdh upgrade [--check] [--channel stable|canary]   Upgrade to the version in the release index\n  rdh rollback                                      Restore the previous version\n\nRun the same command again to reuse the pairing. Press Ctrl+C to stop the Agent.`,
+      `Remote Device Hub Agent ${version}\n\nRun the Node Agent and approve device pairing in your browser.\n\n--server URL       Use a specific Hub; otherwise probe ${defaultServer} and fall back to ${FALLBACK_SERVER} after 500 ms\n--root NAME=PATH   Expose a file root; repeat as needed (default: current directory)\n--name NAME        Device display name\n--profile NAME     Separate device profile (default: default)\n--config PATH      Custom private configuration file\n--no-browser       Print the pairing URL without opening a browser\n--recover-lock     Recover a stale configuration lock after its process has exited\n--pair-only        Exit after pairing without starting the Agent (used by the installer)\n\nCommands:\n  rdh startup --help                                Manage future startup and local approvals\n  rdh upgrade [--check] [--channel stable|canary]   Upgrade to the version in the release index\n  rdh rollback                                      Restore the previous version\n\nRun the same command again to reuse the pairing. Press Ctrl+C to stop the Agent.`,
     );
     return;
   }
@@ -128,7 +129,10 @@ export async function launch(argv: string[]) {
       runAgent: async (config, signal, { configFile }) => {
         // Throws (and the Agent does not start) when a configured sandbox or
         // required audit log cannot be provided.
-        state.agent = new Agent(config, buildHardening(config, configFile));
+        state.agent = new Agent(config, {
+          ...buildHardening(config, configFile),
+          startup: new Startup(configFile),
+        });
         return state.agent.run(signal);
       },
       canReleaseLocks: () => !state.agent || state.agent.cleanShutdown,

@@ -123,10 +123,11 @@ for (const platform of ['Linux', 'Darwin']) {
       const args = ['--config', path.join(f.dir, "paired ' & $.json"), '--root', 'work=/tmp'];
       const result = f.run(['--startup', 'user', ...args]);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(f.calls().length, 1);
+      assert.equal(f.calls().length, 2);
+      assert.deepEqual(f.calls()[1].slice(0, 3), ['startup', 'bind', 'user']);
       assert.ok(existsSync(f.unit));
       execFileSync(path.join(f.prefix, 'run-agent'), [], { env: f.env });
-      assert.deepEqual(f.calls()[1], ['--no-browser', ...args, '--recover-lock']);
+      assert.deepEqual(f.calls()[2], ['--no-browser', ...args, '--recover-lock']);
       const definition = readFileSync(f.unit, 'utf8');
       if (platform === 'Linux') {
         assert.match(definition, /WantedBy=default.target/);

@@ -80,6 +80,7 @@ export function sourceFiles() {
   add('bin/remote-device-hub.mjs');
   add('bundle/agent.mjs');
   add('THIRD_PARTY_LICENSES');
+  add('packaging/windows-logon.ps1');
   const vendor = clientFiles();
   return { files, vendorManifest: vendor.manifest };
 }

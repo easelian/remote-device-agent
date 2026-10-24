@@ -11,6 +11,8 @@ export const WRITE_OPERATIONS = Object.freeze([
 ]);
 export const KNOWN_OPERATIONS = Object.freeze([
   'device_info',
+  'get_startup',
+  'set_startup',
   'list_directory',
   'read_file',
   'write_file',

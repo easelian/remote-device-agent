@@ -72,6 +72,25 @@ const completed = new Map();
 const children = new Map();
 const commands = new Map();
 const manifest = JSON.parse(await readFile(path.join(directory, 'rdh-manifest.json'), 'utf8'));
+const requestStartup = (socket, operation, params = {}) =>
+  new Promise((resolve, reject) => {
+    const id = `startup-${Date.now()}-${Math.random()}`;
+    const timer = setTimeout(() => {
+      socket.off('message', receive);
+      reject(new Error('Startup RPC timed out'));
+    }, 30_000);
+    const receive = (raw) => {
+      const message = JSON.parse(raw);
+      if (message.id !== id) {
+        return;
+      }
+      clearTimeout(timer);
+      socket.off('message', receive);
+      resolve(message);
+    };
+    socket.on('message', receive);
+    socket.send(JSON.stringify({ type: 'request', id, operation, params }));
+  });
 server.on('connection', (socket, request) => {
   const id = request.url.split('/').at(-1);
   socket.deviceId = id;
@@ -195,7 +214,42 @@ try {
       ),
       '0\r\n0',
     );
-    console.log('None: default foreground Agent connects without registering automatic startup.');
+    const socket = [...server.clients].find(
+      (item) => item.deviceId === temporaryName && item.readyState === 1,
+    );
+    const node = path.join(
+      temporaryPrefix,
+      'versions',
+      `rdh-${manifest.version}-win32-${process.arch}`,
+      'node.exe',
+    );
+    const cli = path.join(path.dirname(node), 'bin/remote-device-hub.mjs');
+    let createdName;
+    try {
+      await execute(node, [cli, 'startup', 'grant', 'user', '--config', temporaryConfig]);
+      const enabled = await requestStartup(socket, 'set_startup', { mode: 'user' });
+      assert.equal(enabled.result?.mode, 'user', JSON.stringify(enabled));
+      createdName = enabled.result.registration.name;
+      assert.match(createdName, /^RemoteDeviceHub-S-1-5-/);
+      const off = await requestStartup(socket, 'set_startup', { mode: 'none' });
+      assert.equal(off.result?.mode, 'none', JSON.stringify(off));
+      assert.equal(socket.readyState, 1);
+      await execute(node, [cli, 'startup', 'revoke', '--config', temporaryConfig]);
+      const pending = await requestStartup(socket, 'set_startup', { mode: 'user' });
+      assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
+      await requestStartup(socket, 'set_startup', { mode: 'none' });
+    } finally {
+      await execute(node, [cli, 'startup', 'revoke', '--config', temporaryConfig]);
+      if (createdName) {
+        await run(
+          ['-Command', 'Unregister-ScheduledTask -TaskName $env:RDH_CREATED_TASK -Confirm:$false'],
+          { RDH_CREATED_TASK: createdName },
+        );
+      }
+    }
+    console.log(
+      'None: managed grant creates future logon startup; disabling retains the foreground connection; revocation requires local approval again.',
+    );
   } catch (error) {
     console.error(foregroundLog);
     throw error;
@@ -266,6 +320,44 @@ try {
         () => completed.get(name) >= 1 && children.get(name) >= 1,
         `${mode} Agent handshake and request`,
       );
+      if (mode !== 'none') {
+        const socket = [...server.clients].find(
+          (item) => item.deviceId === name && item.readyState === 1,
+        );
+        const current = await requestStartup(socket, 'get_startup');
+        assert.equal(current.result?.mode, mode.toLowerCase(), JSON.stringify(current));
+        const pending = await requestStartup(socket, 'set_startup', { mode: mode.toLowerCase() });
+        assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
+        const rejected = await requestStartup(socket, 'set_startup', {
+          mode: mode.toLowerCase(),
+          approved: true,
+        });
+        assert.ok(rejected.error, 'remote caller cannot self-approve');
+        const disabled = await requestStartup(socket, 'set_startup', { mode: 'none' });
+        if (mode.toLowerCase() === 'user') {
+          assert.equal(disabled.result?.mode, 'none', JSON.stringify(disabled));
+        } else {
+          assert.ok(
+            disabled.result?.mode === 'none' ||
+              disabled.error_code === 'startup_permission_required',
+            JSON.stringify(disabled),
+          );
+        }
+        assert.equal(socket.readyState, 1, 'disable must preserve the original socket');
+        const after = await requestStartup(socket, 'device_info');
+        assert.ok(after.result?.roots?.work, JSON.stringify(after));
+        const state = await requestStartup(socket, 'get_startup');
+        assert.equal(state.result?.pending, null, JSON.stringify(state));
+        await run(
+          [
+            '-Command',
+            mode === 'Service'
+              ? 'Set-Service -Name $env:RDH_TEST_NAME -StartupType Automatic'
+              : 'Enable-ScheduledTask -TaskName $env:RDH_TEST_NAME | Out-Null',
+          ],
+          environment,
+        );
+      }
       const definition = JSON.parse(
         await run(
           [

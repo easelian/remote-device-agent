@@ -412,6 +412,11 @@ if [ "$STARTUP" != none ]; then
         if [ "$STARTUP" = service ]; then printf 'WantedBy=multi-user.target\n'; else printf 'WantedBy=default.target\n'; fi
       } > "$UNIT"
       systemctl_mode daemon-reload
+      if ! run_agent startup bind "$STARTUP" rdh.service "$@"; then
+        rm -f "$UNIT"
+        systemctl_mode daemon-reload
+        die 'cannot bind startup management; startup registration was removed'
+      fi
       if ! systemctl_mode enable --now rdh; then
         systemctl_mode disable --now rdh || true
         rm -f "$UNIT"
@@ -422,7 +427,7 @@ if [ "$STARTUP" != none ]; then
         warn 'this account already has lingering enabled: its user services can run without login; the installer did not change that setting'
       fi
       log "Stop: systemctl $([ "$STARTUP" = service ] || printf '%s' '--user') stop rdh"
-      log "Disable automatic startup: systemctl $([ "$STARTUP" = service ] || printf '%s' '--user') disable --now rdh"
+      log "Disable automatic startup: systemctl $([ "$STARTUP" = service ] || printf '%s' '--user') disable rdh"
       ;;
     launchd)
       mkdir -p "$(dirname "$PLIST")"
@@ -435,6 +440,10 @@ if [ "$STARTUP" != none ]; then
         printf '<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n</dict></plist>\n'
       } > "$PLIST"
       chmod 644 "$PLIST"
+      if ! run_agent startup bind "$STARTUP" "$LAUNCHD_LABEL" "$@"; then
+        rm -f "$PLIST"
+        die 'cannot bind startup management; startup registration was removed'
+      fi
       if ! launchctl bootstrap "$(launch_domain)" "$PLIST"; then
         rm -f "$PLIST"
         die 'launchd registration failed'
