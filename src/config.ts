@@ -20,6 +20,10 @@ export function validateGateway(value: string): string {
   const url = new URL(value);
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (
+    value !== value.trim() ||
+    /[\\\u0000-\u0020]/u.test(value) ||
+    value.includes('?') ||
+    value.includes('#') ||
     url.username ||
     url.password ||
     url.search ||

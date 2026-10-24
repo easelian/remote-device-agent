@@ -140,3 +140,17 @@ CI is configured for all three operating systems, including native Windows file,
 ## Code style
 
 `npm run format` formats maintained source and tests. `npm run style:check` checks formatting and lint rules; `npm run lint` runs only the linter. Biome is pinned as a development dependency. Use two-space indentation, single quotes, semicolons, trailing commas, one statement per line, and explicit type imports. Explicit `any` and `@ts-ignore` are prohibited. Generated files and third-party code are excluded from formatting.
+
+## Hub address
+
+Connection selection is `--server URL`, then `RDH_SERVER`, then the public origin
+in generated `src/deploymentDefaults.ts`. Startup no longer probes a hardcoded
+direct port. With sibling project checkouts, regenerate official defaults with
+`python3 ../remote-device-server/scripts/sync-deployment.py` and check them with
+`--check` before release. A standalone build uses its committed generated file.
+
+The exact public and MCP origins in that generated deployment share pairing
+profiles and locks. Custom origins remain isolated. Changing to an unrelated
+origin creates a new pairing; a supplied `--config` belonging to another Hub is
+rejected rather than forwarding its token. Domain migration does not rewrite
+existing installed service commands or saved bindings automatically.

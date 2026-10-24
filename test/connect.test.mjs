@@ -6,7 +6,7 @@ import path from 'node:path';
 import { configPath, configPaths, localRoots, readConfig, writeConfig } from '../.build/config.js';
 import { connectDevice, pairDevice } from '../.build/connect.js';
 import { acquireProfileLocks } from '../.build/profile-lock.js';
-import { DIRECT_SERVER, FALLBACK_SERVER } from '../.build/server-selection.js';
+import { PUBLIC_SERVER, MCP_SERVER } from '../.build/server-selection.js';
 
 const tmp = async () => fs.mkdtemp(path.join(os.tmpdir(), 'rdh-node-agent-'));
 const locks = { acquire: async () => ({ release: async () => {} }) };
@@ -16,16 +16,16 @@ test('route changes reuse a private binding and lock both deployment origins', a
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = base;
   try {
-    const destination = configPath(DIRECT_SERVER);
+    const destination = configPath(PUBLIC_SERVER);
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await writeConfig(destination, {
-      gateway_url: DIRECT_SERVER,
+      gateway_url: PUBLIC_SERVER,
       device_id: 'existing',
       token: 'x'.repeat(32),
       roots: { work: base },
     });
     let acquired;
-    for (const server of [FALLBACK_SERVER, DIRECT_SERVER]) {
+    for (const server of [MCP_SERVER, PUBLIC_SERVER]) {
       await connectDevice(
         { server },
         {
@@ -41,9 +41,9 @@ test('route changes reuse a private binding and lock both deployment origins', a
           },
         },
       );
-      assert.deepEqual(acquired, [...configPaths(FALLBACK_SERVER), ...configPaths(DIRECT_SERVER)]);
+      assert.deepEqual(acquired, [...configPaths(PUBLIC_SERVER), ...configPaths(MCP_SERVER)]);
     }
-    assert.equal((await readConfig(destination)).gateway_url, DIRECT_SERVER);
+    assert.equal((await readConfig(destination)).gateway_url, PUBLIC_SERVER);
     await assert.rejects(
       () => connectDevice({ server: 'https://unrelated.test', config: destination }, { locks }),
       /another Hub/,
@@ -110,7 +110,7 @@ test('direct transport accepts canonical binding URL but keeps polling the chose
     if (url.pathname === '/api/pair/start') {
       return Response.json(
         {
-          verification_uri_complete: `${FALLBACK_SERVER}/admin/pair?code=TEST`,
+          verification_uri_complete: `${MCP_SERVER}/admin/pair?code=TEST`,
           user_code: 'TEST',
           device_code: 'pending-test',
           expires_in: 10,
@@ -120,15 +120,15 @@ test('direct transport accepts canonical binding URL but keeps polling the chose
       );
     }
     return Response.json({
-      config: { gateway_url: FALLBACK_SERVER, device_id: 'paired', roots: { work: '/tmp' } },
+      config: { gateway_url: MCP_SERVER, device_id: 'paired', roots: { work: '/tmp' } },
     });
   };
   try {
-    const config = await pairDevice(DIRECT_SERVER, { work: '/tmp' }, 'device', {
+    const config = await pairDevice(PUBLIC_SERVER, { work: '/tmp' }, 'device', {
       openBrowser: false,
     });
-    assert.equal(config.gateway_url, FALLBACK_SERVER);
-    assert.deepEqual(calls, [`${DIRECT_SERVER}/api/pair/start`, `${DIRECT_SERVER}/api/pair/poll`]);
+    assert.equal(config.gateway_url, MCP_SERVER);
+    assert.deepEqual(calls, [`${PUBLIC_SERVER}/api/pair/start`, `${PUBLIC_SERVER}/api/pair/poll`]);
   } finally {
     globalThis.fetch = original;
   }

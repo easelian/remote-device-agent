@@ -4,7 +4,7 @@ import type { Agent } from './agent.js';
 import { isRecord } from './boundary.js';
 import { readFileSync } from 'node:fs';
 import { validateGateway } from './config.js';
-import { DIRECT_SERVER, FALLBACK_SERVER, selectServer } from './server-selection.js';
+import { PUBLIC_SERVER } from './server-selection.js';
 
 const metadata: unknown = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -13,11 +13,11 @@ if (!isRecord(metadata) || typeof metadata.version !== 'string') {
   throw new Error('Invalid Agent package metadata');
 }
 const version = metadata.version;
-const defaultServer = DIRECT_SERVER;
+const defaultServer = PUBLIC_SERVER;
 
-export function parseArgs(argv: string[]): LaunchArgs {
+export function parseArgs(argv: string[], env = process.env): LaunchArgs {
   const result: LaunchArgs = {
-    server: defaultServer,
+    server: env.RDH_SERVER ?? defaultServer,
     profile: 'default',
     noBrowser: false,
     recoverLock: false,
@@ -76,7 +76,7 @@ export async function launch(argv: string[]) {
   }
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log(
-      `Remote Device Hub Agent ${version}\n\nRun the Node Agent and approve device pairing in your browser.\n\n--server URL       Use a specific Hub; otherwise probe ${defaultServer} and fall back to ${FALLBACK_SERVER} after 500 ms\n--root NAME=PATH   Expose a file root; repeat as needed (default: current directory)\n--name NAME        Device display name\n--profile NAME     Separate device profile (default: default)\n--config PATH      Custom private configuration file\n--no-browser       Print the pairing URL without opening a browser\n--recover-lock     Recover a stale configuration lock after its process has exited\n--pair-only        Exit after pairing without starting the Agent (used by the installer)\n\nCommands:\n  rdh startup --help                                Manage future startup and local approvals\n  rdh upgrade [--check] [--channel stable|canary]   Upgrade to the version in the release index\n  rdh rollback                                      Restore the previous version\n\nRun the same command again to reuse the pairing. Press Ctrl+C to stop the Agent.`,
+      `Remote Device Hub Agent ${version}\n\nRun the Node Agent and approve device pairing in your browser.\n\n--server URL       Use a specific Hub (otherwise RDH_SERVER or ${defaultServer})\n--root NAME=PATH   Expose a file root; repeat as needed (default: current directory)\n--name NAME        Device display name\n--profile NAME     Separate device profile (default: default)\n--config PATH      Custom private configuration file\n--no-browser       Print the pairing URL without opening a browser\n--recover-lock     Recover a stale configuration lock after its process has exited\n--pair-only        Exit after pairing without starting the Agent (used by the installer)\n\nCommands:\n  rdh startup --help                                Manage future startup and local approvals\n  rdh upgrade [--check] [--channel stable|canary]   Upgrade to the version in the release index\n  rdh rollback                                      Restore the previous version\n\nRun the same command again to reuse the pairing. Press Ctrl+C to stop the Agent.`,
     );
     return;
   }
@@ -112,13 +112,6 @@ export async function launch(argv: string[]) {
   process.on('SIGTERM', interrupt);
   args.signal = stop.signal;
   try {
-    if (!argv.some((item: string) => item === '--server' || item.startsWith('--server='))) {
-      args.autoServer = true;
-      args.server = await selectServer({ signal: stop.signal });
-      console.log(
-        `Hub: ${args.server}${args.server === FALLBACK_SERVER ? ' (direct endpoint failed its health check within 500 ms; using the fallback)' : ' (direct endpoint)'}`,
-      );
-    }
     // The bundled ws implementation must use its JavaScript paths even when
     // an unrelated package has installed optional native accelerators nearby.
     Object.assign(process.env, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });

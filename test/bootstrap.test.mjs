@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { PUBLIC_SERVER } from '../.build/server-selection.js';
 import { parseArgs, serverFromArgs } from '../.build/bootstrap.js';
 
 test('package runs directly on Node with no runtime dependencies or install hooks', () => {
@@ -23,7 +24,7 @@ test('package runs directly on Node with no runtime dependencies or install hook
 });
 
 test('gateway arguments reject credential-bearing or insecure remote origins', () => {
-  assert.equal(serverFromArgs([]), 'https://xdistribute.site:8090');
+  assert.equal(serverFromArgs([]), PUBLIC_SERVER);
   assert.equal(serverFromArgs(['--server', 'http://127.0.0.1:8765/']), 'http://127.0.0.1:8765');
   assert.equal(serverFromArgs(['--server=https://example.com']), 'https://example.com');
   for (const url of [
@@ -49,7 +50,7 @@ test('repeated roots, profile and config survive argument parsing', () => {
       '--no-browser',
     ]),
     {
-      server: 'https://xdistribute.site:8090',
+      server: PUBLIC_SERVER,
       profile: 'build',
       noBrowser: true,
       recoverLock: false,
@@ -86,4 +87,13 @@ test('help and version run offline with empty PATH and no runtime setup', () => 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('explicit server overrides environment and invalid environment fails closed', () => {
+  assert.equal(parseArgs([], { RDH_SERVER: 'https://custom.test' }).server, 'https://custom.test');
+  assert.equal(
+    parseArgs(['--server=https://explicit.test'], { RDH_SERVER: 'broken' }).server,
+    'https://explicit.test',
+  );
+  assert.throws(() => parseArgs([], { RDH_SERVER: 'http://remote.test' }));
 });

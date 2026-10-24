@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs } from './bootstrap.js';
-import { FALLBACK_SERVER } from './server-selection.js';
+import { profileServers } from './server-selection.js';
 import { configPath, readConfig } from './config.js';
 import { NativeStartup, hasAdministratorAuthority } from './startup-native.js';
 import { Startup, startupMode, setManagedStartupGrant } from './startup.js';
@@ -91,12 +91,11 @@ Shell commands run as the Agent OS user and are not constrained by this approval
   const name = command === 'bind' ? rest.shift() : undefined;
   const options = parseArgs(rest);
   let candidate = options.config || configPath(options.server, options.profile);
-  if (
-    !options.config &&
-    !rest.some((arg) => arg === '--server' || arg.startsWith('--server=')) &&
-    !fs.existsSync(candidate)
-  ) {
-    candidate = configPath(FALLBACK_SERVER, options.profile);
+  if (!options.config) {
+    candidate =
+      profileServers(options.server)
+        .map((server) => configPath(server, options.profile))
+        .find((file) => fs.existsSync(file)) ?? candidate;
   }
   const config = fs.realpathSync.native(path.resolve(candidate));
   if (command === 'grant' || command === 'revoke') {

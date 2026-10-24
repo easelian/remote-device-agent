@@ -28,7 +28,7 @@ flowchart LR
 
 ## Startup and connection
 
-Without `--server`, startup probes `https://xdistribute.site:8090/healthz` with a 500 ms deadline that includes setup, TLS, and response-body reading. A failed probe selects `https://mcp.xdistribute.site`. An explicit `--server` fixes the endpoint. This selection happens at startup; runtime disconnections use WebSocket reconnection.
+Startup uses `--server`, then `RDH_SERVER`, then the generated public deployment origin. It performs no direct-origin probe. The exact public and MCP origins shipped together share profile locks; unrelated custom servers remain isolated. Runtime disconnections use WebSocket reconnection.
 
 The two default origins are aliases for one Hub and can reuse an existing pairing. Custom Hubs retain same-origin pairing validation and credential separation. Profile locks cover the configuration paths used for reuse. Pairing requests browser approval before the Agent saves and uses a new device credential.
 

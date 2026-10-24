@@ -13,7 +13,7 @@ import {
   writeConfig,
 } from './config.js';
 import { acquireProfileLocks, reclaimProfileLocks } from './profile-lock.js';
-import { DIRECT_SERVER, FALLBACK_SERVER, sameHub } from './server-selection.js';
+import { profileServers, sameHub } from './server-selection.js';
 import { defaultShell, platformName, ensurePrivatePath } from './platform.js';
 import type { LaunchArgs, DeviceConfig } from './types.js';
 import { errorCode, isRecord, type Awaitable } from './boundary.js';
@@ -233,16 +233,14 @@ export async function connectDevice<Result = void, Handle = unknown>(
   }
   const server = validateGateway(args.server);
   const profile = args.profile || 'default';
-  const profileServers: [string, ...string[]] = sameHub(server, FALLBACK_SERVER)
-    ? [FALLBACK_SERVER, DIRECT_SERVER]
-    : [server];
+  const servers = profileServers(server);
   // Keep both entrances under the same lock set and reuse an existing binding
   // when startup chooses a different route. Credentials never cross custom hubs.
   let destination = args.config
     ? path.resolve(args.config.replace(/^~(?=\/|$)/, os.homedir()))
-    : configPath(profileServers[0], profile);
+    : configPath(servers[0], profile);
   if (!args.config) {
-    for (const candidate of profileServers.map((item) => configPath(item, profile))) {
+    for (const candidate of servers.map((item) => configPath(item, profile))) {
       try {
         await fs.lstat(candidate);
         destination = candidate;
@@ -256,7 +254,7 @@ export async function connectDevice<Result = void, Handle = unknown>(
   }
   const lockTargets = args.config
     ? [destination]
-    : profileServers.flatMap((item) => configPaths(item, profile));
+    : servers.flatMap((item) => configPaths(item, profile));
   for (const target of lockTargets) {
     if (process.platform === 'win32') {
       ensurePrivatePath(path.dirname(target), true);

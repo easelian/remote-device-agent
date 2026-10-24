@@ -85,15 +85,30 @@ test('service needs preinstalled binding and native permission failures remain e
   };
   await assert.rejects(startup.set('none'), { code: 'startup_permission_required' });
 });
-test('parallel writers do not approve a cancelled request', async (t) => {
+test('parallel writers honor the lock winner and cannot approve a completed cancellation', async (t) => {
   const { startup } = fixture(t);
   const request = await startup.set('user');
   const results = await Promise.allSettled([
     startup.set('none'),
     startup.approve(request.request_id, true),
   ]);
-  assert.ok(results.some((result) => result.status === 'rejected'));
-  assert.equal(startup.status().mode, 'unknown');
+  const [cancel, approval] = results;
+  // Filesystem lock acquisition is not FIFO. A rejected cancellation never
+  // took effect; if both complete, approval must have preceded cancellation.
+  if (cancel.status === 'fulfilled') {
+    assert.equal(startup.status().mode, approval.status === 'fulfilled' ? 'none' : 'unknown');
+    assert.equal(startup.status().pending, null);
+    await assert.rejects(startup.approve(request.request_id, true), {
+      code: 'startup_request_expired',
+    });
+  } else {
+    assert.equal(cancel.reason.code, 'startup_busy');
+    assert.equal(approval.status, 'fulfilled');
+    assert.equal(startup.status().mode, 'user');
+  }
+  if (approval.status === 'rejected') {
+    assert.ok(['startup_busy', 'startup_request_expired'].includes(approval.reason.code));
+  }
 });
 
 test('Agent exposes startup only when configured and rejects remote approval parameters', async (t) => {

@@ -21,7 +21,6 @@ export interface LaunchArgs {
   config?: string;
   name?: string;
   signal?: AbortSignal;
-  autoServer?: boolean;
 }
 
 export type ErrorCode = Error & { code?: string };
