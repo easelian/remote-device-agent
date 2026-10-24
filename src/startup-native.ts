@@ -35,6 +35,17 @@ export function powershell(script: string): string {
     { encoding: 'utf8', timeout: 12_000, windowsHide: true },
   ).trim();
 }
+export function launchdEnabled(output: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const value = new RegExp(`"${escaped}"\\s*=>\\s*(\\w+)`).exec(output)?.[1];
+  if (value === undefined || value === 'false' || value === 'enabled') {
+    return true;
+  }
+  if (value === 'true' || value === 'disabled') {
+    return false;
+  }
+  throw new Error('Unrecognized launchctl startup state');
+}
 export function hasAdministratorAuthority(): boolean {
   return process.platform === 'win32'
     ? powershell(
@@ -86,8 +97,7 @@ export class NativeStartup implements StartupBackend {
         throw new Error('Startup registration is missing');
       }
       const output = this.run('/bin/launchctl', ['print-disabled', this.domain(b)]);
-      const escaped = b.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return !new RegExp(`"${escaped}"\\s*=>\\s*true`).test(output);
+      return launchdEnabled(output, b.name);
     }
     // is-enabled uses exit status 1 for a disabled unit. Other failures are not 'none'.
     try {

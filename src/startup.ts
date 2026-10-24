@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readSidecar } from './hardening.js';
 import { secureNewPath } from './platform.js';
 import { acquireProfileLocks } from './profile-lock.js';
-import { isRecord, errorCode } from './boundary.js';
+import { isRecord, errorCode, errorMessage } from './boundary.js';
 import {
   NativeStartup,
   powershell,
@@ -269,7 +269,8 @@ export class Startup {
     if (state.binding) {
       try {
         this.backend.set(state.binding, mode !== 'none');
-      } catch {
+      } catch (error) {
+        console.error(`Startup manager operation failed: ${errorMessage(error)}`);
         throw new StartupError(
           'startup_permission_required',
           'The operating system did not allow or confirm the startup change; inspect native state locally. No stop was requested.',

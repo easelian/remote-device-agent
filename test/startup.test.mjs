@@ -170,3 +170,37 @@ test('unprivileged service identity reports administrator requirement before sol
   assert.equal(startup.status().pending, null);
   assert.deepEqual(calls, []);
 });
+
+test('launchctl state accepts current words and older booleans without confusing labels', async () => {
+  const { launchdEnabled } = await import('../.build/startup-native.js');
+  for (const value of ['true', 'disabled']) {
+    assert.equal(
+      launchdEnabled(
+        `disabled services = { "com.be-one-click.rdh" => ${value} }`,
+        'com.be-one-click.rdh',
+      ),
+      false,
+    );
+  }
+  for (const value of ['false', 'enabled']) {
+    assert.equal(
+      launchdEnabled(
+        `disabled services = { "com.be-one-click.rdh" => ${value} }`,
+        'com.be-one-click.rdh',
+      ),
+      true,
+    );
+  }
+  assert.equal(
+    launchdEnabled('disabled services = { "com.other" => disabled }', 'com.be-one-click.rdh'),
+    true,
+  );
+  assert.throws(
+    () =>
+      launchdEnabled(
+        'disabled services = { "com.be-one-click.rdh" => invalid }',
+        'com.be-one-click.rdh',
+      ),
+    /Unrecognized/,
+  );
+});
