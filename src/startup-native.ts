@@ -13,6 +13,7 @@ export interface StartupBackend {
   enabled(binding: StartupBinding): boolean;
   set(binding: StartupBinding, enabled: boolean): void;
   createUser(): StartupBinding;
+  serviceAuthority?(): boolean;
 }
 const literal = (s: string) => `'${s.replaceAll("'", "''")}'`;
 const xml = (s: string) =>
@@ -34,6 +35,13 @@ export function powershell(script: string): string {
     { encoding: 'utf8', timeout: 12_000, windowsHide: true },
   ).trim();
 }
+export function hasAdministratorAuthority(): boolean {
+  return process.platform === 'win32'
+    ? powershell(
+        '$p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
+      ).toLowerCase() === 'true'
+    : process.getuid?.() === 0;
+}
 export class NativeStartup implements StartupBackend {
   constructor(
     readonly config: string,
@@ -45,6 +53,9 @@ export class NativeStartup implements StartupBackend {
         throw new Error('Startup requires absolute paths without control characters');
       }
     }
+  }
+  serviceAuthority() {
+    return hasAdministratorAuthority();
   }
   private run(command: string, args: string[]) {
     return execFileSync(command, args, {

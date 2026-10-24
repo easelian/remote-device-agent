@@ -289,6 +289,16 @@ export class Startup {
         writePrivate(this.file, state);
         return this.apply(state, mode);
       }
+      if (
+        mode === 'service' &&
+        state.binding?.mode === 'service' &&
+        this.backend.serviceAuthority?.() === false
+      ) {
+        throw new StartupError(
+          'startup_permission_required',
+          'Use the local administrator command rdh startup system set service; this service account cannot change system startup',
+        );
+      }
       if (local || this.granted(this.config, mode)) {
         return this.apply(state, mode);
       }

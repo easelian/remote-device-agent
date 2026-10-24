@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from './bootstrap.js';
 import { FALLBACK_SERVER } from './server-selection.js';
 import { configPath, readConfig } from './config.js';
+import { NativeStartup, hasAdministratorAuthority } from './startup-native.js';
 import { Startup, startupMode, setManagedStartupGrant } from './startup.js';
 
 async function confirm(message: string) {
@@ -21,6 +22,49 @@ async function confirm(message: string) {
 }
 export async function runStartup(argv: string[]) {
   const [command = 'status', ...rest] = argv;
+  if (command === 'system') {
+    const action = rest.shift() || 'status';
+    const mode = action === 'set' ? startupMode(rest.shift()) : null;
+    let name =
+      process.platform === 'win32'
+        ? 'RemoteDeviceHub'
+        : process.platform === 'darwin'
+          ? 'com.be-one-click.rdh'
+          : 'rdh.service';
+    if (rest[0] === '--name' && rest.length === 2) {
+      name = rest[1] || '';
+      rest.length = 0;
+    }
+    if (
+      !['status', 'set'].includes(action) ||
+      rest.length ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/.test(name) ||
+      mode === 'user'
+    ) {
+      throw new Error('Use startup system status|set none|service [--name NAME]');
+    }
+    const backend = new NativeStartup(path.resolve('.'));
+    const binding = { mode: 'service' as const, name };
+    if (mode !== null) {
+      if (!hasAdministratorAuthority()) {
+        throw new Error('Run this command as an administrator; automatic elevation is disabled');
+      }
+      if (mode === 'service') {
+        await confirm(
+          `Enable the existing boot service ${name}? Its current process will remain running.`,
+        );
+      }
+      backend.set(binding, mode === 'service');
+    }
+    console.log(
+      JSON.stringify({
+        mode: backend.enabled(binding) ? 'service' : 'none',
+        registration: binding,
+        current_connection: 'unchanged',
+      }),
+    );
+    return;
+  }
   if (command === '--help' || command === '-h') {
     console.log(`rdh startup status [--config PATH | --server URL --profile NAME]
 rdh startup set none|user|service [--config PATH]
@@ -29,6 +73,7 @@ rdh startup deny REQUEST_ID [--config PATH]
 rdh startup grant user|service [--config PATH]  (administrator; managed devices)
 rdh startup revoke [--config PATH]             (administrator)
 rdh startup bind user|service NAME [--config PATH] (existing installer registration)
+rdh startup system status|set none|service [--name NAME] (existing boot service; administrator to change)
 
 Enabling requires interactive local confirmation or an administrator grant for remote requests.
 Changes affect future startup only; they do not stop or start the current Agent.

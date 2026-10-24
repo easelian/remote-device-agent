@@ -327,7 +327,11 @@ try {
         const current = await requestStartup(socket, 'get_startup');
         assert.equal(current.result?.mode, mode.toLowerCase(), JSON.stringify(current));
         const pending = await requestStartup(socket, 'set_startup', { mode: mode.toLowerCase() });
-        assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
+        if (mode.toLowerCase() === 'service') {
+          assert.equal(pending.error_code, 'startup_permission_required', JSON.stringify(pending));
+        } else {
+          assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
+        }
         const rejected = await requestStartup(socket, 'set_startup', {
           mode: mode.toLowerCase(),
           approved: true,
@@ -342,6 +346,18 @@ try {
               disabled.error_code === 'startup_permission_required',
             JSON.stringify(disabled),
           );
+        }
+        if (mode === 'Service') {
+          const result = await execute(bundledNode, [
+            path.join(path.dirname(bundledNode), 'bin/remote-device-hub.mjs'),
+            'startup',
+            'system',
+            'set',
+            'none',
+            '--name',
+            name,
+          ]);
+          assert.equal(JSON.parse(result.stdout).mode, 'none');
         }
         assert.equal(socket.readyState, 1, 'disable must preserve the original socket');
         const after = await requestStartup(socket, 'device_info');

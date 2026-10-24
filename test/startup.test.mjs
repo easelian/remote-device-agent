@@ -161,3 +161,12 @@ test('noninteractive CLI cannot supply local confirmation', async (t) => {
   }
   assert.equal(startup.status().pending.request_id, request.request_id);
 });
+
+test('unprivileged service identity reports administrator requirement before soliciting approval', async (t) => {
+  const { startup, backend, calls } = fixture(t);
+  await startup.bind('service', 'RemoteDeviceHub');
+  backend.serviceAuthority = () => false;
+  await assert.rejects(startup.set('service'), { code: 'startup_permission_required' });
+  assert.equal(startup.status().pending, null);
+  assert.deepEqual(calls, []);
+});
