@@ -238,11 +238,33 @@ try {
       const pending = await requestStartup(socket, 'set_startup', { mode: 'user' });
       assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
       await requestStartup(socket, 'set_startup', { mode: 'none' });
+      await execute('taskkill.exe', ['/PID', String(foreground.pid), '/T', '/F']);
+      await foregroundExit;
+      await run(
+        [
+          '-Command',
+          'Enable-ScheduledTask -TaskName $env:RDH_CREATED_TASK | Out-Null; Start-ScheduledTask -TaskName $env:RDH_CREATED_TASK',
+        ],
+        { RDH_CREATED_TASK: createdName },
+      );
+      await waitFor(
+        () => completed.get(temporaryName) >= 2 && children.get(temporaryName) >= 2,
+        'newly created task reconnects to paired Hub',
+      );
+      const restarted = [...server.clients].find(
+        (item) => item.deviceId === temporaryName && item.readyState === 1,
+      );
+      const disabled = await requestStartup(restarted, 'set_startup', { mode: 'none' });
+      assert.equal(disabled.result?.mode, 'none', JSON.stringify(disabled));
+      assert.equal(restarted.readyState, 1);
     } finally {
       await execute(node, [cli, 'startup', 'revoke', '--config', temporaryConfig]);
       if (createdName) {
         await run(
-          ['-Command', 'Unregister-ScheduledTask -TaskName $env:RDH_CREATED_TASK -Confirm:$false'],
+          [
+            '-Command',
+            'Stop-ScheduledTask -TaskName $env:RDH_CREATED_TASK; Unregister-ScheduledTask -TaskName $env:RDH_CREATED_TASK -Confirm:$false',
+          ],
           { RDH_CREATED_TASK: createdName },
         );
       }

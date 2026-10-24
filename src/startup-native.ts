@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { AgentConfig } from './config.js';
+import { readSidecar } from './hardening.js';
 import { configBase, defaultShell } from './platform.js';
 
 export type StartupMode = 'none' | 'user' | 'service';
@@ -141,7 +143,16 @@ export class NativeStartup implements StartupBackend {
     }
   }
   createUser(): StartupBinding {
-    const args = [this.entry, '--config', this.config, '--no-browser', '--recover-lock'];
+    const config = AgentConfig.validate(readSidecar(this.config));
+    const args = [
+      this.entry,
+      '--config',
+      this.config,
+      '--server',
+      config.gateway_url,
+      '--no-browser',
+      '--recover-lock',
+    ];
     if (!fs.existsSync(this.entry)) {
       throw new Error('A persistent Agent executable is required');
     }

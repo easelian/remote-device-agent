@@ -269,8 +269,40 @@ try {
             const pending = await requestStartup(socket, 'set_startup', { mode: 'user' });
             assert.equal(pending.result?.status, 'pending_local_approval', JSON.stringify(pending));
             await requestStartup(socket, 'set_startup', { mode: 'none' });
+            foreground.kill('SIGINT');
+            await foregroundExit;
+            if (mac) {
+              await run('launchctl', ['enable', `${domain}/${label}`]);
+              await run('launchctl', ['bootstrap', domain, userUnit]);
+            } else {
+              await run('systemctl', ['--user', 'enable', 'rdh']);
+              await run('systemctl', ['--user', 'start', 'rdh']);
+            }
+            await waitFor(
+              () => completed.get(name) >= 2,
+              'newly created user registration reconnects to the paired Hub',
+            );
+            const restarted = [...server.clients].find(
+              (item) => item.deviceId === name && item.readyState === 1,
+            );
+            const disabled = await requestStartup(restarted, 'set_startup', { mode: 'none' });
+            assert.equal(disabled.result?.mode, 'none', JSON.stringify(disabled));
+            assert.equal(restarted.readyState, 1);
           } finally {
             await run('sudo', [node, cli, 'startup', 'revoke', '--config', config]);
+            if (mac) {
+              await run('launchctl', ['bootout', `${domain}/${label}`]).catch(() => {});
+              await waitFor(async () => {
+                try {
+                  await run('launchctl', ['print', `${domain}/${label}`]);
+                  return false;
+                } catch {
+                  return true;
+                }
+              }, 'new user registration unloaded');
+            } else {
+              await run('systemctl', ['--user', 'stop', 'rdh']);
+            }
             await rm(userUnit, { force: true });
             await rm(`${config}.startup-run`, { force: true });
             if (!mac) {
@@ -314,7 +346,7 @@ try {
       );
       await waitFor(async () => {
         const processes = await run('ps', ['-axo', 'command=']);
-        return !processes.split('\n').some((line) => line.includes(`${prefix}/current/`));
+        return !processes.split('\n').some((line) => line.includes(`${prefix}/`));
       }, `${mode} process exits after stop`);
       if (mode !== 'none') {
         if (mac) {
