@@ -41,7 +41,10 @@ test('route changes reuse a private binding and lock both deployment origins', a
           },
         },
       );
-      assert.deepEqual(acquired, [...configPaths(PUBLIC_SERVER), ...configPaths(MCP_SERVER)]);
+      assert.deepEqual(
+        acquired,
+        [...new Set([PUBLIC_SERVER, MCP_SERVER])].flatMap((server) => configPaths(server)),
+      );
     }
     assert.equal((await readConfig(destination)).gateway_url, PUBLIC_SERVER);
     await assert.rejects(
