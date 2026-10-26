@@ -6,6 +6,28 @@ import test from 'node:test';
 import { Files } from '../.build/files.js';
 import native from '../.build/posix-fs.js';
 
+test('chunk encoding selects one representation and base64 preserves invalid UTF-8', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-chunk-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const bytes = Buffer.from([0, 255, 65, 195]);
+  await fs.writeFile(path.join(dir, 'binary'), bytes);
+  const files = new Files({ work: dir }, false);
+  const base64 = await files.readFileChunk({ root: 'work', path: 'binary', encoding: 'base64' });
+  assert.equal(base64.utf8_valid, false);
+  assert.equal('content' in base64, false);
+  assert.deepEqual(Buffer.from(base64.content_base64, 'base64'), bytes);
+  const text = await files.readFileChunk({ root: 'work', path: 'binary', encoding: 'text' });
+  assert.equal('content_base64' in text, false);
+  assert.equal(text.content, bytes.toString('utf8'));
+  const both = await files.readFileChunk({ root: 'work', path: 'binary' });
+  assert.equal(both.content, text.content);
+  assert.equal(both.content_base64, base64.content_base64);
+  await assert.rejects(
+    files.readFileChunk({ root: 'work', path: 'binary', encoding: 'invalid' }),
+    /encoding/,
+  );
+});
+
 test('read/write/edit/list/search preserve protocol fields', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-files-'));
   const files = new Files({ workspace: dir }, true);

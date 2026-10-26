@@ -71,6 +71,8 @@ test('oversized results become a correlated bounded error', async () => {
   await sender.send({ type: 'result', id: 'large', result: 'x'.repeat(1000) });
   assert.equal(messages[0].id, 'large');
   assert.match(messages[0].error, /transport limit/);
+  assert.equal(messages[0].error_code, 'result_too_large');
+  assert.equal(messages[0].execution_state, 'succeeded');
   assert.equal(peer.terminated, false);
 });
 

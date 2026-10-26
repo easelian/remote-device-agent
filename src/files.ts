@@ -264,6 +264,10 @@ export class Files {
 
   async readFileChunk(arg: unknown, value?: unknown, offset: unknown = 0, length: unknown = 32768) {
     const params = isParams(arg) ? arg : { root: arg, path: value, offset, length };
+    const encoding = params.encoding ?? 'both';
+    if (encoding !== 'text' && encoding !== 'base64' && encoding !== 'both') {
+      throw new Error('Invalid chunk encoding');
+    }
     let { from_end = false } = params;
     ({ root: arg, path: value, offset = 0, length = 32768 } = params);
     if (
@@ -288,8 +292,8 @@ export class Files {
       if (actualLength === 0) {
         return {
           path: value,
-          content: '',
-          content_base64: '',
+          ...(encoding !== 'base64' ? { content: '' } : {}),
+          ...(encoding !== 'text' ? { content_base64: '' } : {}),
           utf8_valid: true,
           content_encoding: 'utf-8',
           offset: start,
@@ -311,8 +315,8 @@ export class Files {
       }
       return {
         path: value,
-        content: chunk.bytes.toString('utf8'),
-        content_base64: chunk.bytes.toString('base64'),
+        ...(encoding !== 'base64' ? { content: chunk.bytes.toString('utf8') } : {}),
+        ...(encoding !== 'text' ? { content_base64: chunk.bytes.toString('base64') } : {}),
         utf8_valid: utf8Valid,
         content_encoding: utf8Valid ? 'utf-8' : 'utf-8-replacement',
         offset: start,

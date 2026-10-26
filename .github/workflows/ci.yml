@@ -65,7 +65,7 @@ jobs:
           const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
       - run: node scripts/release.mjs build
-      - run: node scripts/release.mjs check "releases/remote-device-hub-${{ steps.metadata.outputs.version }}.json"
+      - run: node scripts/release.mjs check ".build/release/remote-device-hub-${{ steps.metadata.outputs.version }}.json"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

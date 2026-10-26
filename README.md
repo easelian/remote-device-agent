@@ -16,7 +16,7 @@ npm run pack:check
 node scripts/release.mjs build
 ```
 
-The release builder derives artifact and record names from `package.json`. Records in `releases/` are generated build outputs and are not committed. Verify a generated record by passing its path to `node scripts/release.mjs check`.
+The release builder derives artifact and record names from `package.json`. Manifests in `.build/release/` are temporary build outputs, are not committed, and can be removed with `dist/` after use. Verify a generated record by passing its path to `node scripts/release.mjs check`.
 
 Source files live in `src/*.ts`. `npm run build` generates modules in `.build/` for tests and `bundle/agent.mjs` for distribution. `npm pack` runs type checking and compilation first. The release TGZ must be no larger than 64 KiB, with at most 512 KiB of unpacked content. Package checks also verify the file manifest, offline installation with an empty cache, and both command aliases. Stale compiled code or a modified bundle prevents release-record generation.
 
@@ -154,3 +154,7 @@ profiles and locks. Custom origins remain isolated. Changing to an unrelated
 origin creates a new pairing; a supplied `--config` belonging to another Hub is
 rejected rather than forwarding its token. Domain migration does not rewrite
 existing installed service commands or saved bindings automatically.
+
+## Local network configuration
+
+The Agent uses Node's standard network policy. Proxy selection and connection tuning belong to the local launch environment; the package and Hub pairing configuration contain no machine-specific network settings. See [Local network configuration](docs/network.md) for manual and service startup, proxy isolation, and validation limits.

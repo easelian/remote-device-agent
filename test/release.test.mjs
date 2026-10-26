@@ -21,12 +21,12 @@ test('build is deterministic, bounded, and records the current artifact', async 
   try {
     const first = await build({
       output: join(dir, 'dist'),
-      record: join(dir, 'releases', 'agent.json'),
+      record: join(dir, '.build/release', 'agent.json'),
     });
     const bytes = await readFile(first.artifact);
     const second = await build({
       output: join(dir, 'dist'),
-      record: join(dir, 'releases', 'agent.json'),
+      record: join(dir, '.build/release', 'agent.json'),
     });
     assert.deepEqual(await readFile(second.artifact), bytes);
     assert.equal(bytes[9], 255, 'gzip OS must be platform independent');
@@ -45,7 +45,7 @@ test('check rejects a tampered artifact', async () => {
   try {
     const result = await build({
       output: join(dir, 'dist'),
-      record: join(dir, 'releases', 'agent.json'),
+      record: join(dir, '.build/release', 'agent.json'),
     });
     const bytes = await readFile(result.artifact);
     await writeFile(result.artifact, Buffer.concat([bytes, Buffer.from('tamper')]));
@@ -102,7 +102,7 @@ test('publication record enforces ordered stages and requires evidence', async (
     await writeFile(evidence, 'local verification\n');
     const result = await build({
       output: join(dir, 'dist'),
-      record: join(dir, 'releases', 'agent.json'),
+      record: join(dir, '.build/release', 'agent.json'),
     });
     await assert.rejects(
       () => recordPublication(result.record, 'verified', { host: 'local', evidence: [evidence] }),
@@ -142,7 +142,7 @@ test('CLI record accepts repeated evidence and check options', async () => {
     await writeFile(evidence, 'passed\n');
     const result = await build({
       output: join(dir, 'dist'),
-      record: join(dir, 'releases', 'agent.json'),
+      record: join(dir, '.build/release', 'agent.json'),
     });
     execFileSync(
       process.execPath,

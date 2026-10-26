@@ -54,7 +54,9 @@ export class BoundedSender {
       text = JSON.stringify({
         type: 'result',
         id: value.id,
-        error: 'Result exceeds the transport limit; request a smaller range or narrower directory',
+        error: 'Result exceeds the transport limit',
+        error_code: 'result_too_large',
+        execution_state: 'error' in value ? (value.execution_state ?? 'unknown') : 'succeeded',
       });
       bytes = Buffer.byteLength(text);
     }

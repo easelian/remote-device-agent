@@ -11,6 +11,7 @@ export const WRITE_OPERATIONS = Object.freeze([
 ]);
 export const KNOWN_OPERATIONS = Object.freeze([
   'device_info',
+  'get_operation_status',
   'get_startup',
   'set_startup',
   'list_directory',
@@ -93,7 +94,8 @@ export class Policy {
       }
     }
     validateList(protectedPaths, 'protected_paths', MAX_PROTECTED);
-    this.allowed = allowed === null ? null : new Set([...allowed, 'device_info']);
+    this.allowed =
+      allowed === null ? null : new Set([...allowed, 'device_info', 'get_operation_status']);
     this.readonlyRoots = new Set(readonlyRoots);
     this.protected = protectedPaths.map((entry) => {
       if (!entry || entry.length > 256 || entry.includes('\0') || entry.startsWith('/')) {

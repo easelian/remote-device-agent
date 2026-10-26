@@ -232,7 +232,11 @@ export interface AuditOptions {
 }
 export class AuditWriteError extends Error {
   readonly code = 'audit_write_failed';
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly executionState: 'not_sent' | 'succeeded' | 'unknown' = 'unknown',
+    readonly resultSummary: Record<string, unknown> = {},
+  ) {
     super(message);
     this.name = 'AuditWriteError';
   }

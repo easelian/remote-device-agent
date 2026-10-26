@@ -217,7 +217,7 @@ export function validatePackage(files, vendorManifest) {
 
 export async function build({
   output = join(ROOT, 'dist'),
-  record = join(ROOT, 'releases', `${PACKAGE.name}-${PACKAGE.version}.json`),
+  record = join(ROOT, '.build/release', `${PACKAGE.name}-${PACKAGE.version}.json`),
 } = {}) {
   const { files, vendorManifest } = sourceFiles();
   const metadata = validatePackage(files, vendorManifest);
@@ -387,7 +387,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     return index < 0 ? fallback : args[index + 1];
   };
   try {
-    const defaultRecord = join(ROOT, 'releases', `${PACKAGE.name}-${PACKAGE.version}.json`);
+    const defaultRecord = join(ROOT, '.build/release', `${PACKAGE.name}-${PACKAGE.version}.json`);
     if (command === 'build') {
       const result = await build({
         output: value('--output', join(ROOT, 'dist')),

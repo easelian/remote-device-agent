@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 // Native Windows gets its own real filesystem/process/pairing acceptance suite,
 // plus the platform-neutral transport, CLI, release and server-selection tests.
 const windowsSuites = new Set([
+  'agent-proxy.test.mjs',
   'audit.test.mjs',
   'bootstrap.test.mjs',
   'transport.test.mjs',
@@ -14,6 +15,7 @@ const windowsSuites = new Set([
   'platform-storage.test.mjs',
   'platform-runtime.test.mjs',
   'runtime-regression.test.mjs',
+  'operation-receipts.test.mjs',
 ]);
 const files = readdirSync(new URL('../test/', import.meta.url))
   .filter((name) => name.endsWith('.test.mjs'))

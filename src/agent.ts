@@ -1,6 +1,7 @@
 import { StartupError, startupMode, type Startup } from './startup.js';
 import os from 'node:os';
-import type { IncomingMessage } from 'node:http';
+import { globalAgent as httpAgent, type IncomingMessage } from 'node:http';
+import { globalAgent as httpsAgent } from 'node:https';
 import type { DeviceConfig, SandboxSettings } from './types.js';
 import { AuditWriteError, type AuditLog, type AuditRecord } from './audit.js';
 import type { Policy } from './policy.js';
@@ -14,6 +15,12 @@ import { Files } from './files.js';
 import { Processes, ProcessStartError } from './processes.js';
 import { SearchTasks } from './searches.js';
 import { BoundedSender, TRANSPORT_LIMITS } from './transport.js';
+import {
+  OperationError,
+  OperationReceipts,
+  resultSummary,
+  type ExecutionState,
+} from './operation-receipts.js';
 
 const pause = (milliseconds: number, signal?: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -34,6 +41,27 @@ const fatalError = (message: string) => Object.assign(new Error(message), { fata
 
 // Runtime operation methods validate each field after the protocol envelope check.
 type RpcParameters = Record<string, unknown>;
+function operationFailure(error: unknown) {
+  const value = isRecord(error) ? error.executionState : undefined;
+  const state: ExecutionState =
+    typeof value === 'string' &&
+    ['not_sent', 'running', 'succeeded', 'failed', 'unknown'].includes(value)
+      ? (value as ExecutionState)
+      : 'unknown';
+  const code =
+    error instanceof StartupError ||
+    error instanceof PolicyDeniedError ||
+    error instanceof ProcessStartError ||
+    error instanceof AuditWriteError ||
+    error instanceof OperationError
+      ? error.code
+      : 'agent_error';
+  return {
+    error_code: code,
+    execution_state: state,
+    result_summary: resultSummary(isRecord(error) ? error.resultSummary : undefined),
+  };
+}
 export interface AgentOptions {
   startup?: Pick<Startup, 'status' | 'set'>;
   policy?: Pick<Policy, 'describe' | 'denial'> | null;
@@ -45,6 +73,7 @@ export interface AgentOptions {
   transportLimits?: Partial<TransportLimits>;
   operationTimeoutMs?: number;
   shutdownTimeoutMs?: number;
+  receiptLimits?: { maxRecords?: number; ttlMs?: number };
 }
 export interface AgentCloseResult {
   clean: boolean;
@@ -67,6 +96,9 @@ export class Agent {
   readonly transportLimits: TransportLimits;
   readonly operationTimeoutMs: number;
   readonly shutdownTimeoutMs: number;
+  readonly receipts: OperationReceipts;
+  private notifyReceipt: ((id: string) => Promise<void>) | null = null;
+  private statusRequests = 0;
   closing: boolean;
   closeTask: Promise<AgentCloseResult> | null;
   cleanShutdown: boolean;
@@ -100,6 +132,11 @@ export class Agent {
     this.transportLimits = { ...TRANSPORT_LIMITS, ...options.transportLimits };
     this.operationTimeoutMs = options.operationTimeoutMs ?? 20_000;
     this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? 6000;
+    this.receipts = new OperationReceipts(
+      config.token,
+      options.receiptLimits?.maxRecords,
+      options.receiptLimits?.ttlMs,
+    );
     this.closing = false;
     this.closeTask = null;
     this.cleanShutdown = false;
@@ -185,10 +222,19 @@ export class Agent {
       process_output_limit_chars: 256 * 1024,
       shell_authority: 'Agent OS user; file roots do not sandbox shell commands',
       capabilities: {
+        operation_receipts: {
+          version: 1,
+          instance_id: this.receipts.instanceId,
+          max_records: this.receipts.maxRecords,
+          ttl_seconds: this.receipts.ttlMs / 1000,
+        },
+        request_budget: 1,
+        chunk_encoding: 1,
         process_tree_termination:
           process.platform === 'win32' ? 'taskkill-best-effort' : 'process-group',
         operations: [
           'device_info',
+          'get_operation_status',
           ...(this.startup ? ['get_startup', 'set_startup'] : []),
           'list_directory',
           'read_file',
@@ -248,21 +294,43 @@ export class Agent {
       });
     const denial = this.policy?.denial(operation, params);
     if (denial) {
-      record('denied', { error: denial.message });
+      try {
+        record('denied', { error: denial.message });
+      } catch {
+        throw new AuditWriteError(
+          'Operation was rejected before execution; local audit failed',
+          'not_sent',
+        );
+      }
+      Object.assign(denial, { executionState: 'not_sent' });
       throw denial;
     }
-    if (this.audit?.required && operation !== 'device_info') {
-      record('started', {});
+    if (this.audit?.required) {
+      try {
+        record('started', {});
+      } catch {
+        if (operation !== 'device_info' && operation !== 'get_operation_status') {
+          throw new AuditWriteError(
+            'Operation was not executed because local audit failed',
+            'not_sent',
+          );
+        }
+      }
     }
     let result;
     try {
       result = await this.execute(operation, params, context);
     } catch (error) {
+      const state = error instanceof ProcessStartError ? 'failed' : 'unknown';
+      if (error instanceof Error) {
+        Object.assign(error, { executionState: state });
+      }
       try {
         record('error', { error: errorMessage(error) });
       } catch {
         throw new AuditWriteError(
           'Operation failed and its outcome could not be audited; inspect before retrying',
+          'unknown',
         );
       }
       throw error;
@@ -270,11 +338,16 @@ export class Agent {
     try {
       record('ok', { result });
     } catch (error) {
-      if (operation === 'device_info' && error instanceof AuditWriteError) {
-        return this.info();
+      if (
+        (operation === 'device_info' || operation === 'get_operation_status') &&
+        error instanceof AuditWriteError
+      ) {
+        return result;
       }
       throw new AuditWriteError(
         'Operation completed but its outcome could not be audited; inspect before retrying',
+        'succeeded',
+        resultSummary(result),
       );
     }
     return result;
@@ -295,6 +368,9 @@ export class Agent {
     };
     if (operation === 'device_info') {
       return this.info();
+    }
+    if (operation === 'get_operation_status') {
+      return this.receipts.status(params.operation_id, params.instance_id);
     }
     if (operation === 'get_startup' || operation === 'set_startup') {
       if (!this.startup) {
@@ -368,6 +444,9 @@ export class Agent {
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     url.pathname = '/agent/' + this.config.device_id;
     const ws = new WebSocket(url, {
+      // ws otherwise supplies createConnection and bypasses Node's global agent.
+      // Honor the process's local network policy without overriding its defaults.
+      agent: url.protocol === 'wss:' ? httpsAgent : httpAgent,
       headers: { Authorization: 'Bearer ' + this.config.token },
       maxPayload: 2 * 1024 * 1024,
       handshakeTimeout: 15_000,
@@ -393,6 +472,14 @@ export class Agent {
         await sender.send(value);
       } catch {
         stop();
+      }
+    };
+    const notifyReceipt = async (id: string) => {
+      if (ready && ws.readyState === 1) {
+        await send({
+          type: 'operation_result',
+          ...this.receipts.status(id, this.receipts.instanceId),
+        });
       }
     };
     if (signal?.aborted) {
@@ -431,9 +518,17 @@ export class Agent {
           response.resume();
           stop();
         });
-        ws.on('error', () => {
+        ws.on('error', (error: unknown) => {
           if (!ready && !fatal) {
-            reject(new Error('Gateway connection failed'));
+            const codes = (error instanceof AggregateError ? error.errors : [error])
+              .filter(isRecord)
+              .map((entry) => entry.code)
+              .filter(
+                (code): code is string =>
+                  typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code),
+              );
+            const detail = [...new Set(codes)].join(', ') || 'handshake or network timeout';
+            reject(new Error(`Gateway connection failed (${detail})`));
           }
         });
         ws.on('pong', () => {
@@ -462,8 +557,17 @@ export class Agent {
             }
             clearTimeout(readyTimeout);
             ready = true;
+            this.notifyReceipt = notifyReceipt;
             this.processes.markOnline();
             onReady();
+            void (async () => {
+              for (const id of this.receipts.pending()) {
+                if (ws.readyState !== 1) {
+                  break;
+                }
+                await notifyReceipt(id);
+              }
+            })();
             heartbeat = setInterval(() => {
               if (!alive) {
                 stop();
@@ -476,6 +580,10 @@ export class Agent {
             return;
           }
           if (message.type === 'heartbeat') {
+            return;
+          }
+          if (message.type === 'operation_ack') {
+            this.receipts.acknowledge(message.operation_id, message.instance_id);
             return;
           }
           const params = message.params ?? {};
@@ -493,27 +601,121 @@ export class Agent {
           const requestId = message.id;
           const operationName = message.operation;
           if (this.closing) {
-            void send({ type: 'result', id: requestId, error: 'Device is shutting down' });
+            void send({
+              type: 'result',
+              id: requestId,
+              error: 'Device is shutting down',
+              error_code: 'operation_busy',
+              execution_state: 'not_sent',
+            });
             return;
           }
           if (activeIds.has(requestId)) {
             stop();
             return;
           }
-          if (this.inFlightOperations.size >= 8) {
-            void send({ type: 'result', id: requestId, error: 'Device busy' });
+          const statusRequest = operationName === 'get_operation_status';
+          if (statusRequest ? this.statusRequests >= 1 : this.inFlightOperations.size >= 8) {
+            void send({
+              type: 'result',
+              id: requestId,
+              error: 'Device busy',
+              error_code: 'operation_busy',
+              execution_state: 'not_sent',
+            });
             return;
           }
+          let budget = this.operationTimeoutMs;
+          let receiptId: string | undefined;
+          try {
+            if (message.execution_budget_ms !== undefined) {
+              if (
+                typeof message.execution_budget_ms !== 'number' ||
+                !Number.isSafeInteger(message.execution_budget_ms) ||
+                message.execution_budget_ms < 1
+              ) {
+                throw new OperationError(
+                  'operation_timeout',
+                  'Request budget expired before execution',
+                );
+              }
+              budget = Math.min(budget, message.execution_budget_ms);
+            }
+            if (message.operation_receipt !== undefined) {
+              if (!isRecord(message.operation_receipt)) {
+                throw new OperationError('operation_unavailable', 'Invalid operation receipt');
+              }
+              const receipt = message.operation_receipt;
+              if (
+                !this.receipts.begin(
+                  receipt.operation_id,
+                  receipt.instance_id,
+                  operationName,
+                  params,
+                )
+              ) {
+                const existing = this.receipts.status(receipt.operation_id, receipt.instance_id);
+                throw new OperationError(
+                  'operation_unavailable',
+                  'Operation already accepted; query its status',
+                  existing.execution_state as ExecutionState,
+                  existing.result_summary as Record<string, unknown>,
+                );
+              }
+              receiptId = receipt.operation_id as string;
+            }
+          } catch (error) {
+            void send({
+              type: 'result',
+              id: requestId,
+              error: errorMessage(error).slice(0, 1000),
+              ...operationFailure(error),
+            });
+            return;
+          }
+          if (statusRequest) {
+            this.statusRequests += 1;
+          }
           activeIds.add(requestId);
-          const operation = Promise.resolve().then(() =>
-            this.dispatch(operationName, params, { requestId: requestId }),
-          );
+          const started = performance.now();
+          let executionMs: number | undefined;
+          const operation = Promise.resolve()
+            .then(() => this.dispatch(operationName, params, { requestId }))
+            .then(
+              (result) => {
+                if (receiptId) {
+                  this.receipts.complete(receiptId, 'succeeded', result);
+                }
+                return result;
+              },
+              (error: unknown) => {
+                const failure = operationFailure(error);
+                if (receiptId) {
+                  this.receipts.complete(
+                    receiptId,
+                    failure.execution_state,
+                    failure.result_summary,
+                    failure.error_code,
+                  );
+                }
+                throw error;
+              },
+            )
+            .finally(() => {
+              executionMs = performance.now() - started;
+              if (receiptId) {
+                void this.notifyReceipt?.(receiptId);
+              }
+            });
           // The budget belongs to the Agent, so an unresolved I/O operation
           // still occupies a slot after a socket closes or its reply expires.
           this.inFlightOperations.add(operation);
           const completed = operation.finally(() => {
             this.inFlightOperations.delete(operation);
             activeIds.delete(requestId);
+            if (statusRequest) {
+              this.statusRequests -= 1;
+            }
           });
           completed.catch(() => undefined);
           let operationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -521,36 +723,37 @@ export class Agent {
           const expired = new Promise<never>((_, reject) => {
             cancelResponse = () =>
               reject(
-                new Error(
+                new OperationError(
+                  'disconnected',
                   'Connection closed; operation outcome may be unknown. Inspect before retrying.',
+                  'unknown',
                 ),
               );
             operationTimer = setTimeout(
               () =>
                 reject(
-                  new Error(
+                  new OperationError(
+                    'operation_timeout',
                     'Operation deadline exceeded; outcome may be unknown. Inspect before retrying.',
+                    'unknown',
                   ),
                 ),
-              this.operationTimeoutMs,
+              budget,
             );
           });
           const waiter = { cancel: cancelResponse, timer: operationTimer };
           responseWaiters.add(waiter);
           void Promise.race([completed, expired])
             .then(
-              (result) => send({ type: 'result', id: requestId, result }),
+              (result) =>
+                send({ type: 'result', id: requestId, result, execution_ms: executionMs }),
               (error: unknown) =>
                 send({
                   type: 'result',
                   id: requestId,
                   error: errorMessage(error).slice(0, 1000),
-                  ...(error instanceof StartupError ||
-                  error instanceof PolicyDeniedError ||
-                  error instanceof ProcessStartError ||
-                  error instanceof AuditWriteError
-                    ? { error_code: error.code }
-                    : {}),
+                  ...operationFailure(error),
+                  ...(executionMs === undefined ? {} : { execution_ms: executionMs }),
                 }),
             )
             .finally(() => {
@@ -560,6 +763,9 @@ export class Agent {
         });
       });
     } finally {
+      if (this.notifyReceipt === notifyReceipt) {
+        this.notifyReceipt = null;
+      }
       clearTimeout(readyTimeout);
       clearInterval(heartbeat);
       signal?.removeEventListener('abort', stop);
@@ -592,7 +798,7 @@ export class Agent {
     try {
       while (!signal?.aborted) {
         try {
-          await this.session(
+          const outcome = await this.session(
             signal,
             () => {
               delay = 1000;
@@ -600,12 +806,17 @@ export class Agent {
             },
             { preserveJobs: true },
           );
+          if (!signal?.aborted) {
+            console.error(
+              `Gateway disconnected (${outcome.reason}, close=${outcome.code}); retrying in ${(delay / 1000).toFixed(1)}s`,
+            );
+          }
         } catch (error) {
           if (error && typeof error === 'object' && 'fatal' in error && error.fatal) {
             throw error;
           }
           if (!signal?.aborted) {
-            console.error(`Gateway disconnected; retrying in ${(delay / 1000).toFixed(1)}s`);
+            console.error(`${errorMessage(error)}; retrying in ${(delay / 1000).toFixed(1)}s`);
           }
         }
         if (signal?.aborted) {

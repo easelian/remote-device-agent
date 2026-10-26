@@ -5,8 +5,91 @@ import path from 'node:path';
 import test from 'node:test';
 import WebSocketServer from '../vendor/ws/lib/websocket-server.js';
 import { Agent } from '../.build/agent.js';
+import { AuditWriteError } from '../.build/audit.js';
 
 const token = 't'.repeat(48);
+
+test('late completion survives reconnect and a repeated operation ID executes once', {
+  timeout: 5000,
+}, async (t) => {
+  const { server, agent } = await fixture(t);
+  let finish;
+  let dispatches = 0;
+  agent.dispatch = () => {
+    dispatches++;
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  };
+  let peer = waitConnection(server);
+  const first = agent.session(new AbortController().signal, () => {}, { preserveJobs: true });
+  let { socket } = await peer;
+  let next = messageQueue(socket);
+  const hello = await next();
+  const instance = hello.info.capabilities.operation_receipts.instance_id;
+  const request = {
+    type: 'request',
+    id: 'first',
+    operation: 'write_file',
+    params: {},
+    execution_budget_ms: 10,
+    operation_receipt: { operation_id: 'a'.repeat(32), instance_id: instance },
+  };
+  socket.send(JSON.stringify({ type: 'ready' }));
+  socket.send(JSON.stringify(request));
+  const timeout = await next();
+  assert.equal(timeout.error_code, 'operation_timeout');
+  assert.equal(timeout.execution_state, 'unknown');
+  socket.close();
+  await first;
+  finish({ sha256: 'f'.repeat(64), path: 'private', output: 'secret' });
+  await new Promise((resolve) => setImmediate(resolve));
+  peer = waitConnection(server);
+  const stop = new AbortController();
+  const second = agent.session(stop.signal, () => {}, { preserveJobs: true });
+  ({ socket } = await peer);
+  next = messageQueue(socket);
+  assert.equal((await next()).info.capabilities.operation_receipts.instance_id, instance);
+  socket.send(JSON.stringify({ type: 'ready' }));
+  const recovered = await next();
+  assert.equal(recovered.type, 'operation_result');
+  assert.equal(recovered.execution_state, 'succeeded');
+  assert.deepEqual(recovered.result_summary, { sha256: 'f'.repeat(64) });
+  assert.doesNotMatch(JSON.stringify(recovered), /private|secret/);
+  socket.send(
+    JSON.stringify({
+      type: 'operation_ack',
+      operation_id: request.operation_receipt.operation_id,
+      instance_id: instance,
+    }),
+  );
+  socket.send(JSON.stringify({ ...request, id: 'repeated' }));
+  const repeated = await next();
+  assert.equal(repeated.execution_state, 'succeeded');
+  assert.equal(dispatches, 1);
+  assert.deepEqual(agent.receipts.pending(), []);
+  stop.abort();
+  await second;
+});
+
+test('audit failure after a completed operation preserves success and a safe result summary', async (t) => {
+  const { agent } = await fixture(t);
+  agent.execute = async () => ({ job_id: 'job-1', command: 'private', output: 'secret' });
+  agent.audit = {
+    required: true,
+    record: ({ status }) => {
+      if (status === 'ok') {
+        throw new AuditWriteError('private error');
+      }
+    },
+  };
+  await assert.rejects(agent.dispatch('start_process', {}), (error) => {
+    assert.equal(error.code, 'audit_write_failed');
+    assert.equal(error.executionState, 'succeeded');
+    assert.deepEqual(error.resultSummary, { job_id: 'job-1' });
+    return true;
+  });
+});
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rdh-agent-'));
@@ -353,6 +436,8 @@ test('HTTP 401 handshake rejection stops reconnect', { timeout: 5000 }, async (t
 test('HTTP 502 retries and a later accepted connection can be aborted', {
   timeout: 6000,
 }, async (t) => {
+  const diagnostics = [];
+  t.mock.method(console, 'error', (message) => diagnostics.push(message));
   let attempts = 0;
   const server = new WebSocketServer({
     port: 0,
@@ -389,6 +474,8 @@ test('HTTP 502 retries and a later accepted connection can be aborted', {
   const running = agent.run(controller.signal);
   await connected;
   assert.ok(attempts >= 2);
+  assert.ok(diagnostics.some((line) => line.includes('HTTP 502')));
+  assert.ok(diagnostics.every((line) => !line.includes(token)));
   controller.abort();
   await running;
 });
@@ -530,4 +617,14 @@ test('shutdown rejects new requests before dispatch', { timeout: 5000 }, async (
   assert.equal(agent.inFlightOperations.size, 0);
   socket.close();
   await session;
+});
+
+test('connection refusal retains a safe transport error code', async (t) => {
+  const { server, agent } = await fixture(t);
+  await closeServer(server);
+  await assert.rejects(agent.session(), (error) => {
+    assert.match(error.message, /ECONNREFUSED/);
+    assert.ok(!error.message.includes(token));
+    return true;
+  });
 });
