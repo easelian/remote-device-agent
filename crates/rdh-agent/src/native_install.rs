@@ -1,8 +1,11 @@
-//! Recoverable, offline native version-pointer transactions on Linux.
+//! Recoverable, offline native version-pointer transactions on Linux and macOS.
 //! The caller must hold the exclusive installation manager lock.
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+mod posix {
     use std::fs::{self, File, OpenOptions};
     use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
@@ -28,7 +31,8 @@ mod linux {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    fn check_elf(path: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    fn check_executable(path: &Path) -> Result<()> {
         let mut file = File::open(path)?;
         let mut header = [0u8; 20];
         file.read_exact(&mut header)?;
@@ -46,6 +50,27 @@ mod linux {
         if machine != expected {
             return Err(Error::message(
                 "Native update architecture does not match this Agent",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn check_executable(path: &Path) -> Result<()> {
+        let mut header = [0u8; 32];
+        File::open(path)?.read_exact(&mut header)?;
+        let cpu = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let expected = match std::env::consts::ARCH {
+            "x86_64" => 0x0100_0007,
+            "aarch64" => 0x0100_000c,
+            _ => return Err(Error::message("Native update architecture is unsupported")),
+        };
+        if header[..4] != [0xcf, 0xfa, 0xed, 0xfe]
+            || cpu != expected
+            || u32::from_le_bytes(header[12..16].try_into().unwrap()) != 2
+        {
+            return Err(Error::message(
+                "Native update must be a matching 64-bit Mach-O executable",
             ));
         }
         Ok(())
@@ -164,6 +189,7 @@ mod linux {
         self_check(path, &["--version"], version, false, Duration::from_secs(5))
     }
 
+    #[cfg(target_os = "linux")]
     fn check_service_protocol(path: &Path) -> Result<()> {
         self_check(
             path,
@@ -177,6 +203,7 @@ mod linux {
 
     /// Check the downloaded candidate before disturbing the running service.
     /// Staging later verifies the same size, digest, architecture and version.
+    #[cfg(target_os = "linux")]
     pub fn preflight_service(
         controller: &crate::install_lock::ControllerLock,
         version: &str,
@@ -193,11 +220,12 @@ mod linux {
         let temporary = Stage::new(controller.prefix(), "service-preflight")?;
         write_binary(&temporary.path, bytes)?;
         let path = temporary.path.join("rdh");
-        check_elf(&path)?;
+        check_executable(&path)?;
         check_version(&path, version)?;
         check_service_protocol(&path)
     }
 
+    #[cfg(target_os = "linux")]
     pub fn verify_service_protocol(prefix: &Path, version: &str) -> Result<()> {
         check_service_protocol(&version_binary(prefix, version)?)
     }
@@ -295,7 +323,7 @@ mod linux {
         if format!("{:x}", hash.finalize()) != expected {
             return Err(Error::message("Native version checksum mismatch"));
         }
-        check_elf(&path)?;
+        check_executable(&path)?;
         check_version(&path, version)
     }
 
@@ -333,6 +361,7 @@ mod linux {
             .map_err(|_| Error::message("Invalid installation path"))?;
         let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())
             .map_err(|_| Error::message("Invalid installation path"))?;
+        #[cfg(target_os = "linux")]
         let result = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
@@ -341,6 +370,16 @@ mod linux {
                 libc::AT_FDCWD,
                 destination.as_ptr(),
                 1u32,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result = unsafe {
+            libc::renameatx_np(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_EXCL,
             )
         };
         if result != 0 {
@@ -392,11 +431,11 @@ mod linux {
         let temporary = Stage::new(&versions, "native-version")?;
         write_binary(&temporary.path, bytes)?;
         stored_manifest(&temporary.path, version, bytes)?;
-        check_elf(&temporary.path.join("rdh"))?;
+        check_executable(&temporary.path.join("rdh"))?;
         check_version(&temporary.path.join("rdh"), version)?;
-        File::open(&temporary.path)?.sync_all()?;
+        storage::sync_directory(&File::open(&temporary.path)?)?;
         rename_new(&temporary.path, &destination)?;
-        File::open(&versions)?.sync_all()?;
+        storage::sync_directory(&File::open(&versions)?)?;
         Ok(())
     }
 
@@ -432,7 +471,7 @@ mod linux {
         if bytes.is_empty() || bytes.len() as u64 > update::MAX_BINARY_BYTES {
             return Err(Error::message("Native binary size is invalid"));
         }
-        check_elf(&executable)?;
+        check_executable(&executable)?;
         check_version(&executable, env!("CARGO_PKG_VERSION"))?;
         let temporary = Stage::new(&parent, "rdh-install")?;
         let versions = temporary.path.join("versions");
@@ -441,8 +480,8 @@ mod linux {
         storage::create_private_dir(&version)?;
         write_binary(&version, &bytes)?;
         stored_manifest(&version, env!("CARGO_PKG_VERSION"), &bytes)?;
-        File::open(&version)?.sync_all()?;
-        File::open(&versions)?.sync_all()?;
+        storage::sync_directory(&File::open(&version)?)?;
+        storage::sync_directory(&File::open(&versions)?)?;
         storage::write_private_new(
             &temporary.path.join(".native-install.json"),
             br#"{"schema":1,"kind":"native-agent"}"#,
@@ -458,10 +497,10 @@ mod linux {
             format!("versions/{}", env!("CARGO_PKG_VERSION")),
             temporary.path.join("current"),
         )?;
-        File::open(&temporary.path)?.sync_all()?;
+        storage::sync_directory(&File::open(&temporary.path)?)?;
         rename_new(&temporary.path, &destination)?;
         File::open(&parent)
-            .and_then(|directory| directory.sync_all())
+            .and_then(|directory| storage::sync_directory(&directory))
             .map_err(|error| {
                 Error::message(format!(
                     "Native installation was created at {}, but its parent directory could not be synchronized: {error}",
@@ -546,13 +585,13 @@ mod linux {
                 Err(error) => return Err(error.into()),
             }
         }
-        File::open(prefix)?.sync_all()?;
+        storage::sync_directory(&File::open(prefix)?)?;
         Ok(())
     }
     fn clear_pending(prefix: &Path) -> Result<()> {
         pending(prefix)?;
         fs::remove_file(prefix.join(PENDING))?;
-        File::open(prefix)?.sync_all()?;
+        storage::sync_directory(&File::open(prefix)?)?;
         Ok(())
     }
 
@@ -622,6 +661,7 @@ mod linux {
     /// the durable journal. The launch rule permits only the old version after
     /// the current pointer has reached it; a crash between these fsyncs remains
     /// recoverable without exposing an unverified new instance.
+    #[cfg(target_os = "linux")]
     pub fn restore_service(
         manager: &ManagerLock,
         expected: &crate::service_update::Intent,
@@ -804,10 +844,33 @@ mod linux {
     }
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) use linux::install_for_locked_profile;
-#[cfg(target_os = "linux")]
-pub use linux::{
-    install, pending_record, preflight_service, previous, recover, restore_service, stage, switch,
-    validate_profiles, verify_service_protocol, verify_stored,
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+pub(crate) use posix::install_for_locked_profile;
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+pub use posix::{
+    install, pending_record, previous, recover, stage, switch, validate_profiles, verify_stored,
 };
+#[cfg(target_os = "linux")]
+pub use posix::{preflight_service, restore_service, verify_service_protocol};
+
+#[cfg(all(test, target_os = "macos", not(feature = "experimental-macos-install")))]
+mod macos_default_tests {
+    #[test]
+    fn installation_is_unavailable_without_the_experimental_feature() {
+        let prefix = std::env::temp_dir().join(format!(
+            "rdh-unavailable-install-{}",
+            crate::random::hex_token::<12>().unwrap()
+        ));
+        assert!(
+            crate::upgrade_cli::install(&["--prefix".into(), prefix.to_str().unwrap().into(),])
+                .is_err()
+        );
+        assert!(!prefix.exists());
+    }
+}

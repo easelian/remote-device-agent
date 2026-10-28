@@ -177,7 +177,7 @@ jobs:
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --target "$RDH_TARGET" macos_default_tests::
       - name: Compile an independent native upgrade candidate
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         env:
           RDH_TARGET: ${{ matrix.target }}
           RUSTUP_TOOLCHAIN: 1.93.0
@@ -198,6 +198,12 @@ jobs:
         run: |
           python3 --version
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+      - name: Check native LaunchAgent installed update and rollback
+        if: runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd -- --ignored --test-threads=1
       - name: Check native Windows service lifecycle
         if: runner.os == 'Windows'
         env:

@@ -7,8 +7,8 @@ use rdh_agent::{
 };
 use serde_json::Value;
 
-/// The fixture must be independently compiled. Replacing version bytes in an
-/// ELF file leaves optimized immediates and comparisons at the original value.
+/// The fixture must be independently compiled. Replacing version bytes in a
+/// compiled binary leaves optimized immediates and comparisons at the original value.
 pub fn load() -> (String, Vec<u8>) {
     let directory = PathBuf::from(std::env::var_os("RDH_NATIVE_TEST_CANDIDATE_DIR").expect(
         "Build a candidate with `cargo run --locked -p xtask -- native-test-candidate --target TARGET --out ABSOLUTE_NEW_DIRECTORY`, then set RDH_NATIVE_TEST_CANDIDATE_DIR to that directory",
@@ -24,15 +24,19 @@ pub fn load() -> (String, Vec<u8>) {
     assert_eq!(manifest["kind"], "native-test-candidate");
     assert_eq!(manifest["source_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest["release_ready"], false);
-    let target = format!(
-        "{}-unknown-linux-{}",
-        std::env::consts::ARCH,
-        if cfg!(target_env = "musl") {
-            "musl"
-        } else {
-            "gnu"
-        }
-    );
+    let target = match std::env::consts::OS {
+        "linux" => format!(
+            "{}-unknown-linux-{}",
+            std::env::consts::ARCH,
+            if cfg!(target_env = "musl") {
+                "musl"
+            } else {
+                "gnu"
+            }
+        ),
+        "macos" => format!("{}-apple-darwin", std::env::consts::ARCH),
+        _ => panic!("Unsupported native candidate platform"),
+    };
     assert_eq!(manifest["target"], target);
     let version = manifest["version"].as_str().unwrap().to_owned();
     assert_eq!(

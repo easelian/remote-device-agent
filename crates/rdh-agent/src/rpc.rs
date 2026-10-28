@@ -496,7 +496,10 @@ impl Runtime {
             "shell_authority":"Agent OS user; file roots do not sandbox shell commands",
             "capabilities":{"operation_receipts":{"version":1,"instance_id":self.receipts.instance_id,
                 "max_records":self.receipts.max_records,"ttl_seconds":self.receipts.ttl.as_secs()},
-                "request_budget":1,"chunk_encoding":1,"process_tree_termination":"process-group","operations":operations},
+                "request_budget":1,"chunk_encoding":1,"process_tree_termination":
+                    if PROCESS_OPERATIONS.is_empty() { "unavailable" }
+                    else if cfg!(windows) { "job-object" } else { "process-group" },
+                "operations":operations},
             "search_limits":{"max_concurrent":2,"max_entries":1000,"max_depth":30,"max_visited":10000,
                 "max_result_bytes":256 * 1024,"task_ttl_seconds":30},
             "offline_process_grace_seconds":300,

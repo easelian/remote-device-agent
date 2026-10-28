@@ -1,4 +1,7 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -93,7 +96,7 @@ async fn run(binary: &Path, root: &Path, args: &[&str]) -> std::process::Output 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
     let (next, bytes) = native_candidate::load();
-    let fixture = Fixture(std::env::temp_dir().join(format!(
+    let fixture = Fixture(std::env::temp_dir().canonicalize().unwrap().join(format!(
         "rdh-native-upgrade-{}",
         random::hex_token::<8>().unwrap()
     )));
@@ -166,11 +169,17 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
         next
     );
     let index = fixture.0.join("channel.json");
-    let platform = match (std::env::consts::ARCH, cfg!(target_env = "musl")) {
-        ("x86_64", false) => "linux-x64-gnu",
-        ("x86_64", true) => "linux-x64-musl",
-        ("aarch64", false) => "linux-arm64-gnu",
-        ("aarch64", true) => "linux-arm64-musl",
+    let platform = match (
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(target_env = "musl"),
+    ) {
+        ("linux", "x86_64", false) => "linux-x64-gnu",
+        ("linux", "x86_64", true) => "linux-x64-musl",
+        ("linux", "aarch64", false) => "linux-arm64-gnu",
+        ("linux", "aarch64", true) => "linux-arm64-musl",
+        ("macos", "x86_64", _) => "darwin-x64",
+        ("macos", "aarch64", _) => "darwin-arm64",
         _ => panic!("unsupported test architecture"),
     };
     let mut channel = json!({"schema":2,"channel":"stable","version":next,

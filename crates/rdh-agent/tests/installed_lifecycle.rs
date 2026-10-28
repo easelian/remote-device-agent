@@ -1,4 +1,7 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -128,7 +131,7 @@ fn command(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crash_marker_blocks_updates_until_profile_is_recovered() {
-    let fixture = Fixture(std::env::temp_dir().join(format!(
+    let fixture = Fixture(std::env::temp_dir().canonicalize().unwrap().join(format!(
         "rdh-installed-lifecycle-{}",
         random::hex_token::<8>().unwrap()
     )));

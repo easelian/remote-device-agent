@@ -65,6 +65,14 @@ impl Peer {
         assert_eq!(hello["type"], "hello");
         assert_eq!(hello["version"], 1);
         assert_eq!(hello["info"]["allow_shell"], true);
+        assert_eq!(
+            hello["info"]["capabilities"]["process_tree_termination"],
+            if cfg!(windows) {
+                "job-object"
+            } else {
+                "process-group"
+            }
+        );
         let operations = hello["info"]["capabilities"]["operations"]
             .as_array()
             .unwrap();

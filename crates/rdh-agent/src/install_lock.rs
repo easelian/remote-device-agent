@@ -1,8 +1,11 @@
 //! Native installation exclusion and crash markers.
 //! A live Agent holds a shared lock; an offline updater must hold it exclusively.
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+mod posix {
     use std::fs::{self, File, OpenOptions};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -19,6 +22,7 @@ mod linux {
     const PROFILES: &str = ".profiles";
     const PROFILES_LOCK: &str = ".profiles.lock";
     const LAUNCH_LOCK: &str = ".launch.lock";
+    #[cfg(target_os = "linux")]
     const CONTROLLER_LOCK: &str = ".service-controller.lock";
     const MAX_PROFILES: usize = 256;
     pub const PENDING: &str = ".update-pending.json";
@@ -172,7 +176,15 @@ mod linux {
         }
     }
     fn ensure_no_service_pending(prefix: &Path) -> Result<()> {
-        if crate::service_update::read(prefix)?.is_some() {
+        #[cfg(target_os = "linux")]
+        let exists = crate::service_update::read(prefix)?.is_some();
+        #[cfg(target_os = "macos")]
+        let exists = match fs::symlink_metadata(prefix.join(".service-update.json")) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if exists {
             return Err(Error::message(
                 "A service update is pending; inspect and recover it before managing the installation",
             ));
@@ -186,10 +198,12 @@ mod linux {
 
     /// A service controller holds this only across decisions that must not
     /// race an Agent between reading update state and publishing its marker.
+    #[cfg(target_os = "linux")]
     pub struct LaunchBarrier {
         prefix: PathBuf,
         _lock: FileLock,
     }
+    #[cfg(target_os = "linux")]
     impl LaunchBarrier {
         pub fn acquire(prefix: &Path) -> Result<Self> {
             Ok(Self {
@@ -204,10 +218,12 @@ mod linux {
 
     /// Serializes an entire service update, including the time the Agent must
     /// continue to hold the installation's shared lock.
+    #[cfg(target_os = "linux")]
     pub struct ControllerLock {
         prefix: PathBuf,
         _lock: FileLock,
     }
+    #[cfg(target_os = "linux")]
     impl ControllerLock {
         pub fn acquire(prefix: &Path, executable: &Path) -> Result<Self> {
             let lock = lock_file(prefix, CONTROLLER_LOCK, true)?;
@@ -235,7 +251,7 @@ mod linux {
         let path = prefix.join(name);
         match storage::create_private_dir(&path) {
             Ok(_) => {
-                File::open(prefix)?.sync_all()?;
+                storage::sync_directory(&File::open(prefix)?)?;
             }
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 private_directory(&path)?
@@ -384,11 +400,10 @@ mod linux {
             return Err(Error::message("Native state record changed"));
         }
         fs::remove_file(path)?;
-        File::open(
+        storage::sync_directory(&File::open(
             path.parent()
                 .ok_or_else(|| Error::message("Invalid marker parent"))?,
-        )?
-        .sync_all()?;
+        )?)?;
         Ok(())
     }
     fn recover_for_config(directory: &Path, config: &Path) -> Result<()> {
@@ -416,6 +431,7 @@ mod linux {
         prefix: PathBuf,
         _lock: FileLock,
         launch_lock: Option<FileLock>,
+        #[cfg(target_os = "linux")]
         launch: Option<crate::service_update::Launch>,
         marker: Option<(PathBuf, std::fs::Metadata)>,
     }
@@ -437,6 +453,7 @@ mod linux {
                 prefix: prefix.into(),
                 _lock: lock,
                 launch_lock: None,
+                #[cfg(target_os = "linux")]
                 launch: None,
                 marker: None,
             })
@@ -453,11 +470,15 @@ mod linux {
             ensure_no_switch_pending(&prefix)?;
             let current = pointer(&prefix, "current")?;
             verify_version(&prefix, &current, &executable)?;
+            #[cfg(target_os = "linux")]
             let launch = crate::service_update::launch(&prefix, &current)?;
+            #[cfg(target_os = "macos")]
+            ensure_no_service_pending(&prefix)?;
             Ok(Some(Self {
                 prefix,
                 _lock: lock,
                 launch_lock: Some(launch_lock),
+                #[cfg(target_os = "linux")]
                 launch,
                 marker: None,
             }))
@@ -473,22 +494,30 @@ mod linux {
         pub fn inspect_at(prefix: &Path, executable: &Path) -> Result<Self> {
             let lock = open_lock(prefix, false)?;
             ensure_no_switch_pending(prefix)?;
+            #[cfg(target_os = "linux")]
             crate::service_update::read(prefix)?;
+            #[cfg(target_os = "macos")]
+            ensure_no_service_pending(prefix)?;
             verify_current(prefix, executable)?;
             Ok(Self {
                 prefix: prefix.to_path_buf(),
                 _lock: lock,
                 launch_lock: None,
+                #[cfg(target_os = "linux")]
                 launch: None,
                 marker: None,
             })
         }
         pub fn check_launch_profile(&self, config: &Path, pair_only: bool) -> Result<()> {
+            #[cfg(target_os = "linux")]
             if let Some(launch) = &self.launch {
                 launch.check_profile(config, pair_only)?;
             }
+            #[cfg(target_os = "macos")]
+            let _ = (config, pair_only);
             Ok(())
         }
+        #[cfg(target_os = "linux")]
         pub fn trial_launch(&self) -> Option<&crate::service_update::Launch> {
             self.launch.as_ref().filter(|launch| launch.trial)
         }
@@ -594,6 +623,7 @@ mod linux {
     pub struct ManagerLock {
         pub prefix: PathBuf,
         _lock: FileLock,
+        #[cfg(target_os = "linux")]
         service_transaction: Option<String>,
     }
     impl ManagerLock {
@@ -674,6 +704,7 @@ mod linux {
             Ok(Self {
                 prefix: prefix.into(),
                 _lock: lock,
+                #[cfg(target_os = "linux")]
                 service_transaction: None,
             })
         }
@@ -681,6 +712,7 @@ mod linux {
         /// Acquire exclusive installation ownership for a serialized service
         /// controller. A switch journal, when present, must belong to this
         /// exact service transaction before it can be recovered.
+        #[cfg(target_os = "linux")]
         pub fn for_service(
             controller: &ControllerLock,
             executable: &Path,
@@ -747,6 +779,7 @@ mod linux {
             })
         }
 
+        #[cfg(target_os = "linux")]
         pub fn owns_service(&self, transaction_id: &str) -> bool {
             self.service_transaction.as_deref() == Some(transaction_id)
         }
@@ -811,12 +844,10 @@ mod linux {
             let fixture = Fixture::new();
             for exclusive in [false, true] {
                 let held = open_lock(&fixture.prefix, exclusive).unwrap();
-                let mut pipe = [0; 2];
+                use std::os::fd::IntoRawFd;
+                let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+                let pipe = [left.into_raw_fd(), right.into_raw_fd()];
                 // The child only calls async-signal-safe syscalls before _exit.
-                assert_eq!(
-                    unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
-                    0
-                );
                 let child = unsafe { libc::fork() };
                 if child == 0 {
                     unsafe {
@@ -899,16 +930,29 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{
-    ControllerLock, LaunchBarrier, ManagerLock, PENDING, RunningInstall, RunningRecord,
-    current_installation, pointer,
+pub use posix::{ControllerLock, LaunchBarrier};
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+pub use posix::{
+    ManagerLock, PENDING, RunningInstall, RunningRecord, current_installation, pointer,
 };
-#[cfg(target_os = "linux")]
-pub(crate) use linux::{pending, record_profile, version_binary};
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+pub(crate) use posix::{pending, record_profile, version_binary};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+)))]
 pub struct RunningInstall;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+)))]
 impl RunningInstall {
     pub fn acquire_current() -> crate::error::Result<Option<Self>> {
         Ok(None)

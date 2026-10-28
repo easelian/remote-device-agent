@@ -1,7 +1,10 @@
 //! Native development install and offline update commands.
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+mod posix {
     use std::fs::{Metadata, OpenOptions};
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -20,6 +23,7 @@ mod linux {
     const INDEX_LIMIT: usize = 256 * 1024;
     const DEFAULT_INDEX: &str =
         "https://raw.githubusercontent.com/easelian/remote-device-agent/main/channels";
+    #[cfg(target_os = "linux")]
     const USAGE: &str = "rdh upgrade [--channel stable|canary] [--index URL|FILE] [--check|--dry-run] [--force] [--no-restart]\n\
         rdh upgrade --recover [--recover-lock]\n\
         rdh upgrade --service-unit NAME --service-config ABSOLUTE_PATH [--index URL|FILE] [--channel stable|canary] [--force]\n\
@@ -32,6 +36,13 @@ mod linux {
         Service updates are experimental and require a verified user-systemd unit.\n\
         The local probe reports the Agent's latest observed Hub connection state.\n\
         Offline updates require all managed Agents to be stopped.\n";
+
+    #[cfg(target_os = "macos")]
+    const USAGE: &str = "rdh upgrade [--channel stable|canary] [--index URL|FILE] [--check|--dry-run] [--force] [--no-restart]\n\
+        rdh upgrade --recover [--recover-lock]\n\
+        rdh upgrade --list-profiles | --forget-profile ABSOLUTE_PATH\n\
+        rdh rollback --no-restart\n\n\
+        Offline updates require all managed Agents to be stopped. Restart and verify the Agent after switching.\n";
 
     #[derive(Default)]
     struct Options {
@@ -266,11 +277,17 @@ mod linux {
         }
     }
     fn platform() -> Result<&'static str> {
-        match (std::env::consts::ARCH, cfg!(target_env = "musl")) {
-            ("x86_64", false) => Ok("linux-x64-gnu"),
-            ("x86_64", true) => Ok("linux-x64-musl"),
-            ("aarch64", false) => Ok("linux-arm64-gnu"),
-            ("aarch64", true) => Ok("linux-arm64-musl"),
+        match (
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            cfg!(target_env = "musl"),
+        ) {
+            ("linux", "x86_64", false) => Ok("linux-x64-gnu"),
+            ("linux", "x86_64", true) => Ok("linux-x64-musl"),
+            ("linux", "aarch64", false) => Ok("linux-arm64-gnu"),
+            ("linux", "aarch64", true) => Ok("linux-arm64-musl"),
+            ("macos", "x86_64", _) => Ok("darwin-x64"),
+            ("macos", "aarch64", _) => Ok("darwin-arm64"),
             _ => Err(Error::message("Native update platform is unsupported")),
         }
     }
@@ -426,6 +443,18 @@ mod linux {
             return Ok(());
         }
         let options = options(args)?;
+        #[cfg(target_os = "macos")]
+        if options.recover_service
+            || options.probe_profile.is_some()
+            || options.stop_if_idle.is_some()
+            || options.inspect_service.is_some()
+            || options.service_unit.is_some()
+            || options.service_config.is_some()
+        {
+            return Err(Error::message(
+                "Coordinated service updates are unavailable on macOS; stop the Agent and use an offline update",
+            ));
+        }
         let (prefix, executable) = current_installation()?
             .ok_or_else(|| Error::message("This binary is not in a managed native installation"))?;
         if options.recover {
@@ -441,6 +470,7 @@ mod linux {
             );
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
         if options.recover_service {
             let accepted =
                 crate::service_controller::recover(&prefix, &executable, options.recover_lock)
@@ -448,6 +478,7 @@ mod linux {
             println!("Service update recovery completed: {}", accepted.unit);
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
         if let Some(config) = options.probe_profile {
             let guard = RunningInstall::acquire_for_inspection()?
                 .ok_or_else(|| Error::message("Native installation is unavailable"))?;
@@ -461,6 +492,7 @@ mod linux {
             }
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
         if let (Some(unit), Some(config)) = (
             options.inspect_service.as_deref(),
             options.service_config.as_deref(),
@@ -472,6 +504,7 @@ mod linux {
             println!("{}", serde_json::to_string(&identity)?);
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
         if let Some(config) = options.stop_if_idle {
             let _controller = crate::install_lock::ControllerLock::acquire(&prefix, &executable)?;
             let guard = RunningInstall::acquire_current()?
@@ -548,6 +581,7 @@ mod linux {
             println!("Native update is available; no installation changes were made.");
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
         if let (Some(unit), Some(config)) = (
             options.service_unit.as_deref(),
             options.service_config.as_deref(),
@@ -578,9 +612,11 @@ mod linux {
             return Ok(());
         }
         if !options.no_restart {
-            return Err(Error::message(
-                "Specify a verified --service-unit and --service-config, or stop the Agent and use --no-restart",
-            ));
+            return Err(Error::message(if cfg!(target_os = "linux") {
+                "Specify a verified --service-unit and --service-config, or stop the Agent and use --no-restart"
+            } else {
+                "Stop the Agent and use --no-restart for an offline update"
+            }));
         }
         drop(guard);
         let manager = ManagerLock::acquire(&prefix, &executable, false)?;
@@ -715,21 +751,33 @@ mod linux {
     }
 }
 
-#[cfg(target_os = "linux")]
-pub use linux::{install, rollback, upgrade};
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+pub use posix::{install, rollback, upgrade};
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+)))]
 pub fn install(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
         "Native installation is unsupported on this platform",
     ))
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+)))]
 pub async fn upgrade(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
         "Native updates are unsupported on this platform",
     ))
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+)))]
 pub fn rollback(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
         "Native rollback is unsupported on this platform",

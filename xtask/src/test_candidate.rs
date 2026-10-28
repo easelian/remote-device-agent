@@ -44,10 +44,10 @@ fn replace_once(text: &str, before: &str, after: &str) -> Result<String> {
 }
 
 pub(super) fn build(target: &str, output: &Path) -> Result<()> {
-    if !target.contains("-linux-") || !TARGETS.iter().any(|(value, _)| *value == target) {
-        return Err(
-            "Native upgrade fixtures currently require one of the four Linux targets".into(),
-        );
+    if !(target.contains("-linux-") || target.ends_with("-apple-darwin"))
+        || !TARGETS.iter().any(|(value, _)| *value == target)
+    {
+        return Err("Native upgrade fixtures require a supported Linux or macOS target".into());
     }
     if !output.is_absolute() {
         return Err("Upgrade fixture output directory must be absolute and new".into());
@@ -153,7 +153,12 @@ pub(super) fn build(target: &str, output: &Path) -> Result<()> {
     let binary = output.join("rdh");
     fs::copy(built, &binary)?;
     let mut verified_version = false;
-    if std::env::consts::OS == "linux" && target.starts_with(std::env::consts::ARCH) {
+    let native_os = match std::env::consts::OS {
+        "linux" => target.contains("-linux-"),
+        "macos" => target.ends_with("-apple-darwin"),
+        _ => false,
+    };
+    if native_os && target.starts_with(std::env::consts::ARCH) {
         let result = Command::new(&binary)
             .arg("--version")
             .env_clear()

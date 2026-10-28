@@ -1,4 +1,7 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
 
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -30,7 +33,7 @@ fn run(root: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn prepare_existing_profile_requires_lock_and_valid_private_inputs() {
-    let fixture = Fixture(std::env::temp_dir().join(format!(
+    let fixture = Fixture(std::env::temp_dir().canonicalize().unwrap().join(format!(
         "rdh-prepare-profile-{}",
         random::hex_token::<8>().unwrap()
     )));

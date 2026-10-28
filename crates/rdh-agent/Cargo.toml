@@ -10,6 +10,8 @@ name = "rdh"
 path = "src/main.rs"
 
 [features]
+# Requires native Mach-O, installation exclusion, pointer recovery and upgrade checks.
+experimental-macos-install = ["experimental-macos-files", "experimental-macos-processes", "experimental-macos-startup", "experimental-macos-audit"]
 # Requires native task/service registration and administrator grant validation.
 experimental-windows-startup = ["experimental-windows-processes", "experimental-windows-private-storage", "dep:windows"]
 # Requires native Job Object, pipe, inheritance, tree cleanup and session checks.
