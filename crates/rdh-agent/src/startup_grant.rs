@@ -7,7 +7,8 @@ use crate::startup::Mode;
     test,
     any(
         target_os = "linux",
-        all(target_os = "macos", feature = "experimental-macos-startup")
+        all(target_os = "macos", feature = "experimental-macos-startup"),
+        all(windows, feature = "experimental-windows-startup")
     )
 ))]
 use serde_json::Value;
@@ -16,10 +17,11 @@ use serde_json::Value;
     test,
     any(
         target_os = "linux",
-        all(target_os = "macos", feature = "experimental-macos-startup")
+        all(target_os = "macos", feature = "experimental-macos-startup"),
+        all(windows, feature = "experimental-windows-startup")
     )
 ))]
-fn permits(raw: &[u8], config: &Path, mode: Mode) -> Result<bool> {
+pub(crate) fn permits(raw: &[u8], config: &Path, mode: Mode) -> Result<bool> {
     if raw.len() > 4096 {
         return Err(Error::message("Managed startup grant is too large"));
     }
@@ -239,7 +241,8 @@ mod posix {
 pub(crate) use posix::{managed_grant, set_grant};
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 )))]
 pub(crate) fn managed_grant(_: &Path, _: Mode) -> Result<bool> {
     Err(Error::message(
@@ -248,13 +251,17 @@ pub(crate) fn managed_grant(_: &Path, _: Mode) -> Result<bool> {
 }
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 )))]
 pub(crate) fn set_grant(_: &Path, _: Mode) -> Result<()> {
     Err(Error::message(
         "Managed startup grants are unsupported on this platform",
     ))
 }
+
+#[cfg(all(windows, feature = "experimental-windows-startup"))]
+pub(crate) use crate::storage::windows::startup_grants::{managed_grant, set_grant};
 
 #[cfg(test)]
 mod tests {

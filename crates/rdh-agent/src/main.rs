@@ -69,6 +69,9 @@ fn main() {
         Ok(Action::Help) => print!("{}", rdh_agent::cli::help()),
         Ok(Action::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         Ok(Action::ServiceUpdateProtocol) => println!("rdh-service-update-v1"),
+        Ok(Action::ServiceRun(args)) => {
+            check(rdh_agent::service_host::run(&args, server.as_deref()))
+        }
         Ok(Action::Startup(args)) => check(rdh_agent::startup_cli::run(&args, server.as_deref())),
         Ok(Action::InstallNative(args)) => check(rdh_agent::upgrade_cli::install(&args)),
         Ok(Action::Migrate(args)) => run_async(rdh_agent::legacy_inspect::run(&args)),

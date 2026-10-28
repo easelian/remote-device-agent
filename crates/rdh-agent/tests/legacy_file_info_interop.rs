@@ -59,12 +59,19 @@ fn legacy_and_rust_file_fingerprints_match() {
     .unwrap();
     let params = json!({"root":"work","path":"file"});
 
-    for (seconds, nanoseconds) in [
-        (1_737_982_632, 508_156_297),
+    let timestamps = [
+        (1_737_982_632i64, 508_156_297),
         (1_766_863_886, 76_156_279),
         (1_700_000_000, 0),
         (-1, 999_999_999),
-    ] {
+    ]
+    .into_iter()
+    .chain(if cfg!(windows) {
+        vec![(2_147_483_648, 123_456_700), (4_294_967_297, 100_000_000)]
+    } else {
+        Vec::new()
+    });
+    for (seconds, nanoseconds) in timestamps {
         let timestamp = if seconds >= 0 {
             std::time::UNIX_EPOCH + Duration::new(seconds as u64, nanoseconds)
         } else {
@@ -140,12 +147,15 @@ fn legacy_and_rust_file_fingerprints_match() {
             let legacy_mtime = legacy[kind]["mtime_ms"].as_f64().unwrap();
             assert_eq!(
                 rust_mtime, legacy_mtime,
-                "{kind}: timestamp {seconds}.{nanoseconds:09}"
+                "{kind}: timestamp seconds={seconds} nanoseconds={nanoseconds}"
             );
             rust[kind].as_object_mut().unwrap().remove("mtime_ms");
             legacy[kind].as_object_mut().unwrap().remove("mtime_ms");
         }
-        assert_eq!(rust, legacy, "timestamp {seconds}.{nanoseconds:09}");
+        assert_eq!(
+            rust, legacy,
+            "timestamp seconds={seconds} nanoseconds={nanoseconds}"
+        );
         assert_eq!(
             fs::read(fixture.0.join("file")).unwrap(),
             "test file 😀".as_bytes()

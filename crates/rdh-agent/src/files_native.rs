@@ -14,6 +14,8 @@ mod platform;
 #[cfg(windows)]
 #[path = "files_windows.rs"]
 mod platform;
+#[cfg(all(windows, feature = "experimental-windows-processes"))]
+pub(super) use platform::Opened as WindowsDirectory;
 pub(super) use platform::Root;
 use platform::{Opened, Parent, entries_bounded, make_directories, read_existing, write_atomic};
 
@@ -33,6 +35,21 @@ pub(super) fn working_directory(files: &Files, name: &str, path: &str) -> Result
         .get(name)
         .ok_or_else(|| "Unknown root; use device_info to discover configured roots".to_owned())?;
     let directory = root.open(path, true)?;
+    root.verify()?;
+    Ok(directory)
+}
+
+#[cfg(all(windows, feature = "experimental-windows-processes"))]
+pub(super) fn windows_working_directory(
+    files: &Files,
+    name: &str,
+    path: &str,
+) -> Result<WindowsDirectory, String> {
+    let root = files
+        .roots
+        .get(name)
+        .ok_or_else(|| "Unknown root; use device_info to discover configured roots".to_owned())?;
+    let directory = root.working_directory(path)?;
     root.verify()?;
     Ok(directory)
 }

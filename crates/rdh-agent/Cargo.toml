@@ -10,6 +10,10 @@ name = "rdh"
 path = "src/main.rs"
 
 [features]
+# Requires native task/service registration and administrator grant validation.
+experimental-windows-startup = ["experimental-windows-processes", "experimental-windows-private-storage", "dep:windows"]
+# Requires native Job Object, pipe, inheritance, tree cleanup and session checks.
+experimental-windows-processes = ["experimental-windows-files"]
 # Requires native device-file, directory, atomic mutation and legacy comparison checks.
 experimental-windows-files = []
 # Requires native Windows ACL, path, and lock interoperability validation.
@@ -45,6 +49,7 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["c
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-sys = { version = "0.61", features = [
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
@@ -55,7 +60,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_EventLog",
     "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",

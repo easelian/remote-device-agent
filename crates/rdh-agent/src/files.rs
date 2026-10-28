@@ -62,6 +62,14 @@ pub struct Files {
     mutation: std::sync::Mutex<()>,
 }
 
+// Keep the configured root handles as well as the selected directory alive
+// until Windows has created and resumed the child in that directory.
+#[cfg(all(windows, feature = "experimental-windows-processes"))]
+pub(crate) struct WindowsWorkingDirectory {
+    _roots: std::sync::Arc<Files>,
+    _opened: native::WindowsDirectory,
+}
+
 pub(crate) struct SearchEntry {
     pub name: String,
     pub kind: &'static str,
@@ -1186,6 +1194,19 @@ impl Files {
             let _ = (root, path);
             Err("Secure native file operations are unsupported on this platform".into())
         }
+    }
+
+    #[cfg(all(windows, feature = "experimental-windows-processes"))]
+    pub(crate) fn windows_working_directory(
+        self: &std::sync::Arc<Self>,
+        root: &str,
+        path: &str,
+    ) -> Result<WindowsWorkingDirectory, String> {
+        let opened = native::windows_working_directory(self, root, path)?;
+        Ok(WindowsWorkingDirectory {
+            _roots: std::sync::Arc::clone(self),
+            _opened: opened,
+        })
     }
 
     // Background searches validate the request before allocating a task, but

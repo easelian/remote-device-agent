@@ -63,6 +63,26 @@ pub async fn launch(
     shutdown: watch::Receiver<bool>,
     stop: watch::Sender<bool>,
 ) -> Result<()> {
+    launch_with_pairing(args, shutdown, stop, true).await
+}
+
+/// A service must use an already-paired identity. In particular, a deleted
+/// configuration must not turn an unattended service restart into pairing.
+#[cfg(all(windows, feature = "experimental-windows-startup"))]
+pub(crate) async fn launch_existing(
+    args: LaunchArgs,
+    shutdown: watch::Receiver<bool>,
+    stop: watch::Sender<bool>,
+) -> Result<()> {
+    launch_with_pairing(args, shutdown, stop, false).await
+}
+
+async fn launch_with_pairing(
+    args: LaunchArgs,
+    shutdown: watch::Receiver<bool>,
+    stop: watch::Sender<bool>,
+    allow_pairing: bool,
+) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     let _ = stop;
     let mut managed = RunningInstall::acquire_launch_current()?;
@@ -109,6 +129,11 @@ pub async fn launch(
             config
         }
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !allow_pairing {
+                return Err(Error::message(
+                    "Service configuration is missing; pair locally before starting the service",
+                ));
+            }
             let roots = local_roots(&args.roots)?;
             println!("Target device: {}", system::info().hostname);
             println!(

@@ -142,10 +142,13 @@ impl Snapshot {
         self.attributes & FILE_ATTRIBUTE_DIRECTORY != 0
     }
     fn facts(self) -> MetadataFacts {
-        // Node 22/libuv splits FILETIME into seconds and nanoseconds before
-        // calculating mtimeMs. Preserve its rounding, including pre-epoch times.
+        // Node 22/libuv splits FILETIME into seconds and nanoseconds. Its
+        // FillStatsArray then casts Windows seconds to unsigned long (32 bit)
+        // before constructing mtimeMs, including pre-epoch/2106 wraparound.
+        // Preserve that wire/fingerprint contract without changing the raw
+        // timestamps used internally for detecting concurrent file changes.
         let ticks = i128::from(self.modified) - 116_444_736_000_000_000i128;
-        let seconds = ticks.div_euclid(10_000_000);
+        let seconds = ticks.div_euclid(10_000_000) as u32;
         let nanoseconds = ticks.rem_euclid(10_000_000) * 100;
         MetadataFacts {
             identity: self.identity,
@@ -437,6 +440,10 @@ impl Root {
         }
         Err(invalid())
     }
+    #[cfg(feature = "experimental-windows-processes")]
+    pub(super) fn working_directory(&self, path: &str) -> Result<Opened, String> {
+        self.open_access(path, DIRECTORY_ACCESS, true)
+    }
     pub(super) fn open(&self, path: &str, directory: bool) -> Result<Opened, String> {
         self.open_access(
             path,
@@ -458,7 +465,7 @@ impl Root {
     }
 }
 
-pub(super) struct Opened {
+pub(in crate::files) struct Opened {
     file: File,
     _ancestors: Vec<File>,
 }

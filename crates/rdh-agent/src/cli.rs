@@ -24,6 +24,7 @@ pub enum Action {
     Rollback(Vec<String>),
     ValidateConfig(Vec<String>),
     ServiceUpdateProtocol,
+    ServiceRun(Vec<String>),
     Launch(LaunchArgs),
 }
 
@@ -35,6 +36,7 @@ pub fn parse(argv: &[String], environment_server: Option<&str>) -> Result<Action
         Some("upgrade") => return Ok(Action::Upgrade(argv[1..].to_vec())),
         Some("rollback") => return Ok(Action::Rollback(argv[1..].to_vec())),
         Some("validate-config") => return Ok(Action::ValidateConfig(argv[1..].to_vec())),
+        Some("service-run") => return Ok(Action::ServiceRun(argv[1..].to_vec())),
         Some("service-update-protocol") if argv.len() == 1 => {
             return Ok(Action::ServiceUpdateProtocol);
         }

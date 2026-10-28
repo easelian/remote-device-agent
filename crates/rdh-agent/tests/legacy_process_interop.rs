@@ -1,9 +1,9 @@
 #![cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-processes")
+    all(target_os = "macos", feature = "experimental-macos-processes"),
+    all(windows, feature = "experimental-windows-processes")
 ))]
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -51,7 +51,7 @@ impl Fixture {
     }
 
     fn complete(&self, id: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(8);
+        let deadline = Instant::now() + Duration::from_secs(if cfg!(windows) { 65 } else { 8 });
         loop {
             let result = self.call("read_process", json!({"job_id":id})).unwrap();
             if result["status"] != "running" && result["cleanup_pending"] == false {
@@ -105,16 +105,28 @@ fn legacy_and_rust_process_cursors_and_input_match() {
         random::hex_token::<12>().unwrap()
     ));
     fs::create_dir(&root).unwrap();
+    let roots = rdh_agent::config::local_roots(&[format!("work={}", root.display())]).unwrap();
     let config = DeviceConfig {
         gateway_url: "http://localhost".into(),
         device_id: "fixture".into(),
         token: "fixture".into(),
-        roots: BTreeMap::from([("work".into(), root.to_str().unwrap().into())]),
+        roots: roots.clone(),
         allow_shell: true,
         allow_write: true,
-        shell: "/bin/sh".into(),
+        shell: if cfg!(windows) {
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()))
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+                .to_str()
+                .unwrap()
+                .into()
+        } else {
+            "/bin/sh".into()
+        },
         max_processes: 4,
-        max_process_seconds: 10,
+        max_process_seconds: if cfg!(windows) { 60 } else { 10 },
     };
     let files = Arc::new(Files::new(&config.roots, true).unwrap());
     let fixture = Fixture {
@@ -124,12 +136,14 @@ fn legacy_and_rust_process_cursors_and_input_match() {
     let node = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| "node".into());
     let mut child = Command::new(node)
         .arg(&helper)
-        .arg(&fixture.root)
+        .arg(&roots["work"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Three sequential shell launches; native Windows ARM64 previously took
+    // about 25 s per PowerShell startup. Keep each job bounded at 60 s.
+    let deadline = Instant::now() + Duration::from_secs(if cfg!(windows) { 200 } else { 20 });
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
             let _ = child.kill();
@@ -152,7 +166,20 @@ fn legacy_and_rust_process_cursors_and_input_match() {
         normalize_cursor(&mut legacy[field]);
     }
 
-    let id = fixture.start("printf 'A😀B\\nlast'; exit 7", 2.0);
+    let (text_command, input_command, overflow_command) = if cfg!(windows) {
+        (
+            "$b=[Text.Encoding]::UTF8.GetBytes('A😀B'+[char]10+'last'); [Console]::OpenStandardOutput().Write($b,0,$b.Length); exit 7",
+            "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())",
+            "$b=[Text.Encoding]::UTF8.GetBytes(('x' * 262150)); [Console]::OpenStandardOutput().Write($b,0,$b.Length)",
+        )
+    } else {
+        (
+            "printf 'A😀B\\nlast'; exit 7",
+            "dd bs=1 count=7 2>/dev/null",
+            "dd if=/dev/zero bs=262150 count=1 2>/dev/null | tr '\\000' x",
+        )
+    };
+    let id = fixture.start(text_command, 2.0);
     fixture.complete(&id);
     let cursors = json!({
         "full": fixture.read(json!({"job_id":id})),
@@ -168,7 +195,7 @@ fn legacy_and_rust_process_cursors_and_input_match() {
         "zero_limit": fixture.read(json!({"job_id":id,"offset":0,"limit":0})),
         "unknown": fixture.read(json!({"job_id":"unknown"})),
     });
-    let cat = fixture.start("dd bs=1 count=7 2>/dev/null", 0.0);
+    let cat = fixture.start(input_command, 0.0);
     let input = normalized(
         fixture
             .call(
@@ -178,10 +205,7 @@ fn legacy_and_rust_process_cursors_and_input_match() {
             .unwrap(),
     );
     let echoed = fixture.complete(&cat);
-    let overflow = fixture.start(
-        "dd if=/dev/zero bs=262150 count=1 2>/dev/null | tr '\\000' x",
-        3.0,
-    );
+    let overflow = fixture.start(overflow_command, 3.0);
     fixture.complete(&overflow);
     let dropped = fixture.read(json!({"job_id":overflow,"offset":0,"limit":1}));
     let tail = fixture.read(json!({"job_id":overflow,"offset":262149,"limit":2}));

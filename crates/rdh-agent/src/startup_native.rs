@@ -19,7 +19,9 @@ pub(crate) use macos::NativeStartup;
 
 #[cfg(target_os = "macos")]
 pub(crate) const DEFAULT_SERVICE_NAME: &str = "com.be-one-click.rdh";
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub(crate) const DEFAULT_SERVICE_NAME: &str = "RemoteDeviceHub";
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) const DEFAULT_SERVICE_NAME: &str = "rdh.service";
 
 #[cfg(target_os = "linux")]
@@ -307,12 +309,14 @@ pub(crate) use linux::NativeStartup;
 
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 )))]
 pub(crate) struct NativeStartup;
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 )))]
 impl NativeStartup {
     pub(crate) fn new(_: std::path::PathBuf) -> crate::error::Result<Self> {
@@ -323,7 +327,8 @@ impl NativeStartup {
 }
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 )))]
 impl crate::startup::StartupBackend for NativeStartup {
     fn enabled(&self, _: &crate::startup::Binding) -> crate::error::Result<bool> {
@@ -358,5 +363,26 @@ mod macos_default_tests {
         assert!(crate::startup::STARTUP_OPERATIONS.is_empty());
         assert!(!path.exists());
         assert_eq!(super::DEFAULT_SERVICE_NAME, "com.be-one-click.rdh");
+    }
+}
+
+#[cfg(all(windows, feature = "experimental-windows-startup"))]
+#[path = "startup_native_windows.rs"]
+pub(crate) mod windows;
+#[cfg(all(windows, feature = "experimental-windows-startup"))]
+pub(crate) use windows::NativeStartup;
+
+#[cfg(all(test, windows, not(feature = "experimental-windows-startup")))]
+mod windows_default_tests {
+    #[test]
+    fn startup_requires_the_native_windows_feature() {
+        let path = std::env::temp_dir().join(format!(
+            "rdh-default-startup-{}",
+            crate::random::hex_token::<12>().unwrap()
+        ));
+        assert!(super::NativeStartup::new(path.clone()).is_err());
+        assert!(crate::startup::STARTUP_OPERATIONS.is_empty());
+        assert!(!path.exists());
+        assert_eq!(super::DEFAULT_SERVICE_NAME, "RemoteDeviceHub");
     }
 }

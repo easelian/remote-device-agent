@@ -56,6 +56,10 @@ use crate::error::{Error, Result};
 #[path = "audit_windows.rs"]
 pub(crate) mod audit;
 
+#[cfg(feature = "experimental-windows-startup")]
+#[path = "startup_grant_windows.rs"]
+pub(crate) mod startup_grants;
+
 fn unsafe_storage() -> Error {
     Error::message("Windows private storage identity, ACL, or path cannot be verified")
 }
@@ -162,7 +166,7 @@ impl Drop for LocalMemory {
 
 /// Use the same protected, user-only ACL as the legacy Agent's new objects.
 /// The descriptor is attached at creation, before any secret is written.
-fn private_descriptor(directory: bool) -> Result<LocalMemory> {
+pub(crate) fn current_sid_text() -> Result<String> {
     let user = Sid::current()?;
     let mut raw = null_mut();
     // SAFETY: user is a valid live SID and raw is a writable output.
@@ -183,6 +187,11 @@ fn private_descriptor(directory: bool) -> Result<LocalMemory> {
     let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length) })
         .map_err(|_| unsafe_storage())?;
     drop(string_memory);
+    Ok(sid)
+}
+
+fn private_descriptor(directory: bool) -> Result<LocalMemory> {
+    let sid = current_sid_text()?;
     let inherit = if directory { "OICI" } else { "" };
     let sddl = format!("O:{sid}D:P(A;{inherit};FA;;;{sid})");
     let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
@@ -630,6 +639,17 @@ pub(crate) fn delete_open_object(file: &File) -> Result<()> {
 }
 
 pub(crate) fn create_child(parent: &File, name: &[u16], directory: bool) -> Result<File> {
+    let descriptor = private_descriptor(directory)?;
+    create_child_with_descriptor(parent, name, directory, &descriptor, check_file_acl)
+}
+
+fn create_child_with_descriptor(
+    parent: &File,
+    name: &[u16],
+    directory: bool,
+    descriptor: &LocalMemory,
+    validate: impl FnOnce(&File) -> Result<()>,
+) -> Result<File> {
     let length = u16::try_from(name.len().checked_mul(2).ok_or_else(unsafe_storage)?)
         .map_err(|_| unsafe_storage())?;
     let text = UNICODE_STRING {
@@ -637,7 +657,6 @@ pub(crate) fn create_child(parent: &File, name: &[u16], directory: bool) -> Resu
         MaximumLength: length,
         Buffer: name.as_ptr().cast_mut(),
     };
-    let descriptor = private_descriptor(directory)?;
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: parent.as_raw_handle(),
@@ -704,7 +723,7 @@ pub(crate) fn create_child(parent: &File, name: &[u16], directory: bool) -> Resu
     }
     // SAFETY: successful NtCreateFile returned a fresh owned handle.
     let file = unsafe { File::from_raw_handle(result) };
-    if let Err(error) = information(&file, directory).and_then(|_| check_file_acl(&file)) {
+    if let Err(error) = information(&file, directory).and_then(|_| validate(&file)) {
         // No secret has been written yet. Remove only the object this handle
         // owns; report cleanup failure rather than hiding a leftover object.
         if let Err(cleanup) = delete_open_object(&file) {

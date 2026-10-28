@@ -1,8 +1,10 @@
 // Test-only comparison against the legacy Agent's real process manager.
+import path from 'node:path';
 import { Files } from '../src/files.js';
 import { Processes } from '../src/processes.js';
 
 const root = process.argv[2];
+const timeout = process.platform === 'win32' ? 60 : 10;
 if (!root) {
   throw new Error('The fixture requires a file root');
 }
@@ -13,9 +15,18 @@ const config = {
   roots: { work: root },
   allow_shell: true,
   allow_write: true,
-  shell: '/bin/sh',
+  shell:
+    process.platform === 'win32'
+      ? path.join(
+          process.env.SystemRoot || 'C:\\Windows',
+          'System32',
+          'WindowsPowerShell',
+          'v1.0',
+          'powershell.exe',
+        )
+      : '/bin/sh',
   max_processes: 4,
-  max_process_seconds: 10,
+  max_process_seconds: timeout,
 };
 const manager = new Processes(config, new Files(config.roots, true));
 
@@ -31,7 +42,8 @@ function read(id: string, offset?: unknown, limit?: unknown) {
   }
 }
 async function complete(id: string) {
-  for (let attempt = 0; attempt < 1000; attempt++) {
+  const deadline = Date.now() + (process.platform === 'win32' ? 65_000 : 5_000);
+  while (Date.now() < deadline) {
     const result = manager.read(id);
     if (result.status !== 'running' && !result.cleanup_pending) {
       return normalized(result);
@@ -42,7 +54,17 @@ async function complete(id: string) {
 }
 
 try {
-  const job = await manager.start("printf 'A😀B\\nlast'; exit 7", 'work', '.', 10, 2);
+  const windows = process.platform === 'win32';
+  const textCommand = windows
+    ? "$b=[Text.Encoding]::UTF8.GetBytes('A😀B'+[char]10+'last'); [Console]::OpenStandardOutput().Write($b,0,$b.Length); exit 7"
+    : "printf 'A😀B\\nlast'; exit 7";
+  const inputCommand = windows
+    ? '[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())'
+    : 'dd bs=1 count=7 2>/dev/null';
+  const overflowCommand = windows
+    ? "$b=[Text.Encoding]::UTF8.GetBytes(('x' * 262150)); [Console]::OpenStandardOutput().Write($b,0,$b.Length)"
+    : "dd if=/dev/zero bs=262150 count=1 2>/dev/null | tr '\\000' x";
+  const job = await manager.start(textCommand, 'work', '.', timeout, 2);
   await complete(job.job_id);
   const cursors = {
     full: read(job.job_id),
@@ -58,17 +80,11 @@ try {
     zero_limit: read(job.job_id, 0, 0),
     unknown: read('unknown'),
   };
-  const cat = await manager.start('dd bs=1 count=7 2>/dev/null', 'work', '.', 10, 0);
+  const cat = await manager.start(inputCommand, 'work', '.', timeout, 0);
   const sent = await manager.writeStdin(cat.job_id, 'go😀\n', true);
   const { job_id: _id, ...input } = sent;
   const echoed = await complete(cat.job_id);
-  const overflow = await manager.start(
-    "dd if=/dev/zero bs=262150 count=1 2>/dev/null | tr '\\000' x",
-    'work',
-    '.',
-    10,
-    3,
-  );
+  const overflow = await manager.start(overflowCommand, 'work', '.', timeout, 3);
   await complete(overflow.job_id);
   const dropped = read(overflow.job_id, 0, 1);
   const tail = read(overflow.job_id, 262149, 2);

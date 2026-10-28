@@ -14,12 +14,14 @@ use crate::{random, storage};
 
 #[cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 ))]
 pub const STARTUP_OPERATIONS: &[&str] = &["get_startup", "set_startup"];
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup")
+    all(target_os = "macos", feature = "experimental-macos-startup"),
+    all(windows, feature = "experimental-windows-startup")
 )))]
 pub const STARTUP_OPERATIONS: &[&str] = &[];
 
@@ -485,7 +487,14 @@ pub(crate) fn sidecar_path(config: &Path) -> PathBuf {
     state_path(config)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "experimental-macos-startup"),
+        all(windows, feature = "experimental-windows-startup")
+    )
+))]
 mod tests {
     use super::*;
     use std::sync::Mutex;
@@ -533,7 +542,17 @@ mod tests {
         fn new() -> Self {
             let path = std::env::temp_dir()
                 .join(format!("rdh-startup-{}", random::hex_token::<8>().unwrap()));
+            #[cfg(unix)]
             std::fs::create_dir(&path).unwrap();
+            #[cfg(windows)]
+            {
+                let (parents, name) =
+                    crate::storage::windows::open_parent(&path, false, false).unwrap();
+                drop(
+                    crate::storage::windows::create_child(parents.last().unwrap(), &name, true)
+                        .unwrap(),
+                );
+            }
             let backend = Arc::new(Backend::default());
             let granted = Arc::new(AtomicBool::new(false));
             let grant = Arc::clone(&granted);

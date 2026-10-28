@@ -198,6 +198,18 @@ jobs:
         run: |
           python3 --version
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+      - name: Check native Windows service lifecycle
+        if: runner.os == 'Windows'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service -- --ignored --test-threads=1
+      - name: Check native Windows startup settings and administrator grants
+        if: runner.os == 'Windows'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" native_windows_ -- --ignored --test-threads=1
       - name: Set up Node for legacy comparison fixtures
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
         uses: actions/setup-node@v7
@@ -247,12 +259,12 @@ jobs:
           export RDH_LEGACY_SEARCH_HELPER="$(node -p 'require("node:path").resolve(".build/legacy-search-interop.mjs")')"
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_search_interop -- --ignored --test-threads=1
       - name: Build and test the legacy process fixture
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS' || runner.os == 'Windows'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-process-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-process-interop.mjs
-          export RDH_LEGACY_PROCESS_HELPER="$PWD/.build/legacy-process-interop.mjs"
+          export RDH_LEGACY_PROCESS_HELPER="$(node -p 'require("node:path").resolve(".build/legacy-process-interop.mjs")')"
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_process_interop -- --ignored --test-threads=1
       - name: Compare the legacy hardening report
         if: matrix.target == 'x86_64-unknown-linux-gnu'
