@@ -1,4 +1,4 @@
-//! A real, uniquely named LocalSystem service with a loopback authenticated Hub.
+//! Real, uniquely named Windows services with a loopback authenticated Hub.
 #![cfg(all(windows, feature = "experimental-windows-startup"))]
 
 use futures_util::{SinkExt, StreamExt};
@@ -30,13 +30,13 @@ use windows_sys::Win32::{
     Security::{
         AdjustTokenPrivileges,
         Authorization::{
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, SE_FILE_OBJECT,
-            SetNamedSecurityInfoW,
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            SE_FILE_OBJECT, SetNamedSecurityInfoW,
         },
         DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-        LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES,
-        TOKEN_QUERY,
+        GetTokenInformation, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     System::{
         Services::{
@@ -48,8 +48,8 @@ use windows_sys::Win32::{
             SERVICE_WIN32_OWN_PROCESS, StartServiceW,
         },
         Threading::{
-            GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_SYNCHRONIZE,
-            WaitForSingleObject,
+            GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SYNCHRONIZE, WaitForSingleObject,
         },
     },
 };
@@ -127,11 +127,18 @@ impl Drop for Privilege {
     }
 }
 
-fn system_acl(path: &Path, directory: bool) {
+fn service_acl(path: &Path, directory: bool, sid: &str) {
     // Only fixture-owned paths are transferred to the account that will run
     // the service. No production profile or service account is changed.
     let inherited = if directory { "OICI" } else { "" };
-    let sddl = wide(format!("O:SYD:P(A;{inherited};FA;;;SY)(A;{inherited};FA;;;BA)").as_ref());
+    let system = if sid == "S-1-5-18" {
+        String::new()
+    } else {
+        format!("(A;{inherited};FA;;;SY)")
+    };
+    let sddl = wide(
+        format!("O:{sid}D:P(A;{inherited};FA;;;{sid})(A;{inherited};FA;;;BA){system}").as_ref(),
+    );
     let mut descriptor = null_mut();
     assert_ne!(
         unsafe {
@@ -350,7 +357,13 @@ impl Peer {
     }
 }
 fn process(pid: u32) -> OwnedHandle {
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
     assert!(
         !handle.is_null(),
         "Open fixture process: {}",
@@ -359,9 +372,58 @@ fn process(pid: u32) -> OwnedHandle {
     unsafe { OwnedHandle::from_raw_handle(handle) }
 }
 
+fn process_sid(process: &OwnedHandle) -> String {
+    let mut raw = null_mut();
+    assert_ne!(
+        unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut raw) },
+        0
+    );
+    let token = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut bytes = 0;
+    unsafe { GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut bytes) };
+    assert!((size_of::<TOKEN_USER>() as u32..=65536).contains(&bytes));
+    let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                &mut bytes,
+            )
+        },
+        0
+    );
+    let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+    let mut text = null_mut();
+    assert_ne!(
+        unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) },
+        0
+    );
+    let mut length = 0;
+    while length < 256 && unsafe { *text.add(length) } != 0 {
+        length += 1;
+    }
+    assert!(length < 256);
+    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) }).unwrap();
+    unsafe { LocalFree(text.cast()) };
+    sid
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "creates and removes one native LocalSystem service on an elevated Windows runner"]
 async fn native_windows_service_connects_drains_jobs_restarts_and_refuses_missing_config() {
+    service_lifecycle("S-1-5-18", None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "creates and removes one native LocalService service on an elevated Windows runner"]
+async fn native_windows_local_service_preserves_account_identity_and_process_cleanup() {
+    service_lifecycle("S-1-5-19", Some(r"NT AUTHORITY\LocalService")).await;
+}
+
+async fn service_lifecycle(sid: &str, account: Option<&str>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let name = format!("RDH-Test-Native-{}", random::hex_token::<12>().unwrap());
@@ -387,10 +449,10 @@ async fn native_windows_service_connects_drains_jobs_restarts_and_refuses_missin
     {
         let _privilege = Privilege::restore_owner();
         for path in [&binary, &config, &policy] {
-            system_acl(path, false);
+            service_acl(path, false, sid);
         }
-        system_acl(&work, true);
-        system_acl(&directory, true);
+        service_acl(&work, true, sid);
+        service_acl(&directory, true, sid);
     }
     let manager = unsafe {
         OpenSCManagerW(
@@ -413,6 +475,8 @@ async fn native_windows_service_connects_drains_jobs_restarts_and_refuses_missin
     );
     let command = wide(command.as_ref());
     let service_name = wide(name.as_ref());
+    let account = account.map(|account| wide(account.as_ref()));
+    let password = [0u16];
     let raw = unsafe {
         CreateServiceW(
             manager.0,
@@ -426,8 +490,8 @@ async fn native_windows_service_connects_drains_jobs_restarts_and_refuses_missin
             null(),
             null_mut(),
             null(),
-            null(),
-            null(),
+            account.as_ref().map_or(null(), |name| name.as_ptr()),
+            password.as_ptr(),
         )
     };
     assert!(
@@ -444,6 +508,11 @@ async fn native_windows_service_connects_drains_jobs_restarts_and_refuses_missin
     let mut peer = Peer::connect(&listener).await;
     let running = fixture.state(SERVICE_RUNNING).await;
     let owner = process(running.dwProcessId);
+    assert_eq!(
+        process_sid(&owner),
+        sid,
+        "SCM must use the requested runtime account"
+    );
     peer.call(
         "write_file",
         json!({"root":"work","path":"native.txt","content":"service 😀"}),
@@ -472,6 +541,11 @@ async fn native_windows_service_connects_drains_jobs_restarts_and_refuses_missin
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
+    assert_eq!(
+        process_sid(&child),
+        sid,
+        "Device jobs must retain the service identity"
+    );
     let instance = peer.instance.clone();
     fixture.stop();
     let stopped = fixture.state(SERVICE_STOPPED).await;

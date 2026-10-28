@@ -17,7 +17,11 @@ use ::windows::{
     },
     core::{BSTR, Interface},
 };
-use std::{marker::PhantomData, rc::Rc};
+use std::{
+    marker::PhantomData,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 struct Apartment(PhantomData<Rc<()>>);
 impl Drop for Apartment {
@@ -33,6 +37,7 @@ pub struct Task {
     _service: ITaskService,
     _apartment: Apartment,
     pub name: String,
+    started: bool,
     removed: bool,
 }
 impl Task {
@@ -101,6 +106,7 @@ impl Task {
                 _service: service,
                 _apartment: apartment,
                 name,
+                started: false,
                 removed: false,
             }
         }
@@ -136,6 +142,37 @@ impl Task {
                 .unwrap();
         }
     }
+    pub fn start(&mut self) {
+        // Run can have an uncertain result; cleanup is required from here.
+        self.started = true;
+        unsafe {
+            self.folder
+                .GetTask(&BSTR::from(&self.name))
+                .unwrap()
+                .Run(&VARIANT::default())
+                .unwrap();
+        }
+    }
+    fn stop_owned(&mut self) -> ::windows::core::Result<()> {
+        unsafe {
+            let task = self.folder.GetTask(&BSTR::from(&self.name))?;
+            task.Stop(0)?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while task.GetInstances(0)?.Count()? != 0 {
+                if Instant::now() >= deadline {
+                    return Err(::windows::core::Error::from_hresult(
+                        ::windows::core::HRESULT(0x800705b4u32 as i32),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        self.started = false;
+        Ok(())
+    }
+    pub fn stop(&mut self) {
+        self.stop_owned().unwrap();
+    }
     pub fn security(&self) -> String {
         unsafe {
             self.registered
@@ -166,6 +203,7 @@ impl Task {
         }
     }
     pub fn remove(mut self) {
+        assert!(!self.started, "Stop the fixture Task before removing it");
         unsafe {
             self.folder.DeleteTask(&BSTR::from(&self.name), 0).unwrap();
         }
@@ -175,6 +213,12 @@ impl Task {
 impl Drop for Task {
     fn drop(&mut self) {
         if !self.removed {
+            if self.started {
+                if let Err(error) = self.stop_owned() {
+                    eprintln!("Retaining running Task fixture {}: {error}", self.name);
+                    return;
+                }
+            }
             if let Err(error) = unsafe { self.folder.DeleteTask(&BSTR::from(&self.name), 0) } {
                 eprintln!("Task fixture cleanup failed for {}: {error}", self.name);
             }

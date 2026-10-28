@@ -4,9 +4,17 @@ use rdh_agent::{config::sha256_hex, install_lock, profile_lock::ProfileLocks, ra
 use serde_json::{Value, json};
 use std::{
     fs,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
+};
+use windows_sys::Win32::{
+    Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+    System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        QueryFullProcessImageNameW, WaitForSingleObject,
+    },
 };
 
 #[path = "support/native_candidate.rs"]
@@ -104,6 +112,76 @@ fn success(output: std::process::Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+async fn running_task_agent(prefix: &Path, expected: &Path, config: &Path) -> OwnedHandle {
+    let expected = expected.canonicalize().unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            // Private writes publish a final JSON name only after flushing
+            // their temporary file. Do not observe that staging file.
+            let markers: Vec<_> = fs::read_dir(prefix.join(".running"))
+                .unwrap()
+                .map(Result::unwrap)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|value| value == "json")
+                })
+                .collect();
+            assert!(markers.len() <= 1, "Only one fixture Agent may be running");
+            if let Some(marker) = markers.first() {
+                let record: Value =
+                    serde_json::from_slice(&fs::read(marker.path()).unwrap()).unwrap();
+                assert_eq!(record["config"], config.to_str().unwrap());
+                let pid = u32::try_from(record["pid"].as_u64().unwrap()).unwrap();
+                let raw = unsafe {
+                    OpenProcess(
+                        PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                        0,
+                        pid,
+                    )
+                };
+                assert!(
+                    !raw.is_null(),
+                    "Cannot inspect Task Agent: {}",
+                    std::io::Error::last_os_error()
+                );
+                let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+                assert_eq!(
+                    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+                    WAIT_TIMEOUT
+                );
+                let mut image = vec![0u16; 32768];
+                let mut size = image.len() as u32;
+                assert_ne!(
+                    unsafe {
+                        QueryFullProcessImageNameW(
+                            process.as_raw_handle(),
+                            0,
+                            image.as_mut_ptr(),
+                            &mut size,
+                        )
+                    },
+                    0
+                );
+                let actual = PathBuf::from(String::from_utf16(&image[..size as usize]).unwrap());
+                assert_eq!(actual.canonicalize().unwrap(), expected);
+                return process;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Task did not start the selected installed Agent")
+}
+
+fn stopped_task_agent(process: &OwnedHandle) {
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 5000) },
+        WAIT_OBJECT_0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -429,6 +507,13 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
         "gateway_url":"http://127.0.0.1:9", "device_id":"native-task-install", "token":"unchanged-task-fixture-token",
         "roots":{"work":root}, "allow_shell":true, "allow_write":true
     })).unwrap()).unwrap();
+    // The Task inherits its user's environment; keep this startup fixture
+    // from writing audit data into the runner's actual profile.
+    storage::write_private_new(
+        &config.with_extension("policy.json"),
+        br#"{"version":1,"audit":{"enabled":false}}"#,
+    )
+    .unwrap();
     let prefix = root.join("install");
     success(
         run(
@@ -464,7 +549,7 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
         local(&config)
     );
     let sid = windows::current_sid();
-    let task = windows_tasks::Task::create(&sid, &old_path, &arguments, &directory);
+    let mut task = windows_tasks::Task::create(&sid, &old_path, &arguments, &directory);
     success(
         run(
             &old_binary,
@@ -541,5 +626,49 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
     assert_eq!(task.security(), security);
     assert_eq!(fs::read(&sidecar).unwrap(), sidecar_before);
     assert_eq!(fs::read(&config).unwrap(), config_before);
+    // Exercise the actual Task action at all three versions. Task Stop may
+    // terminate the Agent; it is not evidence of a graceful shutdown. Explicit
+    // offline recovery must verify dead owners before replacing its target.
+    task.start();
+    let first = running_task_agent(&prefix, &old_binary, &config).await;
+    assert!(!run(&old_binary, &root, &upgrade).await.status.success());
+    task.stop();
+    stopped_task_agent(&first);
+    let mut recover_update = upgrade.to_vec();
+    recover_update.push("--recover-lock");
+    success(run(&old_binary, &root, &recover_update).await);
+    assert_eq!(task.inspect().0, next_path);
+    task.start();
+    let second = running_task_agent(&prefix, &next_binary, &config).await;
+    assert!(
+        !run(&next_binary, &root, &["rollback", "--no-restart"])
+            .await
+            .status
+            .success()
+    );
+    task.stop();
+    stopped_task_agent(&second);
+    success(
+        run(
+            &next_binary,
+            &root,
+            &["rollback", "--no-restart", "--recover-lock"],
+        )
+        .await,
+    );
+    task.start();
+    let restored = running_task_agent(&prefix, &old_binary, &config).await;
+    task.stop();
+    stopped_task_agent(&restored);
+    // Final fixture cleanup uses the same explicit dead-owner recovery as
+    // offline CLI updates, without switching the selected version again.
+    drop(
+        install_lock::ManagerLock::acquire_with_stale_recovery(&prefix, &old_binary, false, true)
+            .unwrap(),
+    );
+    assert_eq!(selected(&prefix, "current"), original);
+    assert_eq!(fs::read(&config).unwrap(), config_before);
+    assert_eq!(fs::read(&sidecar).unwrap(), sidecar_before);
+    assert_eq!(task.security(), security);
     task.remove();
 }
