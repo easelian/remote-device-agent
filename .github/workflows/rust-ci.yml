@@ -231,20 +231,20 @@ jobs:
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_lock_interop -- --ignored --test-threads=1
       - name: Build and test the legacy file metadata fixture
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS' || runner.os == 'Windows'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-file-info-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-file-info-interop.mjs
-          export RDH_LEGACY_FILE_HELPER="$PWD/.build/legacy-file-info-interop.mjs"
+          export RDH_LEGACY_FILE_HELPER="$(node -p 'require("node:path").resolve(".build/legacy-file-info-interop.mjs")')"
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_file_info_interop -- --ignored --test-threads=1
       - name: Build and test the legacy background search fixture
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS' || runner.os == 'Windows'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-search-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-search-interop.mjs
-          export RDH_LEGACY_SEARCH_HELPER="$PWD/.build/legacy-search-interop.mjs"
+          export RDH_LEGACY_SEARCH_HELPER="$(node -p 'require("node:path").resolve(".build/legacy-search-interop.mjs")')"
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_search_interop -- --ignored --test-threads=1
       - name: Build and test the legacy process fixture
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'

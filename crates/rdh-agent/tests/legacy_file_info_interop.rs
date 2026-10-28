@@ -1,11 +1,10 @@
 #![cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-files")
+    all(target_os = "macos", feature = "experimental-macos-files"),
+    all(windows, feature = "experimental-windows-files")
 ))]
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -35,14 +34,26 @@ fn legacy_and_rust_file_fingerprints_match() {
     )));
     fs::create_dir(&fixture.0).unwrap();
     fs::write(fixture.0.join("file"), "test file 😀").unwrap();
-    let file = fs::File::open(fixture.0.join("file")).unwrap();
+    fs::create_dir(fixture.0.join("directory")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(fixture.0.join("file"), fixture.0.join("link")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(
+        PathBuf::from(&rdh_agent::config::local_roots(&[format!("work={}", fixture.0.display())]).unwrap()["work"]).join("file"),
+        fixture.0.join("link"),
+    ).unwrap();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.0.join("file"))
+        .unwrap();
     let files = Files::new(
-        &BTreeMap::from([("work".into(), fixture.0.to_str().unwrap().into())]),
+        &rdh_agent::config::local_roots(&[format!("work={}", fixture.0.display())]).unwrap(),
         false,
     )
     .unwrap();
     let writable = Files::new(
-        &BTreeMap::from([("work".into(), fixture.0.to_str().unwrap().into())]),
+        &rdh_agent::config::local_roots(&[format!("work={}", fixture.0.display())]).unwrap(),
         true,
     )
     .unwrap();
@@ -54,23 +65,23 @@ fn legacy_and_rust_file_fingerprints_match() {
         (1_700_000_000, 0),
         (-1, 999_999_999),
     ] {
-        let times = [
-            libc::timespec {
-                tv_sec: seconds,
-                tv_nsec: nanoseconds,
-            },
-            libc::timespec {
-                tv_sec: seconds,
-                tv_nsec: nanoseconds,
-            },
-        ];
-        // SAFETY: file is open and times contains the two required timespecs.
-        assert_eq!(
-            unsafe { libc::futimens(file.as_raw_fd(), times.as_ptr()) },
-            0
-        );
+        let timestamp = if seconds >= 0 {
+            std::time::UNIX_EPOCH + Duration::new(seconds as u64, nanoseconds)
+        } else {
+            std::time::UNIX_EPOCH - Duration::from_secs((-seconds) as u64)
+                + Duration::from_nanos(u64::from(nanoseconds))
+        };
+        file.set_times(
+            fs::FileTimes::new()
+                .set_accessed(timestamp)
+                .set_modified(timestamp),
+        )
+        .unwrap();
         let mut rust = json!({
+            "list": files.dispatch("list_directory", &json!({"root":"work"})).unwrap(),
             "info": files.dispatch("file_info", &params).unwrap(),
+            "directory_info": files.dispatch("file_info", &json!({"root":"work","path":"directory"})).unwrap(),
+            "root_info": files.dispatch("file_info", &json!({"root":"work","path":"."})).unwrap(),
             "chunk": files.dispatch("read_file_chunk", &params).unwrap(),
             "batch": files.dispatch("read_multiple_files", &json!({"root":"work","paths":["file"]})).unwrap(),
             "list_large_offset": files.dispatch("list_directory", &json!({"root":"work","offset":1e100})).unwrap(),
@@ -98,7 +109,10 @@ fn legacy_and_rust_file_fingerprints_match() {
         let node = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| "node".into());
         let mut child = Command::new(node)
             .arg(&helper)
-            .arg(&fixture.0)
+            .arg(
+                &rdh_agent::config::local_roots(&[format!("work={}", fixture.0.display())])
+                    .unwrap()["work"],
+            )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -121,14 +135,16 @@ fn legacy_and_rust_file_fingerprints_match() {
         let mut legacy: Value = serde_json::from_slice(&output.stdout).unwrap();
         // JSON has one number type, while serde_json distinguishes an integer
         // spelling from an equivalent floating-point spelling.
-        let rust_mtime = rust["info"]["mtime_ms"].as_f64().unwrap();
-        let legacy_mtime = legacy["info"]["mtime_ms"].as_f64().unwrap();
-        assert_eq!(
-            rust_mtime, legacy_mtime,
-            "timestamp {seconds}.{nanoseconds:09}"
-        );
-        rust["info"].as_object_mut().unwrap().remove("mtime_ms");
-        legacy["info"].as_object_mut().unwrap().remove("mtime_ms");
+        for kind in ["info", "directory_info", "root_info"] {
+            let rust_mtime = rust[kind]["mtime_ms"].as_f64().unwrap();
+            let legacy_mtime = legacy[kind]["mtime_ms"].as_f64().unwrap();
+            assert_eq!(
+                rust_mtime, legacy_mtime,
+                "{kind}: timestamp {seconds}.{nanoseconds:09}"
+            );
+            rust[kind].as_object_mut().unwrap().remove("mtime_ms");
+            legacy[kind].as_object_mut().unwrap().remove("mtime_ms");
+        }
         assert_eq!(rust, legacy, "timestamp {seconds}.{nanoseconds:09}");
         assert_eq!(
             fs::read(fixture.0.join("file")).unwrap(),

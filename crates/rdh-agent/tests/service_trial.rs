@@ -17,7 +17,7 @@ use rdh_agent::systemd_identity::UnitIdentity;
 use rdh_agent::{random, service_update, storage};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 struct Temporary(PathBuf);
 impl Drop for Temporary {
@@ -34,6 +34,7 @@ struct Peer {
 struct Hub {
     token: String,
     peers: mpsc::UnboundedSender<Peer>,
+    ready: Semaphore,
 }
 
 async fn agent(
@@ -56,13 +57,6 @@ async fn agent(
             let Ok(hello) = serde_json::from_str(&hello) else {
                 return;
             };
-            if socket
-                .send(Message::Text(json!({"type":"ready"}).to_string().into()))
-                .await
-                .is_err()
-            {
-                return;
-            }
             let (requests, mut request_rx) = mpsc::unbounded_channel::<Value>();
             let (reply_tx, replies) = mpsc::unbounded_channel();
             if hub
@@ -72,6 +66,15 @@ async fn agent(
                     requests,
                     replies,
                 })
+                .is_err()
+            {
+                return;
+            }
+            let Ok(permit) = hub.ready.acquire().await else { return; };
+            permit.forget();
+            if socket
+                .send(Message::Text(json!({"type":"ready"}).to_string().into()))
+                .await
                 .is_err()
             {
                 return;
@@ -214,12 +217,16 @@ async fn trial_refuses_work_until_a_ready_exact_instance_is_committed_and_activa
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let token = "s".repeat(32);
     let (peers, mut connected) = mpsc::unbounded_channel();
+    let hub = Arc::new(Hub {
+        token: token.clone(),
+        peers,
+        // First launch and restart proceed normally. Recovery below explicitly
+        // controls ready delivery to cover the handshake/probe ordering.
+        ready: Semaphore::new(2),
+    });
     let router = Router::new()
         .route("/agent/{id}", get(agent))
-        .with_state(Arc::new(Hub {
-            token: token.clone(),
-            peers,
-        }));
+        .with_state(Arc::clone(&hub));
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -463,10 +470,23 @@ async fn trial_refuses_work_until_a_ready_exact_instance_is_committed_and_activa
         .unwrap()
         .unwrap();
     let guard = RunningInstall::inspect_at(&prefix, &binary).unwrap();
+    let connecting = rdh_agent::readiness::probe_profile(&guard, &prefix, &config)
+        .await
+        .unwrap();
+    assert!(
+        !connecting.ready && connecting.quarantined,
+        "{connecting:?}"
+    );
+    hub.ready.add_permits(1);
+    // Receiving hello or sending ready on the Hub does not acknowledge that
+    // the Agent consumed ready and bound the connection. Wait on its actual
+    // readiness API, under the same existing bounded deadline as other launches.
+    let ready = snapshot(&binary, &temp.0, &config).await;
+    assert_eq!(ready["quarantined"], true);
     let trial = rdh_agent::readiness::probe_profile(&guard, &prefix, &config)
         .await
         .unwrap();
-    assert!(trial.ready && trial.quarantined);
+    assert!(trial.ready && trial.quarantined, "{trial:?}");
     assert_eq!(
         request(&mut peer, "rollback-trial", "rollback-trial").await["execution_state"],
         "not_sent"

@@ -10,6 +10,8 @@ name = "rdh"
 path = "src/main.rs"
 
 [features]
+# Requires native device-file, directory, atomic mutation and legacy comparison checks.
+experimental-windows-files = []
 # Requires native Windows ACL, path, and lock interoperability validation.
 experimental-windows-private-storage = []
 # Requires native audit ACL, rotation, recovery, and legacy handoff validation.

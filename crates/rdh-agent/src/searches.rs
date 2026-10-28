@@ -12,7 +12,8 @@ use crate::random;
 
 #[cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-files")
+    all(target_os = "macos", feature = "experimental-macos-files"),
+    all(windows, feature = "experimental-windows-files")
 ))]
 pub const SEARCH_OPERATIONS: &[&str] = &[
     "start_search",
@@ -22,7 +23,8 @@ pub const SEARCH_OPERATIONS: &[&str] = &[
 ];
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-files")
+    all(target_os = "macos", feature = "experimental-macos-files"),
+    all(windows, feature = "experimental-windows-files")
 )))]
 pub const SEARCH_OPERATIONS: &[&str] = &[];
 
@@ -488,7 +490,7 @@ impl Searches {
             }
             state.status = "running";
         }
-        if let Err(error) = self.files.working_directory(&job.root, &job.path) {
+        if let Err(error) = self.files.check_search_directory(&job.root, &job.path) {
             let mut state = job.state.lock().unwrap();
             job.refresh(&mut state);
             if state.status == "running" {

@@ -1,11 +1,14 @@
 #![cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-files")
+    all(target_os = "macos", feature = "experimental-macos-files"),
+    all(windows, feature = "experimental-windows-files")
 ))]
 
-use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file as symlink;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -73,12 +76,17 @@ async fn legacy_and_rust_background_search_contracts_match() {
     )
     .unwrap();
     fs::write(fixture.0.join("invalid"), [0xff]).unwrap();
-    symlink(fixture.0.join("Straße"), fixture.0.join("strasse-link")).unwrap();
+    let roots = rdh_agent::config::local_roots(&[format!("work={}", fixture.0.display())]).unwrap();
+    symlink(
+        PathBuf::from(&roots["work"]).join("Straße"),
+        fixture.0.join("strasse-link"),
+    )
+    .unwrap();
 
     let node = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| "node".into());
     let mut child = Command::new(node)
         .arg(&helper)
-        .arg(&fixture.0)
+        .arg(&roots["work"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -104,11 +112,7 @@ async fn legacy_and_rust_background_search_contracts_match() {
         json!({"slow_retained":true,"fast_retained":false,"total":16})
     );
 
-    let files = Files::new(
-        &BTreeMap::from([("work".into(), fixture.0.to_str().unwrap().into())]),
-        false,
-    )
-    .unwrap();
+    let files = Files::new(&roots, false).unwrap();
     let manager = Searches::new(Arc::new(files));
     let invalid = json!({
         "input": start(&manager, Value::Null).unwrap_err(),

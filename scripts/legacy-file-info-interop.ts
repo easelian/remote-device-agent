@@ -9,6 +9,9 @@ const files = new Files({ work: root }, false);
 const writable = new Files({ work: root }, true);
 const params = { root: 'work', path: 'file' };
 const info = await files.fileInfo(params);
+const directory_info = await files.fileInfo({ root: 'work', path: 'directory' });
+const root_info = await files.fileInfo({ root: 'work', path: '.' });
+const list = await files.list({ root: 'work' });
 const chunk = await files.readFileChunk(params);
 const batch = await files.readMultipleFiles({ root: 'work', paths: ['file'] });
 const list_large_offset = await files.list({ root: 'work', offset: 1e100 });
@@ -42,4 +45,15 @@ const invalid = {
   move_type: await rejected(writable.moveFile({ root: 'work', source: null, destination: 'file' })),
   search_query: await rejected(files.search({ root: 'work', query: null })),
 };
-console.log(JSON.stringify({ info, chunk, batch, list_large_offset, invalid }));
+console.log(
+  JSON.stringify({
+    list,
+    info,
+    directory_info,
+    root_info,
+    chunk,
+    batch,
+    list_large_offset,
+    invalid,
+  }),
+);

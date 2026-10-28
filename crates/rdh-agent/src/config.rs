@@ -391,16 +391,33 @@ fn absolute_config_path(value: &str) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+/// Convert only a locally canonicalized path to the protocol's root spelling.
+/// Windows canonicalize returns an extended path; device configs deliberately
+/// reject extended namespaces supplied by a peer or edited configuration.
+fn canonical_root_text(path: &Path) -> Result<String> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| Error::message("File root is not valid Unicode"))?;
+    #[cfg(windows)]
+    {
+        if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            return Ok(format!(r"\\{unc}"));
+        }
+        if let Some(drive) = value.strip_prefix(r"\\?\") {
+            if valid_windows_root(drive) && drive.as_bytes().get(1) == Some(&b':') {
+                return Ok(drive.into());
+            }
+            return Err(Error::message("File root must be a drive or UNC directory"));
+        }
+    }
+    Ok(value.into())
+}
+
 pub fn local_roots(items: &[String]) -> Result<BTreeMap<String, String>> {
     let mut roots = BTreeMap::new();
     if items.is_empty() {
         let cwd = std::env::current_dir()?.canonicalize()?;
-        roots.insert(
-            "work".to_owned(),
-            cwd.to_str()
-                .ok_or_else(|| Error::message("File root is not valid Unicode"))?
-                .to_owned(),
-        );
+        roots.insert("work".to_owned(), canonical_root_text(&cwd)?);
         return Ok(roots);
     }
     for item in items {
@@ -417,12 +434,7 @@ pub fn local_roots(items: &[String]) -> Result<BTreeMap<String, String>> {
                 "Each file root must be an existing directory",
             ));
         }
-        roots.insert(
-            name.to_owned(),
-            root.to_str()
-                .ok_or_else(|| Error::message("File root is not valid Unicode"))?
-                .to_owned(),
-        );
+        roots.insert(name.to_owned(), canonical_root_text(&root)?);
     }
     Ok(roots)
 }
@@ -435,6 +447,17 @@ mod tests {
     fn base_config() -> Value {
         json!({ "gateway_url": "https://EXAMPLE.com:443", "device_id": "device_1",
                 "token": "a".repeat(32), "roots": {"work": std::env::temp_dir()} })
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_canonical_roots_use_the_accepted_device_config_spelling() {
+        let roots = local_roots(&[format!("work={}", std::env::temp_dir().display())]).unwrap();
+        assert!(valid_windows_root(&roots["work"]));
+        assert!(!roots["work"].starts_with(r"\\?\"));
+        let mut config = base_config();
+        config["roots"] = serde_json::to_value(roots).unwrap();
+        assert!(DeviceConfig::parse(config).is_ok());
     }
 
     #[test]
