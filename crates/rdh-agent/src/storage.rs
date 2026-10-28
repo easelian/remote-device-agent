@@ -1,7 +1,13 @@
-#[cfg(not(unix))]
+#[cfg(all(
+    not(unix),
+    not(all(windows, feature = "experimental-windows-private-storage"))
+))]
 use std::path::Path;
 
-#[cfg(not(unix))]
+#[cfg(all(
+    not(unix),
+    not(all(windows, feature = "experimental-windows-private-storage"))
+))]
 use crate::error::{Error, Result};
 
 #[cfg(any(unix, all(windows, feature = "experimental-windows-private-storage")))]
@@ -33,7 +39,7 @@ pub(crate) fn sync_directory(directory: &std::fs::File) -> std::io::Result<()> {
 pub(crate) mod windows;
 
 #[cfg(all(windows, feature = "experimental-windows-private-storage"))]
-pub use windows::{ensure_parent, read_private, write_private_new};
+pub use windows::{ensure_parent, read_private, write_private_new, write_private_replace};
 
 #[cfg(unix)]
 mod platform {
@@ -254,7 +260,10 @@ pub use platform::{
     write_private_replace,
 };
 
-#[cfg(not(unix))]
+#[cfg(all(
+    not(unix),
+    not(all(windows, feature = "experimental-windows-private-storage"))
+))]
 fn unsupported() -> Error {
     Error::message("Native private-storage ACL support is not implemented on this platform")
 }
@@ -280,7 +289,10 @@ pub fn read_private(_: &Path) -> Result<Vec<u8>> {
 pub fn write_private_new(_: &Path, _: &[u8]) -> Result<()> {
     Err(unsupported())
 }
-#[cfg(not(unix))]
+#[cfg(all(
+    not(unix),
+    not(all(windows, feature = "experimental-windows-private-storage"))
+))]
 pub fn write_private_replace(_: &Path, _: &[u8]) -> Result<()> {
     Err(unsupported())
 }

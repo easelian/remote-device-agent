@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
@@ -29,13 +29,63 @@ fn command(binary: &Path, root: &Path) -> Command {
     command
 }
 async fn run(binary: &Path, root: &Path, args: &[&str]) -> std::process::Output {
-    tokio::time::timeout(
-        Duration::from_secs(20),
-        command(binary, root).args(args).output(),
-    )
-    .await
-    .unwrap()
-    .unwrap()
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+
+    eprintln!("Running fixture command: {args:?}");
+    let started = Instant::now();
+    let mut child = command(binary, root)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let out = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.take(65536).read_to_end(&mut bytes).await.unwrap();
+        bytes
+    });
+    let err = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.take(65536).read_to_end(&mut bytes).await.unwrap();
+        bytes
+    });
+    let status = match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
+        Ok(status) => status.unwrap(),
+        Err(_) => {
+            // Retain ownership across the wait timeout: explicitly terminate
+            // and reap only this fixture child before its directory is removed.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let stdout = out.await.unwrap();
+            let stderr = err.await.unwrap();
+            panic!(
+                "Fixture command timed out after {:?}: {args:?}\nstdout: {}\nstderr: {}",
+                started.elapsed(),
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr),
+            );
+        }
+    };
+    let stdout = out.await.unwrap();
+    let stderr = err.await.unwrap();
+    assert!(
+        stdout.len() < 65536 && stderr.len() < 65536,
+        "Fixture output was truncated: {args:?}"
+    );
+    eprintln!(
+        "Fixture command completed in {:?}: {args:?}",
+        started.elapsed()
+    );
+    std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }
 }
 fn candidate_binary(path: &Path, old: &str, new: &str) -> Vec<u8> {
     assert_eq!(old.len(), new.len());

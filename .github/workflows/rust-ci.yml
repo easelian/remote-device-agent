@@ -160,12 +160,6 @@ jobs:
       - name: Check formatting
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo +1.93.0 fmt --all -- --check
-      - name: Check and test implemented paths
-        env:
-          RDH_TARGET: ${{ matrix.target }}
-        run: |
-          cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
-          cargo +1.93.0 test --locked --workspace --all-targets --all-features --target "$RDH_TARGET"
       - name: Check Windows default-feature safety gates
         if: runner.os == 'Windows'
         env:
@@ -178,6 +172,12 @@ jobs:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --locked -p rdh-agent --lib --target "$RDH_TARGET" macos_default_tests::
+      - name: Check and test implemented paths
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
+          cargo +1.93.0 test --locked --workspace --all-targets --all-features --target "$RDH_TARGET"
       - name: Check native LaunchAgent definition arguments
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
         env:

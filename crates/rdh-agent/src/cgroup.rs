@@ -143,7 +143,7 @@ mod linux {
             if unsafe { libc::statfs(path.as_ptr(), &mut stat) } != 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            if stat.f_type as u64 != libc::CGROUP2_SUPER_MAGIC as u64 {
+            if i128::from(stat.f_type) != i128::from(libc::CGROUP2_SUPER_MAGIC) {
                 return Err(Error::message("The cgroup mount is not cgroup v2"));
             }
             return Ok(target);

@@ -1,7 +1,8 @@
-//! Experimental private Windows configuration reads and exclusive creation.
+//! Experimental private Windows configuration reads and atomic publication.
 //!
-//! Replacement remains unsupported. These helpers and experimental profile
-//! locking are disabled by default and require native Windows validation.
+//! These helpers and experimental profile locking are disabled by default and
+//! require native Windows validation. Replacement requires FileRenameInformationEx;
+//! unsupported systems never fall back to deleting or truncating the target.
 use std::ffi::{OsStr, c_void};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -14,7 +15,9 @@ use std::ptr::{null, null_mut};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, NtCreateFile,
+    FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+    FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileRenameInformation,
+    FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
@@ -35,11 +38,11 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    FILE_RENAME_INFO, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileDispositionInfo,
-    FileRenameInfo, GetDriveTypeW, GetFileInformationByHandle, GetFileType,
-    GetVolumeInformationByHandleW, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
-    SetFileInformationByHandle,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_TYPE_DISK,
+    FileDispositionInfo, FileIdInfo, GetDriveTypeW, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, GetFileType, GetVolumeInformationByHandleW, OPEN_EXISTING,
+    READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, FILE_PERSISTENT_ACLS};
@@ -343,6 +346,34 @@ fn information(file: &File, directory: bool) -> Result<BY_HANDLE_FILE_INFORMATIO
     Ok(info)
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct FileIdentity {
+    volume: u64,
+    file: [u8; 16],
+}
+
+fn file_identity(file: &File) -> Result<FileIdentity> {
+    let mut info = FILE_ID_INFO::default();
+    // Use the full volume/file identity: ReFS identifiers need not fit in the
+    // older BY_HANDLE_FILE_INFORMATION's 64-bit file index.
+    // SAFETY: file is live and info is an aligned writable output buffer.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    Ok(FileIdentity {
+        volume: info.VolumeSerialNumber,
+        file: info.FileId.Identifier,
+    })
+}
+
 fn path_parts(path: &Path) -> Result<(Vec<u16>, Vec<Vec<u16>>)> {
     let mut components = path.components();
     let drive = match components.next() {
@@ -402,12 +433,16 @@ fn open_root(root: &[u16], read_acl: bool) -> Result<File> {
             "Windows private storage requires a local drive",
         ));
     }
-    // Omit delete sharing so another process cannot rename a held directory.
+    // A metadata-only open does not reserve ordinary read/write/delete sharing.
+    // Request traversal as well, so omitting delete sharing pins the directory.
     // SAFETY: root is a live NUL-terminated path, with no borrowed handles.
     let handle = unsafe {
         CreateFileW(
             root.as_ptr(),
-            FILE_READ_ATTRIBUTES | SYNCHRONIZE | if read_acl { READ_CONTROL } else { 0 },
+            FILE_READ_ATTRIBUTES
+                | FILE_TRAVERSE
+                | SYNCHRONIZE
+                | if read_acl { READ_CONTROL } else { 0 },
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             null(),
             OPEN_EXISTING,
@@ -455,6 +490,26 @@ fn open_child_access(
     read_acl: bool,
     delete: bool,
 ) -> Result<File> {
+    let desired = (if directory {
+        FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE | if read_acl { READ_CONTROL } else { 0 }
+    } else {
+        GENERIC_READ | READ_CONTROL | SYNCHRONIZE
+    }) | if delete { DELETE } else { 0 };
+    let sharing = if directory {
+        FILE_SHARE_READ | FILE_SHARE_WRITE
+    } else {
+        FILE_SHARE_READ
+    };
+    open_child_request(parent, name, directory, desired, sharing)
+}
+
+fn open_child_request(
+    parent: &File,
+    name: &[u16],
+    directory: bool,
+    desired: u32,
+    sharing: u32,
+) -> Result<File> {
     let bytes = name.len().checked_mul(2).ok_or_else(unsafe_storage)?;
     let length = u16::try_from(bytes).map_err(|_| unsafe_storage())?;
     let text = UNICODE_STRING {
@@ -472,16 +527,6 @@ fn open_child_access(
     };
     let mut result: HANDLE = null_mut();
     let mut status_block = IO_STATUS_BLOCK::default();
-    let desired = (if directory {
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE | if read_acl { READ_CONTROL } else { 0 }
-    } else {
-        GENERIC_READ | READ_CONTROL | SYNCHRONIZE
-    }) | if delete { DELETE } else { 0 };
-    let sharing = if directory {
-        FILE_SHARE_READ | FILE_SHARE_WRITE
-    } else {
-        FILE_SHARE_READ
-    };
     // Each open is a single name relative to an already-held directory handle.
     // The final reparse point is opened itself and rejected by information().
     // SAFETY: all pointers remain valid through the synchronous NtCreateFile.
@@ -513,6 +558,23 @@ fn open_child_access(
     let file = unsafe { File::from_raw_handle(result) };
     information(&file, directory)?;
     Ok(file)
+}
+
+/// Read only identity/attributes, sharing the writer's existing data and
+/// DELETE access. This can verify an exclusively held temporary without
+/// granting another data reader or reopening a checked pathname.
+fn named_identity(parent: &File, name: &[u16]) -> Result<Option<FileIdentity>> {
+    match open_child_request(
+        parent,
+        name,
+        false,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    ) {
+        Ok(file) => file_identity(&file).map(Some),
+        Err(Error::Io(error)) if definitely_not_found(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn open_private_file_for_deletion(parent: &File, name: &[u16]) -> Result<File> {
@@ -586,7 +648,11 @@ pub(crate) fn create_child(parent: &File, name: &[u16], directory: bool) -> Resu
         | READ_CONTROL
         | DELETE
         | SYNCHRONIZE
-        | if directory { 0 } else { GENERIC_WRITE };
+        | if directory {
+            FILE_TRAVERSE
+        } else {
+            GENERIC_WRITE
+        };
     let sharing = if directory {
         FILE_SHARE_READ | FILE_SHARE_WRITE
     } else {
@@ -740,46 +806,102 @@ impl Drop for Temporary {
     }
 }
 
-fn rename_new(file: &File, parent: &File, name: &[u16]) -> Result<()> {
+fn rename_file(file: &File, parent: &File, name: &[u16], replace_existing: bool) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 255
+        || name == [b'.' as u16]
+        || name == [b'.' as u16, b'.' as u16]
+        || name.iter().any(|unit| matches!(*unit, 0 | 47 | 58 | 92))
+    {
+        return Err(unsafe_storage());
+    }
     let name_bytes = name.len().checked_mul(2).ok_or_else(unsafe_storage)?;
-    let length = offset_of!(FILE_RENAME_INFO, FileName)
+    let length = offset_of!(FILE_RENAME_INFORMATION, FileName)
         .checked_add(name_bytes)
         .and_then(|value| value.checked_add(size_of::<u16>()))
         .ok_or_else(unsafe_storage)?
-        .max(size_of::<FILE_RENAME_INFO>());
-    // usize provides sufficient alignment for FILE_RENAME_INFO on Windows.
+        .max(size_of::<FILE_RENAME_INFORMATION>());
+    // usize provides sufficient alignment for FILE_RENAME_INFORMATION on Windows.
     let mut buffer = vec![0usize; length.div_ceil(size_of::<usize>())];
-    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     // SAFETY: the aligned buffer has room for the structure, filename, and NUL.
     // parent and file remain open throughout the synchronous API call.
     unsafe {
-        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).Anonymous.Flags = if replace_existing {
+            FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS
+        } else {
+            0
+        };
         (*info).RootDirectory = parent.as_raw_handle();
         (*info).FileNameLength = u32::try_from(name_bytes).map_err(|_| unsafe_storage())?;
         let destination = buffer
             .as_mut_ptr()
             .cast::<u8>()
-            .add(offset_of!(FILE_RENAME_INFO, FileName))
+            .add(offset_of!(FILE_RENAME_INFORMATION, FileName))
             .cast::<u16>();
         std::ptr::copy_nonoverlapping(name.as_ptr(), destination, name.len());
-        if SetFileInformationByHandle(
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // Keep the destination relative to the retained parent. The Win32
+        // FileRenameInfo wrapper rejects non-NULL RootDirectory on the native
+        // CI hosts; the NT interface accepts the documented relative form.
+        let status = NtSetInformationFile(
             file.as_raw_handle(),
-            FileRenameInfo,
+            &mut status_block,
             info.cast(),
             u32::try_from(length).map_err(|_| unsafe_storage())?,
-        ) == 0
-        {
-            return Err(last_error());
+            if replace_existing {
+                FileRenameInformationEx
+            } else {
+                FileRenameInformation
+            },
+        );
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(RtlNtStatusToDosError(status) as i32).into());
         }
     }
     Ok(())
 }
 
-/// Install a new secret without overwriting an existing configuration. The
-/// parent and temporary object must both have validated protected ACLs. The
-/// file is flushed before the handle-relative rename; Windows crash durability
-/// of directory metadata still needs native filesystem verification.
-pub fn write_private_new(path: &Path, data: &[u8]) -> Result<()> {
+/// Discard only a temporary which is still known to have its original name.
+/// A rename error can have an uncertain outcome; its held handle must never
+/// be deleted merely because the syscall reported an error after publication.
+fn failed_publication(
+    mut temporary: Temporary,
+    parent: &File,
+    temporary_name: &[u16],
+    attempted_rename: bool,
+    error: Error,
+) -> Result<()> {
+    // Disable automatic handle deletion before any fallible verification.
+    temporary.installed_or_deleted = true;
+    if attempted_rename {
+        let still_temporary = (|| {
+            let held = file_identity(&temporary.file)?;
+            Ok::<_, Error>(named_identity(parent, temporary_name)? == Some(held))
+        })();
+        if !matches!(still_temporary, Ok(true)) {
+            return Err(Error::message(format!(
+                "Private write outcome is unknown ({error}); the candidate was retained; inspect before retrying"
+            )));
+        }
+    }
+    if let Err(cleanup) = temporary.discard() {
+        return Err(Error::message(format!(
+            "Private write failed ({error}); temporary cleanup also failed ({cleanup})"
+        )));
+    }
+    // FileDispositionInfo deletes on close, so confirm absence only after the
+    // final writer handle has actually closed.
+    drop(temporary);
+    if let Err(cleanup) = require_child_absent(parent, temporary_name, false) {
+        return Err(Error::message(format!(
+            "Private write failed ({error}); temporary cleanup is unconfirmed ({cleanup})"
+        )));
+    }
+    Err(error)
+}
+
+fn write_private(path: &Path, data: &[u8], replace_existing: bool) -> Result<()> {
     if data.len() as u64 > MAX_PRIVATE_FILE_BYTES {
         return Err(Error::message(
             "Private storage file exceeds the size limit",
@@ -787,6 +909,25 @@ pub fn write_private_new(path: &Path, data: &[u8]) -> Result<()> {
     }
     let (directories, name) = open_parent(path, false, true)?;
     let parent = directories.last().expect("root exists");
+    let existing = if replace_existing {
+        match open_child_request(
+            parent,
+            &name,
+            false,
+            GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+        ) {
+            Ok(file) => {
+                check_file_acl(&file)?;
+                let identity = file_identity(&file)?;
+                Some((file, identity))
+            }
+            Err(Error::Io(error)) if definitely_not_found(&error) => None,
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
     let temporary_name: Vec<u16> = format!(".rdh-{}.tmp", crate::random::hex_token::<16>()?)
         .encode_utf16()
         .collect();
@@ -794,25 +935,50 @@ pub fn write_private_new(path: &Path, data: &[u8]) -> Result<()> {
         file: create_child(parent, &temporary_name, false)?,
         installed_or_deleted: false,
     };
-    let result = (|| {
+    let staged = (|| {
         temporary.file.write_all(data)?;
         temporary.file.sync_all()?;
-        rename_new(&temporary.file, parent, &name)
-    })();
-    match result {
-        Ok(()) => {
-            temporary.installed_or_deleted = true;
-            Ok(())
-        }
-        Err(error) => {
-            if let Err(cleanup) = temporary.discard() {
-                return Err(Error::message(format!(
-                    "Private write failed ({error}); temporary cleanup also failed ({cleanup})"
-                )));
+        information(&temporary.file, false)?;
+        check_file_acl(&temporary.file)?;
+        check_file_acl(parent)?;
+        if let Some((held, identity)) = &existing {
+            information(held, false)?;
+            check_file_acl(held)?;
+            if named_identity(parent, &name)?.as_ref() != Some(identity) {
+                return Err(Error::message(
+                    "Private sidecar changed while being updated",
+                ));
             }
-            Err(error)
         }
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        return failed_publication(temporary, parent, &temporary_name, false, error);
     }
+    // From this point on the writer may name the installed target. Disarm Drop
+    // before the single publication call, including its error/unwind paths.
+    temporary.installed_or_deleted = true;
+    match rename_file(&temporary.file, parent, &name, existing.is_some()) {
+        Ok(()) => Ok(()),
+        Err(error) => failed_publication(temporary, parent, &temporary_name, true, error),
+    }
+}
+
+/// Install a new secret without overwriting any existing object. The private
+/// file is flushed before its handle-relative, non-replacing rename. Native
+/// Windows directory-metadata/crash durability still needs acceptance tests.
+pub fn write_private_new(path: &Path, data: &[u8]) -> Result<()> {
+    write_private(path, data, false)
+}
+
+/// Replace a private sidecar under the caller's legacy-compatible profile
+/// lock. Keep the verified old file open across one FileRenameInformationEx call;
+/// POSIX rename semantics preserve its existing readers. An initially absent
+/// name is published with non-replacing semantics instead. There is no
+/// truncate/delete/ReplaceFileW fallback. External writers not observing the
+/// caller's lock are not covered by an atomic compare-and-swap guarantee.
+pub fn write_private_replace(path: &Path, data: &[u8]) -> Result<()> {
+    write_private(path, data, true)
 }
 
 #[cfg(test)]
@@ -822,11 +988,13 @@ mod tests {
     use windows_sys::Win32::Foundation::GENERIC_WRITE;
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SetSecurityInfo,
     };
     use windows_sys::Win32::Security::{
         GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, SECURITY_ATTRIBUTES,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
     };
-    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateDirectoryW};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateDirectoryW, WRITE_DAC};
 
     fn user_text(identity: &Identity) -> String {
         let mut raw = null_mut();
@@ -967,7 +1135,14 @@ mod tests {
         }
 
         fn write_with_acl(&self, protected: bool) -> std::path::PathBuf {
-            let path = self.0.join("device.json");
+            self.write_with_acl_at(self.0.join("device.json"), protected)
+        }
+
+        fn write_with_acl_at(
+            &self,
+            path: std::path::PathBuf,
+            protected: bool,
+        ) -> std::path::PathBuf {
             let identity = Identity::current().unwrap();
             let user = user_text(&identity);
             let flag = if protected { "P" } else { "" };
@@ -982,7 +1157,7 @@ mod tests {
             let handle = unsafe {
                 CreateFileW(
                     wide.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
+                    GENERIC_READ | GENERIC_WRITE | WRITE_DAC,
                     0,
                     &attributes,
                     CREATE_NEW,
@@ -1000,6 +1175,46 @@ mod tests {
             let mut file = unsafe { File::from_raw_handle(handle) };
             file.write_all(b"fixture-secret").unwrap();
             file.sync_all().unwrap();
+            if !protected {
+                // Creation-time inheritance can protect an explicit DACL on
+                // native Windows. Make the negative fixture unprotected using
+                // the security API, rather than assuming its SDDL persisted.
+                let mut present = 0;
+                let mut defaulted = 0;
+                let mut acl = null_mut();
+                // SAFETY: descriptor is live and the outputs remain writable.
+                assert_ne!(
+                    unsafe {
+                        GetSecurityDescriptorDacl(
+                            descriptor.0,
+                            &mut present,
+                            &mut acl,
+                            &mut defaulted,
+                        )
+                    },
+                    0
+                );
+                assert_ne!(present, 0);
+                // SAFETY: file has WRITE_DAC access and acl belongs to descriptor.
+                assert_eq!(
+                    unsafe {
+                        SetSecurityInfo(
+                            file.as_raw_handle(),
+                            SE_FILE_OBJECT,
+                            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                            null_mut(),
+                            null_mut(),
+                            acl,
+                            null_mut(),
+                        )
+                    },
+                    ERROR_SUCCESS
+                );
+                assert!(
+                    check_file_acl(&file).is_err(),
+                    "negative fixture remains private"
+                );
+            }
             path
         }
 
@@ -1066,6 +1281,184 @@ mod tests {
             .collect();
         assert_eq!(winners.len(), 1);
         assert_eq!(read_private(&path).unwrap(), winners);
+    }
+
+    fn staged_file(parent: &File, name: &[u16], data: &[u8]) -> Temporary {
+        let mut temporary = Temporary {
+            file: create_child(parent, name, false).unwrap(),
+            installed_or_deleted: false,
+        };
+        temporary.file.write_all(data).unwrap();
+        temporary.file.sync_all().unwrap();
+        temporary
+    }
+
+    #[test]
+    fn private_write_rejects_oversize_before_opening_parent() {
+        let fixture = Fixture::new();
+        let missing = fixture.0.join("must-not-create").join("device.json");
+        let large = vec![0; MAX_PRIVATE_FILE_BYTES as usize + 1];
+        for result in [
+            write_private_new(&missing, &large),
+            write_private_replace(&missing, &large),
+        ] {
+            assert!(result.unwrap_err().to_string().contains("size limit"));
+        }
+        assert!(!fixture.0.join("must-not-create").exists());
+    }
+
+    #[test]
+    fn private_replacement_preserves_old_readers_and_installs_a_private_file() {
+        let fixture = Fixture::new();
+        let path = fixture.private_directory("private").join("device.json");
+        write_private_new(&path, b"old-secret").unwrap();
+        let (parents, name) = open_parent(&path, false, true).unwrap();
+        let parent = parents.last().unwrap();
+        let mut reader = open_child_request(
+            parent,
+            &name,
+            false,
+            GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+        )
+        .unwrap();
+        let old = file_identity(&reader).unwrap();
+        write_private_replace(&path, b"new-secret").unwrap();
+        assert_eq!(read_private(&path).unwrap(), b"new-secret");
+        let current = open_child(parent, &name, false, true).unwrap();
+        check_file_acl(&current).unwrap();
+        assert_ne!(old, file_identity(&current).unwrap());
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"old-secret");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+    }
+
+    #[test]
+    fn private_replacement_creates_a_missing_name_and_rejects_unsafe_targets() {
+        let fixture = Fixture::new();
+        let directory = fixture.private_directory("private");
+        let path = directory.join("device.json");
+        write_private_replace(&path, b"created-secret").unwrap();
+        assert_eq!(read_private(&path).unwrap(), b"created-secret");
+        let alias = directory.join("alias.json");
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert!(write_private_replace(&path, b"forbidden").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"created-secret");
+        assert_eq!(std::fs::read(&alias).unwrap(), b"created-secret");
+        std::fs::remove_file(&alias).unwrap();
+        let unprotected = fixture.write_with_acl_at(directory.join("unprotected.json"), false);
+        assert!(write_private_replace(&unprotected, b"forbidden").is_err());
+        assert_eq!(std::fs::read(&unprotected).unwrap(), b"fixture-secret");
+        let child = directory.join("directory.json");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("marker"), b"preserved").unwrap();
+        assert!(write_private_replace(&child, b"forbidden").is_err());
+        assert_eq!(std::fs::read(child.join("marker")).unwrap(), b"preserved");
+        assert!(!std::fs::read_dir(&directory).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rdh-")
+        }));
+    }
+
+    #[test]
+    fn rejected_replacement_retains_the_old_file_and_cleans_its_own_temporary() {
+        let fixture = Fixture::new();
+        let path = fixture.private_directory("private").join("device.json");
+        write_private_new(&path, b"old-secret").unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let result = write_private_replace(&path, b"forbidden");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        // This module runs only on Windows, where this resets the read-only
+        // file attribute and does not grant Unix write permissions.
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert!(result.is_err());
+        assert_eq!(read_private(&path).unwrap(), b"old-secret");
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [OsStr::new("device.json")]);
+    }
+
+    #[test]
+    fn nonreplacing_publication_never_loses_a_late_creator() {
+        let fixture = Fixture::new();
+        let path = fixture.private_directory("private").join("device.json");
+        let (parents, name) = open_parent(&path, false, true).unwrap();
+        let parent = parents.last().unwrap();
+        let temporary_name: Vec<u16> = ".rdh-staged.tmp".encode_utf16().collect();
+        let mut temporary = staged_file(parent, &temporary_name, b"candidate");
+        write_private_new(&path, b"late-creator").unwrap();
+        temporary.installed_or_deleted = true;
+        let error = rename_file(&temporary.file, parent, &name, false).unwrap_err();
+        failed_publication(temporary, parent, &temporary_name, true, error).unwrap_err();
+        assert_eq!(read_private(&path).unwrap(), b"late-creator");
+        assert!(!path.parent().unwrap().join(".rdh-staged.tmp").exists());
+    }
+
+    #[test]
+    fn reported_failure_after_publication_never_deletes_the_installed_candidate() {
+        for replace in [false, true] {
+            let fixture = Fixture::new();
+            let path = fixture.private_directory("private").join("device.json");
+            if replace {
+                write_private_new(&path, b"original").unwrap();
+            }
+            let (parents, name) = open_parent(&path, false, true).unwrap();
+            let parent = parents.last().unwrap();
+            let temporary_name: Vec<u16> = ".rdh-staged.tmp".encode_utf16().collect();
+            let mut temporary = staged_file(parent, &temporary_name, b"candidate");
+            temporary.installed_or_deleted = true;
+            rename_file(&temporary.file, parent, &name, replace).unwrap();
+            // Exercise the real failure cleanup after the effect has happened.
+            let error = failed_publication(
+                temporary,
+                parent,
+                &temporary_name,
+                true,
+                Error::message("injected post-publication error"),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("outcome is unknown"));
+            assert_eq!(read_private(&path).unwrap(), b"candidate");
+        }
+    }
+
+    #[test]
+    fn failed_publication_preserves_a_reused_temporary_name() {
+        let fixture = Fixture::new();
+        let directory = fixture.private_directory("private");
+        let path = directory.join("device.json");
+        let (parents, name) = open_parent(&path, false, true).unwrap();
+        let parent = parents.last().unwrap();
+        let temporary_name: Vec<u16> = ".rdh-staged.tmp".encode_utf16().collect();
+        let temporary_path = directory.join(".rdh-staged.tmp");
+        let mut temporary = staged_file(parent, &temporary_name, b"candidate");
+        temporary.installed_or_deleted = true;
+        rename_file(&temporary.file, parent, &name, false).unwrap();
+        write_private_new(&temporary_path, b"other-creator").unwrap();
+        let error = failed_publication(
+            temporary,
+            parent,
+            &temporary_name,
+            true,
+            Error::message("injected post-publication error"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outcome is unknown"));
+        assert_eq!(read_private(&path).unwrap(), b"candidate");
+        assert_eq!(read_private(&temporary_path).unwrap(), b"other-creator");
     }
 
     #[test]
@@ -1293,7 +1686,15 @@ mod tests {
         };
         temporary.file.write_all(b"temporary-data").unwrap();
         let (directories, target_name) = open_parent(&target, false, false).unwrap();
-        assert!(rename_new(&temporary.file, directories.last().unwrap(), &target_name).is_err());
+        assert!(
+            rename_file(
+                &temporary.file,
+                directories.last().unwrap(),
+                &target_name,
+                false
+            )
+            .is_err()
+        );
         temporary.discard().unwrap();
         drop(temporary);
         assert!(!temporary_path.exists());
