@@ -2,7 +2,36 @@ name: Agent CI
 
 on:
   push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ci.yml'
+      - 'src/**'
+      - 'test/**'
+      - 'bin/**'
+      - 'packaging/**'
+      - 'vendor/**'
+      - 'scripts/**'
+      - '!scripts/legacy-*-interop.ts'
+      - '!scripts/check-legacy-inspection.py'
+      - 'package*.json'
+      - 'tsconfig.json'
+      - 'biome.json'
+      - 'README.md'
   pull_request:
+    paths:
+      - '.github/workflows/ci.yml'
+      - 'src/**'
+      - 'test/**'
+      - 'bin/**'
+      - 'packaging/**'
+      - 'vendor/**'
+      - 'scripts/**'
+      - '!scripts/legacy-*-interop.ts'
+      - '!scripts/check-legacy-inspection.py'
+      - 'package*.json'
+      - 'tsconfig.json'
+      - 'biome.json'
+      - 'README.md'
   workflow_dispatch:
 
 permissions:

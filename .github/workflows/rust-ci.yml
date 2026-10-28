@@ -41,6 +41,8 @@ on:
       - package.json
       - package-lock.json
       - .github/workflows/rust-ci.yml
+      - .github/workflows/ci.yml
+      - .github/workflows/release.yml
   pull_request:
     paths:
       - Cargo.toml
@@ -80,6 +82,8 @@ on:
       - package.json
       - package-lock.json
       - .github/workflows/rust-ci.yml
+      - .github/workflows/ci.yml
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:

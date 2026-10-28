@@ -8,6 +8,8 @@ on:
       - '.github/workflows/release.yml'
       - 'packaging/**'
       - 'scripts/**'
+      - '!scripts/legacy-*-interop.ts'
+      - '!scripts/check-legacy-inspection.py'
       - 'src/**'
       - 'bin/**'
       - 'package*.json'
@@ -16,6 +18,8 @@ on:
       - '.github/workflows/release.yml'
       - 'packaging/**'
       - 'scripts/**'
+      - '!scripts/legacy-*-interop.ts'
+      - '!scripts/check-legacy-inspection.py'
       - 'src/**'
       - 'bin/**'
       - 'package*.json'
@@ -33,13 +37,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}-${{ inputs.tag }}
+  group: agent-native-validation-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   windows-service-host:
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - os: windows-latest
@@ -144,6 +149,7 @@ jobs:
     needs: build
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - os: ubuntu-latest
@@ -193,9 +199,10 @@ jobs:
         run: node scripts/check_windows_startup.mjs dist
 
   musl:
-    needs: build
+    needs: [build, smoke]
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - os: ubuntu-latest
