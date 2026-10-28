@@ -22,39 +22,51 @@
 
 Linux ARM64 的 glibc 和 musl 目标均已交叉编译并通过工作区全目标静态检查。先前一轮源码在 QEMU 用户态模拟下各通过 95 项单元测试；自启动测试程序的完整用例受系统旧版 binfmt 模拟器限制，其环境隔离子用例已用新版模拟器单独通过。新版 QEMU 支持本次文件测试所需的 `openat2`。当前两个交叉编译的开发二进制通过模拟器包装器，分别与临时本地 Hub 完成了 23 项操作样例；此联测未覆盖受管服务和服务更新。先前还用 ARM64 musl 模拟进程验证了安装时预登记配置和拒绝模拟旧锁，未运行真实旧 Node Agent。以上结果不能代替真实 ARM64 上的完整测试、服务和 Hub 联测。
 
-Windows x86_64 GNU 目标已交叉编译，默认构建在 Wine 中先前通过 19 项单元测试；最新两项默认特性门禁测试还验证了禁用时不会创建锁或修改配置。设备根目录和默认 shell 的 Windows 路径语法已与旧 Agent 的代表性样例对照：不完整 UNC、设备命名空间和不符合旧契约的 `SystemRoot` 会被拒绝。这些是配置语法检查，不能替代文件句柄与实际可执行文件的验证。`experimental-windows-private-storage` 构建选项包含实验性私有配置读取、排他创建、已有配置替换以及旧锁名称的获取、释放和显式恢复；默认构建仍拒绝 Windows 私有配置和锁操作。实验实现逐级持有目录句柄、拒绝重解析点及硬链接，并验证所有者和受保护 ACL。新文件先以私有 ACL 创建临时文件，验证后才写入并同步，最后使用句柄相对重命名，禁止覆盖现有配置；失败时只清理自己持有的临时文件。创建缺失目录要求其上一级已通过私有 ACL 检查，因此普通继承权限的目录和部分旧安装可能被拒绝，尚无自动迁移。Windows 目录元数据的断电持久性、相对重命名和创建锁的原生行为仍待验证。
+Windows x86_64 GNU 目标已交叉编译，默认构建在 Wine 中先前通过 19 项单元测试；最新两项默认特性门禁测试还验证了禁用时不会创建锁或修改配置。设备根目录和默认 shell 的 Windows 路径语法已与旧 Agent 的代表性样例对照：不完整 UNC、设备命名空间和不符合旧契约的 `SystemRoot` 会被拒绝。这些是配置语法检查，不能替代文件句柄与实际可执行文件的验证。`experimental-windows-private-storage` 构建选项包含实验性私有配置读取、排他创建、已有配置替换以及旧锁名称的获取、释放和显式恢复；默认构建仍拒绝 Windows 私有配置和锁操作。实验实现逐级持有目录句柄、拒绝重解析点及硬链接，并验证所有者和受保护 ACL。新文件先以私有 ACL 创建临时文件，验证后才写入并同步，最后使用句柄相对重命名，禁止覆盖现有配置；失败时只清理自己持有的临时文件。创建缺失目录要求其上一级已通过私有 ACL 检查，因此普通继承权限的目录和部分旧安装可能被拒绝，尚无自动迁移。两种 Windows MSVC 架构的原生单元测试已覆盖相对重命名、创建和恢复锁；目录元数据的断电持久性仍未验收。
 
 实验锁使用 `<config>.node-lock`、`owner.json` 和 `.reclaiming` 名称，释放前核对 owner。显式 `--recover-lock` 先为所有配置获取恢复 guard，打开并校验全部锁与 owner，再读取完整进程快照；快照不包含当前进程、枚举失败或任一 owner PID 仍存在时均拒绝删除。快照机制依据 Windows 的 [Toolhelp 进程快照接口](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot)；删除只针对已打开且通过私有 ACL 检查的对象句柄，关闭句柄后还需确认名称消失，删除仍在等待或无法确认时返回错误。操作者仍须先确认旧任务结束，且恢复者与旧 Agent 必须处于相同进程可见范围。PID 被复用时会保守拒绝；清理中途失败可能留下部分已恢复的锁或 guard，应检查现场，不能把错误当作完整恢复。
 
-锁互操作夹具通过独立的旧 Node 与 Rust 进程，验证双方持锁时拒绝另一方获取或恢复、正常释放后交接，以及进程被终止并回收后的双向恢复。该夹具已在本机 Linux 运行通过；Windows 和 macOS 的两种架构均已加入开发 CI，但尚未执行。Node 仅用于这个旧实现对照测试，不是原生 Agent 的运行依赖。
+锁互操作夹具通过独立的旧 Node 与 Rust 进程，验证双方持锁时拒绝另一方获取或恢复、正常释放后交接，以及进程被终止并回收后的双向恢复。该夹具已在本机 Linux、原生 macOS 的两种架构和 Windows x86_64 运行通过。Windows ARM64 在等待旧 Node 持锁通知时触发 60 秒期限；当前日志不足以确认停在哪个内部步骤，夹具已补充阶段、子进程状态和 ACL 子命令耗时，等待复验。Node 仅用于这个旧实现对照测试，不是原生 Agent 的运行依赖。
 
-Wine 中的实验构建通过 33 项测试，其中进程快照样例覆盖本进程、存活子进程和子进程退出；另外 9 项依赖真实 ACL、目录固定或锁获取与恢复的测试未计入该结果。单独尝试的新恢复用例在获取锁时被 ACL 校验拒绝，尚未进入恢复流程：Wine 不保留文件 ACL 的保护标志，也允许重命名未共享删除权限的已打开目录。它无法证明 Windows 与旧 Node Agent 的互斥、锁恢复或句柄删除互通。设备文件、进程和启动管理尚未完成；完整会话集成测试只在 Linux 上启用。Wine 结果不代表真实 Windows 或 MSVC 构建验收。本地 macOS 交叉编译仍缺少 Apple SDK。
+Wine 中的实验构建通过 33 项测试，其中进程快照样例覆盖本进程、存活子进程和子进程退出；另外 9 项依赖真实 ACL、目录固定或锁获取与恢复的测试未计入该结果。单独尝试的新恢复用例在获取锁时被 ACL 校验拒绝，尚未进入恢复流程：Wine 不保留文件 ACL 的保护标志，也允许重命名未共享删除权限的已打开目录。它无法证明 Windows 与旧 Node Agent 的互斥、锁恢复或句柄删除互通。设备文件、进程和启动管理尚未完成；完整会话集成测试尚未在 Windows 上启用。Wine 结果本身不能代表真实 Windows 或 MSVC 构建验收。随后两种 Windows MSVC 架构均通过 50 个单元测试和 2 个默认门禁，其中包含真实 ACL、配置替换、目录固定、删除等待及锁恢复用例；Windows x86_64 的完整开发 CI 还通过了锁互操作和默认可执行文件检查，ARM64 的锁互操作仍待复验。本地 macOS 交叉编译仍缺少 Apple SDK。
 
-macOS 审计已有 `experimental-macos-audit` 实验实现，复用 POSIX 目录句柄、私有权限检查、脱敏、轮转和保留逻辑；默认构建仍拒绝打开日志。实验实现显式调用并检查 `fsync`，与旧 Agent 的同步接口一致；这不等于断电后数据完整性验收，Apple 的 [fsync 说明](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)也区分了主机写入与驱动器实际持久化。实际审计源码及测试在独立编译夹具中通过了 macOS x86_64、ARM64 的默认与实验特性交叉类型检查；夹具使用随机数 API 检查桩，未链接或运行完整 Agent。原生 CI 已配置审计测试、旧日志交接和默认禁用门禁，尚无 macOS 文件系统运行结果。
+macOS 审计已有 `experimental-macos-audit` 实验实现，复用 POSIX 目录句柄、私有权限检查、脱敏、轮转和保留逻辑；默认构建仍拒绝打开日志。实验实现显式调用并检查 `fsync`，与旧 Agent 的同步接口一致；这不等于断电后数据完整性验收，Apple 的 [fsync 说明](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)也区分了主机写入与驱动器实际持久化。实际审计源码及测试在独立编译夹具中通过了 macOS x86_64、ARM64 的默认与实验特性交叉类型检查；夹具使用随机数 API 检查桩，未链接或运行完整 Agent。两种原生 macOS 架构已通过审计单元测试和默认禁用门禁；旧日志交接步骤尚未执行，因为前面的进程兼容测试失败。
 
 macOS 启动管理已有 `experimental-macos-startup` 实验实现，默认不开放操作。它沿用旧版 LaunchAgent 名称、本地审批和 `/private/etc/remote-device-hub/startup-grants` 管理员授权路径，使用 `launchctl enable/disable` 改变未来启动状态；不装载、启动、停止或重启 Agent。新建用户注册先确认禁用，再排他创建 plist，直接传入原生 `rdh`、配置、Hub 地址和工作目录，不生成 Node 或 shell 运行包装，也不复制当前进程环境。已有注册须显式绑定，不会因绑定而改写其中的执行程序；系统 LaunchDaemon 仍须先在本机安装。
 
-Linux 上的独立 plist 解析与执行夹具验证了特殊字符路径、参数、工作目录以及不覆盖已有注册；命令夹具覆盖状态确认和错误拒绝。共享启动命令读取器在持续输出时也检查期限，超过 64 KiB 时报告错误，不从截断输出判断启用状态。启动管理、配置、锁与授权的实际源码及其测试已分别通过两种 macOS 架构的默认与实验特性交叉类型检查，随机数 API 使用与审计检查相同的编译桩。Darwin `mode_t` 参数在调用前按 C 可变参数规则提升为整数；私有配置和侧车的目录发布使用受检查的 POSIX `fsync`，文件仍保留 `sync_all`。这些结果未链接或运行完整 Agent，不能代替原生 launchd、重登录、断电或外网就绪验证。
+Linux 上的独立 plist 解析与执行夹具验证了特殊字符路径、参数、工作目录以及不覆盖已有注册；命令夹具覆盖状态确认和错误拒绝。共享启动命令读取器在持续输出时也检查期限，超过 64 KiB 时报告错误，不从截断输出判断启用状态。启动管理、配置、锁与授权的实际源码及其测试已分别通过两种 macOS 架构的默认与实验特性交叉类型检查，随机数 API 使用与审计检查相同的编译桩。Darwin `mode_t` 参数在调用前按 C 可变参数规则提升为整数；私有配置和侧车的目录发布使用受检查的 POSIX `fsync`，文件仍保留 `sync_all`。随后两种原生 macOS 架构通过了启动管理单元测试、默认门禁和独立 plist 参数执行夹具。服务装载、重登录、断电和外网就绪仍未验收。
 
 macOS 文件和搜索已有 `experimental-macos-files` 实验实现，默认不声明相关操作。它与 Linux 共用读取、摘要、编辑、原子写入、目录、移动和搜索逻辑；Darwin 打开路径时使用目录句柄与 [`O_NOFOLLOW_ANY`](https://github.com/apple-oss-distributions/xnu/blob/xnu-7195.81.3/bsd/sys/fcntl.h)，并复核目录描述符路径和末级名称的身份。首次打开根目录前，代码在私有临时目录中验证普通路径可打开、末级和中间链接都被内核拒绝，然后清理自己的探测对象；无法确认能力或清理时拒绝初始化。元数据查询使用不跟随末级链接的 `fstatat`，不打开设备或 FIFO；普通硬链接按所选名称授权，原子替换只改变该名称，描述符设备别名被拒绝。移动使用 `renameatx_np(RENAME_EXCL)`，不退回可覆盖目标的调用。
 
-共享逻辑的 Linux 文件、搜索与旧 Node 对照测试已通过，硬链接读取和替换还经过独立回归。实际文件与搜索源码、测试和旧实现对照程序通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或运行完整 Agent。首次原生文件测试在两个架构上均被能力探测阻止：同时传入 `O_NOFOLLOW` 和 `O_NOFOLLOW_ANY` 会触发 Darwin 的 `EINVAL`。实现现统一为 `O_NOFOLLOW_ANY`，能力探测分别覆盖调用者带或不带 `O_NOFOLLOW` 时的普通路径及链接拒绝，等待原生复验。该互斥规则可在 [Apple 的打开路径实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_vnops.c)中核对。目录路径复核与实际 I/O 不是对外部改名的原子事务，不能据此声称文件根目录构成操作系统沙箱。
+共享逻辑的 Linux 文件、搜索与旧 Node 对照测试已通过，硬链接读取和替换还经过独立回归。实际文件与搜索源码、测试和旧实现对照程序通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或运行完整 Agent。首次原生文件测试在两个架构上均被能力探测阻止：同时传入 `O_NOFOLLOW` 和 `O_NOFOLLOW_ANY` 会触发 Darwin 的 `EINVAL`。实现现统一为 `O_NOFOLLOW_ANY`，能力探测分别覆盖调用者带或不带 `O_NOFOLLOW` 时的普通路径及链接拒绝；两种原生 macOS 架构已通过共享文件与搜索测试，以及旧版文件和后台搜索对照。该互斥规则可在 [Apple 的打开路径实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_vnops.c)中核对。目录路径复核与实际 I/O 不是对外部改名的原子事务，不能据此声称文件根目录构成操作系统沙箱。
 
 macOS 进程管理已有 `experimental-macos-processes` 实验实现，该特性同时启用实验文件后端；默认构建不声明进程操作。它与 Linux 共用任务准入、工作目录句柄、环境变量白名单、非阻塞输入输出、期限、离线保留和关闭逻辑。子进程通过 `setsid` 建立独立进程组，监督者使用 `waitid(WNOWAIT)` 保留已退出组长的身份，在回收前检查原进程组。
 
 Darwin 后端通过 [`libproc` 进程接口](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c)枚举进程组，查询时显式包含僵尸进程。只有完整结果中仅剩身份匹配的已退出组长，才允许回收并释放任务名额；枚举失败、列表达到上限、组长缺失或查询权限不足均不能确认清理完成。其他成员即使已经成为僵尸进程，也须实际离开进程组，否则任务继续保留 `cleanup_pending`。该检查不覆盖主动脱离原进程组的进程，shell 仍拥有 Agent 用户的操作系统权限。
 
-当前 Linux 完整工作区和旧 Node 进程行为对照已通过，新增故障样例覆盖不完整枚举、身份变化和查询失败。进程、文件、配置、策略及 sandbox 的实际源码、单元测试和进程对照夹具，通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或执行完整 Agent。macOS CI 已纳入共享进程测试、原生进程信息检查、旧版行为对照和默认禁用门禁，尚无 Darwin 进程组、管道或资源限制的原生运行验收。
+当前 Linux 完整工作区和旧 Node 进程行为对照已通过，新增故障样例覆盖不完整枚举、身份变化和查询失败。进程、文件、配置、策略及 sandbox 的实际源码、单元测试和进程对照夹具，通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或执行完整 Agent。两种原生 macOS 架构随后通过了共享进程单元测试、原生进程信息检查和默认禁用门禁。旧版行为对照发现正常退出的任务多报 `killpg: EPERM`：Darwin 的进程组信号遍历排除僵尸进程，没有可发送对象时仍可能返回 `EPERM`，见 [XNU 信号实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c)。修复只在完整快照证明组内仅剩尚未回收的组长时接受这个返回值，其余权限错误和查询失败仍保留；新增原生回归尚待执行。
 
-Windows 私有配置替换已加入同一个实验特性。实现持有并校验旧文件和父目录的句柄，在私有临时文件写入、同步和 ACL 检查完成后，通过 `NtSetInformationFile(FileRenameInformationEx)` 发布；目标原本不存在时使用禁止覆盖的发布。该接口的目录相对名称与替换标志见微软 [FILE_RENAME_INFORMATION 说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)。已有目标必须通过身份、硬链接和 ACL 检查，不能退回删除后重建。系统不支持所需的替换语义时返回错误。发布报错后，只有确认候选仍位于原临时名称，才允许清理该候选；名称或身份无法确认时保留对象并报告结果未知，避免误删可能已经发布的文件。该实现仍需原生文件系统与中断验收，不承诺 Windows 目录元数据的断电持久性。
+Windows 私有配置替换已加入同一个实验特性。实现持有并校验旧文件和父目录的句柄，在私有临时文件写入、同步和 ACL 检查完成后，通过 `NtSetInformationFile(FileRenameInformationEx)` 发布；目标原本不存在时使用禁止覆盖的发布。该接口的目录相对名称与替换标志见微软 [FILE_RENAME_INFORMATION 说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)。已有目标必须通过身份、硬链接和 ACL 检查，不能退回删除后重建。系统不支持所需的替换语义时返回错误。发布报错后，只有确认候选仍位于原临时名称，才允许清理该候选；名称或身份无法确认时保留对象并报告结果未知，避免误删可能已经发布的文件。两种 Windows MSVC 架构的原生单元测试已验证旧读者保留、私有 ACL、并发创建、拒绝不安全目标，以及发布前后失败时只处理能够确认的对象；中断和断电恢复仍需验收，不承诺 Windows 目录元数据的断电持久性。
 
 新增的 [Rust 开发 CI](../.github/workflows/rust-ci.yml)按八个目标配置了对应架构的运行器、固定工具链、全部实验特性的静态检查和优化配置测试，Windows 和 macOS 还单独运行默认特性门禁。Linux x86_64 和 macOS 运行旧版文件、搜索和进程行为对照；Windows 和 macOS 运行锁互操作夹具；macOS 还运行审计交接、原生 plist 语法检查和只读 launchctl 状态格式检查。Node 只用于旧实现对照，Python 仅用于独立解析及执行 LaunchAgent 参数夹具。矩阵一次运行一个任务，并与旧 CI 和发布校验串行；最终构建可执行文件时仍使用默认特性。
 
-[草稿 PR #1](https://github.com/easelian/remote-device-agent/pull/1)已启动原生 CI。修正类型转换后，Linux x86_64 glibc、musl 完整任务均通过。ARM64 调试构建在升级校验或启动恢复中触发期限，夹具已补充具体子命令、子进程输出和提前退出诊断；同一套测试改用优化构建继续复验，保留全部断言和原有期限。macOS 的默认配置门禁与静态检查通过，文件能力探测的问题仍在修复验证中；Windows 文件发布和锁互操作也在继续原生验证。尚未通过的目标不能计为支持或完成验收。
+[草稿 PR #1](https://github.com/easelian/remote-device-agent/pull/1)已启动原生 CI。在提交 `38ec254` 上，四个 Linux 目标均通过 127 个单元测试，以及安装、离线升级和会话集成测试，随后在升级后的就绪检查中触发原有期限。检查发现旧测试用直接替换二进制中的版本字符串模拟升级，而优化编译会把部分版本值拆成机器码立即数，导致候选程序内部版本不一致；新夹具改为独立编译不同版本。本机负向对照确认：仅修改完整版本字节的优化二进制虽然能输出新版本，就绪探测仍因安装身份不符而失败；独立编译的候选则通过相同测试。本机完整工作区随后通过 127 个单元测试和 13 个集成测试，新增会话进程往返也在其中；四个原生 Linux 目标仍待复验。两种 macOS 架构各通过 91 个单元测试、4 个默认门禁及锁、文件、搜索对照，仍须修复并复验进程对照差异。Windows 两种架构的 50 个单元测试及默认门禁通过，x86_64 完整任务通过；ARM64 仍须定位旧 Node 锁夹具的持锁通知超时。新加入的 macOS 会话及 RPC 并发测试尚未执行。尚未通过的目标不能计为支持或完成验收。
 
 本机真实用户 systemd 临时单元和本地 Hub 联测还覆盖了空闲停机：运行中的任务会阻止停机；脱离进程组并进入该单元子 cgroup 的进程也会阻止停机；清理这些进程后，Agent 自行退出并释放配置锁。临时单元由 systemd 收集。该验证不代表自动升级、系统级服务或其他平台已验收。
 
 另一个本地 Hub 联测使用临时链接的可重启用户单元和分别编译的三个开发版本，验证了活动任务阻止更新、成功切换和就绪、候选配置校验失败及候选持续离线时恢复旧服务、控制器在试运行期间被终止后的恢复，以及持久化提交后的向前恢复。测试还检查了不安全单元设置的拒绝、服务环境变化检测和配对凭据保持。已接受状态的中断通过重建持久化记录验证，恢复时运行中的任务未被停止。该测试只覆盖本机用户 systemd 与本地 Hub，不代表生产服务、远程网络或正式发布已验收。
+
+完整 Linux 测试需要先构建独立的升级候选。以下命令在仓库根目录执行，要求当前 Rust 为 `1.93.0`，主机为 Linux x86_64 glibc；输出目录必须是新的绝对路径。其他 Linux 目标还需准备相应编译器，并为候选构建与测试指定相同的目标。
+
+```sh
+rdh_test_workspace="$(mktemp -d /tmp/rdh-native-tests.XXXXXX)"
+cargo run --locked -p xtask -- native-test-candidate \
+  --target x86_64-unknown-linux-gnu --out "$rdh_test_workspace/candidate"
+RDH_NATIVE_TEST_CANDIDATE_DIR="$rdh_test_workspace/candidate" \
+  cargo test --release --locked --workspace --all-targets --all-features
+```
+
+构建器复制当前 Rust 源码，修改工作区版本及锁文件中对应的本地包版本，保留依赖版本与校验值，再独立编译候选。成功后输出目录中有 `rdh` 和记录版本、目标、源码摘要与二进制摘要的 `candidate.json`。候选固定标记为 `release_ready: false`，仅用于测试。升级与就绪测试在启动夹具前检查这些字段；缺少候选时直接报错，不跳过测试，也不修改可执行文件的版本字节。
 
 可以在开发环境生成单个目标的归档、独立二进制和本地 canary 索引：
 

@@ -1222,7 +1222,18 @@ impl Files {
         }
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(
+        test,
+        any(
+            target_os = "linux",
+            all(
+                target_os = "macos",
+                feature = "experimental-macos-files",
+                feature = "experimental-macos-processes",
+                feature = "experimental-macos-audit"
+            )
+        )
+    ))]
     pub(crate) fn hold_mutation_for_test(&self) -> std::sync::MutexGuard<'_, ()> {
         self.mutation.lock().unwrap()
     }

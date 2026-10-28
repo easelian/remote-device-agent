@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const RUSTC_VERSION: &str = "1.93.0";
+mod test_candidate;
 const TARGETS: &[(&str, &str)] = &[
     ("x86_64-unknown-linux-gnu", "linux-x64-gnu"),
     ("aarch64-unknown-linux-gnu", "linux-arm64-gnu"),
@@ -429,15 +430,15 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = if args.len() == 5
-        && args[0] == "native-development"
-        && args[1] == "--target"
-        && args[3] == "--out"
-    {
-        build(&args[2], Path::new(&args[4]))
+    let result = if args.len() == 5 && args[1] == "--target" && args[3] == "--out" {
+        match args[0].as_str() {
+            "native-development" => build(&args[2], Path::new(&args[4])),
+            "native-test-candidate" => test_candidate::build(&args[2], Path::new(&args[4])),
+            _ => Err("Unknown native build command".into()),
+        }
     } else {
         Err(
-            "usage: cargo run -p xtask -- native-development --target TARGET --out DIRECTORY"
+            "usage: cargo run -p xtask -- native-development|native-test-candidate --target TARGET --out DIRECTORY"
                 .into(),
         )
     };

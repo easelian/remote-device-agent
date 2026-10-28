@@ -172,6 +172,15 @@ jobs:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --target "$RDH_TARGET" macos_default_tests::
+      - name: Compile an independent native upgrade candidate
+        if: runner.os == 'Linux'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RUSTUP_TOOLCHAIN: 1.93.0
+        run: |
+          candidate="$RUNNER_TEMP/rdh-native-test-candidate"
+          cargo +1.93.0 run --locked -p xtask -- native-test-candidate --target "$RDH_TARGET" --out "$candidate"
+          printf 'RDH_NATIVE_TEST_CANDIDATE_DIR=%s\n' "$candidate" >> "$GITHUB_ENV"
       - name: Check and test implemented paths
         env:
           RDH_TARGET: ${{ matrix.target }}

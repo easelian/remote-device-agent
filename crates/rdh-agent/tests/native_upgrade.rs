@@ -11,6 +11,9 @@ use rdh_agent::{config::sha256_hex, profile_lock::ProfileLocks, random, storage}
 use serde_json::json;
 use tokio::process::Command;
 
+#[path = "support/native_candidate.rs"]
+mod native_candidate;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -87,26 +90,9 @@ async fn run(binary: &Path, root: &Path, args: &[&str]) -> std::process::Output 
         stderr,
     }
 }
-fn candidate_binary(path: &Path, old: &str, new: &str) -> Vec<u8> {
-    assert_eq!(old.len(), new.len());
-    let mut bytes = fs::read(path).unwrap();
-    let mut count = 0;
-    let mut index = 0;
-    while index + old.len() <= bytes.len() {
-        if &bytes[index..index + old.len()] == old.as_bytes() {
-            bytes[index..index + old.len()].copy_from_slice(new.as_bytes());
-            count += 1;
-            index += old.len();
-        } else {
-            index += 1;
-        }
-    }
-    assert!(count > 0, "version string was not found in fixture binary");
-    bytes
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
+    let (next, bytes) = native_candidate::load();
     let fixture = Fixture(std::env::temp_dir().join(format!(
         "rdh-native-upgrade-{}",
         random::hex_token::<8>().unwrap()
@@ -170,9 +156,6 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
         PathBuf::from(format!("versions/{version}"))
     );
 
-    let next = version.replace("rust.1", "rust.2");
-    assert_ne!(next, version);
-    let bytes = candidate_binary(binary, version, &next);
     let candidate = fixture.0.join("candidate");
     fs::write(&candidate, &bytes).unwrap();
     fs::set_permissions(&candidate, fs::Permissions::from_mode(0o700)).unwrap();

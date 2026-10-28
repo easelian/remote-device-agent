@@ -1064,6 +1064,16 @@ mod posix {
         observe(pid)?;
         if unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == -1 {
             let error = io::Error::last_os_error();
+            // Darwin excludes zombies from killpg's signalable members and
+            // returns EPERM when none remain. Accept that result only when a
+            // complete snapshot proves the pinned zombie is the sole member.
+            // An unreadable snapshot or any other member still preserves EPERM.
+            #[cfg(target_os = "macos")]
+            if error.raw_os_error() == Some(libc::EPERM)
+                && matches!(group_has_live_members(pid), Ok(false))
+            {
+                return Ok(());
+            }
             if error.raw_os_error() != Some(libc::ESRCH) {
                 return Err(error);
             }
@@ -1626,6 +1636,35 @@ mod posix {
                 fixture
                     .call("start_process", json!({"root":"work","command":"true"}))
                     .is_err()
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn signaling_a_pinned_zombie_does_not_report_permission_failure() {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "exit 7"])
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while observe(pid).unwrap().is_none() {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("fixture child did not exit");
+                }
+                thread::sleep(TICK);
+            }
+            assert!(!group_has_live_members(pid).unwrap());
+            let signaled = signal_group(pid);
+            let status = child.wait().unwrap();
+            assert!(signaled.is_ok(), "{signaled:?}");
+            assert_eq!(status.code(), Some(7));
+            assert_eq!(
+                signal_group(pid).unwrap_err().raw_os_error(),
+                Some(libc::ECHILD)
             );
         }
 

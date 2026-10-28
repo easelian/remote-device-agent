@@ -19,16 +19,20 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 struct Process {
     child: Child,
     lines: Receiver<String>,
+    label: String,
+    started: Instant,
 }
 
 impl Process {
-    fn spawn(command: &mut Command) -> Self {
+    fn spawn(command: &mut Command, label: &str) -> Self {
+        let started = Instant::now();
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
+        eprintln!("Started {label}, pid={}", child.id());
         let stdout = child.stdout.take().unwrap();
         let (sender, lines) = mpsc::channel();
         std::thread::spawn(move || {
@@ -43,21 +47,42 @@ impl Process {
                 }
             }
         });
-        Self { child, lines }
+        Self {
+            child,
+            lines,
+            label: label.into(),
+            started,
+        }
     }
 
-    fn expect_line(&self, expected: &str) {
+    fn expect_line(&mut self, expected: &str) {
         let deadline = Instant::now() + TIMEOUT;
+        let mut transcript = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let line = self
-                .lines
-                .recv_timeout(remaining)
-                .unwrap_or_else(|error| panic!("fixture did not report {expected:?}: {error}"));
+            let line = self.lines.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!(
+                    "{} pid={} did not report {expected:?} after {:?}: {error}; status={:?}; stdout={transcript:?}",
+                    self.label,
+                    self.child.id(),
+                    self.started.elapsed(),
+                    self.child.try_wait(),
+                )
+            });
             // The Rust test harness may print its test name on the same line.
             if line.trim_end().ends_with(expected) {
+                eprintln!(
+                    "{} reported {expected:?} after {:?}",
+                    self.label,
+                    self.started.elapsed()
+                );
                 return;
             }
+            // Retain bounded diagnostics when a helper emits an unexpected line.
+            if transcript.len() == 16 {
+                transcript.remove(0);
+            }
+            transcript.push(line.chars().take(1024).collect::<String>());
         }
     }
 
@@ -70,9 +95,20 @@ impl Process {
         let deadline = Instant::now() + TIMEOUT;
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
+                eprintln!(
+                    "{} exited {status} after {:?}",
+                    self.label,
+                    self.started.elapsed()
+                );
                 return status;
             }
-            assert!(Instant::now() < deadline, "fixture did not exit");
+            assert!(
+                Instant::now() < deadline,
+                "{} pid={} did not exit after {:?}",
+                self.label,
+                self.child.id(),
+                self.started.elapsed()
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -102,7 +138,14 @@ impl Drop for Fixture {
 
 fn node_process(helper: &Path, action: &str, path: &Path) -> Process {
     let executable = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| OsString::from("node"));
-    Process::spawn(Command::new(executable).arg(helper).arg(action).arg(path))
+    Process::spawn(
+        Command::new(executable)
+            .arg(helper)
+            .arg(action)
+            .arg(path)
+            .env("RDH_TEST_LEGACY_LOCK_TRACE", "1"),
+        &format!("legacy {action}"),
+    )
 }
 
 fn node_once(helper: &Path, action: &str, path: &Path, expected: &str) {
@@ -191,6 +234,7 @@ fn legacy_node_and_rust_locks_interoperate() {
                 "--test-threads=1",
             ])
             .env(RUST_HOLD_CONFIG, &config),
+        "Rust holder",
     );
     rust_child.expect_line("RDH_FIXTURE_HELD");
     node_once(&helper, "recover", &config, "blocked");

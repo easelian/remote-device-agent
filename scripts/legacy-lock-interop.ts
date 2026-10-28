@@ -2,12 +2,48 @@
 // separate Node process. This file is not part of the native Agent runtime.
 import { createInterface } from 'node:readline';
 import { realpathSync } from 'node:fs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { basename } from 'node:path';
 import { acquireProfileLocks, reclaimProfileLocks } from '../src/profile-lock.js';
 import { ensurePrivatePath } from '../src/platform.js';
 
 const [action, path] = process.argv.slice(2);
 if (!action || !path) {
   throw new Error('The fixture requires an action and path');
+}
+
+// Observe the real legacy ACL subprocesses without changing their results or
+// deadlines. In particular, one lock operation can invoke several bounded
+// PowerShell commands. Do not print their arguments, environment or output.
+if (process.env.RDH_TEST_LEGACY_LOCK_TRACE === '1') {
+  const original = childProcess.spawnSync;
+  let sequence = 0;
+  childProcess.spawnSync = ((...args: Parameters<typeof original>) => {
+    const id = ++sequence;
+    const started = performance.now();
+    const detail = {
+      fixture: action,
+      id,
+      executable: basename(args[0]),
+      acl_action: args[2]?.env?.RDH_PRIVATE_ACTION,
+    };
+    console.error(JSON.stringify({ ...detail, phase: 'begin' }));
+    const result = original(...args);
+    console.error(
+      JSON.stringify({
+        ...detail,
+        phase: 'end',
+        elapsed_ms: Math.round(performance.now() - started),
+        status: result.status,
+        signal: result.signal,
+        error: result.error?.name,
+        error_code: result.error && 'code' in result.error ? result.error.code : undefined,
+      }),
+    );
+    return result;
+  }) as typeof childProcess.spawnSync;
+  syncBuiltinESMExports();
 }
 
 function expectedLockRejection(error: unknown): boolean {

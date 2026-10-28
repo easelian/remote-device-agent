@@ -1,15 +1,23 @@
-// This end-to-end test exercises native files, processes, and audit storage,
-// which are currently implemented only on Linux. Enable it for another target
-// when that target can run the complete session, not merely compile it.
-#![cfg(target_os = "linux")]
+// Run the complete session only when every backend it exercises is enabled.
+#![cfg(any(
+    target_os = "linux",
+    all(
+        target_os = "macos",
+        feature = "experimental-macos-files",
+        feature = "experimental-macos-processes",
+        feature = "experimental-macos-audit",
+        feature = "experimental-macos-startup"
+    )
+))]
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path as FilePath, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -17,7 +25,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rdh_agent::config::sha256_hex;
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
 use tokio::sync::{Mutex, oneshot};
 
 struct Fixture {
@@ -54,6 +61,108 @@ async fn poll(State(state): State<Arc<Fixture>>, Json(value): Json<Value>) -> Re
         "max_process_seconds":3600,
     }}))
     .into_response()
+}
+
+async fn request(
+    socket: &mut WebSocket,
+    id: &str,
+    operation: &str,
+    params: Value,
+) -> Result<Value, String> {
+    socket
+        .send(Message::Text(
+            json!({"type":"request", "id":id, "operation":operation, "params":params})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(message) = socket.recv().await {
+            let Message::Text(text) = message.map_err(|error| error.to_string())? else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            if value["type"] == "result" && value["id"] == id {
+                if value.get("error").is_some() {
+                    return Err(format!("{operation}: {value}"));
+                }
+                return Ok(value);
+            }
+        }
+        Err(format!("Connection closed while waiting for {operation}"))
+    })
+    .await
+    .map_err(|_| format!("Timed out waiting for {operation}"))?
+}
+
+async fn completed_process(
+    socket: &mut WebSocket,
+    request_id: &str,
+    job_id: &str,
+) -> Result<Value, String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let result = request(socket, request_id, "read_process", json!({"job_id":job_id})).await?;
+        if result["result"]["status"] != "running" && result["result"]["cleanup_pending"] == false {
+            return Ok(result);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("Process cleanup did not finish: {result}"));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn process_roundtrip(socket: &mut WebSocket, results: &mut Vec<Value>) -> Result<(), String> {
+    let started = request(
+        socket,
+        "process-start",
+        "start_process",
+        // Shell builtins keep the child's PATH empty too: there is no Node or
+        // external helper available through the fixture's command search path.
+        json!({"root":"work", "command":"IFS= read -r line; while IFS= read -r extra; do :; done; printf 'reply:%s\\n' \"$line\"; exit 7", "wait_seconds":0, "timeout_seconds":10}),
+    )
+    .await?;
+    let id = started["result"]["job_id"]
+        .as_str()
+        .ok_or_else(|| format!("Missing process identity: {started}"))?
+        .to_owned();
+    results.push(started);
+    results.push(request(socket, "process-list", "list_processes", json!({})).await?);
+    results.push(
+        request(
+            socket,
+            "process-input",
+            "write_process_stdin",
+            json!({"job_id":id,"text":"private-process-fixture😀\n","close":true}),
+        )
+        .await?,
+    );
+    results.push(completed_process(socket, "process-read", &id).await?);
+    let blocked = request(
+        socket,
+        "blocked-start",
+        "start_process",
+        json!({"root":"work","command":"while IFS= read -r line; do :; done","wait_seconds":0,"timeout_seconds":10}),
+    )
+    .await?;
+    let id = blocked["result"]["job_id"]
+        .as_str()
+        .ok_or_else(|| format!("Missing process identity: {blocked}"))?
+        .to_owned();
+    results.push(blocked);
+    results.push(
+        request(
+            socket,
+            "process-stop",
+            "terminate_process",
+            json!({"job_id":id}),
+        )
+        .await?,
+    );
+    results.push(completed_process(socket, "process-stopped", &id).await?);
+    Ok(())
 }
 
 async fn agent(
@@ -134,6 +243,9 @@ async fn agent(
                 _ => return,
             }
         }
+        if let Err(error) = process_roundtrip(&mut socket, &mut results).await {
+            results.push(json!({"fixture_error":error}));
+        }
         if let Some(sender) = state.result.lock().await.take() { let _ = sender.send(results); }
         while socket.recv().await.is_some() {}
     }).into_response()
@@ -146,10 +258,30 @@ impl Drop for Temporary {
     }
 }
 
+fn diagnostics(path: &FilePath) -> String {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .unwrap()
+        .take(65_537)
+        .read_to_end(&mut bytes)
+        .unwrap();
+    let truncated = bytes.len() > 65_536;
+    bytes.truncate(65_536);
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&bytes),
+        if truncated {
+            "\n[fixture log truncated]"
+        } else {
+            ""
+        }
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_node() {
     use std::os::unix::fs::PermissionsExt;
-    let temp = Temporary(std::env::temp_dir().join(format!(
+    let temp = Temporary(std::env::temp_dir().canonicalize().unwrap().join(format!(
         "rdh-pair-session-{}-{}",
         std::process::id(),
         rdh_agent::random::hex_token::<8>().unwrap()
@@ -187,9 +319,12 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     )
     .unwrap();
     std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let log_path = temp.0.join("agent.log");
+    let log = std::fs::File::create(&log_path).unwrap();
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
         .env_clear()
         .env("PATH", &temp.0)
+        .env("HOME", &temp.0)
         .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
         .env("XDG_STATE_HOME", temp.0.join("agent-state"))
         .args([
@@ -201,15 +336,33 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
             &format!("work={}", root.display()),
             "--no-browser",
         ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    let messages = tokio::time::timeout(Duration::from_secs(15), result_rx)
-        .await
-        .unwrap()
-        .unwrap();
+    let messages = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(15), result_rx) => match result {
+            Ok(Ok(messages)) => Ok(messages),
+            Ok(Err(error)) => Err(format!("Session fixture disconnected: {error}")),
+            Err(_) => Err("Session fixture did not finish within 15 seconds".into()),
+        },
+        status = child.wait() => Err(format!("Agent exited before session completion: {status:?}")),
+    };
+    let messages = match messages {
+        Ok(messages) => messages,
+        Err(error) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            panic!("{error}\n{}", diagnostics(&log_path));
+        }
+    };
+    assert!(
+        messages
+            .iter()
+            .all(|value| value.get("fixture_error").is_none()),
+        "session results: {messages:?}"
+    );
     assert_eq!(messages[0]["type"], "hello");
     assert_eq!(messages[0]["version"], 1);
     let operations = messages[0]["info"]["capabilities"]["operations"]
@@ -264,6 +417,35 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     assert_eq!(results["denied"]["error_code"], "policy_path_protected");
     assert_eq!(results["denied"]["execution_state"], "not_sent");
     assert_eq!(results["status"]["result"]["execution_state"], "succeeded");
+    let job = &results["process-start"]["result"]["job_id"];
+    assert!(job.is_string());
+    assert!(
+        results["process-list"]["result"]["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|process| &process["job_id"] == job && process["status"] == "running")
+    );
+    assert_eq!(results["process-input"]["result"]["stdin_closed"], true);
+    assert_eq!(results["process-read"]["result"]["job_id"], *job);
+    assert_eq!(results["process-read"]["result"]["status"], "exited");
+    assert_eq!(results["process-read"]["result"]["exit_code"], 7);
+    assert_eq!(results["process-read"]["result"]["cleanup_pending"], false);
+    assert_eq!(results["process-read"]["result"]["error"], Value::Null);
+    assert_eq!(
+        results["process-read"]["result"]["output"],
+        "reply:private-process-fixture😀\n"
+    );
+    assert_eq!(
+        results["process-stopped"]["result"]["job_id"],
+        results["blocked-start"]["result"]["job_id"]
+    );
+    assert_eq!(results["process-stopped"]["result"]["status"], "terminated");
+    assert_eq!(
+        results["process-stopped"]["result"]["cleanup_pending"],
+        false
+    );
+    assert_eq!(results["process-stopped"]["result"]["error"], Value::Null);
     assert!(!root.join(".env").exists());
     let metadata = std::fs::metadata(&config).unwrap();
     assert_eq!(metadata.permissions().mode() & 0o077, 0);
@@ -279,6 +461,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     let approval = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
         .env_clear()
         .env("PATH", &temp.0)
+        .env("HOME", &temp.0)
         .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
         .args([
             "startup",
@@ -295,6 +478,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     let denial = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
         .env_clear()
         .env("PATH", &temp.0)
+        .env("HOME", &temp.0)
         .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
         .args([
             "startup",
@@ -322,26 +506,25 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
         .await
         .unwrap()
         .unwrap();
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .await
-        .unwrap();
-    assert!(status.success(), "{stderr}");
+    assert!(status.success(), "{}", diagnostics(&log_path));
     let audit = std::fs::read_to_string(
         temp.0
             .join("agent-state/remote-device-hub/audit/fixture-device.jsonl"),
     )
     .unwrap();
     assert!(!audit.contains("private-audit-fixture"));
+    assert!(!audit.contains("private-process-fixture"));
     assert!(audit.lines().any(|line| line.contains("\"id\":\"write\"") && line.contains("\"op\":\"write_file\"")));
+    assert!(
+        audit.lines().any(
+            |line| line.contains("\"op\":\"process_exit\"") && line.contains("\"exit_code\":7")
+        )
+    );
     assert!(!temp.0.join("device.json.node-lock").exists());
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
         .env_clear()
         .env("PATH", &temp.0)
+        .env("HOME", &temp.0)
         .args([
             "--server",
             &origin,

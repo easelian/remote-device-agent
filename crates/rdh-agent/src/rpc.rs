@@ -121,7 +121,15 @@ impl CompletionGate {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        all(
+            target_os = "macos",
+            feature = "experimental-macos-files",
+            feature = "experimental-macos-processes",
+            feature = "experimental-macos-audit"
+        )
+    ))]
     fn release(&self) {
         *self.released.lock().unwrap() = true;
         self.wake.notify_all();
@@ -1054,7 +1062,18 @@ fn send_failure(sender: &Sender, id: &str, failure: &Failure, elapsed: Option<f6
     let _ = sender.json(&value);
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(
+    test,
+    any(
+        target_os = "linux",
+        all(
+            target_os = "macos",
+            feature = "experimental-macos-files",
+            feature = "experimental-macos-processes",
+            feature = "experimental-macos-audit"
+        )
+    )
+))]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -1066,7 +1085,7 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
+            let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
                 "rdh-rpc-{}-{}",
                 std::process::id(),
                 crate::random::hex_token::<8>().unwrap()
@@ -1151,6 +1170,7 @@ mod tests {
         .expect("worker did not finish");
     }
 
+    #[cfg(target_os = "linux")]
     async fn wait_responses(runtime: &Runtime) {
         tokio::time::timeout(Duration::from_secs(3), async {
             while runtime.active.load(Ordering::Acquire) != 0
@@ -1163,6 +1183,7 @@ mod tests {
         .expect("responses did not settle");
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn idle_freeze_waits_for_result_delivery_and_receipt_acknowledgement() {
         let fixture = Fixture::new();
@@ -1220,6 +1241,7 @@ mod tests {
         assert!(runtime.shutdown().await);
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn idle_freeze_refuses_to_abandon_a_queued_response_or_live_process() {
         let fixture = Fixture::new();

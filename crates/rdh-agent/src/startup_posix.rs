@@ -178,7 +178,6 @@ impl Drop for Created {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn command_overflow_and_timeout_are_bounded_and_never_return_partial_success() {
@@ -217,17 +216,19 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let old = root.join("old");
         let new = root.join("new");
-        fs::write(&old, "#!/bin/sh\necho old\n").unwrap();
-        fs::write(&new, "#!/bin/sh\necho new\n").unwrap();
-        fs::set_permissions(&old, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::set_permissions(&new, fs::Permissions::from_mode(0o700)).unwrap();
+        // This tests pointer selection, not executable creation. Existing
+        // programs avoid ETXTBSY on a freshly written script during fork-heavy
+        // parallel tests. Selecting the old shell would not print this argument.
+        symlink("/bin/sh", &old).unwrap();
+        symlink("/bin/echo", &new).unwrap();
         let pointer = root.join("rdh");
         symlink("old", &pointer).unwrap();
         let selected = choose_stable_executable([pointer.clone()], &old).unwrap();
         assert_eq!(selected, pointer);
         fs::remove_file(&pointer).unwrap();
         symlink("new", &pointer).unwrap();
-        let output = Command::new(selected).output().unwrap();
+        let output = Command::new(selected).arg("new").output().unwrap();
+        assert!(output.status.success());
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "new\n");
         fs::remove_dir_all(root).unwrap();
     }
