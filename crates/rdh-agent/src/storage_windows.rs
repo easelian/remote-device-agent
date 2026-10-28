@@ -816,11 +816,11 @@ fn rename_file(file: &File, parent: &File, name: &[u16], replace_existing: bool)
         return Err(unsafe_storage());
     }
     let name_bytes = name.len().checked_mul(2).ok_or_else(unsafe_storage)?;
-    let length = offset_of!(FILE_RENAME_INFORMATION, FileName)
+    // The native contract requires sizeof(FILE_RENAME_INFORMATION) plus the
+    // filename bytes, including the structure's trailing WCHAR and padding.
+    let length = size_of::<FILE_RENAME_INFORMATION>()
         .checked_add(name_bytes)
-        .and_then(|value| value.checked_add(size_of::<u16>()))
-        .ok_or_else(unsafe_storage)?
-        .max(size_of::<FILE_RENAME_INFORMATION>());
+        .ok_or_else(unsafe_storage)?;
     // usize provides sufficient alignment for FILE_RENAME_INFORMATION on Windows.
     let mut buffer = vec![0usize; length.div_ceil(size_of::<usize>())];
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();

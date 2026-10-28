@@ -1,6 +1,7 @@
 // Test fixture: bundle the current legacy implementation and exercise it in a
 // separate Node process. This file is not part of the native Agent runtime.
 import { createInterface } from 'node:readline';
+import { realpathSync } from 'node:fs';
 import { acquireProfileLocks, reclaimProfileLocks } from '../src/profile-lock.js';
 import { ensurePrivatePath } from '../src/platform.js';
 
@@ -16,7 +17,9 @@ function expectedLockRejection(error: unknown): boolean {
   );
 }
 
-if (action === 'prepare') {
+if (action === 'canonical') {
+  console.log(JSON.stringify(realpathSync.native(path)));
+} else if (action === 'prepare') {
   ensurePrivatePath(path, true);
   console.log('prepared');
 } else if (action === 'hold') {

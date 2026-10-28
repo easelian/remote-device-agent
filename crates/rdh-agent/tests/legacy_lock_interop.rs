@@ -132,6 +132,18 @@ fn legacy_node_and_rust_locks_interoperate() {
     let temporary = std::env::temp_dir();
     #[cfg(unix)]
     let temporary = temporary.canonicalize().unwrap();
+    #[cfg(windows)]
+    let temporary = {
+        // The legacy path checker rejects short-name aliases; Rust's native
+        // canonicalizer adds an extended-path prefix the legacy API rejects.
+        // Use the same Node canonical spelling that the legacy checker expects.
+        let mut canonical = node_process(&helper, "canonical", &temporary);
+        let line = canonical.lines.recv_timeout(TIMEOUT).unwrap();
+        assert!(canonical.wait().success());
+        let path: PathBuf = serde_json::from_str(&line).unwrap();
+        assert!(path.is_absolute());
+        path
+    };
     let fixture = Fixture(temporary.join(format!(
         "rdh-legacy-lock-{}",
         random::hex_token::<12>().unwrap()

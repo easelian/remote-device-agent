@@ -165,26 +165,26 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --locked -p rdh-agent --lib --target "$RDH_TARGET" windows_default_tests::
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --target "$RDH_TARGET" windows_default_tests::
       - name: Check macOS default safety gates
         if: runner.os == 'macOS'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --locked -p rdh-agent --lib --target "$RDH_TARGET" macos_default_tests::
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --target "$RDH_TARGET" macos_default_tests::
       - name: Check and test implemented paths
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
-          cargo +1.93.0 test --locked --workspace --all-targets --all-features --target "$RDH_TARGET"
+          cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --target "$RDH_TARGET"
       - name: Check native LaunchAgent definition arguments
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           python3 --version
-          cargo +1.93.0 test --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
       - name: Set up Node for legacy comparison fixtures
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
         uses: actions/setup-node@v7
@@ -208,7 +208,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_lock_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_lock_interop -- --ignored --test-threads=1
       - name: Build and test the legacy file metadata fixture
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
         env:
@@ -216,7 +216,7 @@ jobs:
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-file-info-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-file-info-interop.mjs
           export RDH_LEGACY_FILE_HELPER="$PWD/.build/legacy-file-info-interop.mjs"
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_file_info_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_file_info_interop -- --ignored --test-threads=1
       - name: Build and test the legacy background search fixture
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
         env:
@@ -224,7 +224,7 @@ jobs:
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-search-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-search-interop.mjs
           export RDH_LEGACY_SEARCH_HELPER="$PWD/.build/legacy-search-interop.mjs"
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_search_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_search_interop -- --ignored --test-threads=1
       - name: Build and test the legacy process fixture
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
         env:
@@ -232,7 +232,7 @@ jobs:
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-process-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-process-interop.mjs
           export RDH_LEGACY_PROCESS_HELPER="$PWD/.build/legacy-process-interop.mjs"
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_process_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_process_interop -- --ignored --test-threads=1
       - name: Compare the legacy hardening report
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         env:
@@ -240,7 +240,7 @@ jobs:
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-hardening-interop.ts --bundle --platform=node --format=esm --target=node22 --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" --outfile=.build/legacy-hardening-interop.mjs
           export RDH_LEGACY_HARDENING_HELPER="$PWD/.build/legacy-hardening-interop.mjs"
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_hardening_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_hardening_interop -- --ignored --test-threads=1
       - name: Test legacy audit handoff
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
         env:
@@ -248,7 +248,7 @@ jobs:
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-audit-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-audit-interop.mjs
           export RDH_LEGACY_AUDIT_HELPER="$PWD/.build/legacy-audit-interop.mjs"
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_audit_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_audit_interop -- --ignored --test-threads=1
       - name: Compare legacy operation receipts
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         env:
@@ -256,7 +256,7 @@ jobs:
         run: |
           node node_modules/esbuild/bin/esbuild scripts/legacy-receipts-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-receipts-interop.mjs
           export RDH_LEGACY_RECEIPTS_HELPER="$PWD/.build/legacy-receipts-interop.mjs"
-          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_receipts_interop -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_receipts_interop -- --ignored --test-threads=1
       - name: Build and inspect the development executable
         env:
           RDH_TARGET: ${{ matrix.target }}

@@ -16,13 +16,17 @@ fn name(value: &str) -> io::Result<CString> {
 }
 fn raw_open(parent: &File, path: &str, flags: i32, mode: u32) -> io::Result<File> {
     let path = name(path)?;
+    // Darwin rejects O_NOFOLLOW together with O_NOFOLLOW_ANY. The latter
+    // covers the final component as well as every intermediate component.
+    let flags =
+        (flags & !libc::O_NOFOLLOW) | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW_ANY;
     // SAFETY: parent owns a live fd, path is NUL terminated and the creation
     // mode is promoted for Darwin's variadic openat argument.
     let fd = unsafe {
         libc::openat(
             parent.as_raw_fd(),
             path.as_ptr(),
-            flags | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_NOFOLLOW_ANY,
+            flags,
             mode as libc::c_uint,
         )
     };
@@ -369,21 +373,24 @@ fn probe_capabilities() -> io::Result<()> {
             .entries
             .push(ProbeEntry::remember(&probe.directory, leaf, false)?);
     }
-    let positive = raw_open(&probe.directory, "real/file", libc::O_RDONLY, 0)?;
     verify_beneath(&probe.directory, &directory)?;
-    verify_named(&directory, "file", &positive)?;
-    for path in ["link/file", "leaf"] {
-        match raw_open(&probe.directory, path, libc::O_RDONLY, 0) {
-            Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {}
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Kernel does not confirm NOFOLLOW_ANY file protection",
-                ));
+    // Check callers with and without an explicit final-component flag. Both
+    // must open a regular path and reject links anywhere in the path.
+    for flags in [libc::O_RDONLY, libc::O_RDONLY | libc::O_NOFOLLOW] {
+        let positive = raw_open(&probe.directory, "real/file", flags, 0)?;
+        verify_named(&directory, "file", &positive)?;
+        for path in ["link/file", "leaf"] {
+            match raw_open(&probe.directory, path, flags, 0) {
+                Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "Kernel does not confirm NOFOLLOW_ANY file protection",
+                    ));
+                }
             }
         }
     }
-    drop(positive);
     drop(file);
     drop(directory);
     probe.remove()

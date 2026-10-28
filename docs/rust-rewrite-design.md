@@ -22,13 +22,13 @@
 
 Linux ARM64 的 glibc 和 musl 目标均已交叉编译并通过工作区全目标静态检查。先前一轮源码在 QEMU 用户态模拟下各通过 95 项单元测试；自启动测试程序的完整用例受系统旧版 binfmt 模拟器限制，其环境隔离子用例已用新版模拟器单独通过。新版 QEMU 支持本次文件测试所需的 `openat2`。当前两个交叉编译的开发二进制通过模拟器包装器，分别与临时本地 Hub 完成了 23 项操作样例；此联测未覆盖受管服务和服务更新。先前还用 ARM64 musl 模拟进程验证了安装时预登记配置和拒绝模拟旧锁，未运行真实旧 Node Agent。以上结果不能代替真实 ARM64 上的完整测试、服务和 Hub 联测。
 
-Windows x86_64 GNU 目标已交叉编译，默认构建在 Wine 中先前通过 19 项单元测试；最新两项默认特性门禁测试还验证了禁用时不会创建锁或修改配置。设备根目录和默认 shell 的 Windows 路径语法已与旧 Agent 的代表性样例对照：不完整 UNC、设备命名空间和不符合旧契约的 `SystemRoot` 会被拒绝。这些是配置语法检查，不能替代文件句柄与实际可执行文件的验证。`experimental-windows-private-storage` 构建选项包含实验性私有配置读取、排他创建以及旧锁名称的获取、释放和显式恢复；默认构建仍拒绝 Windows 私有配置和锁操作。实验实现逐级持有目录句柄、拒绝重解析点及硬链接，并验证所有者和受保护 ACL。新文件先以私有 ACL 创建临时文件，验证后才写入并同步，最后使用句柄相对重命名，禁止覆盖现有配置；失败时只清理自己持有的临时文件。创建缺失目录要求其上一级已通过私有 ACL 检查，因此普通继承权限的目录和部分旧安装可能被拒绝，尚无自动迁移。Windows 目录元数据的断电持久性、相对重命名和创建锁的原生行为仍待验证。
+Windows x86_64 GNU 目标已交叉编译，默认构建在 Wine 中先前通过 19 项单元测试；最新两项默认特性门禁测试还验证了禁用时不会创建锁或修改配置。设备根目录和默认 shell 的 Windows 路径语法已与旧 Agent 的代表性样例对照：不完整 UNC、设备命名空间和不符合旧契约的 `SystemRoot` 会被拒绝。这些是配置语法检查，不能替代文件句柄与实际可执行文件的验证。`experimental-windows-private-storage` 构建选项包含实验性私有配置读取、排他创建、已有配置替换以及旧锁名称的获取、释放和显式恢复；默认构建仍拒绝 Windows 私有配置和锁操作。实验实现逐级持有目录句柄、拒绝重解析点及硬链接，并验证所有者和受保护 ACL。新文件先以私有 ACL 创建临时文件，验证后才写入并同步，最后使用句柄相对重命名，禁止覆盖现有配置；失败时只清理自己持有的临时文件。创建缺失目录要求其上一级已通过私有 ACL 检查，因此普通继承权限的目录和部分旧安装可能被拒绝，尚无自动迁移。Windows 目录元数据的断电持久性、相对重命名和创建锁的原生行为仍待验证。
 
 实验锁使用 `<config>.node-lock`、`owner.json` 和 `.reclaiming` 名称，释放前核对 owner。显式 `--recover-lock` 先为所有配置获取恢复 guard，打开并校验全部锁与 owner，再读取完整进程快照；快照不包含当前进程、枚举失败或任一 owner PID 仍存在时均拒绝删除。快照机制依据 Windows 的 [Toolhelp 进程快照接口](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot)；删除只针对已打开且通过私有 ACL 检查的对象句柄，关闭句柄后还需确认名称消失，删除仍在等待或无法确认时返回错误。操作者仍须先确认旧任务结束，且恢复者与旧 Agent 必须处于相同进程可见范围。PID 被复用时会保守拒绝；清理中途失败可能留下部分已恢复的锁或 guard，应检查现场，不能把错误当作完整恢复。
 
 锁互操作夹具通过独立的旧 Node 与 Rust 进程，验证双方持锁时拒绝另一方获取或恢复、正常释放后交接，以及进程被终止并回收后的双向恢复。该夹具已在本机 Linux 运行通过；Windows 和 macOS 的两种架构均已加入开发 CI，但尚未执行。Node 仅用于这个旧实现对照测试，不是原生 Agent 的运行依赖。
 
-Wine 中的实验构建通过 33 项测试，其中进程快照样例覆盖本进程、存活子进程和子进程退出；另外 9 项依赖真实 ACL、目录固定或锁获取与恢复的测试未计入该结果。单独尝试的新恢复用例在获取锁时被 ACL 校验拒绝，尚未进入恢复流程：Wine 不保留文件 ACL 的保护标志，也允许重命名未共享删除权限的已打开目录。它无法证明 Windows 与旧 Node Agent 的互斥、锁恢复或句柄删除互通。已有配置替换、设备文件、进程和启动管理尚未完成；完整会话集成测试只在 Linux 上启用。Wine 结果不代表真实 Windows 或 MSVC 构建验收。macOS 交叉检查目前缺少 Apple SDK，未得到可用二进制。
+Wine 中的实验构建通过 33 项测试，其中进程快照样例覆盖本进程、存活子进程和子进程退出；另外 9 项依赖真实 ACL、目录固定或锁获取与恢复的测试未计入该结果。单独尝试的新恢复用例在获取锁时被 ACL 校验拒绝，尚未进入恢复流程：Wine 不保留文件 ACL 的保护标志，也允许重命名未共享删除权限的已打开目录。它无法证明 Windows 与旧 Node Agent 的互斥、锁恢复或句柄删除互通。设备文件、进程和启动管理尚未完成；完整会话集成测试只在 Linux 上启用。Wine 结果不代表真实 Windows 或 MSVC 构建验收。本地 macOS 交叉编译仍缺少 Apple SDK。
 
 macOS 审计已有 `experimental-macos-audit` 实验实现，复用 POSIX 目录句柄、私有权限检查、脱敏、轮转和保留逻辑；默认构建仍拒绝打开日志。实验实现显式调用并检查 `fsync`，与旧 Agent 的同步接口一致；这不等于断电后数据完整性验收，Apple 的 [fsync 说明](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)也区分了主机写入与驱动器实际持久化。实际审计源码及测试在独立编译夹具中通过了 macOS x86_64、ARM64 的默认与实验特性交叉类型检查；夹具使用随机数 API 检查桩，未链接或运行完整 Agent。原生 CI 已配置审计测试、旧日志交接和默认禁用门禁，尚无 macOS 文件系统运行结果。
 
@@ -38,7 +38,7 @@ Linux 上的独立 plist 解析与执行夹具验证了特殊字符路径、参�
 
 macOS 文件和搜索已有 `experimental-macos-files` 实验实现，默认不声明相关操作。它与 Linux 共用读取、摘要、编辑、原子写入、目录、移动和搜索逻辑；Darwin 打开路径时使用目录句柄与 [`O_NOFOLLOW_ANY`](https://github.com/apple-oss-distributions/xnu/blob/xnu-7195.81.3/bsd/sys/fcntl.h)，并复核目录描述符路径和末级名称的身份。首次打开根目录前，代码在私有临时目录中验证普通路径可打开、末级和中间链接都被内核拒绝，然后清理自己的探测对象；无法确认能力或清理时拒绝初始化。元数据查询使用不跟随末级链接的 `fstatat`，不打开设备或 FIFO；普通硬链接按所选名称授权，原子替换只改变该名称，描述符设备别名被拒绝。移动使用 `renameatx_np(RENAME_EXCL)`，不退回可覆盖目标的调用。
 
-共享逻辑的 Linux 文件、搜索与旧 Node 对照测试已通过，硬链接读取和替换还经过独立回归。实际文件与搜索源码、测试和旧实现对照程序通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或运行完整 Agent。macOS CI 已配置能力探测、目录移出根范围、描述符别名、共享读写用例及旧实现对照，尚无原生运行结果。目录路径复核与实际 I/O 不是对外部改名的原子事务，不能据此声称文件根目录构成操作系统沙箱。
+共享逻辑的 Linux 文件、搜索与旧 Node 对照测试已通过，硬链接读取和替换还经过独立回归。实际文件与搜索源码、测试和旧实现对照程序通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或运行完整 Agent。首次原生文件测试在两个架构上均被能力探测阻止：同时传入 `O_NOFOLLOW` 和 `O_NOFOLLOW_ANY` 会触发 Darwin 的 `EINVAL`。实现现统一为 `O_NOFOLLOW_ANY`，能力探测分别覆盖调用者带或不带 `O_NOFOLLOW` 时的普通路径及链接拒绝，等待原生复验。该互斥规则可在 [Apple 的打开路径实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_vnops.c)中核对。目录路径复核与实际 I/O 不是对外部改名的原子事务，不能据此声称文件根目录构成操作系统沙箱。
 
 macOS 进程管理已有 `experimental-macos-processes` 实验实现，该特性同时启用实验文件后端；默认构建不声明进程操作。它与 Linux 共用任务准入、工作目录句柄、环境变量白名单、非阻塞输入输出、期限、离线保留和关闭逻辑。子进程通过 `setsid` 建立独立进程组，监督者使用 `waitid(WNOWAIT)` 保留已退出组长的身份，在回收前检查原进程组。
 
@@ -46,9 +46,11 @@ Darwin 后端通过 [`libproc` 进程接口](https://github.com/apple-oss-distri
 
 当前 Linux 完整工作区和旧 Node 进程行为对照已通过，新增故障样例覆盖不完整枚举、身份变化和查询失败。进程、文件、配置、策略及 sandbox 的实际源码、单元测试和进程对照夹具，通过了两种 macOS 架构的默认与实验特性交叉类型检查；随机数 API 使用编译桩，未链接或执行完整 Agent。macOS CI 已纳入共享进程测试、原生进程信息检查、旧版行为对照和默认禁用门禁，尚无 Darwin 进程组、管道或资源限制的原生运行验收。
 
-Windows 已有配置替换仍需设计失败和中断后的恢复，再进行原生文件系统验证。不能仅把 `ReplaceFileW` 调用当作原子替换：微软文档列出的部分失败情形可能使原文件不再位于原路径，或使替换文件继承部分属性。[ReplaceFileW 返回值与说明](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+Windows 私有配置替换已加入同一个实验特性。实现持有并校验旧文件和父目录的句柄，在私有临时文件写入、同步和 ACL 检查完成后，通过 `NtSetInformationFile(FileRenameInformationEx)` 发布；目标原本不存在时使用禁止覆盖的发布。该接口的目录相对名称与替换标志见微软 [FILE_RENAME_INFORMATION 说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)。已有目标必须通过身份、硬链接和 ACL 检查，不能退回删除后重建。系统不支持所需的替换语义时返回错误。发布报错后，只有确认候选仍位于原临时名称，才允许清理该候选；名称或身份无法确认时保留对象并报告结果未知，避免误删可能已经发布的文件。该实现仍需原生文件系统与中断验收，不承诺 Windows 目录元数据的断电持久性。
 
-新增的 [Rust 开发 CI](../.github/workflows/rust-ci.yml)按八个目标配置了对应架构的运行器、固定工具链、全部实验特性的静态检查和测试，Windows 和 macOS 还单独运行默认特性门禁。Linux x86_64 和 macOS 运行旧版文件、搜索和进程行为对照；Windows 和 macOS 运行锁互操作夹具；macOS 还运行审计交接、原生 plist 语法检查和只读 launchctl 状态格式检查。Node 只用于旧实现对照，Python 仅用于独立解析及执行 LaunchAgent 参数夹具。矩阵一次运行一个任务，构建可执行文件时仍使用默认特性。工作流已完成本地语法检查，尚未在 GitHub Actions 执行；未执行的矩阵目标不能计为支持或通过验收。
+新增的 [Rust 开发 CI](../.github/workflows/rust-ci.yml)按八个目标配置了对应架构的运行器、固定工具链、全部实验特性的静态检查和优化配置测试，Windows 和 macOS 还单独运行默认特性门禁。Linux x86_64 和 macOS 运行旧版文件、搜索和进程行为对照；Windows 和 macOS 运行锁互操作夹具；macOS 还运行审计交接、原生 plist 语法检查和只读 launchctl 状态格式检查。Node 只用于旧实现对照，Python 仅用于独立解析及执行 LaunchAgent 参数夹具。矩阵一次运行一个任务，并与旧 CI 和发布校验串行；最终构建可执行文件时仍使用默认特性。
+
+[草稿 PR #1](https://github.com/easelian/remote-device-agent/pull/1)已启动原生 CI。修正类型转换后，Linux x86_64 glibc、musl 完整任务均通过。ARM64 调试构建在升级校验或启动恢复中触发期限，夹具已补充具体子命令、子进程输出和提前退出诊断；同一套测试改用优化构建继续复验，保留全部断言和原有期限。macOS 的默认配置门禁与静态检查通过，文件能力探测的问题仍在修复验证中；Windows 文件发布和锁互操作也在继续原生验证。尚未通过的目标不能计为支持或完成验收。
 
 本机真实用户 systemd 临时单元和本地 Hub 联测还覆盖了空闲停机：运行中的任务会阻止停机；脱离进程组并进入该单元子 cgroup 的进程也会阻止停机；清理这些进程后，Agent 自行退出并释放配置锁。临时单元由 systemd 收集。该验证不代表自动升级、系统级服务或其他平台已验收。
 

@@ -118,6 +118,14 @@ if (platform) {
     }
     console.log(`${platform}: bundled Node.js, launcher without PATH, and installer passed.`);
   } finally {
-    rmSync(temporary, { recursive: true, force: true });
+    // Every fixture command has exited via spawnSync before this cleanup.
+    // Allow bounded Windows EBUSY/EPERM cleanup retries, as in the startup
+    // fixture. Retry only this tree; a persistent lock still fails the check.
+    rmSync(temporary, {
+      recursive: true,
+      force: true,
+      maxRetries: windows ? 5 : 0,
+      retryDelay: 1000,
+    });
   }
 }
