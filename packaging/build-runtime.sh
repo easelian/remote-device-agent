@@ -123,7 +123,10 @@ node_asset_candidates() {
 }
 
 fetch() {
-  curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 1800 -o "$2" "$1" ||
+  # These are repeatable artifact GETs written to a file. HTTP/2 stream errors
+  # are not included in curl's default transient-error retry set. The archive
+  # is still checked against the downloaded SHA-256 list before extraction.
+  curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 15 --max-time 1800 -o "$2" "$1" ||
     die "download failed: $1"
 }
 

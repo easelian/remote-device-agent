@@ -1,18 +1,21 @@
 #![cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-audit")
+    all(target_os = "macos", feature = "experimental-macos-audit"),
+    all(windows, feature = "experimental-windows-audit")
 ))]
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use rdh_agent::random;
 use rdh_agent::{
     audit::{AuditLog, AuditRecord},
     config::sha256_hex,
-    random,
 };
 use serde_json::{Value, json};
 
@@ -20,19 +23,42 @@ const SECRET: &str = "AUDIT_FIXTURE_SECRET";
 
 struct Fixture(PathBuf);
 impl Fixture {
-    fn new() -> Self {
-        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
-            "rdh-legacy-audit-{}",
-            random::hex_token::<12>().unwrap()
-        ));
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        Self(path)
+    fn new(helper: &Path) -> Self {
+        #[cfg(unix)]
+        {
+            let _ = helper;
+            let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
+                "rdh-legacy-audit-{}",
+                random::hex_token::<12>().unwrap()
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            Self(path)
+        }
+        #[cfg(windows)]
+        {
+            // Let the real legacy code create a protected ACL and choose the
+            // long Windows pathname spelling, avoiding short/extended aliases.
+            let node = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| "node".into());
+            let child = Command::new(node)
+                .arg(helper)
+                .arg("--prepare")
+                .arg(std::env::temp_dir())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let output = wait_helper(child, Duration::from_secs(90), "prepare");
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let path = PathBuf::from(report["directory"].as_str().unwrap());
+            assert!(path.is_absolute() && path.is_dir());
+            Self(path)
+        }
     }
 
     fn node(&self, helper: &Path, label: &str, count: usize, max_bytes: u64, required: bool) {
         let node = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| "node".into());
-        let mut child = Command::new(node)
+        let child = Command::new(node)
             .arg(helper)
             .arg(&self.0)
             .arg(label)
@@ -43,21 +69,15 @@ impl Fixture {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while child.try_wait().unwrap().is_none() {
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("legacy audit fixture timed out");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "legacy fixture failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        // The busiest one-profile Windows sample performs five ACL commands
+        // at open and four for each of two retention rewrites. Keep the actual
+        // legacy 60 s per-command limit; the fixture bounds the composition.
+        let budget = if cfg!(windows) {
+            Duration::from_secs(13 * 60 + 30)
+        } else {
+            Duration::from_secs(30)
+        };
+        let output = wait_helper(child, budget, label);
         let stats: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
             stats,
@@ -99,8 +119,18 @@ impl Fixture {
             }
             let metadata = fs::metadata(&path).unwrap();
             assert!(metadata.is_file());
-            assert_eq!(metadata.mode() & 0o077, 0);
-            assert_eq!(metadata.nlink(), 1);
+            #[cfg(unix)]
+            {
+                assert_eq!(metadata.mode() & 0o077, 0);
+                assert_eq!(metadata.nlink(), 1);
+            }
+            #[cfg(windows)]
+            // Reopening through the production private-storage path checks
+            // the protected ACL, owner, full file identity, and hardlink count.
+            assert_eq!(
+                rdh_agent::storage::read_private(&path).unwrap(),
+                fs::read(&path).unwrap()
+            );
             let bytes = fs::read(path).unwrap();
             assert!(
                 !bytes
@@ -147,6 +177,35 @@ impl Fixture {
     }
 }
 
+fn wait_helper(
+    mut child: std::process::Child,
+    budget: Duration,
+    label: &str,
+) -> std::process::Output {
+    let started = Instant::now();
+    let deadline = started + budget;
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("legacy audit {label} timed out after {budget:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "legacy audit {label} failed after {:?}: {}",
+        started.elapsed(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!(
+        "legacy audit {label} completed after {:?}",
+        started.elapsed()
+    );
+    output
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -162,7 +221,7 @@ fn legacy_native_and_legacy_audit_retention_interoperate() {
     );
     assert!(helper.is_absolute() && helper.is_file());
 
-    let retention = Fixture::new();
+    let retention = Fixture::new(&helper);
     let max_bytes = 5 * 1024 * 1024;
     retention.node(&helper, "node-a", 999, max_bytes, false);
     retention.native(3, max_bytes);
@@ -179,7 +238,7 @@ fn legacy_native_and_legacy_audit_retention_interoperate() {
         ["rust-0", "rust-1", "rust-2", "node-b-0", "node-b-1"]
     );
 
-    let rotation = Fixture::new();
+    let rotation = Fixture::new(&helper);
     rotation.node(&helper, "node-a", 9, 4096, false);
     rotation.native(8, 4096);
     rotation.node(&helper, "node-b", 9, 4096, true);

@@ -19,6 +19,7 @@ if (!action || !path) {
 if (process.env.RDH_TEST_LEGACY_LOCK_TRACE === '1') {
   const original = childProcess.spawnSync;
   let sequence = 0;
+  let aclFailures = 0;
   childProcess.spawnSync = ((...args: Parameters<typeof original>) => {
     const id = ++sequence;
     const started = performance.now();
@@ -30,6 +31,12 @@ if (process.env.RDH_TEST_LEGACY_LOCK_TRACE === '1') {
     };
     console.error(JSON.stringify({ ...detail, phase: 'begin' }));
     const result = original(...args);
+    if (
+      detail.acl_action &&
+      (result.error || result.status !== 0 || String(result.stdout).trim() !== 'RDH_PRIVATE_OK')
+    ) {
+      aclFailures += 1;
+    }
     console.error(
       JSON.stringify({
         ...detail,
@@ -44,6 +51,14 @@ if (process.env.RDH_TEST_LEGACY_LOCK_TRACE === '1') {
     return result;
   }) as typeof childProcess.spawnSync;
   syncBuiltinESMExports();
+  process.on('beforeExit', () => {
+    if (aclFailures !== 0) {
+      // Legacy private-directory errors can be mapped to "lock exists". Such
+      // a failure cannot count as proof of lock exclusion in this fixture.
+      console.error(`Legacy ACL subprocess failures: ${aclFailures}`);
+      process.exitCode = 1;
+    }
+  });
 }
 
 function expectedLockRejection(error: unknown): boolean {

@@ -21,6 +21,7 @@ struct Process {
     lines: Receiver<String>,
     label: String,
     started: Instant,
+    legacy_acl_commands: u32,
 }
 
 impl Process {
@@ -52,17 +53,34 @@ impl Process {
             lines,
             label: label.into(),
             started,
+            legacy_acl_commands: 0,
         }
     }
 
     fn expect_line(&mut self, expected: &str) {
-        let deadline = Instant::now() + TIMEOUT;
+        // The real Windows implementation bounds each PowerShell ACL command
+        // at 60 s, while one fixture action executes several in sequence. On
+        // native ARM64 the first two successful calls took 24 s and 25 s; an
+        // aggregate 60 s timeout killed the third call before lock acquisition.
+        // Retain each legacy timeout and add one ordinary helper budget around
+        // the bounded composition. Rust holders and Unix keep their 60 s limit.
+        let commands = if cfg!(windows) && self.legacy_acl_commands != 0 {
+            if expected == "released" {
+                1
+            } else {
+                self.legacy_acl_commands
+            }
+        } else {
+            0
+        };
+        let budget = TIMEOUT * (commands + 1);
+        let deadline = Instant::now() + budget;
         let mut transcript = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let line = self.lines.recv_timeout(remaining).unwrap_or_else(|error| {
                 panic!(
-                    "{} pid={} did not report {expected:?} after {:?}: {error}; status={:?}; stdout={transcript:?}",
+                    "{} pid={} did not report {expected:?} after {:?} (budget {budget:?}): {error}; status={:?}; stdout={transcript:?}",
                     self.label,
                     self.child.id(),
                     self.started.elapsed(),
@@ -138,14 +156,26 @@ impl Drop for Fixture {
 
 fn node_process(helper: &Path, action: &str, path: &Path) -> Process {
     let executable = std::env::var_os("RDH_TEST_NODE").unwrap_or_else(|| OsString::from("node"));
-    Process::spawn(
+    let mut process = Process::spawn(
         Command::new(executable)
             .arg(helper)
             .arg(action)
             .arg(path)
             .env("RDH_TEST_LEGACY_LOCK_TRACE", "1"),
         &format!("legacy {action}"),
-    )
+    );
+    // Counts follow the actual one-profile legacy source: guard create/check,
+    // lock create/check, owner create; acquire also releases its owner. Recovery
+    // checks guard, lock, and owner. No production deadline is changed.
+    process.legacy_acl_commands = match action {
+        "prepare" => 1,
+        "hold" => 5,
+        "acquire" => 6,
+        "recover" => 4,
+        "canonical" => 0,
+        _ => panic!("unexpected legacy fixture action"),
+    };
+    process
 }
 
 fn node_once(helper: &Path, action: &str, path: &Path, expected: &str) {

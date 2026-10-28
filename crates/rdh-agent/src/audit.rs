@@ -1,4 +1,4 @@
-//! Private, bounded JSONL audit records (Linux and experimental macOS). Required mode synchronizes each record
+//! Private, bounded JSONL audit records. Required mode synchronizes each record
 //! before reporting success. The caller must write `started` before effects.
 //!
 //! A mutex serializes this instance; the application's profile lock remains the
@@ -22,14 +22,16 @@ pub struct AuditLog {
     required: bool,
     #[cfg(any(
         target_os = "linux",
-        all(target_os = "macos", feature = "experimental-macos-audit")
+        all(target_os = "macos", feature = "experimental-macos-audit"),
+        all(windows, feature = "experimental-windows-audit")
     ))]
-    state: std::sync::Mutex<unix::State>,
+    state: std::sync::Mutex<implementation::State>,
     #[cfg(any(
         target_os = "linux",
-        all(target_os = "macos", feature = "experimental-macos-audit")
+        all(target_os = "macos", feature = "experimental-macos-audit"),
+        all(windows, feature = "experimental-windows-audit")
     ))]
-    health: std::sync::Arc<std::sync::Mutex<unix::Health>>,
+    health: std::sync::Arc<std::sync::Mutex<implementation::Health>>,
 }
 
 impl AuditLog {
@@ -53,11 +55,13 @@ impl AuditLog {
         }
         #[cfg(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         ))]
         {
-            let health = std::sync::Arc::new(std::sync::Mutex::new(unix::Health::default()));
-            let state = unix::State::open(
+            let health =
+                std::sync::Arc::new(std::sync::Mutex::new(implementation::Health::default()));
+            let state = implementation::State::open(
                 directory,
                 name,
                 max_bytes,
@@ -74,7 +78,8 @@ impl AuditLog {
         }
         #[cfg(not(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         )))]
         {
             let _ = required;
@@ -87,7 +92,8 @@ impl AuditLog {
     pub fn try_record(&self, record: AuditRecord) -> Result<(), String> {
         #[cfg(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         ))]
         {
             match self.state.try_lock() {
@@ -107,7 +113,8 @@ impl AuditLog {
         }
         #[cfg(not(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         )))]
         {
             let _ = record;
@@ -118,20 +125,22 @@ impl AuditLog {
     pub fn record(&self, record: AuditRecord) -> Result<(), String> {
         #[cfg(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         ))]
         {
             match self.state.lock() {
                 Ok(mut state) => state.record(record),
                 Err(poisoned) => {
                     let mut state = poisoned.into_inner();
-                    state.failed(unix::Failure("AUDIT_STATE_POISONED".into()))
+                    state.failed(implementation::Failure("AUDIT_STATE_POISONED".into()))
                 }
             }
         }
         #[cfg(not(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         )))]
         {
             let _ = record;
@@ -142,7 +151,8 @@ impl AuditLog {
     pub fn stats(&self) -> Value {
         #[cfg(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         ))]
         {
             // This short health lock is never held over file I/O or while
@@ -154,7 +164,8 @@ impl AuditLog {
         }
         #[cfg(not(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         )))]
         {
             serde_json::json!({"written":0,"dropped":0,"last_error":"AUDIT_UNSUPPORTED_PLATFORM"})
@@ -171,7 +182,8 @@ impl AuditLog {
     pub fn note_dropped(&self, message: &str) {
         #[cfg(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         ))]
         {
             let code = if !message.is_empty()
@@ -191,11 +203,35 @@ impl AuditLog {
         }
         #[cfg(not(any(
             target_os = "linux",
-            all(target_os = "macos", feature = "experimental-macos-audit")
+            all(target_os = "macos", feature = "experimental-macos-audit"),
+            all(windows, feature = "experimental-windows-audit")
         )))]
         {
             let _ = message;
         }
+    }
+}
+
+#[cfg(all(test, windows, not(feature = "experimental-windows-audit")))]
+mod windows_default_tests {
+    use super::AuditLog;
+
+    #[test]
+    fn audit_requires_explicit_experimental_feature() {
+        let path = std::env::temp_dir().join(format!(
+            "rdh-default-audit-{}",
+            crate::random::hex_token::<12>().unwrap()
+        ));
+        for required in [false, true] {
+            assert!(AuditLog::open(&path, "device", 4096, 3, required).is_err());
+            assert!(!path.exists());
+        }
+        std::fs::create_dir(&path).unwrap();
+        let existing = path.join("device.jsonl");
+        std::fs::write(&existing, b"original\n").unwrap();
+        assert!(AuditLog::open(&path, "device", 4096, 3, true).is_err());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"original\n");
+        std::fs::remove_dir_all(path).unwrap();
     }
 }
 
@@ -229,35 +265,41 @@ mod macos_default_tests {
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-audit")
 ))]
-mod unix {
+#[path = "audit_posix.rs"]
+mod posix;
+
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-audit"),
+    all(windows, feature = "experimental-windows-audit")
+))]
+pub(crate) mod implementation {
     use super::*;
     use serde_json::{Map, json};
     use sha2::{Digest, Sha256};
     use std::{
-        ffi::{CString, OsStr},
-        fs::{File, Metadata},
+        fs::File,
         io::{self, Write},
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::{
-                ffi::OsStrExt,
-                fs::{FileExt, MetadataExt},
-            },
-        },
-        path::{Component, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
+        path::Path,
     };
+
+    #[cfg(unix)]
+    use super::posix as platform;
+    #[cfg(windows)]
+    use crate::storage::windows::audit as platform;
+    use platform::{Directory, Metadata, read_at, same_version};
 
     const MAX_RECORD: usize = 16 * 1024;
     const MAX_ENTRIES: usize = 1000;
     const ARCHIVES: usize = 20;
 
     #[derive(Debug)]
-    pub(super) struct Failure(pub(super) String);
-    type Result<T> = std::result::Result<T, Failure>;
-    fn fail(code: &str) -> Failure {
+    pub(crate) struct Failure(pub(crate) String);
+    pub(crate) type Result<T> = std::result::Result<T, Failure>;
+    pub(crate) fn fail(code: &str) -> Failure {
         Failure(code.into())
     }
+    #[cfg(unix)]
     impl From<io::Error> for Failure {
         fn from(error: io::Error) -> Self {
             let code = match error.raw_os_error() {
@@ -280,12 +322,10 @@ mod unix {
             fail(code)
         }
     }
-    fn os_error() -> Failure {
-        io::Error::last_os_error().into()
-    }
-    fn synchronize(file: &File) -> io::Result<()> {
+    pub(crate) fn synchronize(file: &File) -> io::Result<()> {
         #[cfg(target_os = "macos")]
         loop {
+            use std::os::fd::AsRawFd;
             // Match the legacy Agent's fsync semantics. Rust's sync_all uses
             // F_FULLFSYNC on Apple platforms, including directory handles;
             // this backend explicitly checks POSIX fsync for both kinds.
@@ -301,100 +341,6 @@ mod unix {
         #[cfg(not(target_os = "macos"))]
         file.sync_all()
     }
-    fn cstring(name: &OsStr) -> Result<CString> {
-        CString::new(name.as_bytes()).map_err(|_| fail("AUDIT_INVALID_PATH"))
-    }
-    fn same_file(left: &Metadata, right: &Metadata) -> bool {
-        left.dev() == right.dev() && left.ino() == right.ino()
-    }
-    fn same_version(left: &Metadata, right: &Metadata) -> bool {
-        same_file(left, right)
-            && left.len() == right.len()
-            && left.mtime() == right.mtime()
-            && left.mtime_nsec() == right.mtime_nsec()
-            && left.ctime() == right.ctime()
-            && left.ctime_nsec() == right.ctime_nsec()
-    }
-    fn private(metadata: &Metadata, directory: bool) -> Result<()> {
-        // SAFETY: getuid has no arguments or memory side effects.
-        let uid = unsafe { libc::getuid() };
-        if (if directory {
-            !metadata.is_dir()
-        } else {
-            !metadata.is_file()
-        }) || metadata.uid() != uid
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(fail("AUDIT_UNSAFE_PERMISSIONS"));
-        }
-        // A hardlink alias could otherwise make retention truncate another
-        // private file. Directories legitimately have multiple links.
-        if !directory && metadata.nlink() != 1 {
-            return Err(fail("AUDIT_HARDLINK_REJECTED"));
-        }
-        Ok(())
-    }
-    fn open_at(parent: &File, name: &OsStr, flags: i32, mode: u32) -> Result<File> {
-        let name = cstring(name)?;
-        // SAFETY: name is NUL terminated and parent is a live fd. openat returns
-        // a fresh owned descriptor, which is constructed only after success.
-        let fd = unsafe {
-            libc::openat(
-                parent.as_raw_fd(),
-                name.as_ptr(),
-                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
-                mode,
-            )
-        };
-        if fd < 0 {
-            return Err(os_error());
-        }
-        // SAFETY: fd is uniquely owned from the successful openat above.
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-    fn directory(path: &Path, create: bool) -> Result<File> {
-        if !path.is_absolute() {
-            return Err(fail("AUDIT_INVALID_PATH"));
-        }
-        let slash = cstring(OsStr::new("/"))?;
-        // SAFETY: slash is a valid NUL-terminated path; no fd is borrowed here.
-        let fd = unsafe {
-            libc::open(
-                slash.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(os_error());
-        }
-        // SAFETY: open succeeded and transferred a unique descriptor.
-        let mut current = unsafe { File::from_raw_fd(fd) };
-        for component in path.components() {
-            let name = match component {
-                Component::RootDir | Component::CurDir => continue,
-                Component::Normal(name) => name,
-                _ => return Err(fail("AUDIT_INVALID_PATH")),
-            };
-            let child = match open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY, 0) {
-                Ok(child) => child,
-                Err(error) if error.0 == "ENOENT" && create => {
-                    let name_c = cstring(name)?;
-                    // SAFETY: this is a single component under a live directory.
-                    if unsafe { libc::mkdirat(current.as_raw_fd(), name_c.as_ptr(), 0o700) } < 0
-                        && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
-                    {
-                        return Err(os_error());
-                    }
-                    open_at(&current, name, libc::O_RDONLY | libc::O_DIRECTORY, 0)?
-                }
-                Err(error) => return Err(error),
-            };
-            current = child;
-        }
-        private(&current.metadata()?, true)?;
-        Ok(current)
-    }
-
     fn clip(value: &str, units: usize) -> String {
         let mut used = 0;
         for (index, character) in value.char_indices() {
@@ -529,7 +475,47 @@ mod unix {
         }
         (!summary.is_empty()).then_some(Value::Object(summary))
     }
+    #[cfg(windows)]
     fn timestamp() -> Result<String> {
+        use windows_sys::Win32::Foundation::SYSTEMTIME;
+        use windows_sys::Win32::System::SystemInformation::GetSystemTime;
+        let mut time = SYSTEMTIME::default();
+        // SAFETY: time is writable storage for the complete SYSTEMTIME output.
+        unsafe { GetSystemTime(&mut time) };
+        if !(1..=9999).contains(&time.wYear) {
+            return Err(fail("AUDIT_CLOCK_INVALID"));
+        }
+        Ok(format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            time.wYear,
+            time.wMonth,
+            time.wDay,
+            time.wHour,
+            time.wMinute,
+            time.wSecond,
+            time.wMilliseconds
+        ))
+    }
+
+    #[cfg(windows)]
+    impl From<io::Error> for Failure {
+        fn from(error: io::Error) -> Self {
+            // Only bounded diagnostic codes can enter health reports.
+            let code = match error.kind() {
+                io::ErrorKind::NotFound => "ENOENT",
+                io::ErrorKind::AlreadyExists => "EEXIST",
+                io::ErrorKind::PermissionDenied => "EACCES",
+                io::ErrorKind::InvalidInput => "EINVAL",
+                io::ErrorKind::StorageFull => "ENOSPC",
+                _ => "AUDIT_IO_ERROR",
+            };
+            fail(code)
+        }
+    }
+
+    #[cfg(unix)]
+    fn timestamp() -> Result<String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
         let elapsed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| fail("AUDIT_CLOCK_INVALID"))?;
@@ -561,7 +547,7 @@ mod unix {
             elapsed.subsec_millis()
         ))
     }
-    fn write_all(writer: &mut impl Write, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn write_all(writer: &mut impl Write, bytes: &[u8]) -> Result<()> {
         let mut offset = 0;
         while offset < bytes.len() {
             match writer.write(&bytes[offset..]) {
@@ -586,8 +572,7 @@ mod unix {
     }
     struct Rollback {
         size: u64,
-        device: u64,
-        inode: u64,
+        identity: platform::Identity,
     }
     #[derive(Default)]
     pub(super) struct Health {
@@ -609,8 +594,7 @@ mod unix {
         }
     }
     pub(super) struct State {
-        path: PathBuf,
-        directory: File,
+        directory: Directory,
         name: String,
         max_bytes: u64,
         max_files: usize,
@@ -636,9 +620,8 @@ mod unix {
             required: bool,
             health: std::sync::Arc<std::sync::Mutex<Health>>,
         ) -> Result<Self> {
-            let directory = directory(path, true)?;
+            let directory = Directory::open(path, true)?;
             let mut state = Self {
-                path: path.into(),
                 directory,
                 name: format!("{name}.jsonl"),
                 max_bytes,
@@ -661,56 +644,11 @@ mod unix {
             state.prune(0)?;
             Ok(state)
         }
-        fn verify_directory(&self) -> Result<()> {
-            let held = self.directory.metadata()?;
-            private(&held, true)?;
-            let named = directory(&self.path, false)?.metadata()?;
-            if !same_file(&held, &named) {
-                return Err(fail("AUDIT_DIRECTORY_CHANGED"));
-            }
-            Ok(())
-        }
         fn verify_file(&self, name: &str, file: &File) -> Result<Metadata> {
-            self.verify_directory()?;
-            let held = file.metadata()?;
-            private(&held, false)?;
-            let named =
-                open_at(&self.directory, OsStr::new(name), libc::O_RDONLY, 0)?.metadata()?;
-            private(&named, false)?;
-            if !same_file(&held, &named) {
-                return Err(fail("AUDIT_FILE_CHANGED"));
-            }
-            Ok(held)
+            self.directory.verify_file(name, file)
         }
         fn open_named(&self, name: &str, create: bool) -> Result<File> {
-            self.verify_directory()?;
-            let file = if create {
-                match open_at(
-                    &self.directory,
-                    OsStr::new(name),
-                    libc::O_RDWR | libc::O_APPEND | libc::O_CREAT | libc::O_EXCL,
-                    0o600,
-                ) {
-                    Ok(file) => {
-                        // SAFETY: file is an owned fresh regular-file descriptor.
-                        if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } < 0 {
-                            return Err(os_error());
-                        }
-                        file
-                    }
-                    Err(error) if error.0 == "EEXIST" => open_at(
-                        &self.directory,
-                        OsStr::new(name),
-                        libc::O_RDWR | libc::O_APPEND,
-                        0,
-                    )?,
-                    Err(error) => return Err(error),
-                }
-            } else {
-                open_at(&self.directory, OsStr::new(name), libc::O_RDONLY, 0)?
-            };
-            self.verify_file(name, &file)?;
-            Ok(file)
+            self.directory.open_named(name, create)
         }
         fn ensure_active(&mut self) -> Result<()> {
             if self.active.is_none() {
@@ -720,9 +658,9 @@ mod unix {
                 }
                 let file = self.open_named(&self.name, true)?;
                 if self.required {
-                    synchronize(&self.directory)?;
+                    self.directory.synchronize()?;
                 }
-                self.size = file.metadata()?.len();
+                self.size = self.verify_file(&self.name, &file)?.len();
                 self.active = Some(file);
             }
             Ok(())
@@ -775,9 +713,7 @@ mod unix {
                 .as_ref()
                 .ok_or_else(|| fail("AUDIT_REPAIR_NO_HANDLE"))?;
             let metadata = self.verify_file(&self.name, file)?;
-            if metadata.dev() != rollback.device
-                || metadata.ino() != rollback.inode
-                || metadata.len() < rollback.size
+            if platform::identity(&metadata) != rollback.identity || metadata.len() < rollback.size
             {
                 return Err(fail("AUDIT_REPAIR_FILE_CHANGED"));
             }
@@ -840,9 +776,9 @@ mod unix {
             }
             self.rollback = Some(Rollback {
                 size: self.size,
-                device: metadata.dev(),
-                inode: metadata.ino(),
+                identity: platform::identity(&metadata),
             });
+            platform::prepare_append(file)?;
             #[cfg(test)]
             if let Some(count) = self.faults.append_after {
                 write_all(&mut &*file, &bytes[..count.min(bytes.len())])?;
@@ -879,7 +815,7 @@ mod unix {
         }
         fn tail(&self, name: &str, remaining: usize) -> Result<(Vec<Vec<u8>>, Metadata)> {
             let file = self.open_named(name, false)?;
-            let before = file.metadata()?;
+            let before = self.verify_file(name, &file)?;
             if remaining == 0 {
                 return Ok((Vec::new(), before));
             }
@@ -888,7 +824,7 @@ mod unix {
             let mut bytes = vec![0; length];
             let mut offset = 0;
             while offset < length {
-                let read = match file.read_at(&mut bytes[offset..], start + offset as u64) {
+                let read = match read_at(&file, &mut bytes[offset..], start + offset as u64) {
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     other => other?,
                 };
@@ -942,88 +878,19 @@ mod unix {
             Ok((lines, before))
         }
         fn unlink(&self, name: &str) -> Result<()> {
-            let file = match self.open_named(name, false) {
-                Ok(file) => file,
-                Err(error) if error.0 == "ENOENT" => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            self.verify_file(name, &file)?;
-            let name = cstring(OsStr::new(name))?;
-            // SAFETY: name is a single generated component beneath a live fd.
-            if unsafe { libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0) } < 0 {
-                return Err(os_error());
-            }
-            if self.required {
-                synchronize(&self.directory)?;
-            }
-            Ok(())
+            self.directory.unlink(name, self.required)
         }
         fn rename(&self, source: &str, target: &str) -> Result<()> {
-            let source_file = self.open_named(source, false)?;
-            self.verify_file(source, &source_file)?;
-            match self.open_named(target, false) {
-                Ok(target_file) => {
-                    self.verify_file(target, &target_file)?;
-                }
-                Err(error) if error.0 == "ENOENT" => {}
-                Err(error) => return Err(error),
-            }
-            let source = cstring(OsStr::new(source))?;
-            let target = cstring(OsStr::new(target))?;
-            // SAFETY: generated single-component names and a live directory fd;
-            // rename never follows either leaf symlink.
-            if unsafe {
-                libc::renameat(
-                    self.directory.as_raw_fd(),
-                    source.as_ptr(),
-                    self.directory.as_raw_fd(),
-                    target.as_ptr(),
-                )
-            } < 0
-            {
-                return Err(os_error());
-            }
-            if self.required {
-                synchronize(&self.directory)?;
-            }
-            self.verify_directory()
+            self.directory.rename(source, target, self.required)
         }
         fn replace(&mut self, name: &str, bytes: &[u8], expected: &Metadata) -> Result<()> {
-            let suffix =
-                crate::random::hex_token::<12>().map_err(|_| fail("AUDIT_RANDOM_UNAVAILABLE"))?;
-            let temporary_name = format!("{name}.{suffix}.tmp");
-            let mut file = open_at(
-                &self.directory,
-                OsStr::new(&temporary_name),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-                0o600,
-            )?;
-            let temporary = Temporary {
-                directory: &self.directory,
-                name: temporary_name.clone(),
-                metadata: file.metadata()?,
-            };
-            // SAFETY: this is the exclusive new temporary file's descriptor.
-            if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } < 0 {
-                return Err(os_error());
-            }
-            let preparation = (|| -> Result<()> {
-                write_all(&mut file, bytes)?;
-                if self.required {
-                    synchronize(&file)?;
-                }
-                let named = self.open_named(name, false)?;
-                if !same_version(expected, &named.metadata()?) {
-                    return Err(fail("AUDIT_HISTORY_CHANGED"));
-                }
-                self.verify_file(&temporary_name, &file)?;
-                #[cfg(test)]
-                if self.faults.replace {
-                    return Err(fail("ENOSPC"));
-                }
-                self.rename(&temporary_name, name)
-            })();
-            drop(temporary);
+            #[cfg(test)]
+            let fail_before_rename = self.faults.replace;
+            #[cfg(not(test))]
+            let fail_before_rename = false;
+            let preparation =
+                self.directory
+                    .replace(name, bytes, expected, self.required, fail_before_rename);
             if name == self.name {
                 self.active = None;
                 let reopen = self.ensure_active();
@@ -1083,41 +950,19 @@ mod unix {
         }
     }
 
-    struct Temporary<'a> {
-        directory: &'a File,
-        name: String,
-        metadata: Metadata,
-    }
-    impl Drop for Temporary<'_> {
-        fn drop(&mut self) {
-            // Never unlink an unrelated replacement left at the temporary name.
-            let Ok(named) = open_at(self.directory, OsStr::new(&self.name), libc::O_RDONLY, 0)
-            else {
-                return;
-            };
-            let Ok(metadata) = named.metadata() else {
-                return;
-            };
-            if !same_file(&metadata, &self.metadata) {
-                return;
-            }
-            let Ok(name) = cstring(OsStr::new(&self.name)) else {
-                return;
-            };
-            // SAFETY: generated component, live fd, and ownership checked above.
-            unsafe {
-                libc::unlinkat(self.directory.as_raw_fd(), name.as_ptr(), 0);
-            }
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
         use std::{
-            fs::{self, DirBuilder, OpenOptions},
-            os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt, symlink},
+            fs::{self, OpenOptions},
+            path::PathBuf,
             sync::Arc,
+        };
+
+        #[cfg(unix)]
+        use std::{
+            fs::DirBuilder,
+            os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt, symlink},
         };
 
         struct Fixture(PathBuf);
@@ -1128,20 +973,29 @@ mod unix {
                     std::process::id(),
                     crate::random::hex_token::<12>().unwrap()
                 ));
+                #[cfg(unix)]
                 DirBuilder::new().mode(0o700).create(&path).unwrap();
+                #[cfg(windows)]
+                platform::test_private_directory(&path);
+
                 Self(path)
             }
             fn log(&self, bytes: u64, files: usize, required: bool) -> AuditLog {
                 AuditLog::open(&self.0, "device", bytes, files, required).unwrap()
             }
             fn write(&self, name: &str, bytes: &[u8]) {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(self.0.join(name))
-                    .unwrap();
-                file.write_all(bytes).unwrap();
+                #[cfg(unix)]
+                {
+                    let mut file = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(self.0.join(name))
+                        .unwrap();
+                    file.write_all(bytes).unwrap();
+                }
+                #[cfg(windows)]
+                crate::storage::write_private_new(&self.0.join(name), bytes).unwrap();
             }
             fn raw(&self) -> Vec<u8> {
                 fs::read(self.0.join("device.jsonl")).unwrap()
@@ -1487,12 +1341,11 @@ mod unix {
                 }
             }
             let fixture = Fixture::new();
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(fixture.0.join("short"))
-                .unwrap();
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let file = options.open(fixture.0.join("short")).unwrap();
             let bytes = "世界/😀\n".repeat(40).into_bytes();
             write_all(
                 &mut Chunked {
@@ -1520,6 +1373,7 @@ mod unix {
             assert_eq!(fs::read(fixture.0.join("short")).unwrap(), bytes);
         }
 
+        #[cfg(unix)]
         #[test]
         fn rejects_unsafe_permissions_symlinks_aliases_and_replaced_identity() {
             let unsafe_directory = Fixture::new();

@@ -12,6 +12,8 @@ path = "src/main.rs"
 [features]
 # Requires native Windows ACL, path, and lock interoperability validation.
 experimental-windows-private-storage = []
+# Requires native audit ACL, rotation, recovery, and legacy handoff validation.
+experimental-windows-audit = ["experimental-windows-private-storage"]
 # Requires native macOS filesystem, synchronization and audit handoff validation.
 experimental-macos-audit = []
 # Requires native launchd, filesystem and local approval validation.
@@ -44,12 +46,15 @@ url = "2"
 windows-sys = { version = "0.61", features = [
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
+    "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",

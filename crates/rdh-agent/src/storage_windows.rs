@@ -52,6 +52,10 @@ use windows_sys::Win32::System::WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOVABL
 use super::MAX_PRIVATE_FILE_BYTES;
 use crate::error::{Error, Result};
 
+#[cfg(feature = "experimental-windows-audit")]
+#[path = "audit_windows.rs"]
+pub(crate) mod audit;
+
 fn unsafe_storage() -> Error {
     Error::message("Windows private storage identity, ACL, or path cannot be verified")
 }
