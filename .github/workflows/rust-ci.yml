@@ -1,0 +1,262 @@
+name: Rust Agent development CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'xtask/**'
+      - scripts/legacy-audit-interop.ts
+      - scripts/legacy-file-info-interop.ts
+      - scripts/legacy-hardening-interop.ts
+      - scripts/legacy-lock-interop.ts
+      - scripts/legacy-process-interop.ts
+      - scripts/legacy-receipts-interop.ts
+      - scripts/legacy-search-interop.ts
+      - src/agent.ts
+      - src/audit.ts
+      - src/boundary.ts
+      - src/casefold.ts
+      - src/config.ts
+      - src/file-params.ts
+      - src/files.ts
+      - src/filesystem.ts
+      - src/hardening.ts
+      - src/operation-receipts.ts
+      - src/platform.ts
+      - src/policy.ts
+      - src/posix-fs.ts
+      - src/process-environment.ts
+      - src/processes.ts
+      - src/profile-lock.ts
+      - src/sandbox.ts
+      - src/searches.ts
+      - src/startup-native.ts
+      - src/startup.ts
+      - src/transport.ts
+      - src/types.ts
+      - 'vendor/ws/**'
+      - package.json
+      - package-lock.json
+      - .github/workflows/rust-ci.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'xtask/**'
+      - scripts/legacy-audit-interop.ts
+      - scripts/legacy-file-info-interop.ts
+      - scripts/legacy-hardening-interop.ts
+      - scripts/legacy-lock-interop.ts
+      - scripts/legacy-process-interop.ts
+      - scripts/legacy-receipts-interop.ts
+      - scripts/legacy-search-interop.ts
+      - src/agent.ts
+      - src/audit.ts
+      - src/boundary.ts
+      - src/casefold.ts
+      - src/config.ts
+      - src/file-params.ts
+      - src/files.ts
+      - src/filesystem.ts
+      - src/hardening.ts
+      - src/operation-receipts.ts
+      - src/platform.ts
+      - src/policy.ts
+      - src/posix-fs.ts
+      - src/process-environment.ts
+      - src/processes.ts
+      - src/profile-lock.ts
+      - src/sandbox.ts
+      - src/searches.ts
+      - src/startup-native.ts
+      - src/startup.ts
+      - src/transport.ts
+      - src/types.ts
+      - 'vendor/ws/**'
+      - package.json
+      - package-lock.json
+      - .github/workflows/rust-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-native-validation-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  native-target:
+    name: Development checks (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Preserve LF line endings on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - name: Verify runner architecture
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          case "$RDH_TARGET:$RUNNER_ARCH" in
+            x86_64-*:X64|aarch64-*:ARM64) ;;
+            *) printf 'Runner architecture does not match %s (%s)\n' "$RDH_TARGET" "$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+      - name: Install the pinned Rust toolchain and target
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy --target "$RDH_TARGET"
+          rustc +1.93.0 -vV
+      - name: Install musl tools
+        if: endsWith(matrix.target, '-linux-musl')
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          case "$RDH_TARGET" in
+            x86_64-*)
+              printf '%s\n' 'CC_x86_64_unknown_linux_musl=musl-gcc' 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+              ;;
+            aarch64-*)
+              printf '%s\n' 'CC_aarch64_unknown_linux_musl=musl-gcc' 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+              ;;
+          esac
+      - name: Check formatting
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo +1.93.0 fmt --all -- --check
+      - name: Check and test implemented paths
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
+          cargo +1.93.0 test --locked --workspace --all-targets --all-features --target "$RDH_TARGET"
+      - name: Check Windows default-feature safety gates
+        if: runner.os == 'Windows'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --locked -p rdh-agent --lib --target "$RDH_TARGET" windows_default_tests::
+      - name: Check macOS default safety gates
+        if: runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --locked -p rdh-agent --lib --target "$RDH_TARGET" macos_default_tests::
+      - name: Check native LaunchAgent definition arguments
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          python3 --version
+          cargo +1.93.0 test --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+      - name: Set up Node for legacy comparison fixtures
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22.22.0'
+          architecture: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+          package-manager-cache: false
+      - name: Install legacy fixture build dependencies
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
+        run: |
+          node -e 'const expected = process.env.RUNNER_ARCH === "ARM64" ? "arm64" : "x64"; if (process.arch !== expected) { throw new Error(`Node architecture ${process.arch} does not match ${expected}`); } console.log(process.version, process.arch);'
+          npm ci --ignore-scripts
+          mkdir -p .build
+      - name: Build the legacy lock fixture
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-lock-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-lock-interop.mjs
+          node -e 'const fs = require("node:fs"); const path = require("node:path"); fs.appendFileSync(process.env.GITHUB_ENV, `RDH_LEGACY_LOCK_HELPER=${path.resolve(".build/legacy-lock-interop.mjs")}\n`);'
+      - name: Test legacy and Rust lock interoperability
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_lock_interop -- --ignored --test-threads=1
+      - name: Build and test the legacy file metadata fixture
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-file-info-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-file-info-interop.mjs
+          export RDH_LEGACY_FILE_HELPER="$PWD/.build/legacy-file-info-interop.mjs"
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_file_info_interop -- --ignored --test-threads=1
+      - name: Build and test the legacy background search fixture
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-search-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-search-interop.mjs
+          export RDH_LEGACY_SEARCH_HELPER="$PWD/.build/legacy-search-interop.mjs"
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_search_interop -- --ignored --test-threads=1
+      - name: Build and test the legacy process fixture
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-process-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-process-interop.mjs
+          export RDH_LEGACY_PROCESS_HELPER="$PWD/.build/legacy-process-interop.mjs"
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_process_interop -- --ignored --test-threads=1
+      - name: Compare the legacy hardening report
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-hardening-interop.ts --bundle --platform=node --format=esm --target=node22 --banner:js="import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" --outfile=.build/legacy-hardening-interop.mjs
+          export RDH_LEGACY_HARDENING_HELPER="$PWD/.build/legacy-hardening-interop.mjs"
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_hardening_interop -- --ignored --test-threads=1
+      - name: Test legacy audit handoff
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-audit-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-audit-interop.mjs
+          export RDH_LEGACY_AUDIT_HELPER="$PWD/.build/legacy-audit-interop.mjs"
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_audit_interop -- --ignored --test-threads=1
+      - name: Compare legacy operation receipts
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          node node_modules/esbuild/bin/esbuild scripts/legacy-receipts-interop.ts --bundle --platform=node --format=esm --target=node22 --outfile=.build/legacy-receipts-interop.mjs
+          export RDH_LEGACY_RECEIPTS_HELPER="$PWD/.build/legacy-receipts-interop.mjs"
+          cargo +1.93.0 test --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test legacy_receipts_interop -- --ignored --test-threads=1
+      - name: Build and inspect the development executable
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 build --locked --release -p rdh-agent --target "$RDH_TARGET"
+          binary="target/$RDH_TARGET/release/rdh"
+          if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
+          "$binary" --version

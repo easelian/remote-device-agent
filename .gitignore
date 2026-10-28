@@ -8,6 +8,7 @@ dist/
 state/
 workspace/
 .build/
+/target/
 .env
 .env.*
 *.local.json
