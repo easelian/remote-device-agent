@@ -12,7 +12,7 @@ jobs:
   stop-old-snapshot:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'codex/rust-agent-native-port-20261028'
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 4
     steps:
       - name: Cancel only the superseded development snapshot
         env:
@@ -23,7 +23,13 @@ jobs:
           repository = os.environ['GITHUB_REPOSITORY']
           assert repository == 'easelian/remote-device-agent'
           branch = 'codex/rust-agent-native-port-20261028'
-          snapshot = '77a010828f7634bd9fc1073b9834c5d422d37309'
+          snapshots = {'77a010828f7634bd9fc1073b9834c5d422d37309',
+                       'b8e856a0ae357182598c987f41f8e334253217de'}
+          with open(os.environ['GITHUB_EVENT_PATH']) as event_file:
+              event = json.load(event_file)
+          current_sha = event['pull_request']['head']['sha']
+          assert event['pull_request']['head']['ref'] == branch
+          assert event['pull_request']['head']['repo']['full_name'] == repository
           base = 'https://api.github.com/repos/' + repository
           headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
                      'Accept': 'application/vnd.github+json',
@@ -35,14 +41,17 @@ jobs:
                   data = response.read()
                   return json.loads(data) if data else None
           runs = call('/actions/runs?' + urllib.parse.urlencode({'branch': branch, 'per_page': 100}))
+          assert runs['total_count'] <= 100, 'Refuse a truncated branch run list'
           targets = [run for run in runs['workflow_runs']
-                     if run['head_sha'] == snapshot and run['head_branch'] == branch
-                     and run['name'] in ('Agent CI', 'Release', 'Rust Agent development CI')
-                     and run['status'] != 'completed']
+                     if run['head_branch'] == branch and run['status'] != 'completed'
+                     and ((run['head_sha'] in snapshots
+                           and run['name'] in ('Agent CI', 'Release', 'Rust Agent development CI'))
+                          or (run['head_sha'] == current_sha
+                              and run['name'] in ('Agent CI', 'Release')))]
           for run in targets:
               path = '/actions/runs/' + str(run['id'])
               current = call(path)
-              assert current['head_sha'] == snapshot and current['head_branch'] == branch
+              assert current['head_sha'] == run['head_sha'] and current['head_branch'] == branch
               if current['status'] == 'completed':
                   continue
               try:
@@ -55,7 +64,18 @@ jobs:
                       call(path + '/force-cancel', 'POST')
               print('Cancellation requested:', run['id'], run['name'])
           pending = {run['id'] for run in targets}
-          for _ in range(25):
+          for _ in range(10):
+              pending = {run_id for run_id in pending
+                         if call('/actions/runs/' + str(run_id))['status'] != 'completed'}
+              if not pending:
+                  break
+              time.sleep(2)
+          for run_id in sorted(pending):
+              path = '/actions/runs/' + str(run_id)
+              current = call(path)
+              if current['status'] != 'completed':
+                  call(path + '/force-cancel', 'POST')
+          for _ in range(15):
               pending = {run_id for run_id in pending
                          if call('/actions/runs/' + str(run_id))['status'] != 'completed'}
               if not pending:
@@ -63,5 +83,5 @@ jobs:
               time.sleep(2)
           if pending:
               raise RuntimeError('Cancellation still pending: ' + str(sorted(pending)))
-          print('Superseded snapshot is terminal')
+          print('Superseded and duplicate legacy runs are terminal')
           PY
