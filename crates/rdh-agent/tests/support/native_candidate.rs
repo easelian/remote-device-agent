@@ -35,6 +35,7 @@ pub fn load() -> (String, Vec<u8>) {
             }
         ),
         "macos" => format!("{}-apple-darwin", std::env::consts::ARCH),
+        "windows" => format!("{}-pc-windows-msvc", std::env::consts::ARCH),
         _ => panic!("Unsupported native candidate platform"),
     };
     assert_eq!(manifest["target"], target);
@@ -43,7 +44,7 @@ pub fn load() -> (String, Vec<u8>) {
         compare_versions(&version, env!("CARGO_PKG_VERSION")).unwrap(),
         Ordering::Greater
     );
-    let binary = directory.join("rdh");
+    let binary = directory.join(if cfg!(windows) { "rdh.exe" } else { "rdh" });
     let metadata = std::fs::metadata(&binary).unwrap();
     assert!(metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_BINARY_BYTES);
     let bytes = std::fs::read(binary).unwrap();

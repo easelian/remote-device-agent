@@ -2,12 +2,18 @@
 
 #[cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 ))]
-mod posix {
-    use std::fs::{Metadata, OpenOptions};
+mod native {
+    #[cfg(unix)]
+    use std::fs::Metadata;
+    use std::fs::OpenOptions;
     use std::io::Read;
+    #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    #[cfg(windows)]
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::path::{Component, Path, PathBuf};
 
     use url::Url;
@@ -37,7 +43,7 @@ mod posix {
         The local probe reports the Agent's latest observed Hub connection state.\n\
         Offline updates require all managed Agents to be stopped.\n";
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     const USAGE: &str = "rdh upgrade [--channel stable|canary] [--index URL|FILE] [--check|--dry-run] [--force] [--no-restart]\n\
         rdh upgrade --recover [--recover-lock]\n\
         rdh upgrade --list-profiles | --forget-profile ABSOLUTE_PATH\n\
@@ -151,8 +157,12 @@ mod posix {
                 "--recover-service accepts only the optional --recover-lock",
             ));
         }
-        if result.recover_lock && !result.recover && !result.recover_service {
-            return Err(Error::message("--recover-lock requires a recovery command"));
+        let offline_recovery =
+            cfg!(windows) && result.no_restart && !result.check && !result.dry_run;
+        if result.recover_lock && !(result.recover || result.recover_service || offline_recovery) {
+            return Err(Error::message(
+                "--recover-lock requires recovery, or a Windows offline update after confirming the prior Agent and its work have stopped",
+            ));
         }
         let local_commands = usize::from(result.list_profiles)
             + usize::from(result.forget_profile.is_some())
@@ -256,10 +266,28 @@ mod posix {
         match location {
             Location::Remote(url) => Network::from_env()?.get_update(url, limit).await,
             Location::Local(path) => {
+                #[cfg(unix)]
                 let file = OpenOptions::new()
                     .read(true)
                     .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
                     .open(path)?;
+                #[cfg(windows)]
+                let file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(
+                        windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+                    )
+                    .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+                    .open(path)?;
+                #[cfg(windows)]
+                if file.metadata()?.file_attributes()
+                    & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                    != 0
+                {
+                    return Err(Error::message(
+                        "Local native update input cannot be a reparse point",
+                    ));
+                }
                 if !file.metadata()?.is_file() {
                     return Err(Error::message(
                         "Local native update input must be a regular file",
@@ -288,6 +316,8 @@ mod posix {
             ("linux", "aarch64", true) => Ok("linux-arm64-musl"),
             ("macos", "x86_64", _) => Ok("darwin-x64"),
             ("macos", "aarch64", _) => Ok("darwin-arm64"),
+            ("windows", "x86_64", _) => Ok("win32-x64"),
+            ("windows", "aarch64", _) => Ok("win32-arm64"),
             _ => Err(Error::message("Native update platform is unsupported")),
         }
     }
@@ -305,6 +335,17 @@ mod posix {
         }
         Ok(value.into())
     }
+    #[cfg(unix)]
+    fn config_snapshot(path: &Path) -> Result<Metadata> {
+        let metadata = storage::private_metadata(path, false)?;
+        if metadata.nlink() != 1 {
+            return Err(Error::message(
+                "Existing configuration must not have hard links",
+            ));
+        }
+        Ok(metadata)
+    }
+    #[cfg(unix)]
     fn same_config(left: &Metadata, right: &Metadata) -> bool {
         left.dev() == right.dev()
             && left.ino() == right.ino()
@@ -318,32 +359,48 @@ mod posix {
             && left.ctime_nsec() == right.ctime_nsec()
     }
 
+    #[cfg(windows)]
+    struct ConfigSnapshot {
+        object: crate::install_lock::windows::Object,
+        digest: String,
+    }
+    #[cfg(windows)]
+    fn config_snapshot(path: &Path) -> Result<ConfigSnapshot> {
+        let object = crate::install_lock::windows::private_object(path, false)?;
+        let digest = crate::config::sha256_hex(&storage::read_private(path)?);
+        Ok(ConfigSnapshot { object, digest })
+    }
+    #[cfg(windows)]
+    fn same_config(left: &ConfigSnapshot, right: &ConfigSnapshot) -> bool {
+        use crate::storage::windows::file_identity;
+        matches!((file_identity(&left.object.file), file_identity(&right.object.file)), (Ok(left), Ok(right)) if left == right)
+            && left.digest == right.digest
+    }
+
     fn install_with_profile(prefix: &Path, selected: &Path) -> Result<PathBuf> {
         if !selected.is_absolute()
-            || !selected
-                .components()
-                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+            || !selected.components().all(|part| {
+                matches!(
+                    part,
+                    Component::Prefix(_) | Component::RootDir | Component::Normal(_)
+                )
+            })
         {
             return Err(Error::message(
                 "Existing configuration path must be absolute",
             ));
         }
-        let original = storage::private_metadata(selected, false)?;
-        if original.nlink() != 1 {
-            return Err(Error::message(
-                "Existing configuration must not have hard links",
-            ));
-        }
+        let original = config_snapshot(selected)?;
         let config = selected.canonicalize()?;
-        if !same_config(&original, &storage::private_metadata(&config, false)?) {
+        if !same_config(&original, &config_snapshot(&config)?) {
             return Err(Error::message(
                 "Existing configuration changed before validation",
             ));
         }
         let mut locks = ProfileLocks::acquire(std::slice::from_ref(&config))?;
         let result = (|| {
-            if !same_config(&original, &storage::private_metadata(selected, false)?)
-                || !same_config(&original, &storage::private_metadata(&config, false)?)
+            if !same_config(&original, &config_snapshot(selected)?)
+                || !same_config(&original, &config_snapshot(&config)?)
             {
                 return Err(Error::message(
                     "Existing configuration changed before validation",
@@ -353,18 +410,18 @@ mod posix {
                 .to_str()
                 .ok_or_else(|| Error::message("Config path must be Unicode"))?;
             crate::app::validate_config(&["--config".into(), path.into()])?;
-            if !same_config(&original, &storage::private_metadata(selected, false)?)
-                || !same_config(&original, &storage::private_metadata(&config, false)?)
+            if !same_config(&original, &config_snapshot(selected)?)
+                || !same_config(&original, &config_snapshot(&config)?)
             {
                 return Err(Error::message(
                     "Existing configuration changed during validation",
                 ));
             }
             let installed = native_install::install_for_locked_profile(prefix, &config)?;
-            let unchanged = storage::private_metadata(selected, false)
+            let unchanged = config_snapshot(selected)
                 .ok()
                 .is_some_and(|metadata| same_config(&original, &metadata))
-                && storage::private_metadata(&config, false)
+                && config_snapshot(&config)
                     .ok()
                     .is_some_and(|metadata| same_config(&original, &metadata));
             if !unchanged {
@@ -425,10 +482,15 @@ mod posix {
         } else {
             native_install::install(Path::new(prefix))?
         };
+        #[cfg(unix)]
+        let launch = installed.join("current/rdh");
+        #[cfg(windows)]
+        let launch =
+            crate::install_lock::version_binary(&installed, &pointer(&installed, "current")?)?;
         println!(
-            "Native development installation created: {}\nRun {}/current/rdh to pair or reuse a configuration.",
+            "Native development installation created: {}\nRun {} to pair or reuse a configuration.",
             installed.display(),
-            installed.display()
+            launch.display()
         );
         if config.is_some() {
             println!(
@@ -443,7 +505,7 @@ mod posix {
             return Ok(());
         }
         let options = options(args)?;
-        #[cfg(target_os = "macos")]
+        #[cfg(not(target_os = "linux"))]
         if options.recover_service
             || options.probe_profile.is_some()
             || options.stop_if_idle.is_some()
@@ -452,7 +514,7 @@ mod posix {
             || options.service_config.is_some()
         {
             return Err(Error::message(
-                "Coordinated service updates are unavailable on macOS; stop the Agent and use an offline update",
+                "Coordinated service updates are unavailable on this platform; stop the Agent and use an offline update",
             ));
         }
         let (prefix, executable) = current_installation()?
@@ -619,7 +681,15 @@ mod posix {
             }));
         }
         drop(guard);
+        #[cfg(not(windows))]
         let manager = ManagerLock::acquire(&prefix, &executable, false)?;
+        #[cfg(windows)]
+        let manager = ManagerLock::acquire_with_stale_recovery(
+            &prefix,
+            &executable,
+            false,
+            options.recover_lock,
+        )?;
         native_install::verify_stored(&prefix, &current)?;
         let binary = read(&artifact_source, MAX_BINARY_BYTES as usize).await?;
         if binary.len() as u64 != artifact.bytes {
@@ -631,6 +701,11 @@ mod posix {
         native_install::verify_stored(&prefix, &index.version)?;
         let _profile_locks = native_install::validate_profiles(&manager, &index.version)?;
         native_install::switch(&manager, &index.version)?;
+        #[cfg(windows)]
+        println!(
+            "Selected executable: {}",
+            crate::install_lock::version_binary(&prefix, &index.version)?.display()
+        );
         println!(
             "Switched to {}; start the Agent manually and verify Hub readiness.",
             index.version
@@ -654,7 +729,14 @@ mod posix {
         let previous = pointer(&prefix, "previous")?;
         native_install::verify_stored(&prefix, &current)?;
         native_install::verify_stored(&prefix, &previous)?;
+        #[cfg(windows)]
+        let _profiles = ProfileLocks::acquire(&manager.profiles()?)?;
         native_install::switch(&manager, &previous)?;
+        #[cfg(windows)]
+        println!(
+            "Selected executable: {}",
+            crate::install_lock::version_binary(&prefix, &previous)?.display()
+        );
         println!("Rolled back to {previous}; start the Agent manually and verify Hub readiness.");
         Ok(())
     }
@@ -753,12 +835,14 @@ mod posix {
 
 #[cfg(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 ))]
-pub use posix::{install, rollback, upgrade};
+pub use native::{install, rollback, upgrade};
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 )))]
 pub fn install(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
@@ -767,7 +851,8 @@ pub fn install(_: &[String]) -> crate::error::Result<()> {
 }
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 )))]
 pub async fn upgrade(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
@@ -776,7 +861,8 @@ pub async fn upgrade(_: &[String]) -> crate::error::Result<()> {
 }
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 )))]
 pub fn rollback(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(

@@ -220,6 +220,16 @@ fn validate_acl(
     owner: PSID,
     acl: *mut ACL,
 ) -> Result<()> {
+    validate_acl_kind(identity, descriptor, owner, acl, true)
+}
+
+fn validate_acl_kind(
+    identity: &Identity,
+    descriptor: PSECURITY_DESCRIPTOR,
+    owner: PSID,
+    acl: *mut ACL,
+    private: bool,
+) -> Result<()> {
     if descriptor.is_null() || owner.is_null() || acl.is_null() {
         return Err(unsafe_storage());
     }
@@ -234,7 +244,7 @@ fn validate_acl(
     let mut revision = 0u32;
     // SAFETY: descriptor is live and both outputs point to initialized storage.
     if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
-        || control & SE_DACL_PROTECTED == 0
+        || (private && control & SE_DACL_PROTECTED == 0)
     {
         return Err(unsafe_storage());
     }
@@ -299,13 +309,28 @@ fn validate_acl(
             return Err(unsafe_storage());
         }
         let is_user = unsafe { EqualSid(sid, identity.user.as_ptr()) } != 0;
+        let mask = u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| unsafe_storage())?);
         if !is_user
             && unsafe { EqualSid(sid, identity.system.as_ptr()) } == 0
             && unsafe { EqualSid(sid, identity.administrators.as_ptr()) } == 0
         {
-            return Err(unsafe_storage());
+            // An installation's existing parent may allow public reads. It
+            // must not grant any untrusted principal rights to create, replace,
+            // delete or change security on the new private installation.
+            // Inherit-only entries do not apply here; new objects receive a
+            // protected descriptor and cannot inherit them.
+            use windows_sys::Win32::Foundation::GENERIC_EXECUTE;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+            };
+            let read_only =
+                FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | GENERIC_READ | GENERIC_EXECUTE;
+            if private
+                || (u32::from(header.AceFlags) & INHERIT_ONLY_ACE == 0 && mask & !read_only != 0)
+            {
+                return Err(unsafe_storage());
+            }
         }
-        let mask = u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| unsafe_storage())?);
         if is_user
             && u32::from(header.AceFlags) & INHERIT_ONLY_ACE == 0
             && mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS
@@ -319,7 +344,16 @@ fn validate_acl(
     Ok(())
 }
 
-fn check_file_acl(file: &File) -> Result<()> {
+pub(crate) fn check_file_acl(file: &File) -> Result<()> {
+    check_acl_kind(file, true)
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn check_install_parent(file: &File) -> Result<()> {
+    check_acl_kind(file, false)
+}
+
+fn check_acl_kind(file: &File, private: bool) -> Result<()> {
     let identity = Identity::current()?;
     let mut owner: PSID = null_mut();
     let mut acl: *mut ACL = null_mut();
@@ -341,8 +375,12 @@ fn check_file_acl(file: &File) -> Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32).into());
     }
     let descriptor = LocalMemory(descriptor);
-    validate_acl(&identity, descriptor.0, owner, acl)
-        .map_err(|_| Error::message("Windows private storage owner or ACL cannot be verified"))
+    (if private {
+        validate_acl(&identity, descriptor.0, owner, acl)
+    } else {
+        validate_acl_kind(&identity, descriptor.0, owner, acl, false)
+    })
+    .map_err(|_| Error::message("Windows private storage owner or ACL cannot be verified"))
 }
 
 fn information(file: &File, directory: bool) -> Result<BY_HANDLE_FILE_INFORMATION> {
@@ -359,13 +397,13 @@ fn information(file: &File, directory: bool) -> Result<BY_HANDLE_FILE_INFORMATIO
     Ok(info)
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct FileIdentity {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FileIdentity {
     volume: u64,
     file: [u8; 16],
 }
 
-fn file_identity(file: &File) -> Result<FileIdentity> {
+pub(crate) fn file_identity(file: &File) -> Result<FileIdentity> {
     let mut info = FILE_ID_INFO::default();
     // Use the full volume/file identity: ReFS identifiers need not fit in the
     // older BY_HANDLE_FILE_INFORMATION's 64-bit file index.
@@ -492,7 +530,12 @@ fn open_root(root: &[u16], read_acl: bool) -> Result<File> {
     Ok(file)
 }
 
-fn open_child(parent: &File, name: &[u16], directory: bool, read_acl: bool) -> Result<File> {
+pub(crate) fn open_child(
+    parent: &File,
+    name: &[u16],
+    directory: bool,
+    read_acl: bool,
+) -> Result<File> {
     open_child_access(parent, name, directory, read_acl, false)
 }
 
@@ -516,7 +559,7 @@ fn open_child_access(
     open_child_request(parent, name, directory, desired, sharing)
 }
 
-fn open_child_request(
+pub(crate) fn open_child_request(
     parent: &File,
     name: &[u16],
     directory: bool,
@@ -779,6 +822,25 @@ pub(crate) fn open_parent(
     Ok((directories, parts.last().expect("path has a name").clone()))
 }
 
+/// An installer may create its private root under an existing user-owned
+/// directory with public read access. Existing directories are never repaired.
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn open_install_parent(path: &Path) -> Result<(Vec<File>, Vec<u16>)> {
+    let (root, parts) = path_parts(path)?;
+    let mut directories = vec![open_root(&root, parts.len() == 1)?];
+    for (index, name) in parts[..parts.len() - 1].iter().enumerate() {
+        let next = open_child(
+            directories.last().expect("root exists"),
+            name,
+            true,
+            index + 2 == parts.len(),
+        )?;
+        directories.push(next);
+    }
+    check_install_parent(directories.last().expect("root exists"))?;
+    Ok((directories, parts.last().expect("path has a name").clone()))
+}
+
 pub fn ensure_parent(path: &Path) -> Result<()> {
     open_parent(path, true, true).map(|_| ())
 }
@@ -829,7 +891,12 @@ impl Drop for Temporary {
     }
 }
 
-fn rename_file(file: &File, parent: &File, name: &[u16], replace_existing: bool) -> Result<()> {
+pub(crate) fn rename_file(
+    file: &File,
+    parent: &File,
+    name: &[u16],
+    replace_existing: bool,
+) -> Result<()> {
     if name.is_empty()
         || name.len() > 255
         || name == [b'.' as u16]
@@ -1059,6 +1126,10 @@ mod tests {
     }
 
     fn accepted(identity: &Identity, descriptor: &LocalMemory) -> bool {
+        accepted_kind(identity, descriptor, true)
+    }
+
+    fn accepted_kind(identity: &Identity, descriptor: &LocalMemory, private: bool) -> bool {
         let mut owner = null_mut();
         let mut owner_defaulted = 0;
         let mut present = 0;
@@ -1075,7 +1146,32 @@ mod tests {
             },
             0
         );
-        present != 0 && validate_acl(identity, descriptor.0, owner, acl).is_ok()
+        present != 0 && validate_acl_kind(identity, descriptor.0, owner, acl, private).is_ok()
+    }
+
+    #[cfg(feature = "experimental-windows-install")]
+    #[test]
+    fn installation_parent_may_be_publicly_readable_but_never_publicly_mutable() {
+        let identity = Identity::current().unwrap();
+        let user = user_text(&identity);
+        // Parent directories may use inherited ACLs; created installation
+        // objects still require the existing protected user-only contract.
+        for protection in ["", "P"] {
+            let read = descriptor(&format!(
+                "O:{user}D:{protection}(A;;FA;;;{user})(A;;FRFX;;;WD)"
+            ));
+            assert!(accepted_kind(&identity, &read, false));
+            assert!(!accepted(&identity, &read));
+        }
+        for rights in ["FW", "FA", "WD", "WO", "SD", "DC", "0x00000004"] {
+            let write = descriptor(&format!("O:{user}D:P(A;;FA;;;{user})(A;;{rights};;;WD)"));
+            assert!(!accepted_kind(&identity, &write, false), "{rights}");
+        }
+        let inherited = descriptor(&format!("O:{user}D:P(A;;FA;;;{user})(A;OICIIO;FA;;;WD)"));
+        assert!(accepted_kind(&identity, &inherited, false));
+        assert!(!accepted(&identity, &inherited));
+        let wrong_owner = descriptor(&format!("O:WDD:P(A;;FA;;;{user})"));
+        assert!(!accepted_kind(&identity, &wrong_owner, false));
     }
 
     #[test]
@@ -1101,6 +1197,47 @@ mod tests {
         let identity = Identity::current().unwrap();
         assert!(accepted(&identity, &private_descriptor(false).unwrap()));
         assert!(accepted(&identity, &private_descriptor(true).unwrap()));
+    }
+
+    #[cfg(feature = "experimental-windows-install")]
+    #[test]
+    fn installation_parent_checks_actual_handles_and_children_do_not_inherit_public_access() {
+        let fixture = Fixture::new();
+        let identity = Identity::current().unwrap();
+        let user = user_text(&identity);
+        for (name, rights, allowed) in
+            [("read-parent", "FRFX", true), ("write-parent", "FA", false)]
+        {
+            let path = fixture.0.join(name);
+            let descriptor = descriptor(&format!(
+                "O:{user}D:P(A;OICI;FA;;;{user})(A;OICI;{rights};;;WD)"
+            ));
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.0,
+                bInheritHandle: 0,
+            };
+            let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            assert_ne!(unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) }, 0);
+            let child = path.join("install");
+            let opened = open_install_parent(&child);
+            assert_eq!(opened.is_ok(), allowed);
+            if let Ok((parents, name)) = opened {
+                // Private access must still reject the publicly readable parent.
+                assert!(check_file_acl(parents.last().unwrap()).is_err());
+                let directory = create_child(parents.last().unwrap(), &name, true).unwrap();
+                check_file_acl(&directory).unwrap();
+                drop(directory);
+                drop(parents);
+                write_private_new(&child.join("identity.json"), b"private pairing").unwrap();
+                assert_eq!(
+                    read_private(&child.join("identity.json")).unwrap(),
+                    b"private pairing"
+                );
+            } else {
+                assert!(!child.exists());
+            }
+        }
     }
 
     #[test]

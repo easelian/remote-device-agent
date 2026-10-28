@@ -378,10 +378,31 @@ impl Drop for Attributes {
     }
 }
 
-pub(super) fn spawn(mut plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
-    let executable = wide(executable(&plan.shell, &plan.cwd, &plan.environment)?.as_os_str())?;
-    let cwd = wide(plan.cwd.as_os_str())?;
-    let environment = environment_block(&plan.environment)?;
+pub(super) fn spawn(plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
+    let executable = executable(&plan.shell, &plan.cwd, &plan.environment)?;
+    let mut child = spawn_native(
+        &executable,
+        &plan.cwd,
+        plan.command_line,
+        &plan.environment,
+        plan.deadline,
+        &job.stop,
+    )?;
+    child.directory = Some(plan.directory);
+    Ok(child)
+}
+
+fn spawn_native(
+    executable: &Path,
+    cwd: &Path,
+    mut command_line: Vec<u16>,
+    environment: &Environment,
+    deadline: Instant,
+    cancel: &AtomicBool,
+) -> io::Result<Child> {
+    let executable = wide(executable.as_os_str())?;
+    let cwd = wide(cwd.as_os_str())?;
+    let environment = environment_block(environment)?;
     // SAFETY: unnamed, non-inheritable job owned only by this supervisor.
     let raw_job = unsafe { CreateJobObjectW(null(), null()) };
     if raw_job.is_null() {
@@ -424,7 +445,7 @@ pub(super) fn spawn(mut plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
     startup.StartupInfo.hStdError = inherited[2];
     startup.lpAttributeList = attributes.0.as_mut_ptr().cast();
     let mut information = PROCESS_INFORMATION::default();
-    if job.stop.load(Ordering::Acquire) || Instant::now() >= plan.deadline {
+    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Err(cancelled_error());
     }
     // SAFETY: all pointers reference initialized, live storage. Only the three
@@ -433,7 +454,7 @@ pub(super) fn spawn(mut plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
     if unsafe {
         CreateProcessW(
             executable.as_ptr(),
-            plan.command_line.as_mut_ptr(),
+            command_line.as_mut_ptr(),
             null(),
             null(),
             1,
@@ -461,8 +482,8 @@ pub(super) fn spawn(mut plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
         stdin: Some(stdin),
         stdout: Some(stdout),
         stderr: Some(stderr),
-        directory: Some(plan.directory),
-        deadline: plan.deadline,
+        directory: None,
+        deadline,
     })
 }
 
@@ -503,6 +524,173 @@ fn active_processes(job: &OwnedHandle) -> io::Result<u32> {
         Ok(info.ActiveProcesses)
     }
 }
+
+/// Execute a native install candidate with the same creation-time Job and
+/// restricted handle list as remote jobs. The caller pins the candidate and
+/// its ancestors until this function confirms all descendants have exited.
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn check_program(
+    path: &Path,
+    arguments: &[&str],
+    expected: &str,
+    use_local_environment: bool,
+    timeout: Duration,
+) -> io::Result<()> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("Native binary path is not Unicode"))?;
+    let cwd = path
+        .parent()
+        .ok_or_else(|| io::Error::other("Native binary has no parent"))?;
+    let line = std::iter::once(text)
+        .chain(arguments.iter().copied())
+        .map(quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line = wide(OsStr::new(&line))?;
+    if !path.is_absolute() || line.len() > 32767 {
+        return Err(io::Error::other("Invalid native binary self-check command"));
+    }
+    let mut environment = Environment::new();
+    for name in ["SystemRoot", "WINDIR"] {
+        if let Some(value) = std::env::var_os(name) {
+            fallback(&mut environment, name, value);
+        }
+    }
+    if use_local_environment {
+        for name in [
+            "PATH",
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "ProgramData",
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                fallback(&mut environment, name, value);
+            }
+        }
+    }
+    environment
+        .entry("PATH".into())
+        .or_insert_with(|| ("PATH".into(), OsString::new()));
+    let deadline = Instant::now() + timeout;
+    let mut child = spawn_native(
+        path,
+        cwd,
+        line,
+        &environment,
+        deadline,
+        &AtomicBool::new(false),
+    )?;
+    child.stdin.take();
+    // CreateProcessW itself may consume the remaining budget. Keep ownership
+    // of the suspended process and terminate its Job without ever running it.
+    let mut failure = if Instant::now() >= deadline {
+        Some(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Native binary self-check timed out before resume",
+        ))
+    } else {
+        match unsafe { ResumeThread(child.thread.as_ref().unwrap().as_raw_handle()) } {
+            1 => None,
+            u32::MAX => Some(io::Error::last_os_error()),
+            _ => Some(io::Error::from_raw_os_error(ERROR_INVALID_STATE as i32)),
+        }
+    };
+    child.thread.take();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut last_terminate = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    loop {
+        for (stream, captured) in [
+            (&mut child.stdout, &mut stdout),
+            (&mut child.stderr, &mut stderr),
+        ] {
+            let mut bytes = [0u8; 1024];
+            for _ in 0..8 {
+                let Some(reader) = stream.as_mut() else {
+                    break;
+                };
+                match reader.read(&mut bytes) {
+                    Ok(0) => {
+                        stream.take();
+                        break;
+                    }
+                    Ok(count) if captured.len() + count <= 4096 => {
+                        captured.extend_from_slice(&bytes[..count])
+                    }
+                    Ok(_) => {
+                        failure.get_or_insert_with(|| {
+                            io::Error::other("Native binary self-check output is too large")
+                        });
+                        stream.take();
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        failure.get_or_insert(error);
+                        stream.take();
+                        break;
+                    }
+                }
+            }
+        }
+        let observed = match observe(&child.process) {
+            Ok(value) => value,
+            Err(error) => {
+                failure.get_or_insert(error);
+                None
+            }
+        };
+        let active = match active_processes(&child.job) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                failure.get_or_insert(error);
+                None
+            }
+        };
+        if let Some(code) = observed {
+            if active == Some(0) && child.stdout.is_none() && child.stderr.is_none() {
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                return if code == 0
+                    && std::str::from_utf8(&stdout).ok().map(str::trim) == Some(expected)
+                {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("Native binary self-check failed"))
+                };
+            }
+        }
+        if Instant::now() >= deadline {
+            failure.get_or_insert_with(|| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Native binary self-check timed out",
+                )
+            });
+        }
+        if (failure.is_some() || observed.is_some())
+            && last_terminate.elapsed() >= Duration::from_millis(20)
+        {
+            if unsafe { TerminateJobObject(child.job.as_raw_handle(), 1) } == 0 {
+                failure.get_or_insert_with(io::Error::last_os_error);
+            }
+            last_terminate = Instant::now();
+        }
+        // A failed cleanup query is not permission to release the install and
+        // profile locks. Retain the owner until the same Job is confirmed empty.
+        thread::sleep(TICK);
+    }
+}
+
 fn failed(job: &Job, error: io::Error, syscall: &str) {
     let mut state = lock(&job.state);
     state.status = "failed";

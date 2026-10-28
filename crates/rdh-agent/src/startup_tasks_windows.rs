@@ -140,6 +140,150 @@ pub(super) fn create(
     }
 }
 
+#[cfg(feature = "experimental-windows-install")]
+mod update {
+    use super::*;
+    use windows::Win32::System::TaskScheduler::{
+        IRegisteredTask, ITaskDefinition, TASK_DONT_ADD_PRINCIPAL_ACE,
+        TASK_IGNORE_REGISTRATION_TRIGGERS, TASK_STATE_DISABLED, TASK_STATE_READY, TASK_UPDATE,
+    };
+
+    pub(super) struct Checked {
+        definition: ITaskDefinition,
+        action: IExecAction,
+        pub executable: String,
+        pub fingerprint: String,
+    }
+    fn invalid() -> windows::core::Error {
+        windows::core::Error::from_hresult(HRESULT(0x8007000du32 as i32))
+    }
+    fn inspect(
+        task: &IRegisteredTask,
+        sid: &str,
+        arguments: &str,
+        directory: &str,
+    ) -> Result<Checked> {
+        // Only an idle, single-action, single-logon task for this user is
+        // eligible. Keep its entire definition and security descriptor; the
+        // fingerprint excludes only the executable that the transaction changes.
+        unsafe {
+            if !matches!(task.State()?, TASK_STATE_DISABLED | TASK_STATE_READY)
+                || task.GetInstances(0)?.Count()? != 0
+            {
+                return Err(invalid());
+            }
+            let definition = task.Definition()?;
+            let actions = definition.Actions()?;
+            let triggers = definition.Triggers()?;
+            let (mut action_count, mut trigger_count) = (0, 0);
+            actions.Count(&mut action_count)?;
+            triggers.Count(&mut trigger_count)?;
+            if action_count != 1 || trigger_count != 1 {
+                return Err(invalid());
+            }
+            let action: IExecAction = actions.get_Item(1)?.cast()?;
+            let trigger: ILogonTrigger = triggers.get_Item(1)?.cast()?;
+            let principal = definition.Principal()?;
+            let (mut user, mut trigger_user, mut args, mut cwd, mut executable) = (
+                BSTR::new(),
+                BSTR::new(),
+                BSTR::new(),
+                BSTR::new(),
+                BSTR::new(),
+            );
+            let (mut logon, mut level) = (Default::default(), Default::default());
+            principal.UserId(&mut user)?;
+            principal.LogonType(&mut logon)?;
+            principal.RunLevel(&mut level)?;
+            trigger.UserId(&mut trigger_user)?;
+            action.Arguments(&mut args)?;
+            action.WorkingDirectory(&mut cwd)?;
+            action.Path(&mut executable)?;
+            if user != sid
+                || trigger_user != sid
+                || logon != TASK_LOGON_INTERACTIVE_TOKEN
+                || level != TASK_RUNLEVEL_LUA
+                || args != arguments
+                || cwd != directory
+            {
+                return Err(invalid());
+            }
+            action.SetPath(&BSTR::from("RDH-NATIVE-VERSION-PLACEHOLDER"))?;
+            let mut xml = BSTR::new();
+            definition.XmlText(&mut xml)?;
+            action.SetPath(&executable)?;
+            // OWNER, GROUP and DACL; no SACL privilege is requested.
+            let security = task.GetSecurityDescriptor(7)?;
+            if xml.len() > 65536 || security.len() > 16384 {
+                return Err(invalid());
+            }
+            let fingerprint = crate::config::sha256_hex(
+                &serde_json::to_vec(&(
+                    xml.to_string(),
+                    security.to_string(),
+                    task.Enabled()?.0 != 0,
+                ))
+                .map_err(|_| invalid())?,
+            );
+            Ok(Checked {
+                definition,
+                action,
+                executable: executable.to_string(),
+                fingerprint,
+            })
+        }
+    }
+    pub(crate) fn snapshot(
+        name: &str,
+        sid: &str,
+        arguments: &str,
+        directory: &str,
+    ) -> Result<(String, String)> {
+        let scheduler = Scheduler::connect()?;
+        let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
+        let checked = inspect(&task, sid, arguments, directory)?;
+        Ok((checked.executable, checked.fingerprint))
+    }
+    pub(crate) fn replace(target: &super::super::UpdateTask, destination: &str) -> Result<()> {
+        let scheduler = Scheduler::connect()?;
+        let task = unsafe { scheduler.folder.GetTask(&BSTR::from(&target.name))? };
+        let checked = inspect(&task, &target.sid, &target.arguments, &target.directory)?;
+        if checked.fingerprint != target.fingerprint
+            || (checked.executable != target.old_executable
+                && checked.executable != target.new_executable)
+            || (destination != target.old_executable && destination != target.new_executable)
+        {
+            return Err(invalid());
+        }
+        if checked.executable == destination {
+            return Ok(());
+        }
+        unsafe {
+            checked.action.SetPath(&BSTR::from(destination))?;
+            // Updating must neither run a registration trigger nor silently
+            // add/remove principal ACL entries. No enable/Run/Stop call occurs.
+            scheduler.folder.RegisterTaskDefinition(
+                &BSTR::from(&target.name),
+                &checked.definition,
+                TASK_UPDATE.0 | TASK_DONT_ADD_PRINCIPAL_ACE.0 | TASK_IGNORE_REGISTRATION_TRIGGERS.0,
+                &VARIANT::from(target.sid.as_str()),
+                &VARIANT::default(),
+                TASK_LOGON_INTERACTIVE_TOKEN,
+                &VARIANT::default(),
+            )?;
+        }
+        let task = unsafe { scheduler.folder.GetTask(&BSTR::from(&target.name))? };
+        let actual = inspect(&task, &target.sid, &target.arguments, &target.directory)?;
+        if actual.executable != destination || actual.fingerprint != target.fingerprint {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(super) use update::{replace as replace_target, snapshot as target_snapshot};
+
 #[cfg(test)]
 pub(super) fn remove(name: &str) -> Result<()> {
     let scheduler = Scheduler::connect()?;

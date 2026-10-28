@@ -186,6 +186,11 @@ fn require_absent(processes: &[u32], current: u32, owners: &[u32]) -> Result<()>
     Ok(())
 }
 
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn require_dead_owners(owners: &[u32]) -> Result<()> {
+    require_absent(&process_snapshot()?, std::process::id(), owners)
+}
+
 pub struct ProfileLocks {
     held: Vec<HeldLock>,
     release_on_drop: bool,

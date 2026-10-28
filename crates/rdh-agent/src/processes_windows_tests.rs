@@ -287,6 +287,79 @@ fn child_helper() {
     std::process::exit(0);
 }
 
+#[cfg(feature = "experimental-windows-install")]
+#[test]
+fn native_candidate_checks_use_an_owned_job_and_bound_output() {
+    // The candidate checker passes native argv. cmd.exe has a distinct /C
+    // command-string grammar, so use this native test executable as the probe.
+    let native = std::env::current_exe().unwrap();
+    let listed = format!("{HELPER}: test\n\n1 test, 0 benchmarks");
+    check_program(
+        &native,
+        &["--list", "--exact", HELPER],
+        &listed,
+        false,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(
+        check_program(
+            &native,
+            &["--rdh-intentionally-unknown-option"],
+            "",
+            false,
+            Duration::from_secs(10)
+        )
+        .is_err()
+    );
+    assert!(
+        check_program(
+            &native,
+            &["--list", "--exact", HELPER],
+            &listed,
+            false,
+            Duration::ZERO
+        )
+        .is_err()
+    );
+
+    let fixture = Fixture::new();
+    let executable = fixture.path.join("candidate-helper.exe");
+    fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+    mode(
+        &fixture.path,
+        json!({"mode":"tree", "silent":true, "leader_exits":true, "wait_release":true}),
+    );
+    let worker = thread::spawn(move || {
+        check_program(
+            &executable,
+            &["--exact", HELPER, "--nocapture"],
+            "",
+            false,
+            Duration::from_secs(15),
+        )
+    });
+    until(|| fixture.path.join("tree-ready").is_file().then_some(()));
+    let descendant = recorded_process(&fixture.path.join("descendant/pid"));
+    fs::write(fixture.path.join("release"), b"release").unwrap();
+    assert!(worker.join().unwrap().is_err());
+    wait_process(&descendant);
+
+    mode(&fixture.path, json!({"mode":"overflow"}));
+    assert!(
+        check_program(
+            &fixture.path.join("candidate-helper.exe"),
+            &["--exact", HELPER, "--nocapture"],
+            "",
+            false,
+            Duration::from_secs(10)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("too large")
+    );
+}
+
 #[test]
 fn cmd_shell_cwd_nonzero_exit_and_completion_hook() {
     let calls = Arc::new(Mutex::new(Vec::new()));

@@ -20,7 +20,7 @@ use windows_sys::Win32::{
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
-pub fn private_directory(path: &Path) {
+pub fn current_sid() -> String {
     let mut raw = null_mut();
     assert_ne!(
         unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) },
@@ -60,6 +60,11 @@ pub fn private_directory(path: &Path) {
     unsafe {
         LocalFree(text.cast());
     }
+    sid
+}
+
+pub fn private_directory(path: &Path) {
+    let sid = current_sid();
     let sddl: Vec<u16> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})")
         .encode_utf16()
         .chain(Some(0))

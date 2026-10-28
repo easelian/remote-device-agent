@@ -256,6 +256,129 @@ impl StartupBackend for NativeStartup {
     }
 }
 
+#[cfg(feature = "experimental-windows-install")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UpdateTask {
+    pub config: PathBuf,
+    pub name: String,
+    pub sid: String,
+    pub arguments: String,
+    pub directory: String,
+    pub old_executable: String,
+    pub new_executable: String,
+    pub fingerprint: String,
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn expected_task(config: &Path, name: &str, old: &Path, new: &Path) -> Result<UpdateTask> {
+    if !valid_name(name) || !config.is_absolute() {
+        return Err(Error::message("Invalid managed task binding"));
+    }
+    let backend = NativeStartup {
+        config: config.into(),
+        executable: old.into(),
+    };
+    let paired = DeviceConfig::read(config)?;
+    Ok(UpdateTask {
+        config: config.into(),
+        name: name.into(),
+        sid: crate::storage::windows::current_sid_text()?,
+        arguments: backend.action_arguments(&paired.gateway_url)?,
+        directory: startup_path(
+            config
+                .parent()
+                .ok_or_else(|| Error::message("Invalid task config directory"))?,
+        )?,
+        old_executable: startup_path(old)?,
+        new_executable: startup_path(new)?,
+        fingerprint: String::new(),
+    })
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn prepare_update_task(
+    config: &Path,
+    binding: &Binding,
+    old: &Path,
+    new: &Path,
+) -> Result<UpdateTask> {
+    if binding.mode != Mode::User {
+        return Err(Error::message(
+            "This installation has a service binding; coordinated Windows service target updates are not yet available",
+        ));
+    }
+    let mut target = expected_task(config, &binding.name, old, new)?;
+    let (executable, fingerprint) = tasks::target_snapshot(
+        &target.name,
+        &target.sid,
+        &target.arguments,
+        &target.directory,
+    )
+    .map_err(task_error)?;
+    if executable != target.old_executable {
+        return Err(Error::message(
+            "Startup task does not execute this installation's current native version",
+        ));
+    }
+    target.fingerprint = fingerprint;
+    Ok(target)
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn verify_update_task(target: &UpdateTask, old: &Path, new: &Path) -> Result<()> {
+    let expected = expected_task(&target.config, &target.name, old, new)?;
+    let (binding, _) = crate::startup::inspect_sidecar(&target.config)?;
+    if binding
+        != Some(Binding {
+            mode: Mode::User,
+            name: target.name.clone(),
+        })
+        || target.sid != expected.sid
+        || target.arguments != expected.arguments
+        || target.directory != expected.directory
+        || target.old_executable != expected.old_executable
+        || target.new_executable != expected.new_executable
+        || target.fingerprint.len() != 64
+        || !target
+            .fingerprint
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    {
+        return Err(Error::message(
+            "Interrupted startup target no longer matches the registered profile",
+        ));
+    }
+    let (executable, fingerprint) = tasks::target_snapshot(
+        &target.name,
+        &target.sid,
+        &target.arguments,
+        &target.directory,
+    )
+    .map_err(task_error)?;
+    if fingerprint != target.fingerprint
+        || (executable != target.old_executable && executable != target.new_executable)
+    {
+        return Err(Error::message(
+            "Startup task changed during the interrupted native update",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn switch_update_task(target: &UpdateTask, restore: bool) -> Result<()> {
+    tasks::replace_target(
+        target,
+        if restore {
+            &target.old_executable
+        } else {
+            &target.new_executable
+        },
+    )
+    .map_err(task_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

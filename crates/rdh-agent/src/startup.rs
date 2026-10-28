@@ -475,14 +475,20 @@ impl Startup {
 
 /// Read only the existing sidecar. This does not query or change a native
 /// registration, and does not expose the approval request identifier.
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    all(windows, feature = "experimental-windows-install")
+))]
 pub(crate) fn inspect_sidecar(config: &Path) -> Result<(Option<Binding>, Option<Mode>)> {
     let state = Startup::read_file(&state_path(config))
         .map_err(|_| Error::message("Startup state cannot be safely read"))?;
     Ok((state.binding, state.pending.map(|pending| pending.mode)))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    all(windows, feature = "experimental-windows-install")
+))]
 pub(crate) fn sidecar_path(config: &Path) -> PathBuf {
     state_path(config)
 }

@@ -384,6 +384,9 @@ mod windows;
 #[cfg(all(windows, feature = "experimental-windows-private-storage"))]
 pub use windows::ProfileLocks;
 
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+pub(crate) use windows::require_dead_owners;
+
 #[cfg(all(
     not(unix),
     not(all(windows, feature = "experimental-windows-private-storage"))

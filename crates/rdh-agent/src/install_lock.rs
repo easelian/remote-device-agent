@@ -1,6 +1,16 @@
 //! Native installation exclusion and crash markers.
 //! A live Agent holds a shared lock; an offline updater must hold it exclusively.
 
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+#[path = "install_lock_windows.rs"]
+pub(crate) mod windows;
+
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+pub use windows::{ManagerLock, PENDING, RunningInstall, current_installation, pointer};
+
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+pub(crate) use windows::{pending, record_profile, version_binary};
+
 #[cfg(any(
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-install")
@@ -946,12 +956,14 @@ pub(crate) use posix::{pending, record_profile, version_binary};
 
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 )))]
 pub struct RunningInstall;
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 )))]
 impl RunningInstall {
     pub fn acquire_current() -> crate::error::Result<Option<Self>> {

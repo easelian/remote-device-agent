@@ -1,5 +1,7 @@
 //! Compile a distinct version for upgrade tests; never patch executable bytes.
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -44,10 +46,8 @@ fn replace_once(text: &str, before: &str, after: &str) -> Result<String> {
 }
 
 pub(super) fn build(target: &str, output: &Path) -> Result<()> {
-    if !(target.contains("-linux-") || target.ends_with("-apple-darwin"))
-        || !TARGETS.iter().any(|(value, _)| *value == target)
-    {
-        return Err("Native upgrade fixtures require a supported Linux or macOS target".into());
+    if !TARGETS.iter().any(|(value, _)| *value == target) {
+        return Err("Native upgrade fixtures require one of the eight supported targets".into());
     }
     if !output.is_absolute() {
         return Err("Upgrade fixture output directory must be absolute and new".into());
@@ -148,14 +148,20 @@ pub(super) fn build(target: &str, output: &Path) -> Result<()> {
     if !status.success() {
         return Err("Native upgrade fixture build failed".into());
     }
-    let built = target_dir.0.join(target).join("release/rdh");
+    let filename = if target.contains("-windows-") {
+        "rdh.exe"
+    } else {
+        "rdh"
+    };
+    let built = target_dir.0.join(target).join("release").join(filename);
     validate_binary(&built, target)?;
-    let binary = output.join("rdh");
+    let binary = output.join(filename);
     fs::copy(built, &binary)?;
     let mut verified_version = false;
     let native_os = match std::env::consts::OS {
         "linux" => target.contains("-linux-"),
         "macos" => target.ends_with("-apple-darwin"),
+        "windows" => target.ends_with("-pc-windows-msvc"),
         _ => false,
     };
     if native_os && target.starts_with(std::env::consts::ARCH) {
@@ -169,7 +175,10 @@ pub(super) fn build(target: &str, output: &Path) -> Result<()> {
         }
         verified_version = true;
     }
+    #[cfg(unix)]
     File::open(&binary)?.sync_all()?;
+    #[cfg(windows)]
+    OpenOptions::new().write(true).open(&binary)?.sync_all()?;
     let manifest = json!({"schema":1,"kind":"native-test-candidate","source_version":source_version,
         "version":version,"target":target,"source_sha256":source_sha256,"rustc":rustc,
         "binary":{"sha256":hash(&binary)?,"bytes":fs::metadata(&binary)?.len()},
