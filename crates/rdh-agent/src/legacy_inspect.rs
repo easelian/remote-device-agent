@@ -677,7 +677,15 @@ pub use linux::run;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{MigrationLayout, ScriptIdentity, observe_wrapper};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(target_os = "macos", feature = "experimental-macos-install"))]
+pub async fn run(args: &[String]) -> crate::error::Result<()> {
+    crate::legacy_migration_macos::run(args)
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+)))]
 pub async fn run(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
         "Legacy migration inspection is only implemented for Linux user installations",

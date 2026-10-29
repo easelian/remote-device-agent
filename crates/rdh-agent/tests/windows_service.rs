@@ -1163,9 +1163,11 @@ async fn exercise_service(
             if (!$text.Contains('\"op\":\"write_file\"') -or $text.Contains('{TOKEN}')) {{ exit 21 }}; \
             $admin = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'); \
             foreach ($path in @('{}', '{}', '{}')) {{ \
-              $acl = Get-Acl -LiteralPath $path; \
+              $directory = [IO.Directory]::Exists($path); \
+              $sections = [Security.AccessControl.AccessControlSections]::Access; \
+              $acl = if ($directory) {{ [IO.Directory]::GetAccessControl($path, $sections) }} else {{ [IO.File]::GetAccessControl($path, $sections) }}; \
               $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($admin, 'FullControl', 'Allow')); \
-              Set-Acl -LiteralPath $path -AclObject $acl; \
+              if ($directory) {{ [IO.Directory]::SetAccessControl($path, $acl) }} else {{ [IO.File]::SetAccessControl($path, $acl) }}; \
             }}; [Console]::Write('service-audit-ok')",
             quote(&audit),
             quote(&state),
@@ -1174,7 +1176,10 @@ async fn exercise_service(
         );
         // Read the required audit as its real LocalService owner, then grant
         // the test administrator access to these three exact fixture objects
-        // for post-stop cleanup. No real service profile is touched.
+        // for post-stop cleanup. Only the modified DACL is persisted: the
+        // PowerShell Set-Acl provider also requests SACL changes, which would
+        // incorrectly require SeSecurityPrivilege from LocalService here.
+        // No real service profile is touched.
         let started = peer
             .call(
                 "start_process",

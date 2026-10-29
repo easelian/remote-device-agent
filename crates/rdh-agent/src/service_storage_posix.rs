@@ -34,7 +34,7 @@ fn metadata(path: &Path, directory: bool, sticky_parent: bool) -> Result<Metadat
         )));
     }
     #[cfg(target_os = "macos")]
-    acl(path)?;
+    crate::storage::macos_acl::check(path)?;
     Ok(m)
 }
 pub(super) fn directory(path: &Path) -> Result<()> {
@@ -189,71 +189,4 @@ impl Drop for Lock {
             libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn acl(path: &Path) -> Result<()> {
-    use std::{
-        ffi::{CString, c_void},
-        os::unix::ffi::OsStrExt,
-    };
-    // Apple Libc include/sys/acl.h and posix1e/acl_entry.c: extended ACLs
-    // supplement mode bits. Reject write-granting entries, including inherited
-    // entries; harmless read/deny entries need no identity interpretation.
-    unsafe extern "C" {
-        fn acl_get_file(path: *const libc::c_char, kind: libc::c_int) -> *mut c_void;
-        fn acl_free(object: *mut c_void) -> libc::c_int;
-        fn acl_get_entry(
-            acl: *mut c_void,
-            kind: libc::c_int,
-            entry: *mut *mut c_void,
-        ) -> libc::c_int;
-        fn acl_get_tag_type(entry: *mut c_void, tag: *mut libc::c_int) -> libc::c_int;
-        fn acl_get_permset_mask_np(entry: *mut c_void, mask: *mut u64) -> libc::c_int;
-    }
-    let name = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| Error::message("Invalid service path"))?;
-    let acl = unsafe { acl_get_file(name.as_ptr(), 0x100) };
-    if acl.is_null() {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let result = (|| {
-        for i in 0..=128 {
-            let mut entry = std::ptr::null_mut();
-            if unsafe { acl_get_entry(acl, if i == 0 { 0 } else { -1 }, &mut entry) } != 0 {
-                let error = std::io::Error::last_os_error();
-                return if error.raw_os_error() == Some(libc::EINVAL) {
-                    Ok(())
-                } else {
-                    Err(error.into())
-                };
-            }
-            let mut tag = 0;
-            let mut mask = 0;
-            if i == 128
-                || unsafe { acl_get_tag_type(entry, &mut tag) } != 0
-                || unsafe { acl_get_permset_mask_np(entry, &mut mask) } != 0
-            {
-                return Err(Error::message("Cannot inspect service program ACL"));
-            }
-            const WRITES: u64 = (1 << 2)
-                | (1 << 4)
-                | (1 << 5)
-                | (1 << 6)
-                | (1 << 8)
-                | (1 << 10)
-                | (1 << 12)
-                | (1 << 13);
-            if !matches!(tag, 1 | 2) || (tag == 1 && mask & WRITES != 0) {
-                return Err(Error::message(
-                    "Service program ACL grants write access; choose a protected root-owned directory",
-                ));
-            }
-        }
-        unreachable!()
-    })();
-    unsafe {
-        acl_free(acl);
-    }
-    result
 }

@@ -14,6 +14,8 @@ use std::{
     time::Duration,
 };
 
+#[path = "service_migration_posix.rs"]
+mod migration;
 #[path = "service_profile_posix.rs"]
 mod profile;
 #[path = "service_storage_posix.rs"]
@@ -52,6 +54,8 @@ pub(crate) struct Record {
     server: String,
     pub current: Version,
     previous: Option<Version>,
+    #[serde(default)]
+    migrated: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -522,12 +526,17 @@ fn definition(prefix: &Path, record: &Record) -> Result<Vec<u8>> {
                     .replace('%', "%%")
             )
         };
-        let command = args
-            .iter()
-            .map(|s| quote(s).replace('$', "$$"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        Ok(format!("[Unit]\nDescription=Remote Device Hub Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nUser={}\nGroup={}\nEnvironment={}\nWorkingDirectory={}\nExecStart={}\nRestart=on-failure\nRestartSec=5\nKillMode=mixed\nTimeoutStopSec=30\n\n[Install]\nWantedBy=multi-user.target\n", record.uid, record.gid, quote(&format!("HOME={}", path_text(&account.home)?)), quote(path_text(&record.state)?), command).into_bytes())
+        let command = args.iter().map(|s| quote(s)).collect::<Vec<_>>().join(" ");
+        let working = path_text(&record.state)?;
+        if working.ends_with(char::is_whitespace) || working.ends_with('\\') {
+            return Err(Error::message(
+                "Systemd working directory cannot end in whitespace or a backslash",
+            ));
+        }
+        // WorkingDirectory accepts the entire unquoted value, unlike an
+        // ExecStart word. ':' disables environment expansion for our literal
+        // argument vector, including dollar signs in executable path names.
+        Ok(format!("[Unit]\nDescription=Remote Device Hub Agent\nAfter=network-online.target\n\n[Service]\nType=simple\nUser={}\nGroup={}\nEnvironment={}\nWorkingDirectory={}\nExecStart=:{}\nRestart=on-failure\nRestartSec=5\nKillMode=mixed\nTimeoutStopSec=30\n\n[Install]\nWantedBy=multi-user.target\n", record.uid, record.gid, quote(&format!("HOME={}", path_text(&account.home)?)), working.replace('%', "%%"), command).into_bytes())
     }
     #[cfg(target_os = "macos")]
     {
@@ -541,7 +550,8 @@ fn definition(prefix: &Path, record: &Record) -> Result<Vec<u8>> {
             .iter()
             .map(|s| format!("<string>{}</string>", quote(s)))
             .collect::<String>();
-        Ok(format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>UserName</key><string>{}</string>\n<key>ProgramArguments</key><array>{}</array>\n<key>WorkingDirectory</key><string>{}</string>\n<key>EnvironmentVariables</key><dict><key>HOME</key><string>{}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>Disabled</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n</dict></plist>\n", quote(&record.name), quote(&record.user), command, quote(path_text(&record.state)?), quote(path_text(&account.home)?)).into_bytes())
+        let disabled = if record.migrated { "false" } else { "true" };
+        Ok(format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>UserName</key><string>{}</string>\n<key>ProgramArguments</key><array>{}</array>\n<key>WorkingDirectory</key><string>{}</string>\n<key>EnvironmentVariables</key><dict><key>HOME</key><string>{}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>Disabled</key><{disabled}/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n</dict></plist>\n", quote(&record.name), quote(&record.user), command, quote(path_text(&record.state)?), quote(path_text(&account.home)?)).into_bytes())
     }
 }
 fn registration_matches(prefix: &Path, record: &Record) -> Result<()> {
@@ -558,7 +568,7 @@ fn stopped(record: &Record) -> Result<()> {
         let (status, output) = manager(&[
             "show",
             &record.name,
-            "--property=LoadState,ActiveState,SubState,MainPID,DropInPaths",
+            "--property=LoadState,ActiveState,SubState,MainPID,ControlPID,ControlGroup,DropInPaths",
         ])?;
         let map: std::collections::BTreeMap<_, _> =
             output.lines().filter_map(|l| l.split_once('=')).collect();
@@ -567,6 +577,8 @@ fn stopped(record: &Record) -> Result<()> {
             || map.get("ActiveState") != Some(&"inactive")
             || map.get("SubState") != Some(&"dead")
             || map.get("MainPID") != Some(&"0")
+            || map.get("ControlPID") != Some(&"0")
+            || map.get("ControlGroup") != Some(&"")
             || map.get("DropInPaths") != Some(&"")
         {
             return Err(Error::message(
@@ -635,12 +647,20 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         return profile::helper(rest);
     }
     store::root()?;
+    if migration::resume(args)? {
+        return Ok(());
+    }
     let mut options = std::collections::BTreeMap::new();
     let mut items = args.iter();
     while let Some(flag) = items.next() {
         if !matches!(
             flag.as_str(),
-            "--prefix" | "--config" | "--state-directory" | "--service-user" | "--name"
+            "--prefix"
+                | "--config"
+                | "--state-directory"
+                | "--service-user"
+                | "--name"
+                | "--migrate-from"
         ) {
             return Err(Error::message("Invalid POSIX service installation option"));
         }
@@ -672,6 +692,16 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     }
     path_text(config)?;
     path_text(state)?;
+    if let Some(legacy) = options.get("--migrate-from") {
+        path_text(Path::new(legacy))?;
+        let legacy = Path::new(legacy).canonicalize()?;
+        store::directory(&legacy)?;
+        if prefix.starts_with(&legacy) || legacy.starts_with(&prefix) {
+            return Err(Error::message(
+                "Use separate native and legacy program directories",
+            ));
+        }
+    }
     let source = std::env::current_exe()?.canonicalize()?;
     // The invoked executable is already trusted by the administrator; copy it
     // before dropping privilege so a protected executable path is passed on.
@@ -698,9 +728,10 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     let binary = stage(&prefix, &version, &bytes)?;
     let mut profile =
         ProfileLease::start(&binary, &account, config, state, name, &version.version)?;
-    if profile.ready.bound {
+    let legacy = options.get("--migrate-from").copied();
+    if profile.ready.bound != legacy.is_some() {
         return Err(Error::message(
-            "Existing service bindings require explicit migration",
+            "Existing service bindings require --migrate-from; migration requires the matching existing binding",
         ));
     }
     let record = Record {
@@ -715,21 +746,32 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         server: profile.ready.server.clone(),
         current: version,
         previous: None,
+        migrated: legacy.is_some(),
     };
-    ensure_absent(&record)?;
+    let legacy = legacy
+        .map(|path| migration::Legacy::inspect(Path::new(path), &record, &profile.ready))
+        .transpose()?;
+    if legacy.is_none() {
+        ensure_absent(&record)?;
+    }
     let definition = definition(&prefix, &record)?;
     store::create(&prefix.join(RECORD), &serde_json::to_vec(&record)?, false)?;
     set_pointer(&prefix, &record.current)?;
-    #[cfg(target_os = "macos")]
-    checked_manager(&["disable", &format!("system/{}", record.name)])?;
-    store::create(&registration(&record), &definition, false)?;
-    #[cfg(target_os = "linux")]
-    checked_manager(&["daemon-reload"])?;
-    profile.bind()?;
+    if let Some(legacy) = &legacy {
+        legacy.save(&prefix)?;
+        profile.check()?;
+        legacy.publish(&prefix, &record)?;
+    } else {
+        #[cfg(target_os = "macos")]
+        checked_manager(&["disable", &format!("system/{}", record.name)])?;
+        store::create(&registration(&record), &definition, false)?;
+        #[cfg(target_os = "linux")]
+        checked_manager(&["daemon-reload"])?;
+        profile.bind()?;
+    }
     profile.check()?;
     profile.finish()?;
-    fs::remove_file(prefix.join(INSTALL_PENDING))?;
-    store::sync(&prefix)?;
+    migration::complete(&prefix)?;
     println!(
         "System service installed and bound: {}\nProgram: {}\nConfiguration retained at: {}",
         record.name,
@@ -738,14 +780,29 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     );
     #[cfg(target_os = "linux")]
     println!(
-        "Start locally: sudo systemctl start {}\nThen verify the device connection in the Hub. Boot startup remains disabled.",
+        "Start locally: sudo systemctl start {}\nThen verify the device connection in the Hub.",
         record.name
     );
     #[cfg(target_os = "macos")]
+    {
+        if !record.migrated {
+            println!(
+                "Enable locally: sudo launchctl enable system/{}",
+                record.name
+            );
+        }
+        println!(
+            "Start locally: sudo launchctl bootstrap system {}\nThen verify the device connection in the Hub.",
+            registration(&record).display()
+        );
+    }
     println!(
-        "Enable locally: sudo launchctl enable system/{}\nStart locally: sudo launchctl bootstrap system {}\nThen verify the device connection in the Hub.",
-        record.name,
-        registration(&record).display()
+        "{}",
+        if record.migrated {
+            "Existing boot startup settings were retained. The old installation is available for undo."
+        } else {
+            "Boot startup remains disabled until enabled locally."
+        }
     );
     Ok(())
 }

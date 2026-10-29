@@ -10,7 +10,10 @@ use serde_json::{Value, json};
 use std::{
     fs, io,
     io::Read,
-    os::unix::{ffi::OsStringExt, fs::PermissionsExt},
+    os::unix::{
+        ffi::OsStringExt,
+        fs::{MetadataExt, PermissionsExt, symlink},
+    },
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     time::{Duration, Instant},
@@ -28,6 +31,10 @@ use tokio_tungstenite::{
 mod native_candidate;
 
 const TOKEN: &str = "native-launchd-fixture-token-only";
+
+fn text(path: &Path) -> &str {
+    path.to_str().unwrap()
+}
 
 // File output avoids an inherited pipe keeping the test waiting after a
 // command exits. Every invoked command has a deadline and is reaped here.
@@ -88,6 +95,20 @@ fn absent(pid: u32) -> bool {
         && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
+fn process_path(pid: u32) -> PathBuf {
+    let mut bytes = vec![0; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let length =
+        unsafe { libc::proc_pidpath(pid as i32, bytes.as_mut_ptr().cast(), bytes.len() as u32) };
+    assert!(length > 0 && (length as usize) < bytes.len());
+    bytes.truncate(length as usize);
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(bytes))
+        .canonicalize()
+        .unwrap()
+}
+
 struct Fixture {
     directory: PathBuf,
     prefix: PathBuf,
@@ -108,6 +129,13 @@ impl Fixture {
     }
     fn launchctl(&self, args: &[&str]) -> String {
         self.checked(Path::new("/bin/launchctl"), args)
+    }
+    fn boot_setting(&self) -> Option<String> {
+        let label = self.target.rsplit('/').next().unwrap();
+        self.launchctl(&["print-disabled", &self.domain])
+            .lines()
+            .find(|line| line.contains(&format!("\"{label}\"")))
+            .map(|line| line.trim().to_owned())
     }
     fn clean(&self) -> bool {
         let marker_clear = match fs::read_dir(self.prefix.join(".running")) {
@@ -188,6 +216,15 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Ok((_, output)) = run(
+                &self.directory,
+                Path::new("/bin/launchctl"),
+                &["print", &self.target],
+            )
+        {
+            eprintln!("Failed LaunchAgent diagnostic:\n{output}");
+        }
         if self.booted {
             let result = run(
                 &self.directory,
@@ -206,7 +243,11 @@ impl Drop for Fixture {
                 return;
             }
         }
-        let _ = fs::remove_dir_all(&self.directory);
+        if std::thread::panicking() {
+            eprintln!("Retained LaunchAgent fixture: {}", self.directory.display());
+        } else {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
     }
 }
 
@@ -428,4 +469,274 @@ async fn native_launchagent_runs_installed_versions_and_preserves_identity_acros
     fixture.stop(&[owner]).await;
     assert_eq!(fs::read(&fixture.config).unwrap(), config);
     assert_eq!(fs::read(&fixture.plist).unwrap(), plist.as_bytes());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a native GUI runner and the actual legacy Node build"]
+async fn legacy_launchagent_wrappers_migrate_and_restore_without_changing_the_profile() {
+    let source =
+        PathBuf::from(std::env::var_os("RDH_LEGACY_SOURCE").expect("legacy source required"));
+    let node =
+        PathBuf::from(std::env::var_os("RDH_LEGACY_NODE").expect("legacy Node binary required"));
+    let package: Value =
+        serde_json::from_slice(&fs::read(source.join("package.json")).unwrap()).unwrap();
+    let version = package["version"].as_str().unwrap();
+    for installer in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let suffix = random::hex_token::<12>().unwrap();
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("rdh legacy user '$&-{suffix}"));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let label = format!("com.easelian.rdh-legacy-user-{suffix}");
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        let home = directory.join("home");
+        let agents = home.join("Library/LaunchAgents");
+        fs::create_dir_all(&agents).unwrap();
+        let mut fixture = Fixture {
+            prefix: directory.join("native install"),
+            config: directory.join("device '&.json"),
+            plist: agents.join(format!("{label}.plist")),
+            target: format!("{domain}/{label}"),
+            domain,
+            directory,
+            booted: false,
+        };
+        let legacy = fixture.directory.join("legacy install");
+        let old_version = legacy.join("versions").join(version);
+        fs::create_dir_all(old_version.join("bin")).unwrap();
+        fs::create_dir_all(old_version.join("bundle")).unwrap();
+        for (from, to, executable) in [
+            (node.clone(), old_version.join("node"), true),
+            (
+                source.join("package.json"),
+                old_version.join("package.json"),
+                false,
+            ),
+            (
+                source.join("bin/remote-device-hub.mjs"),
+                old_version.join("bin/remote-device-hub.mjs"),
+                false,
+            ),
+            (
+                source.join("bundle/agent.mjs"),
+                old_version.join("bundle/agent.mjs"),
+                false,
+            ),
+        ] {
+            fs::copy(from, &to).unwrap();
+            fs::set_permissions(
+                to,
+                fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
+            )
+            .unwrap();
+        }
+        fs::write(
+            old_version.join("rdh"),
+            include_bytes!("fixtures/legacy-launcher.sh"),
+        )
+        .unwrap();
+        fs::set_permissions(old_version.join("rdh"), fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(format!("versions/{version}"), legacy.join("current")).unwrap();
+        assert_eq!(
+            fixture
+                .checked(&legacy.join("current/rdh"), &["--version"])
+                .trim(),
+            version
+        );
+        let work = fixture.directory.join("work");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(fixture.directory.join("state")).unwrap();
+        let config = serde_json::to_vec(
+            &json!({"gateway_url":origin,"device_id":"native-launchd", "token":TOKEN,
+            "roots":{"work":work},"allow_write":true,"allow_shell":true,"shell":"/bin/sh"}),
+        )
+        .unwrap();
+        storage::write_private_new(&fixture.config, &config).unwrap();
+        let config_inode = fs::metadata(&fixture.config).unwrap().ino();
+        let policy = fixture.config.with_extension("policy.json");
+        let policy_bytes = br#"{"version":1,"audit":{"enabled":false}}"#;
+        storage::write_private_new(&policy, policy_bytes).unwrap();
+        let sidecar = PathBuf::from(format!("{}.startup.json", text(&fixture.config)));
+        let pending = json!({"request_id":"55555555-5555-4555-8555-555555555555","mode":"none","expires_at":
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 600_000});
+        let startup = serde_json::to_vec(
+            &json!({"version":1,"binding":{"mode":"user","name":label},"pending":pending}),
+        )
+        .unwrap();
+        storage::write_private_new(&sidecar, &startup).unwrap();
+        let shell = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        let wrapper = if installer {
+            legacy.join("run-agent")
+        } else {
+            PathBuf::from(format!("{}.startup-run", text(&fixture.config)))
+        };
+        let old = if installer {
+            format!(
+                "#!/bin/sh\nexport XDG_CONFIG_HOME={}\nexport XDG_STATE_HOME={}\ncd {} || exit 1\nexec {} '--no-browser' '--config' {} '--server' {} --recover-lock\n",
+                shell(text(&fixture.directory.join("config"))),
+                shell(text(&fixture.directory.join("state"))),
+                shell(text(&home)),
+                shell(text(&legacy.join("current/rdh"))),
+                shell(text(&fixture.config)),
+                shell(&origin)
+            )
+        } else {
+            format!(
+                "#!/bin/sh\ncd {} || exit 1\nexec {} {} '--config' {} '--server' {} '--no-browser' '--recover-lock'\n",
+                shell(text(fixture.config.parent().unwrap())),
+                shell(text(&old_version.join("node"))),
+                shell(text(&legacy.join("current/bin/remote-device-hub.mjs"))),
+                shell(text(&fixture.config)),
+                shell(&origin)
+            )
+        };
+        fs::write(&wrapper, &old).unwrap();
+        fs::set_permissions(
+            &wrapper,
+            fs::Permissions::from_mode(if installer { 0o755 } else { 0o700 }),
+        )
+        .unwrap();
+        let plist = if installer {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n<key>ProgramArguments</key><array><string>{}</string></array>\n<key>WorkingDirectory</key><string>{}</string>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n</dict></plist>\n",
+                xml(text(&wrapper)).replace('"', "&quot;"),
+                xml(text(&home)).replace('"', "&quot;")
+            )
+        } else {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string></array><key>RunAtLoad</key><true/></dict></plist>\n",
+                xml(text(&wrapper))
+            )
+        };
+        storage::write_private_new(&fixture.plist, plist.as_bytes()).unwrap();
+        fixture.launchctl(&["enable", &fixture.target]);
+        fixture.start();
+        let mut old_peer = Peer::connect(&listener).await;
+        let old_pid: u32 = fixture
+            .launchctl(&["print", &fixture.target])
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("pid = "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(process_path(old_pid), old_version.join("node"));
+        old_peer
+            .call(
+                "write_file",
+                json!({"root":"work","path":"handoff.txt","content":"old identity"}),
+            )
+            .await;
+        fixture.stop(&[old_pid]).await;
+        drop(old_peer);
+        fixture.checked(
+            initial_binary::path(),
+            &[
+                "install-native",
+                "--prefix",
+                text(&fixture.prefix),
+                "--config",
+                text(&fixture.config),
+            ],
+        );
+        let current = fixture.prefix.join("current/rdh");
+        let apply_owned = [
+            "migrate",
+            "--offline",
+            "--prefix",
+            text(&legacy),
+            "--config",
+            text(&fixture.config),
+            "--service-unit",
+            &label,
+        ]
+        .map(str::to_owned);
+        let apply: Vec<&str> = apply_owned.iter().map(String::as_str).collect();
+        let mut undo_owned = apply_owned.clone();
+        undo_owned[1] = "--undo".into();
+        let undo: Vec<&str> = undo_owned.iter().map(String::as_str).collect();
+        let enabled = fixture.boot_setting();
+        fixture.checked(&current, &apply);
+        let native_wrapper = fs::read(&wrapper).unwrap();
+        assert_ne!(native_wrapper, old.as_bytes());
+        fixture.checked(&current, &apply); // Repeat after a completed atomic publication.
+        assert_eq!(fs::read(&wrapper).unwrap(), native_wrapper);
+        assert_eq!(fixture.boot_setting(), enabled);
+        assert_eq!(fs::read(&fixture.plist).unwrap(), plist.as_bytes());
+        fixture.start();
+        let mut native_peer = Peer::connect(&listener).await;
+        let native_pid = fixture.running_binary(env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            native_peer
+                .call("read_file", json!({"root":"work","path":"handoff.txt"}))
+                .await["content"],
+            "old identity"
+        );
+        native_peer
+            .call(
+                "write_file",
+                json!({"root":"work","path":"handoff.txt","content":"native identity"}),
+            )
+            .await;
+        let (status, output) = run(&fixture.directory, &current, &undo).unwrap();
+        assert!(!status.success() && output.contains("active"), "{output}");
+        fixture.stop(&[native_pid]).await;
+        drop(native_peer);
+        // Unrelated plist edits and wrapper edits must remain untouched.
+        storage::write_private_replace(
+            &fixture.plist,
+            format!("{plist}\n<!-- external -->\n").as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            !run(&fixture.directory, &current, &undo)
+                .unwrap()
+                .0
+                .success()
+        );
+        storage::write_private_replace(&fixture.plist, plist.as_bytes()).unwrap();
+        let changed = b"#!/bin/sh\nexit 3\n";
+        fs::write(&wrapper, changed).unwrap();
+        assert!(
+            !run(&fixture.directory, &current, &undo)
+                .unwrap()
+                .0
+                .success()
+        );
+        assert_eq!(fs::read(&wrapper).unwrap(), changed);
+        fs::write(&wrapper, &native_wrapper).unwrap();
+        // Reconstruct the pre-publication boundary: durable record plus old wrapper.
+        fs::write(&wrapper, &old).unwrap();
+        fixture.checked(&current, &apply);
+        assert_eq!(fs::read(&wrapper).unwrap(), native_wrapper);
+        fixture.checked(&current, &undo);
+        fixture.checked(&current, &undo);
+        assert_eq!(fs::read(&wrapper).unwrap(), old.as_bytes());
+        fixture.start();
+        let mut returned = Peer::connect(&listener).await;
+        let returned_pid: u32 = fixture
+            .launchctl(&["print", &fixture.target])
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("pid = "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(process_path(returned_pid), old_version.join("node"));
+        assert_eq!(
+            returned
+                .call("read_file", json!({"root":"work","path":"handoff.txt"}))
+                .await["content"],
+            "native identity"
+        );
+        fixture.stop(&[returned_pid]).await;
+        assert_eq!(fs::read(&fixture.config).unwrap(), config);
+        assert_eq!(fs::metadata(&fixture.config).unwrap().ino(), config_inode);
+        assert_eq!(fs::read(&policy).unwrap(), policy_bytes);
+        assert_eq!(fs::read(&sidecar).unwrap(), startup);
+        assert_eq!(fs::read(&fixture.plist).unwrap(), plist.as_bytes());
+        assert_eq!(fixture.boot_setting(), enabled);
+    }
 }

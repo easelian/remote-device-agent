@@ -249,7 +249,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd native_launchagent_runs -- --ignored --test-threads=1
       - name: Check native Windows service lifecycle
         if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'Windows' }}
         env:
@@ -261,7 +261,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test posix_system_service -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test posix_system_service system_service_preserves_user_data -- --ignored --test-threads=1
       - name: Check native Windows startup settings and administrator grants
         if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
         env:
@@ -275,18 +275,39 @@ jobs:
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_native_install -- --ignored --test-threads=1
       - name: Set up Node for legacy comparison fixtures
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' }}
         uses: actions/setup-node@v7
         with:
           node-version: '22.22.0'
           architecture: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
           package-manager-cache: false
       - name: Install legacy fixture build dependencies
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
+        id: legacy_dependencies
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' }}
         run: |
           node -e 'const expected = process.env.RUNNER_ARCH === "ARM64" ? "arm64" : "x64"; if (process.arch !== expected) { throw new Error(`Node architecture ${process.arch} does not match ${expected}`); } console.log(process.version, process.arch);'
           npm ci --ignore-scripts
           mkdir -p .build
+      - name: Build the legacy program for migration fixtures
+        id: legacy_program
+        if: ${{ !cancelled() && steps.legacy_dependencies.outcome == 'success' && runner.os != 'Windows' }}
+        run: node scripts/build.mjs
+      - name: Check legacy POSIX system service handoff and undo
+        if: ${{ !cancelled() && steps.legacy_program.outcome == 'success' && runner.os != 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          export RDH_LEGACY_SOURCE="$PWD"
+          export RDH_LEGACY_NODE="$(node -p 'process.execPath')"
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test posix_system_service legacy_system_service_handoff -- --ignored --test-threads=1
+      - name: Check legacy macOS user LaunchAgent handoff and undo
+        if: ${{ !cancelled() && steps.legacy_program.outcome == 'success' && runner.os == 'macOS' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          export RDH_LEGACY_SOURCE="$PWD"
+          export RDH_LEGACY_NODE="$(node -p 'process.execPath')"
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd legacy_launchagent_wrappers -- --ignored --test-threads=1
       - name: Compare legacy system hostname and release
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
         env:

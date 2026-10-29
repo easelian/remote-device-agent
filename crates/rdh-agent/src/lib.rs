@@ -10,6 +10,13 @@ pub mod install_lock;
 pub mod legacy_inspect;
 #[cfg(target_os = "linux")]
 mod legacy_migration;
+#[cfg(all(target_os = "macos", feature = "experimental-macos-install"))]
+mod legacy_migration_macos;
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+mod legacy_shell;
 pub mod native_install;
 pub mod network;
 pub mod pairing;

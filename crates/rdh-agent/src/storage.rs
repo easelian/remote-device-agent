@@ -38,6 +38,10 @@ pub(crate) fn sync_directory(directory: &std::fs::File) -> std::io::Result<()> {
 #[path = "storage_windows.rs"]
 pub(crate) mod windows;
 
+#[cfg(all(target_os = "macos", feature = "experimental-macos-install"))]
+#[path = "storage_macos_acl.rs"]
+pub(crate) mod macos_acl;
+
 #[cfg(all(windows, feature = "experimental-windows-private-storage"))]
 pub use windows::{ensure_parent, read_private, write_private_new, write_private_replace};
 

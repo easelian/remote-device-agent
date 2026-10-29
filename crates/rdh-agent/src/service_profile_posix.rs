@@ -86,6 +86,8 @@ pub(super) struct Ready {
     pub state: PathBuf,
     pub server: String,
     pub bound: bool,
+    #[serde(default)]
+    pub roots: std::collections::BTreeMap<String, String>,
 }
 
 pub(super) struct ProfileLease {
@@ -140,6 +142,7 @@ impl ProfileLease {
                 state: PathBuf::new(),
                 server: String::new(),
                 bound: false,
+                roots: std::collections::BTreeMap::new(),
             },
         };
         let flags = unsafe { libc::fcntl(lease.output.as_raw_fd(), libc::F_GETFL) };
@@ -338,6 +341,15 @@ pub(super) fn helper(args: &[String]) -> Result<()> {
     crate::app::validate_config(&["--config".into(), super::path_text(&config)?.into()])?;
     let paired = crate::config::DeviceConfig::read(&config)?;
     let (binding, _) = crate::startup::inspect_sidecar(&config)?;
+    let sidecar = crate::startup::sidecar_path(&config);
+    let read_sidecar = || -> Result<Option<Vec<u8>>> {
+        match std::fs::symlink_metadata(&sidecar) {
+            Ok(_) => Ok(Some(storage::read_private(&sidecar)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    };
+    let mut startup_bytes = read_sidecar()?;
     if binding
         .as_ref()
         .is_some_and(|b| b.mode != Mode::Service || b.name != *name)
@@ -353,6 +365,7 @@ pub(super) fn helper(args: &[String]) -> Result<()> {
         state,
         server: paired.gateway_url,
         bound: binding.is_some(),
+        roots: paired.roots,
     };
     // After announcing readiness, an unexpected helper exit must retain the
     // legacy-compatible lock. Only the normal parent pipe close releases it.
@@ -377,9 +390,9 @@ pub(super) fn helper(args: &[String]) -> Result<()> {
                 return Err(Error::message("Invalid service profile command"));
             }
         }
-        if storage::read_private(&config)? != config_bytes {
+        if storage::read_private(&config)? != config_bytes || read_sidecar()? != startup_bytes {
             return Err(Error::message(
-                "Service configuration changed during validation",
+                "Service configuration or startup state changed during validation",
             ));
         }
         if line == b"check" {
@@ -400,6 +413,7 @@ pub(super) fn helper(args: &[String]) -> Result<()> {
             .map_err(|error| {
                 Error::message(format!("Service binding failed: {}", error.message))
             })?;
+        startup_bytes = read_sidecar()?;
         println!("bound");
         std::io::stdout().flush()?;
     }
