@@ -108,10 +108,9 @@ fn file_state(path: &Path) -> ((u32, u32, u32), String, Vec<u8>) {
     )
 }
 fn legacy_process(config: &Path, node: &Path) -> OwnedHandle {
-    let owner: Value = serde_json::from_reader(backup_file(&PathBuf::from(format!(
-        "{}.node-lock/owner.json",
-        config.display()
-    ))))
+    let owner: Value = serde_json::from_reader(backup_file(
+        &PathBuf::from(format!("{}.node-lock", config.display())).join("owner.json"),
+    ))
     .unwrap();
     let process = process(u32::try_from(owner["pid"].as_u64().unwrap()).unwrap());
     assert_eq!(process_image(&process), node.canonicalize().unwrap());

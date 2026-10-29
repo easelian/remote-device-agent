@@ -150,11 +150,8 @@ fn process(pid: u32, expected: &Path) -> OwnedHandle {
 }
 fn legacy_process(config: &Path, node: &Path) -> OwnedHandle {
     let owner: Value = serde_json::from_slice(
-        &fs::read(PathBuf::from(format!(
-            "{}.node-lock/owner.json",
-            config.display()
-        )))
-        .unwrap(),
+        &fs::read(PathBuf::from(format!("{}.node-lock", config.display())).join("owner.json"))
+            .unwrap(),
     )
     .unwrap();
     process(u32::try_from(owner["pid"].as_u64().unwrap()).unwrap(), node)
