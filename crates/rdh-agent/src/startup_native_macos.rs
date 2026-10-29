@@ -267,8 +267,11 @@ impl StartupBackend for NativeStartup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
+    #[cfg(target_os = "macos")]
+    use serde_json::Value;
+    use serde_json::json;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    #[cfg(target_os = "macos")]
     use std::process::Command;
 
     struct Fixture(PathBuf);
@@ -455,8 +458,9 @@ mod tests {
         assert!(!fixture.plist().exists());
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "requires Python 3 plist parser; run explicitly on Linux and macOS"]
+    #[ignore = "requires the native macOS plutil parser"]
     fn launchagent_plist_executes_exact_native_arguments() {
         let fixture = Fixture::new();
         let backend = fixture.backend();
@@ -470,18 +474,42 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        let output = Command::new("python3").arg("-c").arg("import json,plistlib,subprocess,sys; p=plistlib.load(open(sys.argv[1],'rb')); r=subprocess.run(p['ProgramArguments'],cwd=p['WorkingDirectory'],check=True,capture_output=True,text=True); print(json.dumps({'plist':p,'output':r.stdout.splitlines()}))").arg(fixture.plist()).output().unwrap();
+        let parsed = Command::new("/usr/bin/plutil")
+            .args(["-convert", "json", "-o", "-"])
+            .arg(fixture.plist())
+            .output()
+            .unwrap();
+        assert!(
+            parsed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&parsed.stderr)
+        );
+        let value: Value = serde_json::from_slice(&parsed.stdout).unwrap();
+        assert_eq!(value["Label"], USER_LABEL);
+        assert_eq!(value["RunAtLoad"], true);
+        assert_eq!(value["Disabled"], true);
+        let arguments: Vec<_> = value["ProgramArguments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|argument| argument.as_str().unwrap())
+            .collect();
+        let output = Command::new(arguments[0])
+            .args(&arguments[1..])
+            .current_dir(value["WorkingDirectory"].as_str().unwrap())
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["plist"]["Label"], USER_LABEL);
-        assert_eq!(value["plist"]["RunAtLoad"], true);
-        assert_eq!(value["plist"]["Disabled"], true);
+        let lines: Vec<_> = std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .lines()
+            .collect();
         assert_eq!(
-            value["output"],
+            json!(lines),
             json!([
                 fixture.0,
                 "--config",
@@ -493,7 +521,7 @@ mod tests {
             ])
         );
         assert!(
-            !value["plist"]
+            !value
                 .as_object()
                 .unwrap()
                 .contains_key("EnvironmentVariables")

@@ -152,7 +152,6 @@ mod update {
         definition: ITaskDefinition,
         action: IExecAction,
         pub executable: String,
-        pub arguments: String,
         pub directory: String,
         pub fingerprint: String,
     }
@@ -164,7 +163,6 @@ mod update {
         sid: &str,
         arguments: Option<&str>,
         directory: Option<&str>,
-        replace_arguments: bool,
     ) -> Result<Checked> {
         // Only an idle, single-action, single-logon task for this user is
         // eligible. Keep its entire definition and security descriptor; the
@@ -214,15 +212,9 @@ mod update {
                 return Err(invalid());
             }
             action.SetPath(&BSTR::from("RDH-NATIVE-VERSION-PLACEHOLDER"))?;
-            if replace_arguments {
-                action.SetArguments(&BSTR::from("RDH-MIGRATION-ARGUMENTS-PLACEHOLDER"))?;
-            }
             let mut xml = BSTR::new();
             definition.XmlText(&mut xml)?;
             action.SetPath(&executable)?;
-            if replace_arguments {
-                action.SetArguments(&args)?;
-            }
             // OWNER, GROUP and DACL; no SACL privilege is requested.
             let security = task.GetSecurityDescriptor(7)?;
             if xml.len() > 65536 || security.len() > 16384 {
@@ -240,7 +232,6 @@ mod update {
                 definition,
                 action,
                 executable: executable.to_string(),
-                arguments: args.to_string(),
                 directory: cwd.to_string(),
                 fingerprint,
             })
@@ -254,7 +245,7 @@ mod update {
     ) -> Result<(String, String, String)> {
         let scheduler = Scheduler::connect()?;
         let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
-        let checked = inspect(&task, sid, Some(arguments), directory, false)?;
+        let checked = inspect(&task, sid, Some(arguments), directory)?;
         Ok((checked.executable, checked.directory, checked.fingerprint))
     }
     pub(crate) fn replace(target: &super::super::UpdateTask, destination: &str) -> Result<()> {
@@ -265,7 +256,6 @@ mod update {
             &target.sid,
             Some(&target.arguments),
             Some(&target.directory),
-            false,
         )?;
         if checked.fingerprint != target.fingerprint
             || (checked.executable != target.old_executable
@@ -297,79 +287,8 @@ mod update {
             &target.sid,
             Some(&target.arguments),
             Some(&target.directory),
-            false,
         )?;
         if actual.executable != destination || actual.fingerprint != target.fingerprint {
-            return Err(invalid());
-        }
-        Ok(())
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub(crate) struct Action {
-        pub executable: String,
-        pub arguments: String,
-        pub directory: String,
-    }
-    impl Checked {
-        fn value(&self) -> Action {
-            Action {
-                executable: self.executable.clone(),
-                arguments: self.arguments.clone(),
-                directory: self.directory.clone(),
-            }
-        }
-    }
-
-    pub(crate) fn migration_snapshot(name: &str, sid: &str) -> Result<(Action, String)> {
-        let scheduler = Scheduler::connect()?;
-        let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
-        let checked = inspect(&task, sid, None, None, true)?;
-        Ok((checked.value(), checked.fingerprint))
-    }
-
-    pub(crate) fn migrate(
-        name: &str,
-        sid: &str,
-        fingerprint: &str,
-        old: &Action,
-        new: &Action,
-        undo: bool,
-    ) -> Result<()> {
-        let scheduler = Scheduler::connect()?;
-        let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
-        let checked = inspect(&task, sid, None, None, true)?;
-        if old.directory != new.directory
-            || checked.fingerprint != fingerprint
-            || (checked.value() != *old && checked.value() != *new)
-        {
-            return Err(invalid());
-        }
-        let desired = if undo { old } else { new };
-        if checked.value() == *desired {
-            return Ok(());
-        }
-        unsafe {
-            checked.action.SetPath(&BSTR::from(&desired.executable))?;
-            checked
-                .action
-                .SetArguments(&BSTR::from(&desired.arguments))?;
-            // Publish both fields in one task update. Settings, cwd, triggers,
-            // account and DACL remain part of the checked fingerprint.
-            scheduler.folder.RegisterTaskDefinition(
-                &BSTR::from(name),
-                &checked.definition,
-                TASK_UPDATE.0 | TASK_DONT_ADD_PRINCIPAL_ACE.0 | TASK_IGNORE_REGISTRATION_TRIGGERS.0,
-                &VARIANT::from(sid),
-                &VARIANT::default(),
-                TASK_LOGON_INTERACTIVE_TOKEN,
-                &VARIANT::default(),
-            )?;
-        }
-        let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
-        let actual = inspect(&task, sid, None, None, true)?;
-        if actual.value() != *desired || actual.fingerprint != fingerprint {
             return Err(invalid());
         }
         Ok(())
@@ -378,9 +297,6 @@ mod update {
 
 #[cfg(feature = "experimental-windows-install")]
 pub(super) use update::{replace as replace_target, snapshot as target_snapshot};
-
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) use update::{Action as MigrationAction, migrate, migration_snapshot};
 
 #[cfg(test)]
 pub(super) fn remove(name: &str) -> Result<()> {

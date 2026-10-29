@@ -221,9 +221,12 @@ fn checked_bytes(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn verify_stored(prefix: &Path, version: &str) -> Result<()> {
+pub(crate) fn pin_stored(
+    prefix: &Path,
+    version: &str,
+) -> Result<crate::install_lock::windows::Object> {
     let path = version_binary(prefix, version)?;
-    let _binary = private_object(&path, false)?;
+    let binary = private_object(&path, false)?;
     let manifest: Value = serde_json::from_slice(&storage::read_private(
         &path.parent().unwrap().join(VERSION_MANIFEST),
     )?)?;
@@ -239,6 +242,12 @@ pub fn verify_stored(prefix: &Path, version: &str) -> Result<()> {
         ));
     }
     check_executable(&bytes)?;
+    Ok(binary)
+}
+
+pub fn verify_stored(prefix: &Path, version: &str) -> Result<()> {
+    let _binary = pin_stored(prefix, version)?;
+    let path = version_binary(prefix, version)?;
     check_version(&path, version)
 }
 
@@ -320,6 +329,9 @@ fn install_inner(prefix: &Path, profile: Option<&Path>) -> Result<PathBuf> {
             &json!({"schema":1,"kind":"native-version","version":env!("CARGO_PKG_VERSION")}),
         )?,
     )?;
+    for name in crate::native_launcher::COMMAND_NAMES {
+        temporary.file(Path::new(&format!("{name}.exe")), &bytes)?;
+    }
     if let Some(config) = profile {
         temporary.profile(config)?;
     }

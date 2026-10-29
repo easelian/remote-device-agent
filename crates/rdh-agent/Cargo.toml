@@ -10,6 +10,7 @@ name = "rdh"
 path = "src/main.rs"
 
 [features]
+default = ["experimental-windows-install", "experimental-macos-install"]
 # Requires native private installation, target switching and crash recovery checks.
 experimental-windows-install = ["experimental-windows-processes", "experimental-windows-startup", "experimental-windows-audit"]
 # Requires native Mach-O, installation exclusion, pointer recovery and upgrade checks.
@@ -18,17 +19,17 @@ experimental-macos-install = ["experimental-macos-files", "experimental-macos-pr
 experimental-windows-startup = ["experimental-windows-processes", "experimental-windows-private-storage", "dep:windows"]
 # Requires native Job Object, pipe, inheritance, tree cleanup and session checks.
 experimental-windows-processes = ["experimental-windows-files"]
-# Requires native device-file, directory, atomic mutation and legacy comparison checks.
+# Requires native device-file, directory and atomic mutation checks.
 experimental-windows-files = []
 # Requires native Windows ACL, path, and lock interoperability validation.
 experimental-windows-private-storage = []
-# Requires native audit ACL, rotation, recovery, and legacy handoff validation.
+# Requires native audit ACL, rotation and recovery validation.
 experimental-windows-audit = ["experimental-windows-private-storage"]
 # Requires native macOS filesystem, synchronization and audit handoff validation.
 experimental-macos-audit = []
 # Requires native launchd, filesystem and local approval validation.
 experimental-macos-startup = []
-# Requires native path, filesystem mutation and old-Agent comparison validation.
+# Requires native path and filesystem mutation validation.
 experimental-macos-files = []
 # Requires native process-group observation, pipe, reap and shutdown validation.
 experimental-macos-processes = ["experimental-macos-files"]
@@ -63,6 +64,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_EventLog",
     "Win32_System_IO",

@@ -1,160 +1,159 @@
 # Remote Device Hub Agent
 
-A device Agent written in TypeScript. Native Windows, Linux, and macOS share the CLI, pairing protocol, and file and process interfaces. The npm package requires Node.js 22+; `rdh-*.tar.gz` release archives include the runtime and do not require Node.js to be preinstalled.
+A standalone Rust Agent for Linux, macOS and Windows. It opens an authenticated
+WebSocket connection to Remote Device Hub and executes bounded file, search and
+process operations under the device user's authority. Agent runtime, business
+logic, build and tests do not require Node or npm.
 
-The npm package is `remote-device-hub`, with two command aliases: `remote-device-agent` and `remote-device-hub`. The final package contains only bundled, minified JavaScript, the CLI entry point, this README, and third-party licenses. It has no runtime npm dependencies, native addons, installation scripts, first-run compilation, or additional runtime downloads. TypeScript, type declarations, and build tools are development dependencies and are excluded from the release package.
+This branch is the unpublished `0.7.2-rust.1` replacement under native acceptance.
+The latest validation scope and remaining work are recorded in the
+[rewrite design](docs/rust-rewrite-design.md). Public release and npm packaging
+are later phases; the development artifacts are not a published stable channel.
 
 ## Build and validate
 
-Run from the repository root:
+Use Rust 1.93.0, the target's native linker/SDK and the checked-in lockfile:
 
 ```sh
-npm ci --ignore-scripts
-npm run typecheck
-npm test
-npm run pack:check
-node scripts/release.mjs build
+cargo +1.93.0 fmt --all -- --check
+cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
+cargo +1.93.0 run --locked -p xtask -- native-development \
+  --target x86_64-unknown-linux-gnu --out .build/native-development
 ```
 
-The release builder derives artifact and record names from `package.json`. Manifests in `.build/release/` are temporary build outputs, are not committed, and can be removed with `dist/` after use. Verify a generated record by passing its path to `node scripts/release.mjs check`.
-
-Source files live in `src/*.ts`. `npm run build` generates modules in `.build/` for tests and `bundle/agent.mjs` for distribution. `npm pack` runs type checking and compilation first. The release TGZ must be no larger than 64 KiB, with at most 512 KiB of unpacked content. Package checks also verify the file manifest, offline installation with an empty cache, and both command aliases. Stale compiled code or a modified bundle prevents release-record generation.
-
-Building writes local files only. It does not publish to npm, deploy to devices, or link an account. See [Maintenance and releases](docs/maintenance.md) for build checks and the release workflow.
-
-## Documentation
-
-- [Architecture](docs/architecture.md): component responsibilities, connection flow, and operation lifetimes.
-- [Hardening configuration](docs/hardening.md): operation policies, sandboxing, environment inheritance, and local auditing.
-- [Distribution](docs/distribution.md): runtime archives, npm packages, and internal mirrors.
-- [Maintenance and releases](docs/maintenance.md): development checks, package constraints, and release preparation.
+Change the target to match the host. The builder creates the raw executable,
+checksum, archive, provenance record and a verified extraction. Integration tests
+which need an independent update candidate or a real service manager have
+additional prerequisites: follow [Maintenance](docs/maintenance.md) and
+[Agent CI](.github/workflows/ci.yml). An ordinary local test run does not include
+all privileged and platform-specific cases.
 
 ## Install and run
 
-Choose the installation method that matches the device:
-
-| Method | Node.js requirement | Platforms | How the Agent runs |
-| --- | --- | --- | --- |
-| Runtime installer | Node.js is included | Linux / macOS | Registered user service |
-| `npx` | Node.js 22+ and npm installed on the device | Windows / Linux / macOS | In the current terminal |
-
-### Option 1: Install with Node.js included
-
-The installer includes the Node runtime, so devices do not need a preinstalled Node.js runtime or root access:
+Obtain or build the correct native artifact first. The examples below use an
+executable extracted from a development archive; replace absolute paths with
+local paths. For user installation on Linux or macOS:
 
 ```sh
-curl -fsSL https://github.com/be-one-click/remote-device-agent/releases/latest/download/install.sh | sh
+/absolute/artifact/rdh install-native --prefix /absolute/new-install
+/absolute/new-install/rdh --root work=/absolute/work --no-browser
 ```
 
-The script detects the platform (glibc/musl and x64/arm64), verifies `SHA256SUMS`, extracts the release to `~/.local/lib/rdh/versions/<version>`, switches the `current` symlink, completes pairing in a browser, and registers a systemd user service (launchd on macOS). Run it again to upgrade.
+On Windows, the equivalent commands are:
 
-Installer options:
+```powershell
+& 'C:\Artifact\rdh.exe' install-native --prefix 'C:\Path\NewInstall'
+& 'C:\Path\NewInstall\rdh.exe' --root 'work=C:\Work' --no-browser
+```
 
-- `--server URL`: use a specific Hub URL.
-- `--root NAME=PATH`: expose a file root; repeat for multiple roots.
-- `--no-pair`: install only; run `rdh --pair-only` later to pair.
-- `--no-service`: install without registering a service.
-- `--offline FILE`: install from a local archive.
-- `--uninstall`: remove the installation while retaining configuration and audit logs.
+The destination must be new. Installation creates stable `rdh`,
+`remote-device-agent` and `remote-device-hub` commands (`.exe` on Windows).
+They use the selected native version after an update. Add that program directory
+to your local PATH if desired. The installer does not change shell startup files.
+[Bootstrap scripts](docs/distribution.md#bootstrap-installation) can download and
+verify the raw artifact before invoking the same Rust command.
 
-If a device cannot reach GitHub, use `--base` to select an internal mirror with the same directory layout as the release page:
+On first launch, the Agent prints a pairing URL and code. Review the device,
+roots and permissions in the browser before approving. `--no-browser` prints the
+URL without opening it. With no explicit root, the current directory is used.
+`--root NAME=PATH` is repeatable; quote the whole argument when it contains spaces.
+`--profile NAME` chooses a separate profile, and `--config PATH` selects a private
+configuration file. `--pair-only` saves or validates pairing and exits.
+
+A paired foreground Agent stays connected until Ctrl+C or termination. Reusing
+the same command reuses its device identity. Never run two copies of the same
+profile. To register an existing stopped profile with an installation, pass
+`--config /absolute/paired.json` to `install-native`; it is validated and retained
+at that path, without copying credentials.
+
+### Background startup
+
+After pairing with an installed command, inspect and enable user startup:
 
 ```sh
-sh install.sh --base https://mirror.example.com/rdh
+/absolute/new-install/rdh startup status --config /absolute/paired.json
+/absolute/new-install/rdh startup set user --config /absolute/paired.json
 ```
 
-### Option 2: Run with npx using the device's Node.js
+This creates or enables future user startup; it does not start or stop the current
+connection. Start the registered unit, LaunchAgent or task locally after ending
+the foreground instance. Linux uses systemd user units, macOS uses LaunchAgents,
+and Windows uses Task Scheduler. Use `startup set none` to disable future startup.
+Remote requests require local approval or an administrator grant. See
+`startup --help` for `approve`, `deny`, `grant`, `revoke` and explicit `bind`.
 
-Install Node.js 22+ and npm on the device first. This method uses that Node.js runtime; the Agent package does not include another copy. `npx` downloads the package into npm's cache when needed and runs it without a global installation.
+For a system service, run `install-service --help`. POSIX installation requires
+root, an existing non-root service account and its paired, stopped configuration.
+Windows requires administrator authority and creates a LocalService registration.
+Both keep writable device state separate from protected program files, create a
+stopped registration and require a local start. They never elevate automatically.
 
-Run the latest release from your configured npm registry:
+### Native updates and removal
 
-```sh
-npx --yes remote-device-hub@latest
-```
+Native updates validate a schema-2 index and candidate executable. End managed
+work and stop the Agent before `upgrade --no-restart` or `rollback --no-restart`;
+restart locally and verify a new Hub connection. Linux's verified systemd user
+service path also supports automatic update and readiness rollback. macOS and
+Windows use stopped updates and manual restart in this phase. See
+[Maintenance](docs/maintenance.md#update-and-recover-an-installation).
 
-The registry command requires the package to be published with a `latest` tag. For a TGZ distributed directly, save the downloaded package as `remote-device-hub.tgz` in the current directory and run:
-
-```sh
-npx --yes --package=./remote-device-hub.tgz remote-device-agent
-```
-
-Both commands start the Agent in the foreground. Keep the terminal open; press Ctrl+C to stop it. Add `--version` to check the package version, or `--no-browser` to print the pairing URL without opening a browser. Use the same command again to reuse the saved pairing.
-
-### Pairing and file roots
-
-On first run, the Agent prints a pairing URL and code. Check the device and permissions on the page before approving. The current directory is the default file root.
-
-Use `--root NAME=PATH` to configure roots; repeat it as needed and quote the entire argument when a path contains spaces. `--profile NAME` creates a separate pairing, and `--server URL` selects a specific Hub. With `npx`, place these Agent options after the package name or explicit `remote-device-agent` command. Windows uses native drive-letter or UNC roots; relative paths in file tools still use `/`. Windows pairing requires a Hub with Protocol 1.0.1 or a newer compatible version. Older server models reject Windows pairing proposals.
-
-## Releases and staged rollouts
-
-Pushing a `v*` tag triggers CI to build and publish runtime archives for six platforms. No manual upload is required. Publishing runtime archives and publishing the npm package to a registry are separate distribution steps.
-
-Publishing a version and moving a channel pointer are separate steps. Expanding a rollout does not require rebuilding the package:
-
-1. **Prerelease:** set the intended prerelease version in `package.json` and create a matching tag with a `v` prefix. CI builds and publishes a GitHub Release marked as a prerelease.
-2. **Canary:** in Actions, run `Promote` with `channel=canary`, set `version` to the published prerelease, and use `percent=100`. Devices that opt in run `rdh upgrade --channel canary`.
-3. **Stable release:** set the intended stable version in `package.json` and create its matching `v` tag.
-4. **Staged rollout:** run `Promote` with `channel=stable`, set `version` to the published stable release, and use `percent=10`. A hash of the `install-id` generated during installation selects approximately 10% of devices. Run it again with `percent=50` or `100` to expand the rollout. Bucket assignments remain stable.
-5. **Rollback:** point `stable` to the previous version by running `Promote` again, or run `rdh rollback` on a device.
-
-Check or upgrade on a device:
-
-```sh
-rdh upgrade --check                 # Report only; make no changes
-rdh upgrade                         # Follow the stable channel and rollout percentage
-rdh upgrade --channel canary        # Opt in to canary
-rdh rollback                        # Restore the previous version
-```
-
-The default channel index is `channels/<channel>.json` in this repository. Use `--index` for an internal mirror:
-
-```sh
-rdh upgrade --index https://mirror.example.com/rdh/stable.json
-```
-
-The index contains the version, `min_from` (which prevents unsupported version jumps), and `rollout.percent`. Each upgrade extracts into a new directory, verifies `--version`, switches `current`, and restarts the service. A failed health check triggers an automatic rollback.
+To remove an installation, disable startup, stop every Agent using it and remove
+its registration with the local service manager: systemd, launchd, Task Scheduler
+or SCM. Then remove only the program directory. Keep the configuration, policies
+and audit/data directory, including the separate service-account state directory.
+Inspect the paths before deleting files. Deleting program files does not revoke
+the device identity on the Hub.
 
 ## Platform behavior and limits
 
-| Capability | Linux / macOS | Windows |
+| Behavior | Linux / macOS | Windows |
 | --- | --- | --- |
-| Pairing, files, search, and processes | Shared interfaces | Shared interfaces, with drive-letter, reserved-name, and alternate-data-stream validation |
-| Default shell | `/bin/sh` | System `cmd.exe`; commands must use the target system's syntax |
-| Private configuration and audit logs | Owned by the current user; files `0600`, directories `0700` | Private ACL owned by the current user with inheritance disabled; verified using system PowerShell |
-| Process termination | POSIX process groups | Best-effort termination of a live command tree with `taskkill /T /F`; detached descendants are not guaranteed to be cleaned up after the parent exits |
-| bubblewrap sandbox | Linux only; bwrap must be installed separately | Unsupported; configuring it prevents startup |
-| Shell resource limits | Applied when supported by the shell; failure stops execution | POSIX ulimit is unsupported; configuring it prevents startup |
+| Shell | `/bin/sh` | System `cmd.exe` |
+| Private configuration | Owner-only files and directories | Native SID and protected ACL checks |
+| File access | Root-relative paths, held directory descriptors | Held handles, reparse-point and reserved-name checks |
+| Process supervision | POSIX process groups | Job Objects and bounded pipe handling |
+| Startup | systemd / launchd | Task Scheduler / native SCM service entry |
+| bubblewrap | Linux only, separately installed | Unsupported; configured use fails |
+| POSIX resource limits | Applied where supported; failure blocks launch | Unsupported; configured use fails |
 
-The default configuration directory is `~/.config/remote-device-hub` on Linux/macOS and `%LOCALAPPDATA%\remote-device-hub` on Windows. Override it with `XDG_CONFIG_HOME` or `--config`. Existing configuration with insufficient privacy protections is not automatically repaired or made less restrictive. Local audit logging is enabled by default and retains at most the latest 1,000 JSONL operation records per device across restarts. Logs live under `~/.local/state/remote-device-hub/audit/` on Linux/macOS (`XDG_STATE_HOME` overrides the state base) or `%LOCALAPPDATA%\remote-device-hub\audit\` on Windows. See [Hardening configuration](docs/hardening.md) for record fields, redaction, retention, and the explicit opt-out.
+The default configuration directory is `~/.config/remote-device-hub` on POSIX and
+`%LOCALAPPDATA%\remote-device-hub` on Windows. `XDG_CONFIG_HOME` or `--config` can
+select another location. Existing permissive configuration is rejected rather
+than silently repaired. Audit is enabled by default and retains up to 1,000
+redacted records per device, subject to byte and rotation limits. Audit normally
+lives below `~/.local/state/remote-device-hub` or `%LOCALAPPDATA%\remote-device-hub`;
+system services use their explicitly configured state directory.
 
-The same guide documents explicit application environment inheritance, audit health and required audit writes, character-safe UTF-8/UTF-16 text reads, and recursive parent-directory creation. Process launch errors retain bounded OS diagnostics, and local audit records also track final process status.
+File roots and path policies constrain file tools. Shell commands run as the
+Agent OS user and need an explicit sandbox for stronger isolation. A response
+timeout does not prove an operation had no effect. Inspect uncertain write or
+process outcomes before retrying. Brief disconnects retain managed jobs for up to
+five minutes; authorization rejection, prolonged disconnection or shutdown
+initiates cleanup. Profile ownership is not released while effectful work remains.
 
-File roots and path policies constrain the Agent's file tools; they are not an operating-system sandbox. Concurrent path replacement by another local process remains a TOCTOU limitation. Shell commands run as the Agent's operating-system user and are not constrained by file path policies.
+Cross-compilation is not native runtime evidence. UNC syntax coverage does not
+establish live SMB compatibility, and process/file tests do not establish
+power-loss durability. See [Hardening](docs/hardening.md) for policy and audit
+contracts and the design's acceptance section for platform evidence.
 
-Brief network interruptions retain processes and bounded output for up to five minutes. Revoked authorization, prolonged disconnection, or an explicit exit triggers cleanup. If a timeout or disconnect leaves an operation's outcome unknown, inspect its state before retrying. On Linux/macOS, `cleanup_pending` means supervisor resources have not finished closing. On Windows, this field does not prove that all detached descendants have exited. Recover a configuration lock left by an abnormal exit with `--recover-lock` only after confirming that the previous process has stopped.
+## Hub and network settings
 
-CI is configured for all three operating systems, including native Windows file, ACL, pairing, and process cases. Validate changes on the affected operating system; pure path tests on Linux do not establish Windows ACL, shell, or process behavior.
+Hub selection is `--server`, then `RDH_SERVER`, then the committed default in
+[deployment_defaults.rs](crates/rdh-agent/src/deployment_defaults.rs). The exact
+public and MCP origins listed there share profile aliases and locks. Custom
+origins remain isolated; an explicit configuration for a different Hub is rejected
+without forwarding its token. Changing defaults does not rewrite installed
+service commands or existing bindings.
 
-## Code style
+Connections are direct by default. Opt into local proxy variables with
+`RDH_USE_ENV_PROXY=1`; add PEM trust roots with `RDH_CA_BUNDLE`.
+See [Network configuration](docs/network.md).
 
-`npm run format` formats maintained source and tests. `npm run style:check` checks formatting and lint rules; `npm run lint` runs only the linter. Biome is pinned as a development dependency. Use two-space indentation, single quotes, semicolons, trailing commas, one statement per line, and explicit type imports. Explicit `any` and `@ts-ignore` are prohibited. Generated files and third-party code are excluded from formatting.
+## Documentation
 
-## Hub address
-
-Connection selection is `--server URL`, then `RDH_SERVER`, then the public origin
-in generated `src/deploymentDefaults.ts`. Startup no longer probes a hardcoded
-direct port. With sibling project checkouts, regenerate official defaults with
-`python3 ../remote-device-server/scripts/sync-deployment.py` and check them with
-`--check` before release. A standalone build uses its committed generated file.
-
-The exact public and MCP origins in that generated deployment share pairing
-profiles and locks. Custom origins remain isolated. Changing to an unrelated
-origin creates a new pairing; a supplied `--config` belonging to another Hub is
-rejected rather than forwarding its token. Domain migration does not rewrite
-existing installed service commands or saved bindings automatically.
-
-## Local network configuration
-
-The Agent uses Node's standard network policy. Proxy selection and connection tuning belong to the local launch environment; the package and Hub pairing configuration contain no machine-specific network settings. See [Local network configuration](docs/network.md) for manual and service startup, proxy isolation, and validation limits.
+- [Architecture](docs/architecture.md): components, protocol and work lifetimes.
+- [Hardening](docs/hardening.md): policies, sandbox, environment and audit.
+- [Distribution](docs/distribution.md): artifacts, bootstrap and channel format.
+- [Maintenance](docs/maintenance.md): checks, upgrades and recovery.
+- [Rust replacement design](docs/rust-rewrite-design.md): decisions and acceptance.

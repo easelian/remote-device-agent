@@ -1,7 +1,23 @@
 name: Agent CI
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'xtask/**'
+      - 'packaging/**'
+      - .github/workflows/ci.yml
   pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'xtask/**'
+      - 'packaging/**'
+      - .github/workflows/ci.yml
   workflow_dispatch:
 
 permissions:
@@ -12,9 +28,197 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  scope-update:
-    name: Scope update only (no acceptance tests)
-    runs-on: ubuntu-24.04
+  native-target:
+    name: Development checks (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 90 || 60 }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Record the narrowed validation scope
-        run: printf '%s\n' 'Legacy Node migration is out of scope. This run cancels obsolete validation; it is not acceptance evidence. Native Rust validation follows after source cleanup.'
+      - name: Preserve LF line endings on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - name: Verify runner architecture
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          case "$RDH_TARGET:$RUNNER_ARCH" in
+            x86_64-*:X64|aarch64-*:ARM64) ;;
+            *) printf 'Runner architecture does not match %s (%s)\n' "$RDH_TARGET" "$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+      - name: Record Windows installation-parent diagnostics
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $since = Get-Date
+          ('RDH_COMMAND_DIAGNOSTIC_START=' + $since.ToUniversalTime().ToString('o')) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          foreach ($path in @([System.IO.Path]::GetPathRoot($env:ProgramData), $env:ProgramData)) {
+            $acl = Get-Acl -LiteralPath $path
+            Write-Host ('Installer ancestor ' + $path + ': ' + $acl.Sddl)
+          }
+      - name: Install the pinned Rust toolchain and target
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy --target "$RDH_TARGET"
+          rustc +1.93.0 -vV
+      - name: Install musl tools
+        if: endsWith(matrix.target, '-linux-musl')
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          case "$RDH_TARGET" in
+            x86_64-*)
+              printf '%s\n' 'CC_x86_64_unknown_linux_musl=musl-gcc' 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+              ;;
+            aarch64-*)
+              printf '%s\n' 'CC_aarch64_unknown_linux_musl=musl-gcc' 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+              ;;
+          esac
+      - name: Check formatting
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo +1.93.0 fmt --all -- --check
+      - name: Check Windows explicitly disabled features
+        if: runner.os == 'Windows'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --no-default-features --target "$RDH_TARGET" windows_default_tests::
+      - name: Check macOS explicitly disabled features
+        if: runner.os == 'macOS'
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --no-default-features --target "$RDH_TARGET" macos_default_tests::
+      - name: Compile an independent native upgrade candidate
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RUSTUP_TOOLCHAIN: 1.93.0
+        run: |
+          candidate="$RUNNER_TEMP/rdh-native-test-candidate"
+          cargo +1.93.0 run --locked -p xtask -- native-test-candidate --target "$RDH_TARGET" --out "$candidate"
+          printf 'RDH_NATIVE_TEST_CANDIDATE_DIR=%s\n' "$candidate" >> "$GITHUB_ENV"
+      - name: Check implemented paths
+        id: native_checks
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
+      - name: Build and round-trip the native development archive
+        id: native_artifacts
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RUSTUP_TOOLCHAIN: 1.93.0
+        run: |
+          artifacts="$RUNNER_TEMP/rdh-native-artifacts"
+          cargo +1.93.0 run --locked -p xtask -- native-development --target "$RDH_TARGET" --out "$artifacts" --all-features
+          shopt -s nullglob
+          extracted=("$artifacts"/verified/*)
+          [[ ${#extracted[@]} -eq 1 && -d "${extracted[0]}" ]]
+          artifact="$(cd "${extracted[0]}" && pwd -P)"
+          if [[ "$RUNNER_OS" == Windows ]]; then artifact="$(cygpath -w "$artifact")"; fi
+          printf 'RDH_NATIVE_ARTIFACT_DIR=%s\n' "$artifact" >> "$GITHUB_ENV"
+      - name: Test implemented paths
+        id: native_tests
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
+      - name: Record Windows process-denial events after the failed tests
+        if: ${{ !cancelled() && steps.native_tests.outcome == 'failure' && runner.os == 'Windows' }}
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $since = [datetime]::Parse($env:RDH_COMMAND_DIAGNOSTIC_START).ToLocalTime()
+          foreach ($log in @('Microsoft-Windows-Windows Defender/Operational', 'Microsoft-Windows-CodeIntegrity/Operational', 'Microsoft-Windows-AppLocker/EXE and DLL')) {
+            try {
+              $events = Get-WinEvent -FilterHashtable @{LogName=$log; StartTime=$since} -MaxEvents 30 -ErrorAction Stop
+              foreach ($event in $events) {
+                $message = $event.Message
+                if ($message -match 'cmd\.exe|rdh_agent|rdh-process-|rdh-command-diagnostic') {
+                  Write-Host ($log + ' event ' + $event.Id + ' at ' + $event.TimeCreated.ToUniversalTime().ToString('o'))
+                  Write-Host ($message.Substring(0, [Math]::Min($message.Length, 4096)))
+                }
+              }
+            } catch {
+              Write-Host ('Event diagnostic unavailable or empty for ' + $log + ': ' + $_.Exception.Message)
+            }
+          }
+      - name: Check native LaunchAgent definition arguments
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'macOS' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+      - name: Check native LaunchAgent installed update and rollback
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'macOS' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd native_launchagent_runs -- --ignored --test-threads=1
+      - name: Check native Windows service lifecycle
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service native_windows_ -- --ignored --test-threads=1
+      - name: Check native POSIX system service installation and recovery
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os != 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test posix_system_service system_service_preserves_user_data -- --ignored --test-threads=1
+      - name: Check native Windows startup settings and administrator grants
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" native_windows_ -- --ignored --test-threads=1
+      - name: Check native Windows installed task update and rollback
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_native_install managed_windows_task_targets -- --ignored --test-threads=1
+      - name: Build and inspect the development executable
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 build --locked --release -p rdh-agent --target "$RDH_TARGET"
+          binary="target/$RDH_TARGET/release/rdh"
+          if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
+          "$binary" --version
+      - name: Retain native development artifacts
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-development-${{ matrix.target }}
+          path: ${{ runner.temp }}/rdh-native-artifacts/rdh-*
+          if-no-files-found: error
+          retention-days: 7

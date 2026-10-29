@@ -25,8 +25,6 @@ use windows_sys::Win32::{
     },
 };
 
-#[path = "support/windows_legacy_task.rs"]
-mod legacy_task;
 #[path = "support/native_candidate.rs"]
 mod native_candidate;
 #[path = "support/windows.rs"]
@@ -129,6 +127,16 @@ fn success(output: std::process::Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+async fn aliases(prefix: &Path, root: &Path, expected: &str) {
+    for name in rdh_agent::native_launcher::COMMAND_NAMES {
+        let alias = prefix.join(format!("{name}.exe"));
+        assert_eq!(
+            success(run(&alias, root, &["--version"]).await).trim(),
+            expected
+        );
+    }
 }
 
 async fn running_task_agent(prefix: &Path, expected: &Path, config: &Path) -> OwnedHandle {
@@ -253,6 +261,13 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
     assert!(!output.contains(token));
     let current = env!("CARGO_PKG_VERSION");
     let old_binary = binary(&prefix, current);
+    let command_entry = prefix.join("rdh.exe");
+    aliases(&prefix, &root, current).await;
+    let invalid_argument = "--unknown-argument=two words ' \" 雪\\";
+    let invalid = run(&command_entry, &root, &[invalid_argument]).await;
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains(invalid_argument));
     assert!(output.contains(old_binary.to_str().unwrap()));
     assert_eq!(selected(&prefix, "current"), current);
     assert!(!prefix.join("current").exists());
@@ -322,8 +337,9 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
     let held = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
     assert!(!run(&old_binary, &root, &upgrade).await.status.success());
     drop(held);
-    success(run(&old_binary, &root, &upgrade).await);
+    success(run(&command_entry, &root, &upgrade).await);
     assert_eq!(selected(&prefix, "current"), next);
+    aliases(&prefix, &root, &next).await;
     assert_eq!(selected(&prefix, "previous"), current);
     let next_binary = binary(&prefix, &next);
     let pairing = [
@@ -341,8 +357,16 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
             .success()
     );
     success(run(&next_binary, &root, &pairing).await);
-    success(run(&next_binary, &root, &["rollback", "--no-restart"]).await);
+    success(
+        run(
+            &prefix.join("remote-device-agent.exe"),
+            &root,
+            &["rollback", "--no-restart"],
+        )
+        .await,
+    );
     assert_eq!(selected(&prefix, "current"), current);
+    aliases(&prefix, &root, current).await;
     assert_eq!(selected(&prefix, "previous"), next);
 
     // Reconstruct each durable boundary: journal only, previous changed, and
@@ -364,7 +388,14 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
         }
         assert!(!run(&old_binary, &root, &pairing).await.status.success());
         assert!(!run(&next_binary, &root, &pairing).await.status.success());
-        success(run(&next_binary, &root, &["upgrade", "--recover"]).await);
+        success(
+            run(
+                &prefix.join("remote-device-hub.exe"),
+                &root,
+                &["upgrade", "--recover"],
+            )
+            .await,
+        );
         assert_eq!(selected(&prefix, "current"), current);
         assert_eq!(selected(&prefix, "previous"), next);
         assert!(!prefix.join(install_lock::PENDING).exists());

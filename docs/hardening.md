@@ -4,7 +4,7 @@ By default, file and shell tools run as the Agent's operating-system user. Opera
 
 ## Why use a sidecar file?
 
-Device configuration fields form a contract shared across implementations. The shared protocol component rejects unknown fields, and older Agents fail to start when they encounter new fields. Adding hardening options to the main configuration would therefore break rollback. Instead, the Node Agent reads a separate file next to the main configuration:
+Device configuration fields form a contract shared across implementations. Older Agents can reject unfamiliar fields, so hardening options remain in a separate file next to the main configuration. The Rust Agent preserves that sidecar format for migration and rollback:
 
 ```text
 <main configuration path without .json>.policy.json

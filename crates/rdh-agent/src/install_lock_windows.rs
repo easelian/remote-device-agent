@@ -151,6 +151,16 @@ fn verify_version(prefix: &Path, version: &str, executable: &Path) -> Result<()>
     }
     Ok(())
 }
+
+pub(crate) fn command_target(prefix: &Path) -> Result<(PathBuf, Object)> {
+    let _lock = lock_file(prefix, LOCK, false)?;
+    let version = pointer(prefix, "current")?;
+    let binary = version_binary(prefix, &version)?;
+    let pinned = crate::native_install::pin_stored(prefix, &version)?;
+    // Pending-state policy belongs to the selected command; recovery must
+    // remain callable through the same stable entry point.
+    Ok((binary, pinned))
+}
 pub(crate) fn pending(prefix: &Path) -> Result<Value> {
     let bytes = storage::read_private(&prefix.join(PENDING))?;
     if bytes.len() > MAX_PENDING_BYTES {

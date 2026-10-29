@@ -18,6 +18,6 @@ client_secret_*.json
 # Local release records and validation evidence are generated outputs.
 /releases/
 
-# Generated TypeScript release bundle; only prebuilt JS goes into npm.
+# Historical local build outputs must not be included in native artifacts.
 /bundle/
 /stability-quick.json

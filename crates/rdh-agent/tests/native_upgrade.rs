@@ -136,7 +136,17 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
         "{}",
         String::from_utf8_lossy(&installed.stderr)
     );
-    let current = prefix.join("current/rdh");
+    let current = prefix.join("rdh");
+    for name in rdh_agent::native_launcher::COMMAND_NAMES {
+        let alias = prefix.join(name);
+        assert_eq!(fs::read_link(&alias).unwrap(), PathBuf::from("current/rdh"));
+        let version = run(&alias, &fixture.0, &["--version"]).await;
+        assert!(version.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&version.stdout).trim(),
+            env!("CARGO_PKG_VERSION")
+        );
+    }
     let registered = run(&current, &fixture.0, &["upgrade", "--list-profiles"]).await;
     assert!(registered.status.success());
     assert_eq!(

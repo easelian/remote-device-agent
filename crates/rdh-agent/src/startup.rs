@@ -495,7 +495,7 @@ pub(crate) fn new_service_state(config: &Path, name: &str) -> Result<Vec<u8>> {
         .map_err(|_| Error::message("Startup state cannot be safely read"))?;
     if state.binding.is_some() {
         return Err(Error::message(
-            "Service installation requires an unbound source profile; migrate an existing registration explicitly",
+            "Service installation requires an unbound source profile",
         ));
     }
     let binding = Binding {
@@ -793,22 +793,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Validate the same binding and pending-approval contract from a service
-/// profile already held open under LocalService ownership checks.
-#[cfg(all(windows, feature = "experimental-windows-install"))]
-pub(crate) fn check_service_binding_bytes(bytes: &[u8], name: &str) -> Result<()> {
-    let state = Startup::read_bytes(bytes).map_err(|error| Error::message(error.message))?;
-    if state.binding
-        != Some(Binding {
-            mode: Mode::Service,
-            name: name.into(),
-        })
-    {
-        return Err(Error::message(
-            "Service profile is not bound to the requested service",
-        ));
-    }
-    Ok(())
 }

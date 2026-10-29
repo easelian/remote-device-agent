@@ -20,7 +20,6 @@ pub enum Action {
     Startup(Vec<String>),
     InstallNative(Vec<String>),
     InstallService(Vec<String>),
-    Migrate(Vec<String>),
     Upgrade(Vec<String>),
     Rollback(Vec<String>),
     ValidateConfig(Vec<String>),
@@ -34,7 +33,6 @@ pub fn parse(argv: &[String], environment_server: Option<&str>) -> Result<Action
         Some("startup") => return Ok(Action::Startup(argv[1..].to_vec())),
         Some("install-native") => return Ok(Action::InstallNative(argv[1..].to_vec())),
         Some("install-service") => return Ok(Action::InstallService(argv[1..].to_vec())),
-        Some("migrate") => return Ok(Action::Migrate(argv[1..].to_vec())),
         Some("upgrade") => return Ok(Action::Upgrade(argv[1..].to_vec())),
         Some("rollback") => return Ok(Action::Rollback(argv[1..].to_vec())),
         Some("validate-config") => return Ok(Action::ValidateConfig(argv[1..].to_vec())),
@@ -118,7 +116,6 @@ pub fn help() -> String {
         Commands:\n  rdh startup --help         Manage future startup and local approvals\n\
           rdh install-native --help  Install a standalone development binary\n\
           rdh install-service --help Install a native system service\n\
-          rdh migrate --help         Inspect or switch a stopped legacy service\n\
           rdh upgrade --help         Check or switch native versions offline\n\
           rdh rollback --help        Restore the previous native version offline\n\
           rdh validate-config --config PATH  Check a configuration locally\n",

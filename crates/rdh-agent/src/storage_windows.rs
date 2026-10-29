@@ -538,33 +538,6 @@ fn check_service_parent(file: &File) -> Result<()> {
     })
 }
 
-/// Old installer program files inherit their protected system parent's ACL.
-/// Permit public reads, but no writes by an untrusted principal. The current
-/// SID is accepted only by the elevated migration caller.
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) fn check_legacy_service_program(file: &File) -> Result<()> {
-    with_acl(file, |descriptor, owner, acl| {
-        let mut candidates = vec![
-            Sid::current()?,
-            Sid::well_known(WinBuiltinAdministratorsSid)?,
-            Sid::well_known(WinLocalSystemSid)?,
-        ];
-        if let Ok(installer) = Sid::trusted_installer() {
-            candidates.push(installer);
-        }
-        let user = candidates
-            .into_iter()
-            .find(|sid| unsafe { EqualSid(owner, sid.as_ptr()) } != 0)
-            .ok_or_else(unsafe_storage)?;
-        let identity = Identity {
-            user,
-            system: Sid::well_known(WinLocalSystemSid)?,
-            administrators: Sid::well_known(WinBuiltinAdministratorsSid)?,
-        };
-        validate_acl_policy(&identity, descriptor, owner, acl, false, false, false)
-    })
-}
-
 /// Service code is administrator-owned and readable by LocalService. Service
 /// data is LocalService-owned and private to it and trusted administrators.
 /// These checks never change the current-user private-storage contract.
@@ -806,31 +779,6 @@ pub(crate) fn open_child_request(
     sharing: u32,
 ) -> Result<File> {
     open_child_options(parent, name, directory, desired, sharing, 0)
-}
-
-/// Inspect existing LocalService data without changing its ACL. The caller
-/// holds SeBackupPrivilege only while acquiring these read-only handles.
-/// Reparse, type and link checks remain identical to ordinary opens.
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) fn open_service_data_child(
-    parent: &File,
-    name: &[u16],
-    directory: bool,
-    sharing: u32,
-) -> Result<File> {
-    let desired = if directory {
-        FILE_READ_ATTRIBUTES | FILE_TRAVERSE | READ_CONTROL | SYNCHRONIZE
-    } else {
-        GENERIC_READ | READ_CONTROL | SYNCHRONIZE
-    };
-    open_child_options(
-        parent,
-        name,
-        directory,
-        desired,
-        sharing,
-        windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_FOR_BACKUP_INTENT,
-    )
 }
 
 fn open_child_options(

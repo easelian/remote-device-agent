@@ -183,14 +183,6 @@ impl Record {
         .collect::<Vec<_>>()
         .join(" "))
     }
-    pub(super) fn same_installation(&self, other: &Self) -> Result<bool> {
-        self.validate()?;
-        other.validate()?;
-        let mut expected = self.clone();
-        expected.current = other.current.clone();
-        expected.previous = other.previous.clone();
-        Ok(expected == *other)
-    }
     fn with_version(&self, version: Version) -> Self {
         let mut next = self.clone();
         next.previous = Some(self.current.clone());
@@ -208,7 +200,7 @@ fn binary(prefix: &Path, version: &Version) -> PathBuf {
 // Program objects and every ancestor stay pinned without delete sharing.
 // The record is read under a kernel lock; data never comes from an LS-writable
 // program manifest or a user-owned replacement of a checked ancestor.
-pub(super) struct Object {
+pub(crate) struct Object {
     file: File,
     _parents: Vec<File>,
 }
@@ -263,6 +255,14 @@ pub(super) fn verify_binary(prefix: &Path, version: &Version) -> Result<Object> 
     }
     native_install::check_executable(&bytes)?;
     Ok(object)
+}
+
+pub(crate) fn command_target(prefix: &Path) -> Result<(PathBuf, Object)> {
+    let _lock = manager_lock(prefix, false)?;
+    let record: Record = read_record(prefix, MANIFEST)?;
+    record.validate()?;
+    let pinned = verify_binary(prefix, &record.current)?;
+    Ok((binary(prefix, &record.current), pinned))
 }
 
 pub(super) fn write_record<T: Serialize>(
@@ -409,7 +409,6 @@ impl Lease {
                 "Interrupted service update; stop the service and run upgrade --recover",
             ));
         }
-        super::migration::require_complete(&prefix)?;
         let source = std::iter::once(&record.current)
             .chain(record.previous.iter())
             .find(|version| binary(&prefix, version) == executable)

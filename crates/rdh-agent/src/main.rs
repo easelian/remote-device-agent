@@ -63,6 +63,12 @@ async fn launch_agent(args: LaunchArgs) -> Result<()> {
 }
 
 fn main() {
+    #[cfg(all(windows, feature = "experimental-windows-install"))]
+    match rdh_agent::native_launcher::forward() {
+        Ok(Some(code)) => std::process::exit(code),
+        Ok(None) => {}
+        Err(error) => fail(error),
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let server = std::env::var("RDH_SERVER").ok();
     match parse(&args, server.as_deref()) {
@@ -75,7 +81,6 @@ fn main() {
         Ok(Action::Startup(args)) => check(rdh_agent::startup_cli::run(&args, server.as_deref())),
         Ok(Action::InstallNative(args)) => check(rdh_agent::upgrade_cli::install(&args)),
         Ok(Action::InstallService(args)) => check(rdh_agent::service_install::run(&args)),
-        Ok(Action::Migrate(args)) => run_async(rdh_agent::legacy_inspect::run(&args)),
         Ok(Action::Upgrade(args)) => run_async(rdh_agent::upgrade_cli::upgrade(&args)),
         Ok(Action::Rollback(args)) => check(rdh_agent::upgrade_cli::rollback(&args)),
         Ok(Action::ValidateConfig(args)) => {

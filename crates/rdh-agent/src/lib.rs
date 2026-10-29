@@ -7,19 +7,8 @@ pub mod deployment_defaults;
 pub mod error;
 pub mod files;
 pub mod install_lock;
-pub mod legacy_inspect;
-#[cfg(target_os = "linux")]
-mod legacy_migration;
-#[cfg(all(target_os = "macos", feature = "experimental-macos-install"))]
-mod legacy_migration_macos;
-#[cfg(all(windows, feature = "experimental-windows-install"))]
-mod legacy_migration_windows;
-#[cfg(any(
-    target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
-))]
-mod legacy_shell;
 pub mod native_install;
+pub mod native_launcher;
 pub mod network;
 pub mod pairing;
 pub mod policy;

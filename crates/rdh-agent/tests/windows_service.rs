@@ -4,6 +4,7 @@
 #[path = "support/initial_binary.rs"]
 mod initial_binary;
 
+#[cfg(feature = "experimental-windows-install")]
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use rdh_agent::{config::local_roots, random};
@@ -804,6 +805,12 @@ async fn exercise_service_updates(
     let executable = |version: &str| program.join("versions").join(version).join("rdh.exe");
     let original = executable(old_version);
     let updated = executable(&new_version);
+    let entry = program.join("rdh.exe");
+    for name in rdh_agent::native_launcher::COMMAND_NAMES {
+        let output = service_manager(&program.join(format!("{name}.exe")), &["--version"]).await;
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), old_version);
+        manager_success(output);
+    }
     let manifest = program.join(".service-install.json");
     let pending = program.join(".service-update-pending.json");
     let current = || serde_json::from_slice::<Value>(&fs::read(&manifest).unwrap()).unwrap();
@@ -895,7 +902,13 @@ async fn exercise_service_updates(
     assert_eq!(current(), old);
     assert_eq!(service_configuration(fixture.service.0), before);
     assert!(!updated.exists() && !pending.exists());
-    manager_success(service_manager(&original, &upgrade).await);
+    manager_success(service_manager(&entry, &upgrade).await);
+    let selected = service_manager(&entry, &["--version"]).await;
+    assert_eq!(
+        String::from_utf8_lossy(&selected.stdout).trim(),
+        new_version
+    );
+    manager_success(selected);
     let next = current();
     assert_eq!(next["current"]["version"], new_version);
     assert_eq!(next["previous"], old["current"]);
@@ -937,7 +950,13 @@ async fn exercise_service_updates(
     );
     stop_and_wait(fixture, owner).await;
     drop(peer);
-    manager_success(service_manager(&updated, &["rollback", "--no-restart"]).await);
+    manager_success(
+        service_manager(
+            &program.join("remote-device-agent.exe"),
+            &["rollback", "--no-restart"],
+        )
+        .await,
+    );
     let restored = current();
     assert_eq!(restored["current"], old["current"]);
     assert_eq!(restored["previous"], next["current"]);
@@ -1007,7 +1026,13 @@ async fn exercise_service_updates(
                 Some(before["display_name"].as_str().unwrap()),
             );
         }
-        manager_success(service_manager(&original, &["upgrade", "--recover"]).await);
+        manager_success(
+            service_manager(
+                &program.join("remote-device-hub.exe"),
+                &["upgrade", "--recover"],
+            )
+            .await,
+        );
         assert!(!pending.exists());
         assert_eq!(current(), restored);
         assert_eq!(service_configuration(fixture.service.0), before);
@@ -1342,7 +1367,3 @@ async fn exercise_service(
     assert_ne!(unsafe { DeleteService(fixture.service.0) }, 0);
     fixture.removed = true;
 }
-
-#[cfg(feature = "experimental-windows-install")]
-#[path = "support/windows_legacy_service.rs"]
-mod legacy_service;

@@ -355,7 +355,7 @@ pub(super) fn helper(args: &[String]) -> Result<()> {
         .is_some_and(|b| b.mode != Mode::Service || b.name != *name)
     {
         return Err(Error::message(
-            "The service profile is bound to another registration; migrate it explicitly",
+            "The service profile is bound to another registration; choose an unbound profile",
         ));
     }
     let ready = Ready {

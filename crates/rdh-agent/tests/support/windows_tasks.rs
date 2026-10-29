@@ -153,19 +153,6 @@ impl Task {
                 .unwrap();
         }
     }
-    pub fn execution_state(&self) -> (bool, i32) {
-        use ::windows::Win32::System::TaskScheduler::{TASK_STATE_QUEUED, TASK_STATE_RUNNING};
-        unsafe {
-            let task = self.folder.GetTask(&BSTR::from(&self.name)).unwrap();
-            (
-                matches!(
-                    task.State().unwrap(),
-                    TASK_STATE_QUEUED | TASK_STATE_RUNNING
-                ) || task.GetInstances(0).unwrap().Count().unwrap() != 0,
-                task.LastTaskResult().unwrap(),
-            )
-        }
-    }
     fn stop_owned(&mut self) -> ::windows::core::Result<()> {
         unsafe {
             let task = self.folder.GetTask(&BSTR::from(&self.name))?;
@@ -213,62 +200,6 @@ impl Task {
             rdh_agent::config::sha256_hex(
                 &serde_json::to_vec(&(xml.to_string(), self.security(), self.inspect().3)).unwrap(),
             )
-        }
-    }
-    pub fn migration_fingerprint(&self) -> String {
-        unsafe {
-            let task = self.folder.GetTask(&BSTR::from(&self.name)).unwrap();
-            let definition = task.Definition().unwrap();
-            let action: IExecAction = definition
-                .Actions()
-                .unwrap()
-                .get_Item(1)
-                .unwrap()
-                .cast()
-                .unwrap();
-            action
-                .SetPath(&BSTR::from("RDH-NATIVE-VERSION-PLACEHOLDER"))
-                .unwrap();
-            action
-                .SetArguments(&BSTR::from("RDH-MIGRATION-ARGUMENTS-PLACEHOLDER"))
-                .unwrap();
-            let mut xml = BSTR::new();
-            definition.XmlText(&mut xml).unwrap();
-            rdh_agent::config::sha256_hex(
-                &serde_json::to_vec(&(xml.to_string(), self.security(), self.inspect().3)).unwrap(),
-            )
-        }
-    }
-    pub fn replace_action(&self, sid: &str, executable: &str, arguments: &str) {
-        use ::windows::Win32::System::TaskScheduler::{
-            TASK_DONT_ADD_PRINCIPAL_ACE, TASK_IGNORE_REGISTRATION_TRIGGERS, TASK_UPDATE,
-        };
-        unsafe {
-            let task = self.folder.GetTask(&BSTR::from(&self.name)).unwrap();
-            assert_eq!(task.GetInstances(0).unwrap().Count().unwrap(), 0);
-            let definition = task.Definition().unwrap();
-            let action: IExecAction = definition
-                .Actions()
-                .unwrap()
-                .get_Item(1)
-                .unwrap()
-                .cast()
-                .unwrap();
-            action.SetPath(&BSTR::from(executable)).unwrap();
-            action.SetArguments(&BSTR::from(arguments)).unwrap();
-            self.folder
-                .RegisterTaskDefinition(
-                    &BSTR::from(&self.name),
-                    &definition,
-                    TASK_UPDATE.0
-                        | TASK_DONT_ADD_PRINCIPAL_ACE.0
-                        | TASK_IGNORE_REGISTRATION_TRIGGERS.0,
-                    &VARIANT::from(sid),
-                    &VARIANT::default(),
-                    TASK_LOGON_INTERACTIVE_TOKEN,
-                    &VARIANT::default(),
-                )
-                .unwrap();
         }
     }
     pub fn remove(mut self) {

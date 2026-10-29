@@ -14,8 +14,6 @@ use std::{
     time::Duration,
 };
 
-#[path = "service_migration_posix.rs"]
-mod migration;
 #[path = "service_profile_posix.rs"]
 mod profile;
 #[path = "service_storage_posix.rs"]
@@ -54,8 +52,6 @@ pub(crate) struct Record {
     server: String,
     pub current: Version,
     previous: Option<Version>,
-    #[serde(default)]
-    migrated: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -566,8 +562,7 @@ fn definition(prefix: &Path, record: &Record) -> Result<Vec<u8>> {
             .iter()
             .map(|s| format!("<string>{}</string>", quote(s)))
             .collect::<String>();
-        let disabled = if record.migrated { "false" } else { "true" };
-        Ok(format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>UserName</key><string>{}</string>\n<key>ProgramArguments</key><array>{}</array>\n<key>WorkingDirectory</key><string>{}</string>\n<key>EnvironmentVariables</key><dict><key>HOME</key><string>{}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>Disabled</key><{disabled}/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n</dict></plist>\n", quote(&record.name), quote(&record.user), command, quote(path_text(&record.state)?), quote(path_text(&account.home)?)).into_bytes())
+        Ok(format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>UserName</key><string>{}</string>\n<key>ProgramArguments</key><array>{}</array>\n<key>WorkingDirectory</key><string>{}</string>\n<key>EnvironmentVariables</key><dict><key>HOME</key><string>{}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>Disabled</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n</dict></plist>\n", quote(&record.name), quote(&record.user), command, quote(path_text(&record.state)?), quote(path_text(&account.home)?)).into_bytes())
     }
 }
 fn registration_matches(prefix: &Path, record: &Record) -> Result<()> {
@@ -625,7 +620,7 @@ fn stopped(record: &Record) -> Result<()> {
 fn ensure_absent(record: &Record) -> Result<()> {
     if exists(&registration(record))? {
         return Err(Error::message(
-            "System service registration already exists; migrate it explicitly",
+            "System service registration already exists; choose a new name",
         ));
     }
     #[cfg(target_os = "linux")]
@@ -664,20 +659,12 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         return profile::helper(rest);
     }
     store::root()?;
-    if migration::resume(args)? {
-        return Ok(());
-    }
     let mut options = std::collections::BTreeMap::new();
     let mut items = args.iter();
     while let Some(flag) = items.next() {
         if !matches!(
             flag.as_str(),
-            "--prefix"
-                | "--config"
-                | "--state-directory"
-                | "--service-user"
-                | "--name"
-                | "--migrate-from"
+            "--prefix" | "--config" | "--state-directory" | "--service-user" | "--name"
         ) {
             return Err(Error::message("Invalid POSIX service installation option"));
         }
@@ -711,16 +698,6 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     }
     path_text(config)?;
     path_text(state)?;
-    if let Some(legacy) = options.get("--migrate-from") {
-        path_text(Path::new(legacy))?;
-        let legacy = Path::new(legacy).canonicalize()?;
-        store::directory(&legacy)?;
-        if prefix.starts_with(&legacy) || legacy.starts_with(&prefix) {
-            return Err(Error::message(
-                "Use separate native and legacy program directories",
-            ));
-        }
-    }
     let source = std::env::current_exe()?.canonicalize()?;
     // The invoked executable is already trusted by the administrator; copy it
     // before dropping privilege so a protected executable path is passed on.
@@ -747,10 +724,9 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     let binary = stage(&prefix, &version, &bytes)?;
     let mut profile =
         ProfileLease::start(&binary, &account, config, state, name, &version.version)?;
-    let legacy = options.get("--migrate-from").copied();
-    if profile.ready.bound != legacy.is_some() {
+    if profile.ready.bound {
         return Err(Error::message(
-            "Existing service bindings require --migrate-from; migration requires the matching existing binding",
+            "Service installation requires an unbound, stopped profile",
         ));
     }
     let record = Record {
@@ -765,32 +741,25 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         server: profile.ready.server.clone(),
         current: version,
         previous: None,
-        migrated: legacy.is_some(),
     };
-    let legacy = legacy
-        .map(|path| migration::Legacy::inspect(Path::new(path), &record, &profile.ready))
-        .transpose()?;
-    if legacy.is_none() {
-        ensure_absent(&record)?;
-    }
+    ensure_absent(&record)?;
     let definition = definition(&prefix, &record)?;
     store::create(&prefix.join(RECORD), &serde_json::to_vec(&record)?, false)?;
     set_pointer(&prefix, &record.current)?;
-    if let Some(legacy) = &legacy {
-        legacy.save(&prefix)?;
-        profile.check()?;
-        legacy.publish(&prefix, &record)?;
-    } else {
-        #[cfg(target_os = "macos")]
-        checked_manager(&["disable", &format!("system/{}", record.name)])?;
-        store::create(&registration(&record), &definition, false)?;
-        #[cfg(target_os = "linux")]
-        checked_manager(&["daemon-reload"])?;
-        profile.bind()?;
+    for name in crate::native_launcher::COMMAND_NAMES {
+        symlink("current/rdh", prefix.join(name))?;
     }
+    store::sync(&prefix)?;
+    #[cfg(target_os = "macos")]
+    checked_manager(&["disable", &format!("system/{}", record.name)])?;
+    store::create(&registration(&record), &definition, false)?;
+    #[cfg(target_os = "linux")]
+    checked_manager(&["daemon-reload"])?;
+    profile.bind()?;
     profile.check()?;
     profile.finish()?;
-    migration::complete(&prefix)?;
+    fs::remove_file(prefix.join(INSTALL_PENDING))?;
+    store::sync(&prefix)?;
     println!(
         "System service installed and bound: {}\nProgram: {}\nConfiguration retained at: {}",
         record.name,
@@ -804,24 +773,15 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     );
     #[cfg(target_os = "macos")]
     {
-        if !record.migrated {
-            println!(
-                "Enable locally: sudo launchctl enable system/{}",
-                record.name
-            );
-        }
+        println!(
+            "Enable locally: sudo launchctl enable system/{}",
+            record.name
+        );
         println!(
             "Start locally: sudo launchctl bootstrap system {}\nThen verify the device connection in the Hub.",
             registration(&record).display()
         );
     }
-    println!(
-        "{}",
-        if record.migrated {
-            "Existing boot startup settings were retained. The old installation is available for undo."
-        } else {
-            "Boot startup remains disabled until enabled locally."
-        }
-    );
+    println!("Boot startup remains disabled until enabled locally.");
     Ok(())
 }

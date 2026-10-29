@@ -9,6 +9,8 @@ pub(crate) use windows::check_executable;
 #[cfg(all(windows, feature = "experimental-windows-install"))]
 pub(crate) use windows::install_for_locked_profile;
 #[cfg(all(windows, feature = "experimental-windows-install"))]
+pub(crate) use windows::pin_stored;
+#[cfg(all(windows, feature = "experimental-windows-install"))]
 pub use windows::{
     install, pending_record, previous, recover, stage, switch, validate_profiles, verify_stored,
 };
@@ -508,6 +510,9 @@ mod posix {
             format!("versions/{}", env!("CARGO_PKG_VERSION")),
             temporary.path.join("current"),
         )?;
+        for name in crate::native_launcher::COMMAND_NAMES {
+            symlink("current/rdh", temporary.path.join(name))?;
+        }
         storage::sync_directory(&File::open(&temporary.path)?)?;
         rename_new(&temporary.path, &destination)?;
         File::open(&parent)

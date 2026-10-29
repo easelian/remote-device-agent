@@ -1,51 +1,101 @@
-# Agent maintenance and releases
+# Agent maintenance
 
-This repository maintains the Node Agent. Its source, tests, builder, and CI do not depend on a Server checkout, integrations, or Python. Use Node.js 22 or later for development.
+The repository builds the Rust Agent with Cargo and a Rust `xtask` artifact
+builder. Use Rust `1.93.0` and the checked-in `Cargo.lock`. No Server checkout,
+Node, npm or Python is required by the Agent build and test chain. OS SDKs,
+linkers and platform service tools are still required for their respective targets.
 
 ## Build and validate
 
 Run from the repository root:
 
 ```sh
-npm ci --ignore-scripts
-npm run style:check
-npm run typecheck
-npm test
-npm run pack:check
+cargo +1.93.0 fmt --all -- --check
+cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
 ```
 
-`npm test` builds the TypeScript modules before running the tests. `npm run pack:check` checks the package manifest, size limits, offline installation with an empty cache, and both CLI aliases. Tests are selected for the host platform; a skipped platform-specific test is not validation of that platform.
+Some integration tests require an independently built update candidate or a real
+service manager and are explicitly ignored in an ordinary local run. Ignored
+tests are not passing evidence. [Agent CI](../.github/workflows/ci.yml) records
+the exact platform commands, creates the candidates and runs those fixtures on
+eight native OS/CPU/libc targets, one job at a time. Run privileged service tests
+only on disposable hosts: they create real temporary service registrations and
+accounts. Do not run them against an installed production profile.
 
-On Linux/macOS, run the local connection and resource-cleanup probes after building:
+The retained `experimental-*` Cargo feature names are compatibility switches;
+the normal default enables all applicable platform backends. The CI safety-gate
+checks use `--no-default-features` to verify deliberate reduced builds.
+
+Build and round-trip a development artifact for the host target, replacing the
+target and unused output directory as needed:
 
 ```sh
-node scripts/check_stability.mjs --duration-seconds 30 --json
-node scripts/check_lifecycle.mjs --quick
+cargo +1.93.0 run --locked -p xtask -- native-development \
+  --target x86_64-unknown-linux-gnu --out .build/native-development
 ```
 
-These probes use a temporary root and a real loopback WebSocket peer. The stability probe exercises files, searches, processes, reconnection, output limits, and cleanup. The lifecycle probe's `--quick` mode checks a short disconnect and authorization rejection; its default mode, also selected by `--full`, covers longer disconnects around the five-minute grace period using real elapsed time. The default stability-probe duration is 24 hours when no duration is supplied.
+The builder verifies executable headers, copies active dependencies' license
+texts, archives and re-extracts every file, and compares contents and metadata.
+When target and host match it runs the extracted executable's version check with
+an empty environment. The record binds source hashes, Git state, toolchain,
+target and artifact digests. A dirty source tree is recorded as dirty. Existing
+outputs are not overwritten; choose a new directory for a new build.
 
-Local checks do not establish public WSS/OAuth behavior or acceptance in a real client. Validate those paths separately before declaring a deployment ready. Cross-repository compatibility checks must use the exact candidate TGZ and the intended Server version; the Agent builder does not read a sibling worktree.
+`native-test-candidate` builds an independent native version used by upgrade,
+rollback and interrupted-switch tests. Candidate and main executable are built
+from the same source snapshot with separate version identities.
 
-## Package constraints
+## Update and recover an installation
 
-`package.json` supplies the version. The package name is `remote-device-hub`, with `remote-device-hub` and `remote-device-agent` command aliases. The builder uses Node's standard libraries to create deterministic tar/gzip archives from the compiled bundle, CLI entry point, README, package metadata, and third-party licenses.
-
-The npm TGZ budget is 64 KiB, with at most 512 KiB unpacked. TypeScript source, tests, build scripts, runtime npm dependencies, native addons, and installation hooks are excluded. The full vendor tree remains in the source repository. Review a vendored library's origin, license, digest, and client allowlist together when changing it.
-
-## Prepare and publish a release
-
-After updating `package.json` and completing validation, build the local TGZ and check its generated record:
+For an offline update, finish commands and searches, stop every Agent using the
+installation, then run its stable command:
 
 ```sh
-node scripts/release.mjs build
-node scripts/release.mjs check .build/release/remote-device-hub-0.7.0.json
+/absolute/install/rdh upgrade --index /absolute/native-index.json --channel canary --no-restart
 ```
 
-Use the version from `package.json` in the check path. Manifests in `.build/release/` are temporary build outputs, are not committed, and can be removed with `dist/` after use. Release records bind the Node version, Git state, source and builder digests, and artifact digest. Stale compiled code or a modified bundle prevents record generation. The `record` command describes actions already completed; it does not perform publication or deployment. A published version must not be replaced with different source or artifacts.
+The installer validates the candidate's size, digest, architecture, version and
+registered profiles before switching. Restart the Agent using the stable command
+or its installed service registration and confirm a new Hub `ready` message.
+macOS and Windows require this manual restart. Root-owned POSIX system services
+and Windows service-account installations also require a stopped service and
+root/administrator authority.
 
-Pushing a matching `v*` tag runs the release workflow, which builds runtime archives, verifies their checksums, performs a Linux installation smoke test, and publishes GitHub Release assets. Channel promotion is a separate workflow that changes rollout metadata without rebuilding artifacts. See [Distribution](distribution.md) and the [rollout instructions](../README.md#releases-and-staged-rollouts).
+To roll back, stop the Agent again and use:
 
-## Recover a profile lock
+```sh
+/absolute/install/rdh rollback --no-restart
+```
 
-Stop the old Agent before starting another process with the same configuration. Use `--recover-lock` only after confirming that the previous process has exited. Recovery accepts a valid private lock belonging to an exited PID; a leftover recovery guard requires manual inspection. See [Architecture](architecture.md) for shutdown and resource-lifetime behavior.
+An interrupted switch leaves a pending record and prevents normal startup.
+`rdh upgrade --recover` reconciles that recorded switch. Preserve the record and
+program directories if recovery detects outside changes. Recovery only completes
+or reverses the recorded native switch; it does not infer missing state.
+
+Linux also supports the existing automatic update path for a verified user
+systemd unit: `upgrade --service-unit NAME --service-config ABSOLUTE_PATH`.
+It checks active work, stops the matching instance, switches, restarts and checks
+that instance's new Hub readiness. Failure restores the old version. This path
+rejects service definitions it cannot prove belong to the installation; it is
+not a generic controller for arbitrary services. See `upgrade --help` for local
+inspection and recovery commands.
+
+Use `--recover-lock` only after confirming the previous Agent and its work have
+stopped. Recovery rejects a live or uninspectable owner. On Windows an explicitly
+requested stopped-profile recovery can be needed after Task Scheduler forcibly
+terminates a task. System-service installers use kernel locks and do not accept
+that profile-recovery override.
+
+## Release boundary
+
+The workspace version is in `Cargo.toml`. Generated artifacts, records and logs
+belong in ignored `.build/` directories or external artifact storage. The old
+Node release and promotion workflows are removed. The current builder never
+publishes, installs on a device or changes a channel in GitHub.
+
+Public release work still needs a project license decision, supported OS baseline
+validation, signing/provenance, immutable hosting and channel promotion. The
+builder explicitly records whether a project license is present and leaves
+`release_ready` false. Do not substitute dependency licenses for a project license.
+npm packaging and publication are a separate later phase.

@@ -1,6 +1,5 @@
 [workspace]
 members = ["crates/rdh-agent", "xtask"]
-exclude = [".build/legacy-shawl-source"]
 resolver = "3"
 
 [workspace.package]

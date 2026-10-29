@@ -10,8 +10,6 @@ use std::{
     time::Duration,
 };
 
-#[path = "service_migration_windows.rs"]
-mod migration;
 #[path = "service_update_windows.rs"]
 pub(crate) mod update;
 use windows_sys::Win32::{
@@ -67,12 +65,9 @@ impl Privilege {
     fn owner_assignment() -> Result<Self> {
         Self::enable("SeRestorePrivilege")
     }
-    fn backup_read() -> Result<Self> {
-        Self::enable("SeBackupPrivilege")
-    }
     fn enable(privilege: &str) -> Result<Self> {
         let mut raw = null_mut();
-        // Ownership changes and backup reads are synchronous. Restore the
+        // Ownership changes are synchronous. Restore the
         // caller's token before any subprocess can inherit the privilege.
         if unsafe {
             OpenProcessToken(
@@ -425,9 +420,6 @@ fn optional_private(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
-    if migration::run(args)? {
-        return Ok(());
-    }
     let options = options(args)?;
     if !administrator() {
         return Err(Error::message(
@@ -490,6 +482,9 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     let versions = creation.directory(program, "versions", true)?;
     let release = creation.directory(versions, version, true)?;
     let executable = creation.file(release, "rdh.exe", &binary_bytes, true)?;
+    for name in crate::native_launcher::COMMAND_NAMES {
+        creation.file(program, &format!("{name}.exe"), &binary_bytes, true)?;
+    }
     let data = creation.root(&options.data, false)?;
     let config = creation.file(data, "agent.json", &config_bytes, false)?;
     if let Some(bytes) = policy_bytes {

@@ -856,9 +856,6 @@ pub use linux::{
     Reporter, Snapshot, activate_profile, probe_profile, stop_exact_idle, stop_if_idle, stop_trial,
 };
 
-#[cfg(target_os = "linux")]
-pub(crate) use linux::{process_handle, require_live};
-
 #[cfg(not(target_os = "linux"))]
 pub struct Reporter;
 #[cfg(not(target_os = "linux"))]
