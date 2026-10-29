@@ -148,6 +148,16 @@ fn success(output: Output) {
     );
 }
 
+fn failure(output: Output, message: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.to_lowercase().contains(message),
+        "Expected {message:?}, got {}\nstdout: {stdout}\nstderr: {stderr}",
+        output.status
+    );
+}
+
 fn selected_binary(prefix: &Path, version: &str) -> PathBuf {
     prefix
         .join("versions")
@@ -172,24 +182,18 @@ fn bootstrap_verifies_native_artifact_and_preserves_existing_installation() {
         format!("{}  {}\n", "0".repeat(64), artifact_name(version)),
     )
     .unwrap();
-    let bad = bootstrap(&fixture.0, version, &refused, true);
-    assert!(!bad.status.success());
-    assert!(
-        String::from_utf8_lossy(&bad.stderr)
-            .to_lowercase()
-            .contains("checksum mismatch")
+    failure(
+        bootstrap(&fixture.0, version, &refused, true),
+        "checksum mismatch",
     );
     assert!(!refused.exists());
     fs::write(&checksum, checksum_bytes).unwrap();
 
     let wrong_version = "9999.0.0-bootstrap-fixture";
     artifact(&fixture.0, wrong_version, &bytes);
-    let wrong = bootstrap(&fixture.0, wrong_version, &refused, false);
-    assert!(!wrong.status.success());
-    assert!(
-        String::from_utf8_lossy(&wrong.stderr)
-            .to_lowercase()
-            .contains("version mismatch")
+    failure(
+        bootstrap(&fixture.0, wrong_version, &refused, false),
+        "version mismatch",
     );
     assert!(!refused.exists());
 
@@ -209,9 +213,10 @@ fn bootstrap_verifies_native_artifact_and_preserves_existing_installation() {
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), version);
         success(output);
         let marker = fs::read(prefix.join(".native-install.json")).unwrap();
-        let duplicate = bootstrap(&fixture.0, version, &prefix, offline);
-        assert!(!duplicate.status.success());
-        assert!(String::from_utf8_lossy(&duplicate.stderr).contains("prefix already exists"));
+        failure(
+            bootstrap(&fixture.0, version, &prefix, offline),
+            "prefix already exists",
+        );
         assert_eq!(
             fs::read(prefix.join(".native-install.json")).unwrap(),
             marker

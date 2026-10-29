@@ -106,7 +106,9 @@ function Fetch-Native([string]$Name, [string]$Destination) {
     } elseif ($Base -match '://') {
         throw '-Base must use HTTPS or a local directory.'
     } else {
-        Copy-Item -LiteralPath (Join-Path $Base $Name) -Destination $Destination
+        # Treat local bases as filesystem paths, including verbatim \\?\ paths,
+        # rather than asking the PowerShell provider to resolve a drive.
+        Copy-Item -LiteralPath ([IO.Path]::Combine($Base, $Name)) -Destination $Destination
     }
 }
 try {
