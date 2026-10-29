@@ -24,6 +24,7 @@ pub mod sandbox;
 pub mod searches;
 pub mod service_controller;
 pub mod service_host;
+pub mod service_install;
 pub mod service_update;
 pub mod session;
 pub mod startup;

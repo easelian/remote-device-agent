@@ -387,7 +387,13 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        let (ancestors, directory_name) = open_parent(&base, false, false).unwrap();
+        // ACL queries require READ_CONTROL on every retained ancestor.
+        let (root, parts) = path_parts(&base).unwrap();
+        let mut ancestors = vec![open_root(&root, true).unwrap()];
+        for part in &parts[..parts.len() - 1] {
+            ancestors.push(open_child(ancestors.last().unwrap(), part, true, true).unwrap());
+        }
+        let directory_name = parts.last().unwrap();
         for ancestor in &ancestors {
             check(ancestor, false).unwrap();
         }
@@ -395,7 +401,7 @@ mod tests {
         drop(
             create_child_with_descriptor(
                 ancestors.last().unwrap(),
-                &directory_name,
+                directory_name,
                 true,
                 &security,
                 |file| check(file, true),

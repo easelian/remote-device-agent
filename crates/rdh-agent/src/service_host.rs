@@ -8,7 +8,7 @@ mod windows;
 pub fn run(args: &[String], server: Option<&str>) -> Result<()> {
     if args == ["--help"] {
         println!(
-            "rdh service-run --service-name NAME --config ABSOLUTE_PATH --server URL [--recover-lock]\n\nWindows SCM entry point for an already-paired Agent. Register this command as an own-process service; it does not register or start a service from a terminal."
+            "rdh service-run --service-name NAME --config ABSOLUTE_PATH --server URL [--recover-lock] [--state-directory ABSOLUTE_PATH]\n\nWindows SCM entry point for an already-paired Agent. Register this command as an own-process service; it does not register or start a service from a terminal.\n--state-directory keeps service audit state beneath the specified private directory."
         );
         return Ok(());
     }

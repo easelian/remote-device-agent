@@ -6,7 +6,7 @@ use crate::{
 use std::{
     ffi::c_void,
     io,
-    path::Path,
+    path::{Path, PathBuf},
     ptr::{null, null_mut},
     sync::{
         Mutex, OnceLock,
@@ -28,6 +28,7 @@ use windows_sys::Win32::{
 struct Context {
     name: Vec<u16>,
     args: LaunchArgs,
+    state_directory: Option<PathBuf>,
     stop: watch::Sender<bool>,
     shutdown: watch::Receiver<bool>,
     // SCM owns this opaque handle for the process lifetime. The status mutex
@@ -74,7 +75,10 @@ impl Context {
     }
 }
 
-fn arguments(args: &[String], server: Option<&str>) -> Result<(String, LaunchArgs)> {
+fn arguments(
+    args: &[String],
+    server: Option<&str>,
+) -> Result<(String, LaunchArgs, Option<PathBuf>)> {
     let (name, remaining) = match args {
         [flag, name, remaining @ ..] if flag == "--service-name" && valid_name(name) => {
             (name, remaining)
@@ -85,7 +89,21 @@ fn arguments(args: &[String], server: Option<&str>) -> Result<(String, LaunchArg
             ));
         }
     };
-    let Action::Launch(mut launch) = parse(remaining, server)? else {
+    let mut launch_args = Vec::new();
+    let mut state_directory = None;
+    let mut items = remaining.iter();
+    while let Some(argument) = items.next() {
+        if argument == "--state-directory" {
+            let directory = items.next().filter(|value| Path::new(value).is_absolute() && !value.chars().any(char::is_control))
+                .ok_or_else(|| Error::message("--state-directory requires an absolute Unicode path without control characters"))?;
+            if state_directory.replace(PathBuf::from(directory)).is_some() {
+                return Err(Error::message("Duplicate service state directory"));
+            }
+        } else {
+            launch_args.push(argument.clone());
+        }
+    }
+    let Action::Launch(mut launch) = parse(&launch_args, server)? else {
         return Err(Error::message("A service requires Agent launch arguments"));
     };
     if launch.pair_only
@@ -101,16 +119,17 @@ fn arguments(args: &[String], server: Option<&str>) -> Result<(String, LaunchArg
         ));
     }
     launch.no_browser = true;
-    Ok((name.clone(), launch))
+    Ok((name.clone(), launch, state_directory))
 }
 
 pub(super) fn run(args: &[String], server: Option<&str>) -> Result<()> {
-    let (name, args) = arguments(args, server)?;
+    let (name, args, state_directory) = arguments(args, server)?;
     let (stop, shutdown) = watch::channel(false);
     CONTEXT
         .set(Context {
             name: name.encode_utf16().chain(Some(0)).collect(),
             args,
+            state_directory,
             stop,
             shutdown,
             handle: AtomicPtr::new(null_mut()),
@@ -216,6 +235,7 @@ fn service_main_inner() {
             context.args.clone(),
             context.shutdown.clone(),
             context.stop.clone(),
+            context.state_directory.clone(),
         ))
         .unwrap_or_else(|error| fatal(error));
     drop(runtime);
@@ -268,13 +288,23 @@ mod tests {
             "--server",
             "http://localhost:8111",
         ]);
-        let (name, launch) = arguments(&base, None).unwrap();
+        let (name, launch, state_directory) = arguments(&base, None).unwrap();
         assert_eq!(name, "RDH-fixture");
         assert!(launch.no_browser);
+        assert!(state_directory.is_none());
+        let mut with_state = base.clone();
+        with_state.extend(args(&["--state-directory", r"C:\private data\state"]));
+        assert_eq!(
+            arguments(&with_state, None).unwrap().2,
+            Some(PathBuf::from(r"C:\private data\state"))
+        );
+        with_state.extend(args(&["--state-directory", r"C:\second"]));
+        assert!(arguments(&with_state, None).is_err());
         for extra in [
             vec!["--pair-only"],
             vec!["--name", "new identity"],
             vec!["--root", r"work=C:\data"],
+            vec!["--state-directory", "relative"],
         ] {
             let mut invalid = base.clone();
             invalid.extend(args(&extra));

@@ -74,6 +74,7 @@ fn main() {
         }
         Ok(Action::Startup(args)) => check(rdh_agent::startup_cli::run(&args, server.as_deref())),
         Ok(Action::InstallNative(args)) => check(rdh_agent::upgrade_cli::install(&args)),
+        Ok(Action::InstallService(args)) => check(rdh_agent::service_install::run(&args)),
         Ok(Action::Migrate(args)) => run_async(rdh_agent::legacy_inspect::run(&args)),
         Ok(Action::Upgrade(args)) => run_async(rdh_agent::upgrade_cli::upgrade(&args)),
         Ok(Action::Rollback(args)) => check(rdh_agent::upgrade_cli::rollback(&args)),

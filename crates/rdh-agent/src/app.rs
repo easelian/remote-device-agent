@@ -17,7 +17,10 @@ use crate::rpc::Runtime;
 use crate::startup::{STARTUP_OPERATIONS, Startup};
 use crate::{pairing, session, system};
 
-fn audit_directory() -> Result<PathBuf> {
+fn audit_directory(service_state: Option<&Path>) -> Result<PathBuf> {
+    if let Some(base) = service_state {
+        return Ok(base.join("remote-device-hub").join("audit"));
+    }
     let base =
         if let Some(value) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
             PathBuf::from(value)
@@ -63,7 +66,7 @@ pub async fn launch(
     shutdown: watch::Receiver<bool>,
     stop: watch::Sender<bool>,
 ) -> Result<()> {
-    launch_with_pairing(args, shutdown, stop, true).await
+    launch_with_pairing(args, shutdown, stop, true, None).await
 }
 
 /// A service must use an already-paired identity. In particular, a deleted
@@ -73,8 +76,9 @@ pub(crate) async fn launch_existing(
     args: LaunchArgs,
     shutdown: watch::Receiver<bool>,
     stop: watch::Sender<bool>,
+    state_directory: Option<PathBuf>,
 ) -> Result<()> {
-    launch_with_pairing(args, shutdown, stop, false).await
+    launch_with_pairing(args, shutdown, stop, false, state_directory).await
 }
 
 async fn launch_with_pairing(
@@ -82,6 +86,7 @@ async fn launch_with_pairing(
     shutdown: watch::Receiver<bool>,
     stop: watch::Sender<bool>,
     allow_pairing: bool,
+    state_directory: Option<PathBuf>,
 ) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     let _ = stop;
@@ -179,7 +184,7 @@ async fn launch_with_pairing(
         let policy = Policy::load(&paths.destination, &config)?;
         policy.ensure_sandbox_supported()?;
         let audit = if policy.audit.enabled {
-            let opened = audit_directory().and_then(|directory| {
+            let opened = audit_directory(state_directory.as_deref()).and_then(|directory| {
                 AuditLog::open(
                     &directory,
                     &config.device_id,

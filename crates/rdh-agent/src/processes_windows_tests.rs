@@ -371,13 +371,78 @@ fn cmd_shell_cwd_nonzero_exit_and_completion_hook() {
         })),
     );
     fs::create_dir(fixture.path.join("nested")).unwrap();
-    let job = fixture
-        .call(
-            "start_process",
-            json!({"root":"work","cwd":"nested",
+    let launched = fixture.call(
+        "start_process",
+        json!({"root":"work","cwd":"nested",
         "command":"echo shell-marker&cd&echo error-marker 1>&2&exit /b 7","wait_seconds":2}),
-        )
-        .unwrap();
+    );
+    if let Err(error) = &launched {
+        // Preserve the original failure. These fixed, harmless builtin-only
+        // commands distinguish cwd, command text and Job/handle launch paths.
+        for (label, cwd, command) in [
+            ("root-simple", ".", "echo diagnostic-marker"),
+            ("nested-simple", "nested", "echo diagnostic-marker"),
+            (
+                "root-original",
+                ".",
+                "echo shell-marker&cd&echo error-marker 1>&2&exit /b 7",
+            ),
+        ] {
+            let result = fixture.call(
+                "start_process",
+                json!({
+                    "root":"work", "cwd":cwd, "command":command, "wait_seconds":2
+                }),
+            );
+            match result {
+                Ok(job) => {
+                    let done = fixture.done(job["job_id"].as_str().unwrap());
+                    eprintln!(
+                        "Process fixture {label}: status={}, exit={}",
+                        done["status"], done["exit_code"]
+                    );
+                }
+                Err(error) => eprintln!("Process fixture {label}: {error:?}"),
+            }
+        }
+        let direct = Command::new(default_shell())
+            .args([
+                "/d",
+                "/s",
+                "/c",
+                "echo shell-marker&cd&echo error-marker 1>&2&exit /b 7",
+            ])
+            .current_dir(fixture.path.join("nested"))
+            .env_clear()
+            .envs(environment(&[]).into_values())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match direct {
+            Ok(mut child) => {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            eprintln!("Process fixture direct nested: {status}");
+                            break;
+                        }
+                        Ok(None) if Instant::now() < deadline => thread::sleep(TICK),
+                        result => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            eprintln!("Process fixture direct nested did not finish: {result:?}");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) => eprintln!("Process fixture direct nested spawn: {error}"),
+        }
+        panic!("Original cmd/cwd fixture launch failed: {error:?}");
+    }
+    let job = launched.unwrap();
     let result = fixture.done(job["job_id"].as_str().unwrap());
     assert_eq!(result["status"], "exited");
     assert_eq!(result["exit_code"], 7);

@@ -136,6 +136,38 @@ impl Sid {
         }
         Ok(Self(sid))
     }
+
+    #[cfg(feature = "experimental-windows-install")]
+    fn trusted_installer() -> Result<Self> {
+        use windows_sys::Win32::Security::LookupAccountNameW;
+        let name: Vec<u16> = "NT SERVICE\\TrustedInstaller"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut sid = vec![0u32; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<u32>())];
+        let mut bytes = size_of_val(sid.as_slice()) as u32;
+        let mut domain = vec![0u16; 256];
+        let mut characters = domain.len() as u32;
+        let mut kind = 0;
+        // Only this fixed local service account is accepted as an additional
+        // owner of an existing Program Files parent. It is never the runtime user.
+        if unsafe {
+            LookupAccountNameW(
+                null(),
+                name.as_ptr(),
+                sid.as_mut_ptr().cast(),
+                &mut bytes,
+                domain.as_mut_ptr(),
+                &mut characters,
+                &mut kind,
+            )
+        } == 0
+            || unsafe { IsValidSid(sid.as_ptr().cast_mut().cast()) } == 0
+        {
+            return Err(last_error());
+        }
+        Ok(Self(sid))
+    }
 }
 
 struct Identity {
@@ -190,6 +222,64 @@ pub(crate) fn current_sid_text() -> Result<String> {
     Ok(sid)
 }
 
+/// Task Scheduler may return an account name even when registered with a SID.
+/// Compare resolved identities; never accept a name by string similarity.
+#[cfg(all(
+    feature = "experimental-windows-startup",
+    any(test, feature = "experimental-windows-install")
+))]
+pub(crate) fn account_matches_sid(account: &str, expected: &str) -> Result<bool> {
+    use windows_sys::Win32::Security::{Authorization::ConvertStringSidToSidW, LookupAccountNameW};
+    if account.is_empty()
+        || account.encode_utf16().count() > 1024
+        || account.chars().any(char::is_control)
+        || !expected.starts_with("S-1-")
+        || expected.len() > 256
+        || expected.contains('\0')
+    {
+        return Err(unsafe_storage());
+    }
+    let expected_text: Vec<u16> = expected.encode_utf16().chain(Some(0)).collect();
+    let mut expected_sid = null_mut();
+    if unsafe { ConvertStringSidToSidW(expected_text.as_ptr(), &mut expected_sid) } == 0 {
+        return Err(last_error());
+    }
+    let expected_sid = LocalMemory(expected_sid);
+    if account == expected {
+        return Ok(true);
+    }
+    if account.starts_with("S-1-") {
+        return Ok(false);
+    }
+    let name: Vec<u16> = account.encode_utf16().chain(Some(0)).collect();
+    let mut sid = vec![0u32; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<u32>())];
+    let mut bytes = size_of_val(sid.as_slice()) as u32;
+    let mut domain = vec![0u16; 1024];
+    let mut characters = domain.len() as u32;
+    let mut kind = 0;
+    // All outputs are bounded and live for the local account lookup. Unknown
+    // names or larger outputs are rejected without changing task definitions.
+    if unsafe {
+        LookupAccountNameW(
+            null(),
+            name.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut bytes,
+            domain.as_mut_ptr(),
+            &mut characters,
+            &mut kind,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    let resolved = sid.as_mut_ptr().cast();
+    if unsafe { IsValidSid(resolved) } == 0 {
+        return Err(unsafe_storage());
+    }
+    Ok(unsafe { EqualSid(resolved, expected_sid.0) } != 0)
+}
+
 fn private_descriptor(directory: bool) -> Result<LocalMemory> {
     let sid = current_sid_text()?;
     let inherit = if directory { "OICI" } else { "" };
@@ -229,6 +319,17 @@ fn validate_acl_kind(
     owner: PSID,
     acl: *mut ACL,
     private: bool,
+) -> Result<()> {
+    validate_acl_policy(identity, descriptor, owner, acl, private, false)
+}
+
+fn validate_acl_policy(
+    identity: &Identity,
+    descriptor: PSECURITY_DESCRIPTOR,
+    owner: PSID,
+    acl: *mut ACL,
+    private: bool,
+    allow_new_children: bool,
 ) -> Result<()> {
     if descriptor.is_null() || owner.is_null() || acl.is_null() {
         return Err(unsafe_storage());
@@ -325,8 +426,18 @@ fn validate_acl_kind(
             };
             let read_only =
                 FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | GENERIC_READ | GENERIC_EXECUTE;
+            // ProgramData may let users create a new child, but it must not
+            // let them replace/delete an existing child or alter the parent's
+            // ACL. Exclusive creation attaches a protected descriptor before
+            // any contents are written. This exception is installer-only.
+            let allowed = read_only
+                | if allow_new_children {
+                    0x0002 | 0x0004
+                } else {
+                    0
+                };
             if private
-                || (u32::from(header.AceFlags) & INHERIT_ONLY_ACE == 0 && mask & !read_only != 0)
+                || (u32::from(header.AceFlags) & INHERIT_ONLY_ACE == 0 && mask & !allowed != 0)
             {
                 return Err(unsafe_storage());
             }
@@ -338,7 +449,11 @@ fn validate_acl_kind(
             user_control = true;
         }
     }
-    if !user_control {
+    // Existing system parents can be owned by TrustedInstaller while granting
+    // the administrators group (rather than that owner) full control. Service
+    // installation separately checks that owner against a fixed trusted set;
+    // creating the child must still pass the kernel's access check.
+    if !user_control && !allow_new_children {
         return Err(unsafe_storage());
     }
     Ok(())
@@ -355,6 +470,19 @@ pub(crate) fn check_install_parent(file: &File) -> Result<()> {
 
 fn check_acl_kind(file: &File, private: bool) -> Result<()> {
     let identity = Identity::current()?;
+    with_acl(file, |descriptor, owner, acl| {
+        if private {
+            validate_acl(&identity, descriptor, owner, acl)
+        } else {
+            validate_acl_kind(&identity, descriptor, owner, acl, false)
+        }
+    })
+}
+
+fn with_acl(
+    file: &File,
+    validate: impl FnOnce(PSECURITY_DESCRIPTOR, PSID, *mut ACL) -> Result<()>,
+) -> Result<()> {
     let mut owner: PSID = null_mut();
     let mut acl: *mut ACL = null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
@@ -375,12 +503,92 @@ fn check_acl_kind(file: &File, private: bool) -> Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32).into());
     }
     let descriptor = LocalMemory(descriptor);
-    (if private {
-        validate_acl(&identity, descriptor.0, owner, acl)
-    } else {
-        validate_acl_kind(&identity, descriptor.0, owner, acl, false)
+    if descriptor.0.is_null() || owner.is_null() || acl.is_null() {
+        return Err(unsafe_storage());
+    }
+    validate(descriptor.0, owner, acl)
+        .map_err(|_| Error::message("Windows private storage owner or ACL cannot be verified"))
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn check_service_parent(file: &File) -> Result<()> {
+    with_acl(file, |descriptor, owner, acl| {
+        let mut candidates = vec![
+            Sid::current()?,
+            Sid::well_known(WinBuiltinAdministratorsSid)?,
+            Sid::well_known(WinLocalSystemSid)?,
+        ];
+        if let Ok(installer) = Sid::trusted_installer() {
+            candidates.push(installer);
+        }
+        let user = candidates
+            .into_iter()
+            .find(|sid| unsafe { EqualSid(owner, sid.as_ptr()) } != 0)
+            .ok_or_else(unsafe_storage)?;
+        let identity = Identity {
+            user,
+            system: Sid::well_known(WinLocalSystemSid)?,
+            administrators: Sid::well_known(WinBuiltinAdministratorsSid)?,
+        };
+        validate_acl_policy(&identity, descriptor, owner, acl, false, true)
     })
-    .map_err(|_| Error::message("Windows private storage owner or ACL cannot be verified"))
+}
+
+/// Service code is administrator-owned and readable by LocalService. Service
+/// data is LocalService-owned and private to it and trusted administrators.
+/// These checks never change the current-user private-storage contract.
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn check_service_object(file: &File, program: bool) -> Result<()> {
+    use windows_sys::Win32::Security::WinLocalServiceSid;
+    with_acl(file, |descriptor, owner, acl| {
+        let identity = Identity {
+            user: Sid::well_known(if program {
+                WinBuiltinAdministratorsSid
+            } else {
+                WinLocalServiceSid
+            })?,
+            system: Sid::well_known(WinLocalSystemSid)?,
+            administrators: Sid::well_known(WinBuiltinAdministratorsSid)?,
+        };
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
+            || control & SE_DACL_PROTECTED == 0
+        {
+            return Err(unsafe_storage());
+        }
+        validate_acl_kind(&identity, descriptor, owner, acl, !program)
+    })
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn create_service_child(
+    parent: &File,
+    name: &[u16],
+    directory: bool,
+    program: bool,
+) -> Result<File> {
+    let inherited = if directory { "OICI" } else { "" };
+    let owner = if program { "BA" } else { "LS" };
+    let runtime_access = if program { "FRFX" } else { "FA" };
+    let sddl: Vec<u16> = format!("O:{owner}D:P(A;{inherited};FA;;;BA)(A;{inherited};FA;;;SY)(A;{inherited};{runtime_access};;;LS)")
+        .encode_utf16().chain(Some(0)).collect();
+    let mut descriptor = null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1,
+            &mut descriptor,
+            null_mut(),
+        )
+    } == 0
+        || descriptor.is_null()
+    {
+        return Err(last_error());
+    }
+    create_child_with_descriptor(parent, name, directory, &LocalMemory(descriptor), |file| {
+        check_service_object(file, program)
+    })
 }
 
 fn information(file: &File, directory: bool) -> Result<BY_HANDLE_FILE_INFORMATION> {
@@ -826,6 +1034,27 @@ pub(crate) fn open_parent(
 /// directory with public read access. Existing directories are never repaired.
 #[cfg(feature = "experimental-windows-install")]
 pub(crate) fn open_install_parent(path: &Path) -> Result<(Vec<File>, Vec<u16>)> {
+    open_install_parent_checked(path, check_install_parent)
+}
+
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn open_service_install_parent(path: &Path) -> Result<(Vec<File>, Vec<u16>)> {
+    let (root, parts) = path_parts(path)?;
+    let mut directories = vec![open_root(&root, true)?];
+    check_service_parent(directories.last().expect("root exists"))?;
+    for name in &parts[..parts.len() - 1] {
+        let next = open_child(directories.last().expect("root exists"), name, true, true)?;
+        check_service_parent(&next)?;
+        directories.push(next);
+    }
+    Ok((directories, parts.last().expect("path has a name").clone()))
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn open_install_parent_checked(
+    path: &Path,
+    validate: impl FnOnce(&File) -> Result<()>,
+) -> Result<(Vec<File>, Vec<u16>)> {
     let (root, parts) = path_parts(path)?;
     let mut directories = vec![open_root(&root, parts.len() == 1)?];
     for (index, name) in parts[..parts.len() - 1].iter().enumerate() {
@@ -837,7 +1066,7 @@ pub(crate) fn open_install_parent(path: &Path) -> Result<(Vec<File>, Vec<u16>)> 
         )?;
         directories.push(next);
     }
-    check_install_parent(directories.last().expect("root exists"))?;
+    validate(directories.last().expect("root exists"))?;
     Ok((directories, parts.last().expect("path has a name").clone()))
 }
 
@@ -1130,6 +1359,15 @@ mod tests {
     }
 
     fn accepted_kind(identity: &Identity, descriptor: &LocalMemory, private: bool) -> bool {
+        accepted_policy(identity, descriptor, private, false)
+    }
+
+    fn accepted_policy(
+        identity: &Identity,
+        descriptor: &LocalMemory,
+        private: bool,
+        allow_new_children: bool,
+    ) -> bool {
         let mut owner = null_mut();
         let mut owner_defaulted = 0;
         let mut present = 0;
@@ -1146,7 +1384,48 @@ mod tests {
             },
             0
         );
-        present != 0 && validate_acl_kind(identity, descriptor.0, owner, acl, private).is_ok()
+        present != 0
+            && validate_acl_policy(
+                identity,
+                descriptor.0,
+                owner,
+                acl,
+                private,
+                allow_new_children,
+            )
+            .is_ok()
+    }
+
+    #[cfg(feature = "experimental-windows-install")]
+    #[test]
+    fn service_parent_creation_rights_do_not_allow_replacement_or_relax_private_storage() {
+        let identity = Identity {
+            user: Sid::well_known(WinBuiltinAdministratorsSid).unwrap(),
+            system: Sid::well_known(WinLocalSystemSid).unwrap(),
+            administrators: Sid::well_known(WinBuiltinAdministratorsSid).unwrap(),
+        };
+        let make = |rights: &str| {
+            descriptor(&format!(
+                "O:BAD:(A;;FA;;;BA)(A;;FRFX;;;BU)(A;;{rights};;;AU)"
+            ))
+        };
+        for rights in ["0x00000002", "0x00000004", "0x00000006"] {
+            let descriptor = make(rights);
+            assert!(
+                accepted_policy(&identity, &descriptor, false, true),
+                "{rights}"
+            );
+            assert!(!accepted_kind(&identity, &descriptor, false));
+            assert!(!accepted(&identity, &descriptor));
+        }
+        for rights in ["FW", "FA", "WD", "WO", "SD", "DC"] {
+            assert!(
+                !accepted_policy(&identity, &make(rights), false, true),
+                "{rights}"
+            );
+        }
+        let wrong_owner = descriptor("O:WDD:(A;;FA;;;BA)(A;;FRFX;;;BU)");
+        assert!(!accepted_policy(&identity, &wrong_owner, false, true));
     }
 
     #[cfg(feature = "experimental-windows-install")]

@@ -1,6 +1,7 @@
 //! Real, uniquely named Windows services with a loopback authenticated Hub.
 #![cfg(all(windows, feature = "experimental-windows-startup"))]
 
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use rdh_agent::{config::local_roots, random};
 use serde_json::{Value, json};
@@ -447,6 +448,140 @@ async fn native_windows_local_service_preserves_account_identity_and_process_cle
     service_lifecycle("S-1-5-19", Some(r"NT AUTHORITY\LocalService")).await;
 }
 
+#[cfg(feature = "experimental-windows-install")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "installs and removes a native LocalService registration with separate protected program and data trees"]
+async fn native_windows_installer_preserves_profile_and_runs_as_local_service() {
+    use rdh_agent::{profile_lock::ProfileLocks, storage};
+    use windows_sys::Win32::System::Services::OpenServiceW;
+    let _inspection = Privilege::inspect_service_processes();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let name = format!("RDH-Test-Install-{}", random::hex_token::<12>().unwrap());
+    let directory =
+        PathBuf::from(std::env::var_os("ProgramData").unwrap()).join(format!("{name} '😀"));
+    fs::create_dir(&directory).unwrap();
+    let source = directory.join("source");
+    let work = directory.join("work");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&work).unwrap();
+    let sid = process_sid(&process(std::process::id()));
+    {
+        let _restore = Privilege::restore_owner();
+        program_acl(&directory, true);
+        service_acl(&source, true, &sid);
+        service_acl(&work, true, "S-1-5-19");
+    }
+    let config_source = source.join("agent.json");
+    let policy_source = source.join("agent.policy.json");
+    let startup_source = source.join("agent.json.startup.json");
+    let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let contents = serde_json::to_vec(
+        &json!({"gateway_url":origin,"device_id":"native-service","token":TOKEN,
+        "roots":local_roots(&[format!("work={}",work.display())]).unwrap(),
+        "allow_write":true,"allow_shell":true,"shell":powershell}),
+    )
+    .unwrap();
+    let policy = br#"{"version":1,"audit":{"enabled":true,"required":true}}"#;
+    let expires = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 3_600_000;
+    let startup = serde_json::to_vec(&json!({"version":1,"binding":null,
+        "pending":{"request_id":"01234567-89ab-4def-8123-456789abcdef","mode":"user","expires_at":expires}})).unwrap();
+    storage::write_private_new(&config_source, &contents).unwrap();
+    storage::write_private_new(&policy_source, policy).unwrap();
+    storage::write_private_new(&startup_source, &startup).unwrap();
+    let program = directory.join("program");
+    let data = directory.join("data");
+    let install = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
+            .args(["install-service", "--prefix"])
+            .arg(&program)
+            .arg("--data")
+            .arg(&data)
+            .arg("--config")
+            .arg(&config_source)
+            .args(["--name", &name])
+            .env("PATH", "")
+            .output()
+            .unwrap()
+    };
+    let mut locked = ProfileLocks::acquire(std::slice::from_ref(&config_source)).unwrap();
+    assert!(
+        !install().status.success(),
+        "Running/locked source profile must not be copied"
+    );
+    assert!(!program.exists() && !data.exists());
+    locked.release().unwrap();
+    fs::create_dir(&program).unwrap();
+    let sentinel = program.join("existing.txt");
+    fs::write(&sentinel, b"keep existing installation").unwrap();
+    assert!(!install().status.success());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"keep existing installation");
+    assert!(!data.exists());
+    fs::remove_file(&sentinel).unwrap();
+    fs::remove_dir(&program).unwrap();
+    let result = install();
+    assert!(
+        result.status.success(),
+        "installer stdout={} stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let manager = unsafe { OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT) };
+    assert!(!manager.is_null());
+    let manager = Handle(manager);
+    let service_name = wide(name.as_ref());
+    let service = unsafe {
+        OpenServiceW(
+            manager.0,
+            service_name.as_ptr(),
+            SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | 0x0001_0000,
+        )
+    };
+    assert!(!service.is_null());
+    let fixture = Fixture {
+        directory,
+        service: Handle(service),
+        removed: false,
+    };
+    assert_eq!(fixture.status().dwCurrentState, SERVICE_STOPPED);
+    assert_eq!(fs::read(&config_source).unwrap(), contents);
+    assert_eq!(fs::read(&policy_source).unwrap(), policy);
+    assert_eq!(fs::read(&startup_source).unwrap(), startup);
+    let config = data.join("agent.json");
+    let copied_startup: Value =
+        serde_json::from_slice(&fs::read(data.join("agent.json.startup.json")).unwrap()).unwrap();
+    assert_eq!(
+        copied_startup["binding"],
+        json!({"mode":"service","name":name})
+    );
+    assert_eq!(
+        copied_startup["pending"],
+        serde_json::from_slice::<Value>(&startup).unwrap()["pending"]
+    );
+    assert_eq!(fs::read(&config).unwrap(), contents);
+    assert_eq!(fs::read(data.join("agent.policy.json")).unwrap(), policy);
+    assert!(
+        !install().status.success(),
+        "Duplicate installation must preserve the registered service"
+    );
+    assert_eq!(fixture.status().dwCurrentState, SERVICE_STOPPED);
+    exercise_service(
+        &listener,
+        "S-1-5-19",
+        fixture,
+        config,
+        program.join(".service-install.json"),
+        contents,
+        true,
+    )
+    .await;
+}
+
 async fn service_lifecycle(sid: &str, account: Option<&str>) {
     // Cross-account token inspection requires SeDebugPrivilege. It is scoped
     // to the elevated test driver; SCM still creates the service and its jobs
@@ -537,13 +672,25 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
         "Create fixture service: {}",
         io::Error::last_os_error()
     );
-    let mut fixture = Fixture {
+    let fixture = Fixture {
         directory,
         service: Handle(raw),
         removed: false,
     };
+    exercise_service(&listener, sid, fixture, config, protected, contents, false).await;
+}
+
+async fn exercise_service(
+    listener: &TcpListener,
+    sid: &str,
+    mut fixture: Fixture,
+    config: PathBuf,
+    protected: PathBuf,
+    contents: Vec<u8>,
+    required_service_audit: bool,
+) {
     fixture.start();
-    let mut peer = Peer::connect(&listener).await;
+    let mut peer = Peer::connect(listener).await;
     let running = fixture.state(SERVICE_RUNNING).await;
     let owner = process(running.dwProcessId);
     assert_eq!(
@@ -561,11 +708,58 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
             .await["content"],
         "service 😀"
     );
+    if required_service_audit {
+        let state = config.parent().unwrap().join("remote-device-hub");
+        let audit_directory = state.join("audit");
+        let audit = audit_directory.join("native-service.jsonl");
+        let quote = |path: &Path| path.to_str().unwrap().replace('\'', "''");
+        let command = format!(
+            "$ErrorActionPreference = 'Stop'; $text = [IO.File]::ReadAllText('{}'); \
+            if (!$text.Contains('\"op\":\"write_file\"') -or $text.Contains('{TOKEN}')) {{ exit 21 }}; \
+            $admin = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'); \
+            foreach ($path in @('{}', '{}', '{}')) {{ \
+              $acl = Get-Acl -LiteralPath $path; \
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($admin, 'FullControl', 'Allow')); \
+              Set-Acl -LiteralPath $path -AclObject $acl; \
+            }}; [Console]::Write('service-audit-ok')",
+            quote(&audit),
+            quote(&state),
+            quote(&audit_directory),
+            quote(&audit),
+        );
+        // Read the required audit as its real LocalService owner, then grant
+        // the test administrator access to these three exact fixture objects
+        // for post-stop cleanup. No real service profile is touched.
+        let started = peer
+            .call(
+                "start_process",
+                json!({"root":"work","command":command,"wait_seconds":0}),
+            )
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let result = loop {
+            let value = peer
+                .call("read_process", json!({"job_id":started["job_id"]}))
+                .await;
+            if value["status"] != "running" && value["cleanup_pending"] == false {
+                break value;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Service audit probe did not finish: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert_eq!(result["output"], "service-audit-ok", "{result}");
+    }
     if sid == "S-1-5-19" {
         let path = protected.to_str().unwrap().replace('\'', "''");
+        let protected_bytes = fs::read(&protected).unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&protected_bytes);
         let command = format!(
             "$ErrorActionPreference = 'Stop'; \
-            if ([IO.File]::ReadAllText('{path}') -ne 'administrator-owned program data') {{ exit 11 }}; \
+            if ([Convert]::ToBase64String([IO.File]::ReadAllBytes('{path}')) -ne '{encoded}') {{ exit 11 }}; \
             try {{ $file = [IO.File]::Open('{path}', [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite); $file.Dispose(); exit 12 }} \
             catch {{ if ($_.Exception.GetBaseException() -is [UnauthorizedAccessException]) {{ exit 0 }}; exit 13 }}"
         );
@@ -591,10 +785,7 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
         };
         assert_eq!(result["status"], "exited", "{result}");
         assert_eq!(result["exit_code"], 0, "{result}");
-        assert_eq!(
-            fs::read(&protected).unwrap(),
-            b"administrator-owned program data"
-        );
+        assert_eq!(fs::read(&protected).unwrap(), protected_bytes);
     }
     let job = peer.call("start_process", json!({"root":"work","command":"[Console]::WriteLine($PID); [Console]::Out.Flush(); Start-Sleep -Seconds 120","wait_seconds":0})).await;
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -643,7 +834,7 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
     assert_eq!(fs::read(&config).unwrap(), contents);
     drop(peer);
     fixture.start();
-    let mut peer = Peer::connect(&listener).await;
+    let mut peer = Peer::connect(listener).await;
     assert_ne!(peer.instance, instance);
     assert_eq!(
         peer.call("read_file", json!({"root":"work","path":"native.txt"}))

@@ -199,8 +199,10 @@ mod update {
             action.Arguments(&mut args)?;
             action.WorkingDirectory(&mut cwd)?;
             action.Path(&mut executable)?;
-            if user != sid
-                || trigger_user != sid
+            if !crate::storage::windows::account_matches_sid(&user.to_string(), sid)
+                .map_err(|_| invalid())?
+                || !crate::storage::windows::account_matches_sid(&trigger_user.to_string(), sid)
+                    .map_err(|_| invalid())?
                 || logon != TASK_LOGON_INTERACTIVE_TOKEN
                 || level != TASK_RUNLEVEL_LUA
                 || args != arguments

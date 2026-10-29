@@ -1,6 +1,11 @@
 #![cfg(all(windows, feature = "experimental-windows-install"))]
 
-use rdh_agent::{config::sha256_hex, install_lock, profile_lock::ProfileLocks, random, storage};
+use rdh_agent::{
+    config::{local_roots, sha256_hex},
+    install_lock,
+    profile_lock::ProfileLocks,
+    random, storage,
+};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -201,7 +206,8 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
     let token = "private-pairing-must-remain-unchanged";
     storage::write_private_new(&config, &serde_json::to_vec(&json!({
         "gateway_url":"http://127.0.0.1:9", "device_id":"windows-install-fixture", "token":token,
-        "roots":{"work":work}, "allow_shell":true, "allow_write":true
+        "roots":local_roots(&[format!("work={}", work.display())]).unwrap(),
+        "allow_shell":true, "allow_write":true
     })).unwrap()).unwrap();
     let original_config = fs::read(&config).unwrap();
     let prefix = root.join("install");
@@ -519,8 +525,9 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
     let root = fixture.0.canonicalize().unwrap();
     let config = root.join("device with spaces.json");
     storage::write_private_new(&config, &serde_json::to_vec(&json!({
-        "gateway_url":"http://127.0.0.1:9", "device_id":"native-task-install", "token":"unchanged-task-fixture-token",
-        "roots":{"work":root}, "allow_shell":true, "allow_write":true
+        "gateway_url":"http://127.0.0.1:9", "device_id":"native-task-install", "token":"unchanged-task-fixture-token-only",
+        "roots":local_roots(&[format!("work={}", root.display())]).unwrap(),
+        "allow_shell":true, "allow_write":true
     })).unwrap()).unwrap();
     // The Task inherits its user's environment; keep this startup fixture
     // from writing audit data into the runner's actual profile.

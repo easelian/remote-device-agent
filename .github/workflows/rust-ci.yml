@@ -191,10 +191,17 @@ jobs:
         run: |
           cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
       - name: Test implemented paths
+        id: native_tests
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
+      - name: Diagnose isolated Windows command launch after a suite failure
+        if: ${{ !cancelled() && steps.native_tests.outcome == 'failure' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" processes::native::platform::tests::cmd_shell_cwd_nonzero_exit_and_completion_hook -- --exact --nocapture --test-threads=1
       - name: Check native LaunchAgent definition arguments
         if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && (matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS') }}
         env:

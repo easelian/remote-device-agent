@@ -128,7 +128,7 @@ impl Service {
 #[path = "startup_tasks_windows.rs"]
 mod tasks;
 
-fn startup_path(path: &Path) -> Result<String> {
+pub(crate) fn startup_path(path: &Path) -> Result<String> {
     let text = path
         .to_str()
         .ok_or_else(|| Error::message("Startup path is not Unicode"))?;
@@ -470,9 +470,16 @@ mod tests {
             startup_path(backend.config.parent().unwrap()).unwrap()
         );
         assert!(before.interactive && before.limited);
-        assert_eq!(
-            before.trigger_user,
-            crate::storage::windows::current_sid_text().unwrap()
+        assert!(
+            crate::storage::windows::account_matches_sid(
+                &before.trigger_user,
+                &crate::storage::windows::current_sid_text().unwrap()
+            )
+            .unwrap()
+        );
+        assert!(
+            !crate::storage::windows::account_matches_sid(&before.trigger_user, "S-1-5-18")
+                .unwrap()
         );
         assert!(!backend.enabled(&binding).unwrap());
         assert!(backend.create_named_user(Some(&name)).is_err());

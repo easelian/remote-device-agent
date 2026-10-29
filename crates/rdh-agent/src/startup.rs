@@ -485,8 +485,29 @@ pub(crate) fn inspect_sidecar(config: &Path) -> Result<(Option<Binding>, Option<
     Ok((state.binding, state.pending.map(|pending| pending.mode)))
 }
 
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+pub(crate) fn new_service_state(config: &Path, name: &str) -> Result<Vec<u8>> {
+    let mut state = Startup::read_file(&state_path(config))
+        .map_err(|_| Error::message("Startup state cannot be safely read"))?;
+    if state.binding.is_some() {
+        return Err(Error::message(
+            "Service installation requires an unbound source profile; migrate an existing registration explicitly",
+        ));
+    }
+    let binding = Binding {
+        mode: Mode::Service,
+        name: name.into(),
+    };
+    validate_binding(&binding).map_err(|_| Error::message("Invalid service registration name"))?;
+    state.binding = Some(binding);
+    // Preserve any approval request. Registering a stopped service does not
+    // approve or enable a pending remote startup request.
+    Ok(serde_json::to_vec(&state)?)
+}
+
 #[cfg(any(
     target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install"),
     all(windows, feature = "experimental-windows-install")
 ))]
 pub(crate) fn sidecar_path(config: &Path) -> PathBuf {
