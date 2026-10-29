@@ -505,6 +505,14 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    fn request_deadline() -> Instant {
+        // These cases assert approval/permission semantics, not filesystem
+        // latency. Windows validates ACLs and publishes real private sidecars;
+        // allow the local CLI's per-request budget on loaded native runners.
+        // The explicitly expired request below still exercises deadline denial.
+        Instant::now() + Duration::from_secs(30)
+    }
+
     #[derive(Default)]
     struct Backend {
         enabled: AtomicBool,
@@ -575,20 +583,12 @@ mod tests {
             }
         }
         fn set(&self, mode: Mode, local: bool) -> StartupResult<Value> {
-            self.startup.set(
-                mode,
-                local,
-                Instant::now() + Duration::from_secs(2),
-                &AtomicBool::new(false),
-            )
+            self.startup
+                .set(mode, local, request_deadline(), &AtomicBool::new(false))
         }
         fn approve(&self, id: &str, accept: bool) -> StartupResult<Value> {
-            self.startup.approve(
-                id,
-                accept,
-                Instant::now() + Duration::from_secs(2),
-                &AtomicBool::new(false),
-            )
+            self.startup
+                .approve(id, accept, request_deadline(), &AtomicBool::new(false))
         }
     }
     impl Drop for Fixture {
@@ -711,7 +711,7 @@ mod tests {
             .bind(
                 Mode::Service,
                 "existing.service",
-                Instant::now() + Duration::from_secs(2),
+                request_deadline(),
                 &AtomicBool::new(false),
             )
             .unwrap();
@@ -737,7 +737,7 @@ mod tests {
             startup.set(
                 Mode::None,
                 false,
-                Instant::now() + Duration::from_secs(2),
+                request_deadline(),
                 &AtomicBool::new(false),
             )
         });
@@ -749,7 +749,7 @@ mod tests {
             startup.approve(
                 &request_id,
                 true,
-                Instant::now() + Duration::from_secs(2),
+                request_deadline(),
                 &AtomicBool::new(false),
             )
         });

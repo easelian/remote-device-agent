@@ -35,8 +35,8 @@ use windows_sys::Win32::{
         },
         DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
         GetTokenInformation, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        PROTECTED_DACL_SECURITY_INFORMATION, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     System::{
         Services::{
@@ -65,6 +65,13 @@ struct Privilege {
 }
 impl Privilege {
     fn restore_owner() -> Self {
+        Self::enable("SeRestorePrivilege")
+    }
+    fn inspect_service_processes() -> Self {
+        Self::enable("SeDebugPrivilege")
+    }
+    fn enable(name: &str) -> Self {
+        let name = wide(name.as_ref());
         let mut raw = null_mut();
         assert_ne!(
             unsafe {
@@ -82,7 +89,7 @@ impl Privilege {
             ..TOKEN_PRIVILEGES::default()
         };
         assert_ne!(
-            unsafe { LookupPrivilegeValueW(null(), SE_RESTORE_NAME, &mut next.Privileges[0].Luid) },
+            unsafe { LookupPrivilegeValueW(null(), name.as_ptr(), &mut next.Privileges[0].Luid) },
             0
         );
         next.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
@@ -139,6 +146,21 @@ fn service_acl(path: &Path, directory: bool, sid: &str) {
     let sddl = wide(
         format!("O:{sid}D:P(A;{inherited};FA;;;{sid})(A;{inherited};FA;;;BA){system}").as_ref(),
     );
+    set_acl(path, &sddl);
+}
+
+fn program_acl(path: &Path, directory: bool) {
+    // Mirror the installer boundary: only administrators and SYSTEM can
+    // change program files. LocalService can read and execute them.
+    let inherited = if directory { "OICI" } else { "" };
+    let sddl = wide(
+        format!("O:BAD:P(A;{inherited};FA;;;BA)(A;{inherited};FA;;;SY)(A;{inherited};FRFX;;;LS)")
+            .as_ref(),
+    );
+    set_acl(path, &sddl);
+}
+
+fn set_acl(path: &Path, sddl: &[u16]) {
     let mut descriptor = null_mut();
     assert_ne!(
         unsafe {
@@ -376,7 +398,9 @@ fn process_sid(process: &OwnedHandle) -> String {
     let mut raw = null_mut();
     assert_ne!(
         unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut raw) },
-        0
+        0,
+        "Open fixture process token: {}",
+        io::Error::last_os_error()
     );
     let token = unsafe { OwnedHandle::from_raw_handle(raw) };
     let mut bytes = 0;
@@ -424,17 +448,27 @@ async fn native_windows_local_service_preserves_account_identity_and_process_cle
 }
 
 async fn service_lifecycle(sid: &str, account: Option<&str>) {
+    // Cross-account token inspection requires SeDebugPrivilege. It is scoped
+    // to the elevated test driver; SCM still creates the service and its jobs
+    // with the requested account's own token. The original state is restored.
+    let _inspection_privilege = Privilege::inspect_service_processes();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let name = format!("RDH-Test-Native-{}", random::hex_token::<12>().unwrap());
     let directory =
         PathBuf::from(std::env::var_os("ProgramData").unwrap()).join(format!("{name} '😀"));
     fs::create_dir(&directory).unwrap();
-    let work = directory.join("work");
+    let data = directory.join("data");
+    fs::create_dir(&data).unwrap();
+    let work = data.join("work");
     fs::create_dir(&work).unwrap();
     let binary = directory.join("rdh.exe");
     fs::copy(env!("CARGO_BIN_EXE_rdh"), &binary).unwrap();
-    let config = directory.join("device '😀.json");
+    // This non-executable file has the same ACL as the binary. Unlike a
+    // running executable, image-section locking cannot explain write denial.
+    let protected = directory.join("program-access.txt");
+    fs::write(&protected, b"administrator-owned program data").unwrap();
+    let config = data.join("device '😀.json");
     let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
     let contents = serde_json::to_vec(
@@ -444,15 +478,19 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
     )
     .unwrap();
     fs::write(&config, &contents).unwrap();
-    let policy = directory.join("device '😀.policy.json");
+    let policy = data.join("device '😀.policy.json");
     fs::write(&policy, br#"{"version":1,"audit":{"enabled":false}}"#).unwrap();
     {
         let _privilege = Privilege::restore_owner();
-        for path in [&binary, &config, &policy] {
+        for path in [&config, &policy] {
             service_acl(path, false, sid);
         }
         service_acl(&work, true, sid);
-        service_acl(&directory, true, sid);
+        service_acl(&data, true, sid);
+        for path in [&binary, &protected] {
+            program_acl(path, false);
+        }
+        program_acl(&directory, true);
     }
     let manager = unsafe {
         OpenSCManagerW(
@@ -523,6 +561,41 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
             .await["content"],
         "service 😀"
     );
+    if sid == "S-1-5-19" {
+        let path = protected.to_str().unwrap().replace('\'', "''");
+        let command = format!(
+            "$ErrorActionPreference = 'Stop'; \
+            if ([IO.File]::ReadAllText('{path}') -ne 'administrator-owned program data') {{ exit 11 }}; \
+            try {{ $file = [IO.File]::Open('{path}', [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite); $file.Dispose(); exit 12 }} \
+            catch {{ if ($_.Exception.GetBaseException() -is [UnauthorizedAccessException]) {{ exit 0 }}; exit 13 }}"
+        );
+        let started = peer
+            .call(
+                "start_process",
+                json!({"root":"work","command":command,"wait_seconds":0}),
+            )
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let result = loop {
+            let value = peer
+                .call("read_process", json!({"job_id":started["job_id"]}))
+                .await;
+            if value["status"] != "running" && value["cleanup_pending"] == false {
+                break value;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Program ACL check did not finish"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(result["status"], "exited", "{result}");
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert_eq!(
+            fs::read(&protected).unwrap(),
+            b"administrator-owned program data"
+        );
+    }
     let job = peer.call("start_process", json!({"root":"work","command":"[Console]::WriteLine($PID); [Console]::Out.Flush(); Start-Sleep -Seconds 120","wait_seconds":0})).await;
     let deadline = Instant::now() + Duration::from_secs(30);
     let child = loop {

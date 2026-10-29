@@ -357,6 +357,7 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
         PathBuf::from(format!("versions/{next}"))
     );
 
+    let crash_log = fixture.0.join("crash-agent.log");
     let mut crashed = command(&current, &fixture.0)
         .args([
             "--server",
@@ -365,18 +366,33 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
             config.to_str().unwrap(),
             "--no-browser",
         ])
-        .stdout(std::process::Stdio::null())
+        .stdout(fs::File::create(&crash_log).unwrap())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if fs::read_dir(prefix.join(".running"))
-                .ok()
-                .and_then(|mut entries| entries.next())
-                .is_some()
+            assert!(
+                crashed.try_wait().unwrap().is_none(),
+                "Fixture Agent exited before connecting"
+            );
+            // A temporary marker is visible before its atomic publication.
+            // Kill only after the runtime has completed that publication.
+            if fs::read_to_string(&crash_log)
+                .unwrap()
+                .contains("Connecting to the Hub.")
             {
+                let markers: Vec<_> = fs::read_dir(prefix.join(".running"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(markers.len(), 1);
+                assert_eq!(markers[0].extension().unwrap(), "json");
+                let record: serde_json::Value =
+                    serde_json::from_slice(&storage::read_private(&markers[0]).unwrap()).unwrap();
+                assert_eq!(record["pid"], crashed.id().unwrap());
+                assert_eq!(record["config"], config.to_str().unwrap());
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

@@ -352,6 +352,7 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
     // termination deliberately leaves recovery markers; it is not clean exit.
     for recover_without_journal in [false, true] {
         let agent_log = root.join("agent.err");
+        let connection_log = root.join("agent.out");
         let mut agent = windows::command(&old_binary, &root)
             .args([
                 "--server",
@@ -360,7 +361,7 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
                 config.to_str().unwrap(),
                 "--no-browser",
             ])
-            .stdout(Stdio::null())
+            .stdout(fs::File::create(&connection_log).unwrap())
             .stderr(fs::File::create(&agent_log).unwrap())
             .spawn()
             .unwrap();
@@ -371,9 +372,23 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
                     "Agent exited: {}",
                     fs::read_to_string(&agent_log).unwrap()
                 );
-                if fs::read_dir(prefix.join(".running"))
-                    .is_ok_and(|mut entries| entries.next().is_some())
+                // The connection message follows completed marker publication;
+                // a private staging file alone is not a running Agent.
+                if fs::read_to_string(&connection_log)
+                    .unwrap()
+                    .contains("Connecting to the Hub.")
                 {
+                    let markers: Vec<_> = fs::read_dir(prefix.join(".running"))
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path())
+                        .collect();
+                    assert_eq!(markers.len(), 1);
+                    assert_eq!(markers[0].extension().unwrap(), "json");
+                    let record: Value =
+                        serde_json::from_slice(&storage::read_private(&markers[0]).unwrap())
+                            .unwrap();
+                    assert_eq!(record["pid"], agent.id().unwrap());
+                    assert_eq!(record["config"], config.to_str().unwrap());
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;

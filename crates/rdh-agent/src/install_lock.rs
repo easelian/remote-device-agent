@@ -355,6 +355,45 @@ mod posix {
         pub nonce: String,
     }
 
+    fn hex_nonce(value: &str) -> bool {
+        value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    }
+
+    // write_private_new publishes pid-nonce.json through a sibling temporary
+    // file. That name is not a running record, including during another
+    // profile's startup. Keep the producer PID so explicit recovery can prove
+    // that an interrupted writer is gone before removing its staging file.
+    fn staged_marker(path: &Path) -> Option<(u32, PathBuf)> {
+        let name = path.file_name()?.to_str()?;
+        let (published, suffix) = name.rsplit_once(".json.")?;
+        if !hex_nonce(suffix.strip_suffix(".tmp")?) {
+            return None;
+        }
+        let (pid_text, nonce) = published.split_once('-')?;
+        let pid: u32 = pid_text.parse().ok()?;
+        if pid == 0 || pid > i32::MAX as u32 || pid.to_string() != pid_text || !hex_nonce(nonce) {
+            return None;
+        }
+        Some((pid, path.with_file_name(format!("{published}.json"))))
+    }
+
+    fn marker_paths(directory: &Path) -> Result<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            // One published name and one unfinished temporary name per profile.
+            if paths.len() >= MAX_PROFILES * 2 {
+                return Err(Error::message(
+                    "Native installation has too many running markers",
+                ));
+            }
+            paths.push(entry?.path());
+        }
+        Ok(paths)
+    }
+
     fn parse_marker(path: &Path) -> Result<RunningRecord> {
         let bytes = storage::read_private(path)?;
         if bytes.len() > 8192 {
@@ -372,12 +411,7 @@ mod posix {
             .ok_or_else(|| Error::message("Invalid native running marker"))?;
         let nonce = value["nonce"]
             .as_str()
-            .filter(|value| {
-                value.len() == 32
-                    && value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
+            .filter(|value| hex_nonce(value))
             .ok_or_else(|| Error::message("Invalid native running marker"))?;
         if value["schema"].as_u64() != Some(1)
             || path.file_name().and_then(|name| name.to_str())
@@ -405,8 +439,11 @@ mod posix {
         }
     }
     fn remove_same(path: &Path, before: &std::fs::Metadata) -> Result<()> {
+        remove_same_with_links(path, before, 1)
+    }
+    fn remove_same_with_links(path: &Path, before: &std::fs::Metadata, links: u64) -> Result<()> {
         let now = storage::private_metadata(path, false)?;
-        if now.dev() != before.dev() || now.ino() != before.ino() || now.nlink() != 1 {
+        if now.dev() != before.dev() || now.ino() != before.ino() || now.nlink() != links {
             return Err(Error::message("Native state record changed"));
         }
         fs::remove_file(path)?;
@@ -416,13 +453,53 @@ mod posix {
         )?)?;
         Ok(())
     }
+
+    fn recover_staged_markers(directory: &Path, require_all_dead: bool) -> Result<()> {
+        for path in marker_paths(directory)? {
+            let Some((pid, published)) = staged_marker(&path) else {
+                continue;
+            };
+            if !pid_is_dead(pid)? {
+                if require_all_dead {
+                    return Err(Error::message("A native marker writer still exists"));
+                }
+                continue; // Another profile can be publishing under its shared lock.
+            }
+            let before = storage::private_metadata(&path, false)?;
+            if before.len() > 8192 {
+                return Err(Error::message("Invalid native marker staging file"));
+            }
+            if before.nlink() == 2 {
+                // Crash after link(), before the private temporary is unlinked.
+                // The second link must be this exact published marker, never an
+                // arbitrary alias elsewhere in the installation or filesystem.
+                let other = storage::private_metadata(&published, false)?;
+                if other.dev() != before.dev()
+                    || other.ino() != before.ino()
+                    || other.nlink() != 2
+                    || parse_marker(&published)?.pid != pid
+                {
+                    return Err(Error::message("Native marker staging links changed"));
+                }
+                remove_same_with_links(&path, &before, 2)?;
+            } else {
+                // A partial file has never been published or accepted work.
+                // Even an empty file is recoverable once its writer is dead.
+                remove_same(&path, &before)?;
+            }
+        }
+        Ok(())
+    }
+
     fn recover_for_config(directory: &Path, config: &Path) -> Result<()> {
         let config = config
             .to_str()
             .ok_or_else(|| Error::message("Config path is not Unicode"))?;
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            let path = entry.path();
+        recover_staged_markers(directory, false)?;
+        for path in marker_paths(directory)? {
+            if staged_marker(&path).is_some() {
+                continue;
+            }
             let before = storage::private_metadata(&path, false)?;
             let record = parse_marker(&path)?;
             if record.config == Path::new(config) {
@@ -433,6 +510,38 @@ mod posix {
                 }
                 remove_same(&path, &before)?;
             }
+        }
+        Ok(())
+    }
+
+    /// The caller owns the exclusive installation lock. Recover registered
+    /// profile locks even when a crash happened before publishing a marker.
+    fn recover_stopped_markers(prefix: &Path, directory: &Path) -> Result<()> {
+        recover_staged_markers(directory, true)?;
+        let mut records = Vec::new();
+        let mut profiles = registered_profiles(prefix)?;
+        for path in marker_paths(directory)? {
+            let metadata = storage::private_metadata(&path, false)?;
+            let record = parse_marker(&path)?;
+            if !pid_is_dead(record.pid)? {
+                return Err(Error::message(
+                    "A previous native Agent process still exists",
+                ));
+            }
+            profiles.push(record.config);
+            records.push((path, metadata));
+        }
+        profiles.sort();
+        profiles.dedup();
+        let mut locks = profiles.clone();
+        locks.extend(
+            profiles
+                .iter()
+                .map(|path| crate::startup::sidecar_path(path)),
+        );
+        crate::profile_lock::ProfileLocks::recover(&locks)?;
+        for (path, metadata) in records {
+            remove_same(&path, &metadata)?;
         }
         Ok(())
     }
@@ -560,13 +669,16 @@ mod posix {
         /// alone is never proof that its process or Hub connection is alive.
         pub fn running_records(&self) -> Result<Vec<RunningRecord>> {
             let mut records = Vec::new();
-            for entry in fs::read_dir(running_dir(&self.prefix)?)? {
+            for path in marker_paths(&running_dir(&self.prefix)?)? {
+                if staged_marker(&path).is_some() {
+                    continue;
+                }
                 if records.len() >= MAX_PROFILES {
                     return Err(Error::message(
                         "Native installation has too many running markers",
                     ));
                 }
-                records.push(parse_marker(&entry?.path())?);
+                records.push(parse_marker(&path)?);
             }
             Ok(records)
         }
@@ -584,8 +696,11 @@ mod posix {
             let config = config
                 .to_str()
                 .ok_or_else(|| Error::message("Config path is not Unicode"))?;
-            for entry in fs::read_dir(&directory)? {
-                let record = parse_marker(&entry?.path())?;
+            for path in marker_paths(&directory)? {
+                if staged_marker(&path).is_some() {
+                    continue;
+                }
+                let record = parse_marker(&path)?;
                 if record.config == Path::new(config) {
                     return Err(Error::message(
                         "A native running marker remains for this profile; inspect and recover the previous Agent before starting",
@@ -595,7 +710,11 @@ mod posix {
             let nonce = random::hex_token::<16>()?;
             let path = directory.join(format!("{}-{nonce}.json", std::process::id()));
             let value = json!({"schema":1,"pid":std::process::id(),"config":config,"nonce":nonce});
-            storage::write_private_new(&path, &serde_json::to_vec(&value)?)?;
+            let data = serde_json::to_vec(&value)?;
+            if data.len() > 8192 {
+                return Err(Error::message("Native running marker is too large"));
+            }
+            storage::write_private_new(&path, &data)?;
             let metadata = storage::private_metadata(&path, false)?;
             self.marker = Some((path, metadata));
             Ok(())
@@ -693,18 +812,7 @@ mod posix {
             }
             let directory = running_dir(prefix)?;
             if recover_stale {
-                for entry in fs::read_dir(&directory)? {
-                    let path = entry?.path();
-                    let metadata = storage::private_metadata(&path, false)?;
-                    let record = parse_marker(&path)?;
-                    if !pid_is_dead(record.pid)? {
-                        return Err(Error::message(
-                            "A previous native Agent process still exists",
-                        ));
-                    }
-                    crate::profile_lock::ProfileLocks::recover(&[record.config])?;
-                    remove_same(&path, &metadata)?;
-                }
+                recover_stopped_markers(prefix, &directory)?;
             }
             if fs::read_dir(directory)?.next().transpose()?.is_some() {
                 return Err(Error::message(
@@ -764,18 +872,7 @@ mod posix {
             }
             let directory = running_dir(prefix)?;
             if recover_stale {
-                for entry in fs::read_dir(&directory)? {
-                    let path = entry?.path();
-                    let metadata = storage::private_metadata(&path, false)?;
-                    let record = parse_marker(&path)?;
-                    if !pid_is_dead(record.pid)? {
-                        return Err(Error::message(
-                            "A previous native Agent process still exists",
-                        ));
-                    }
-                    crate::profile_lock::ProfileLocks::recover(&[record.config])?;
-                    remove_same(&path, &metadata)?;
-                }
+                recover_stopped_markers(prefix, &directory)?;
             }
             if fs::read_dir(directory)?.next().transpose()?.is_some() {
                 return Err(Error::message(
@@ -807,7 +904,7 @@ mod posix {
         }
         impl Fixture {
             fn new() -> Self {
-                let prefix = std::env::temp_dir().join(format!(
+                let prefix = std::env::temp_dir().canonicalize().unwrap().join(format!(
                     "rdh-install-lock-{}",
                     random::hex_token::<8>().unwrap()
                 ));
@@ -840,6 +937,19 @@ mod posix {
                 let path = directory.join(format!("{pid}-{nonce}.json"));
                 let data = json!({"schema":1,"pid":pid,"config":self.config,"nonce":nonce});
                 storage::write_private_new(&path, &serde_json::to_vec(&data).unwrap()).unwrap();
+                path
+            }
+            fn staging(&self, pid: u32) -> PathBuf {
+                running_dir(&self.prefix).unwrap().join(format!(
+                    "{pid}-{}.json.{}.tmp",
+                    "a".repeat(32),
+                    "b".repeat(32)
+                ))
+            }
+            fn partial_marker(&self, pid: u32) -> PathBuf {
+                let path = self.staging(pid);
+                fs::write(&path, b"{\"schema\":").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
                 path
             }
         }
@@ -906,6 +1016,122 @@ mod posix {
             let mut agent = RunningInstall::acquire(&fixture.prefix, &fixture.executable).unwrap();
             assert!(agent.mark_running(&fixture.config, true).is_err());
             assert!(alive.exists());
+        }
+
+        #[test]
+        fn incomplete_marker_recovery_also_releases_registered_profile_locks() {
+            let fixture = Fixture::new();
+            storage::write_private_new(&fixture.config, b"{}").unwrap();
+            record_profile(&fixture.prefix, &fixture.config).unwrap();
+            let sidecar = crate::startup::sidecar_path(&fixture.config);
+            let mut locks = crate::profile_lock::ProfileLocks::acquire(&[
+                fixture.config.clone(),
+                sidecar.clone(),
+            ])
+            .unwrap();
+            let mut lock_paths = Vec::new();
+            for config in [&fixture.config, &sidecar] {
+                let lock = config.with_file_name(format!(
+                    "{}.node-lock",
+                    config.file_name().unwrap().to_str().unwrap()
+                ));
+                let owner = lock.join("owner.json");
+                let mut value: Value =
+                    serde_json::from_slice(&storage::read_private(&owner).unwrap()).unwrap();
+                value["pid"] = json!(i32::MAX);
+                fs::write(&owner, serde_json::to_vec(&value).unwrap()).unwrap();
+                lock_paths.push(lock);
+            }
+            locks.retain_on_drop();
+            drop(locks);
+            let temporary = fixture.partial_marker(i32::MAX as u32);
+            assert!(ManagerLock::acquire(&fixture.prefix, &fixture.executable, false).is_err());
+            assert!(temporary.exists());
+            let manager = ManagerLock::acquire_with_stale_recovery(
+                &fixture.prefix,
+                &fixture.executable,
+                false,
+                true,
+            )
+            .unwrap();
+            assert!(!temporary.exists());
+            assert!(lock_paths.iter().all(|path| !path.exists()));
+            assert_eq!(
+                manager.profiles().unwrap().as_slice(),
+                std::slice::from_ref(&fixture.config)
+            );
+            assert_eq!(storage::read_private(&fixture.config).unwrap(), b"{}");
+        }
+
+        #[test]
+        fn interrupted_marker_publication_recovers_its_two_names_only() {
+            let fixture = Fixture::new();
+            let published = fixture.stale(i32::MAX as u32);
+            let temporary = fixture.staging(i32::MAX as u32);
+            fs::hard_link(&published, &temporary).unwrap();
+            assert_eq!(fs::metadata(&published).unwrap().nlink(), 2);
+            let manager = ManagerLock::acquire_with_stale_recovery(
+                &fixture.prefix,
+                &fixture.executable,
+                false,
+                true,
+            )
+            .unwrap();
+            assert!(!published.exists() && !temporary.exists());
+            drop(manager);
+
+            let temporary = fixture.partial_marker(i32::MAX as u32);
+            let unrelated = fixture.prefix.join("unrelated-link");
+            fs::hard_link(&temporary, &unrelated).unwrap();
+            assert!(
+                ManagerLock::acquire_with_stale_recovery(
+                    &fixture.prefix,
+                    &fixture.executable,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+            assert!(temporary.exists() && unrelated.exists());
+        }
+
+        #[test]
+        fn active_marker_staging_is_not_a_published_record_or_recovery_candidate() {
+            let fixture = Fixture::new();
+            let temporary = fixture.partial_marker(std::process::id());
+            let mut agent = RunningInstall::acquire(&fixture.prefix, &fixture.executable).unwrap();
+            assert!(agent.running_records().unwrap().is_empty());
+            agent.mark_running(&fixture.config, false).unwrap();
+            assert_eq!(agent.running_records().unwrap().len(), 1);
+            agent.mark_clean().unwrap();
+            drop(agent);
+            assert!(
+                ManagerLock::acquire_with_stale_recovery(
+                    &fixture.prefix,
+                    &fixture.executable,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+            assert!(temporary.exists());
+        }
+
+        #[test]
+        fn marker_recovery_retains_unrecognized_files() {
+            let fixture = Fixture::new();
+            let unknown = running_dir(&fixture.prefix).unwrap().join("unrelated.tmp");
+            storage::write_private_new(&unknown, b"unrelated").unwrap();
+            assert!(
+                ManagerLock::acquire_with_stale_recovery(
+                    &fixture.prefix,
+                    &fixture.executable,
+                    false,
+                    true,
+                )
+                .is_err()
+            );
+            assert_eq!(storage::read_private(&unknown).unwrap(), b"unrelated");
         }
 
         #[test]

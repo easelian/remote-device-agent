@@ -184,39 +184,44 @@ jobs:
           candidate="$RUNNER_TEMP/rdh-native-test-candidate"
           cargo +1.93.0 run --locked -p xtask -- native-test-candidate --target "$RDH_TARGET" --out "$candidate"
           printf 'RDH_NATIVE_TEST_CANDIDATE_DIR=%s\n' "$candidate" >> "$GITHUB_ENV"
-      - name: Check and test implemented paths
+      - name: Check implemented paths
+        id: native_checks
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 clippy --locked --workspace --all-targets --all-features --target "$RDH_TARGET" -- -D warnings
-          cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --target "$RDH_TARGET"
+      - name: Test implemented paths
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
       - name: Check native LaunchAgent definition arguments
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && (matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS') }}
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           python3 --version
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
       - name: Check native LaunchAgent installed update and rollback
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'macOS' }}
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd -- --ignored --test-threads=1
       - name: Check native Windows service lifecycle
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service -- --ignored --test-threads=1
       - name: Check native Windows startup settings and administrator grants
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" native_windows_ -- --ignored --test-threads=1
       - name: Check native Windows installed task update and rollback
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |

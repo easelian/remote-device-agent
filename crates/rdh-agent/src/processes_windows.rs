@@ -379,7 +379,8 @@ impl Drop for Attributes {
 }
 
 pub(super) fn spawn(plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
-    let executable = executable(&plan.shell, &plan.cwd, &plan.environment)?;
+    let executable = executable(&plan.shell, &plan.cwd, &plan.environment)
+        .map_err(|error| launch_error("resolve executable", error))?;
     let mut child = spawn_native(
         &executable,
         &plan.cwd,
@@ -390,6 +391,18 @@ pub(super) fn spawn(plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
     )?;
     child.directory = Some(plan.directory);
     Ok(child)
+}
+
+fn launch_error(stage: &'static str, error: io::Error) -> io::Error {
+    // Keep the original OS code for the legacy-compatible RPC error, but make
+    // native setup failures distinguishable in local diagnostics. Never log
+    // the command, environment, credentials or working-directory path.
+    eprintln!(
+        "Windows process setup failed at {stage}: {:?}, OS code {:?}",
+        error.kind(),
+        error.raw_os_error()
+    );
+    error
 }
 
 fn spawn_native(
@@ -406,7 +419,7 @@ fn spawn_native(
     // SAFETY: unnamed, non-inheritable job owned only by this supervisor.
     let raw_job = unsafe { CreateJobObjectW(null(), null()) };
     if raw_job.is_null() {
-        return Err(io::Error::last_os_error());
+        return Err(launch_error("CreateJobObjectW", io::Error::last_os_error()));
     }
     // SAFETY: successful creation transferred one real handle.
     let owned_job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
@@ -422,11 +435,17 @@ fn spawn_native(
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(launch_error(
+            "SetInformationJobObject",
+            io::Error::last_os_error(),
+        ));
     }
-    let (stdin, child_stdin) = pipe::pair(true)?;
-    let (stdout, child_stdout) = pipe::pair(false)?;
-    let (stderr, child_stderr) = pipe::pair(false)?;
+    let (stdin, child_stdin) =
+        pipe::pair(true).map_err(|error| launch_error("stdin pipe", error))?;
+    let (stdout, child_stdout) =
+        pipe::pair(false).map_err(|error| launch_error("stdout pipe", error))?;
+    let (stderr, child_stderr) =
+        pipe::pair(false).map_err(|error| launch_error("stderr pipe", error))?;
     let inherited = [
         child_stdin.as_raw_handle(),
         child_stdout.as_raw_handle(),
@@ -434,9 +453,14 @@ fn spawn_native(
     ];
     let jobs = [raw_job];
     // Drop order matters: attribute values and handles outlive the list.
-    let mut attributes = Attributes::new()?;
-    attributes.handles(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
-    attributes.handles(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
+    let mut attributes =
+        Attributes::new().map_err(|error| launch_error("initialize attributes", error))?;
+    attributes
+        .handles(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)
+        .map_err(|error| launch_error("stdio handle attributes", error))?;
+    attributes
+        .handles(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)
+        .map_err(|error| launch_error("job attributes", error))?;
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -469,7 +493,7 @@ fn spawn_native(
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(launch_error("CreateProcessW", io::Error::last_os_error()));
     }
     // No fallible operation follows creation. The already-allocated supervisor
     // must receive this owner even if cancellation or ResumeThread later fails.
