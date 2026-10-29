@@ -1,5 +1,8 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -202,7 +205,7 @@ async fn trial_refuses_work_until_a_ready_exact_instance_is_committed_and_activa
         std::fs::create_dir(temp.0.join(name)).unwrap();
     }
     let prefix = temp.0.join("install");
-    let installed = command(Path::new(env!("CARGO_BIN_EXE_rdh")), &temp.0)
+    let installed = command(initial_binary::path(), &temp.0)
         .args(["install-native", "--prefix", prefix.to_str().unwrap()])
         .output()
         .await

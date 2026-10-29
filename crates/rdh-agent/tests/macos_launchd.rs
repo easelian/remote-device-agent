@@ -1,6 +1,9 @@
 //! A temporary LaunchAgent runs the installed binary with an empty PATH.
 #![cfg(all(target_os = "macos", feature = "experimental-macos-install"))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use futures_util::{SinkExt, StreamExt};
 use rdh_agent::{config::sha256_hex, random, storage};
 use serde_json::{Value, json};
@@ -318,7 +321,7 @@ async fn native_launchagent_runs_installed_versions_and_preserves_identity_acros
     )
     .unwrap();
     fixture.checked(
-        Path::new(env!("CARGO_BIN_EXE_rdh")),
+        initial_binary::path(),
         &[
             "install-native",
             "--prefix",

@@ -1,7 +1,10 @@
 #![cfg(all(windows, feature = "experimental-windows-private-storage"))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
 #[path = "support/windows.rs"]
 mod support;
+
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use rdh_agent::{
     config::{DeviceConfig, local_roots, sha256_hex},
@@ -88,7 +91,7 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
         "--no-browser".into(),
     ];
     let run = || {
-        let mut command = support::command(env!("CARGO_BIN_EXE_rdh"), &fixture.0);
+        let mut command = support::command(initial_binary::path(), &fixture.0);
         command.args(&args);
         command
     };

@@ -1,6 +1,9 @@
 //! Real, uniquely named Windows services with a loopback authenticated Hub.
 #![cfg(all(windows, feature = "experimental-windows-startup"))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use rdh_agent::{config::local_roots, random};
@@ -501,7 +504,7 @@ async fn native_windows_installer_preserves_profile_and_runs_as_local_service() 
     let program = directory.join("program");
     let data = directory.join("data");
     let install = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
+        std::process::Command::new(initial_binary::path())
             .args(["install-service", "--prefix"])
             .arg(&program)
             .arg("--data")
@@ -1035,7 +1038,7 @@ async fn service_lifecycle(sid: &str, account: Option<&str>) {
     let work = data.join("work");
     fs::create_dir(&work).unwrap();
     let binary = directory.join("rdh.exe");
-    fs::copy(env!("CARGO_BIN_EXE_rdh"), &binary).unwrap();
+    fs::copy(initial_binary::path(), &binary).unwrap();
     // This non-executable file has the same ACL as the binary. Unlike a
     // running executable, image-section locking cannot explain write denial.
     let protected = directory.join("program-access.txt");

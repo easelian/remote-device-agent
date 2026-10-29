@@ -1,5 +1,8 @@
 #![cfg(all(windows, feature = "experimental-windows-install"))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use rdh_agent::{
     config::{local_roots, sha256_hex},
     install_lock,
@@ -140,10 +143,9 @@ async fn running_task_agent(prefix: &Path, expected: &Path, config: &Path) -> Ow
                 let record: Value =
                     serde_json::from_slice(&fs::read(marker.path()).unwrap()).unwrap();
                 assert_eq!(
-                    Path::new(record["config"].as_str().unwrap())
-                        .canonicalize()
-                        .unwrap(),
-                    config.canonicalize().unwrap()
+                    Path::new(record["config"].as_str().unwrap()),
+                    config.canonicalize().unwrap(),
+                    "New running records use the same canonical spelling as the profile catalog"
                 );
                 let pid = u32::try_from(record["pid"].as_u64().unwrap()).unwrap();
                 let raw = unsafe {
@@ -216,7 +218,7 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
     })).unwrap()).unwrap();
     let original_config = fs::read(&config).unwrap();
     let prefix = root.join("install");
-    let initial = Path::new(env!("CARGO_BIN_EXE_rdh"));
+    let initial = initial_binary::path();
     let prepare = [
         "install-native",
         "--prefix",
@@ -549,7 +551,7 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
     let prefix = root.join("install");
     success(
         run(
-            Path::new(env!("CARGO_BIN_EXE_rdh")),
+            initial_binary::path(),
             &root,
             &[
                 "install-native",
@@ -666,6 +668,19 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
     assert!(!run(&old_binary, &root, &upgrade).await.status.success());
     task.stop();
     stopped_task_agent(&first);
+    // Older Agents could persist the Task action's ordinary Win32 path,
+    // although the profile catalog already used an extended canonical path.
+    // Recovery must resolve that existing metadata, as well as producing
+    // canonical metadata for newly started Agents.
+    let markers: Vec<_> = fs::read_dir(prefix.join(".running"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(markers.len(), 1);
+    let mut record: Value =
+        serde_json::from_slice(&storage::read_private(&markers[0]).unwrap()).unwrap();
+    record["config"] = local(&config).into();
+    storage::write_private_replace(&markers[0], &serde_json::to_vec(&record).unwrap()).unwrap();
     let mut recover_update = upgrade.to_vec();
     recover_update.push("--recover-lock");
     success(run(&old_binary, &root, &recover_update).await);

@@ -3,6 +3,9 @@
     all(target_os = "macos", feature = "experimental-macos-install")
 ))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -145,7 +148,7 @@ async fn crash_marker_blocks_updates_until_profile_is_recovered() {
     fs::set_permissions(prefix.join("versions"), fs::Permissions::from_mode(0o700)).unwrap();
     fs::set_permissions(&version, fs::Permissions::from_mode(0o700)).unwrap();
     let installed = version.join("rdh");
-    fs::copy(env!("CARGO_BIN_EXE_rdh"), &installed).unwrap();
+    fs::copy(initial_binary::path(), &installed).unwrap();
     fs::set_permissions(&installed, fs::Permissions::from_mode(0o700)).unwrap();
     symlink(
         format!("versions/{}", env!("CARGO_PKG_VERSION")),

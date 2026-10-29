@@ -1,5 +1,8 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::fs;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
@@ -40,7 +43,7 @@ fn waiting_for_pairing_does_not_create_one_scheduler_thread_per_cpu() {
     let server = format!("http://{}", listener.local_addr().unwrap());
     let root = format!("work={}", fixture.0.join("work").display());
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_rdh"))
+        Command::new(initial_binary::path())
             .env_clear()
             .env("PATH", fixture.0.join("empty"))
             .env("HOME", fixture.0.join("home"))

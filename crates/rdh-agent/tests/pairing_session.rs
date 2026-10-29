@@ -10,6 +10,9 @@
     )
 ))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path as FilePath, PathBuf};
@@ -321,7 +324,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
     let log_path = temp.0.join("agent.log");
     let log = std::fs::File::create(&log_path).unwrap();
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
+    let mut child = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)
         .env("HOME", &temp.0)
@@ -458,7 +461,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     let request_id = results["startup-request"]["result"]["request_id"]
         .as_str()
         .unwrap();
-    let approval = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
+    let approval = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)
         .env("HOME", &temp.0)
@@ -475,7 +478,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
         .unwrap();
     assert!(!approval.status.success());
     assert!(String::from_utf8_lossy(&approval.stderr).contains("interactive terminal"));
-    let denial = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
+    let denial = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)
         .env("HOME", &temp.0)
@@ -521,7 +524,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
         )
     );
     assert!(!temp.0.join("device.json.node-lock").exists());
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdh"))
+    let output = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)
         .env("HOME", &temp.0)

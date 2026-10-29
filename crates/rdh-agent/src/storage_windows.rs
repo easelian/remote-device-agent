@@ -422,17 +422,20 @@ fn validate_acl_policy(
             // protected descriptor and cannot inherit them.
             use windows_sys::Win32::Foundation::GENERIC_EXECUTE;
             use windows_sys::Win32::Storage::FileSystem::{
-                FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+                FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+                FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA,
             };
             let read_only =
                 FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | GENERIC_READ | GENERIC_EXECUTE;
-            // ProgramData may let users create a new child, but it must not
-            // let them replace/delete an existing child or alter the parent's
-            // ACL. Exclusive creation attaches a protected descriptor before
-            // any contents are written. This exception is installer-only.
+            // ProgramData grants Users child creation and directory metadata
+            // writes (0x116), without DELETE, FILE_DELETE_CHILD, WRITE_DAC or
+            // WRITE_OWNER. Those rights cannot modify a protected child's
+            // contents or security. Exclusive creation attaches a protected
+            // descriptor before writing contents. This is only for existing
+            // service-installation directory ancestors, never private files.
             let allowed = read_only
                 | if allow_new_children {
-                    0x0002 | 0x0004
+                    FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
                 } else {
                     0
                 };
@@ -1415,7 +1418,7 @@ mod tests {
                 "O:BAD:(A;;FA;;;BA)(A;;FRFX;;;BU)(A;;{rights};;;AU)"
             ))
         };
-        for rights in ["0x00000002", "0x00000004", "0x00000006"] {
+        for rights in ["0x00000002", "0x00000004", "0x00000006", "0x00000116", "FW"] {
             let descriptor = make(rights);
             assert!(
                 accepted_policy(&identity, &descriptor, false, true),
@@ -1426,7 +1429,15 @@ mod tests {
         }
         // SDDL DC is directory-service DELETE_CHILD (0x2), which is
         // FILE_ADD_FILE for a filesystem directory. FILE_DELETE_CHILD is 0x40.
-        for rights in ["FW", "FA", "WD", "WO", "SD", "0x00000040"] {
+        for rights in [
+            "FA",
+            "WD",
+            "WO",
+            "SD",
+            "0x00000040",
+            "0x00010116",
+            "0x00000156",
+        ] {
             assert!(
                 !accepted_policy(&identity, &make(rights), false, true),
                 "{rights}"
@@ -1434,6 +1445,23 @@ mod tests {
         }
         let wrong_owner = descriptor("O:WDD:(A;;FA;;;BA)(A;;FRFX;;;BU)");
         assert!(!accepted_policy(&identity, &wrong_owner, false, true));
+        // Observed on the native runner's ProgramData directory. DCLCRPCR
+        // means 0x116 in a file ACL, not a right to delete existing children.
+        let system_identity = Identity {
+            user: Sid::well_known(WinLocalSystemSid).unwrap(),
+            system: Sid::well_known(WinLocalSystemSid).unwrap(),
+            administrators: Sid::well_known(WinBuiltinAdministratorsSid).unwrap(),
+        };
+        let program_data = descriptor(
+            "O:SYG:SYD:PAI(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;CI;DCLCRPCR;;;BU)",
+        );
+        assert!(accepted_policy(
+            &system_identity,
+            &program_data,
+            false,
+            true
+        ));
+        assert!(!accepted(&system_identity, &program_data));
     }
 
     #[cfg(feature = "experimental-windows-install")]

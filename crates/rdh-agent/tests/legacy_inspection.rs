@@ -1,5 +1,8 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -35,7 +38,7 @@ impl Fixture {
         ] {
             fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
         }
-        fs::copy(env!("CARGO_BIN_EXE_rdh"), version.join("node")).unwrap();
+        fs::copy(initial_binary::path(), version.join("node")).unwrap();
         fs::set_permissions(version.join("node"), fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(version.join("rdh"), b"#!/bin/sh\nexit 9\n").unwrap();
         fs::set_permissions(version.join("rdh"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -71,7 +74,7 @@ impl Fixture {
     }
 
     fn inspect(&self, prefix: &Path, config: &Path, extra: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_rdh"))
+        Command::new(initial_binary::path())
             .env_clear()
             .env("PATH", self.root.join("no-runtime"))
             .args(["migrate", "--inspect", "--prefix"])

@@ -3,6 +3,9 @@
     all(target_os = "macos", feature = "experimental-macos-install")
 ))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{
@@ -114,7 +117,7 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
         .unwrap(),
     )
     .unwrap();
-    let binary = Path::new(env!("CARGO_BIN_EXE_rdh"));
+    let binary = initial_binary::path();
     let prefix = fixture.0.join("install");
     let installed = run(
         binary,

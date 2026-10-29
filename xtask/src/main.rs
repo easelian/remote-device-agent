@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const RUSTC_VERSION: &str = "1.93.0";
+mod archive;
 mod test_candidate;
 const TARGETS: &[(&str, &str)] = &[
     ("x86_64-unknown-linux-gnu", "linux-x64-gnu"),
@@ -110,25 +111,26 @@ fn copy_licenses(
     target: &str,
     metadata: &Value,
     destination: &Path,
+    all_features: bool,
 ) -> Result<Vec<Value>> {
-    let tree = stdout(command(
-        "cargo",
-        &[
-            "tree",
-            "-p",
-            "rdh-agent",
-            "--locked",
-            "--target",
-            target,
-            "-e",
-            "normal",
-            "--prefix",
-            "none",
-            "--format",
-            "{p}",
-        ],
-        root,
-    )?)?;
+    let mut args = vec![
+        "tree",
+        "-p",
+        "rdh-agent",
+        "--locked",
+        "--target",
+        target,
+        "-e",
+        "normal",
+        "--prefix",
+        "none",
+        "--format",
+        "{p}",
+    ];
+    if all_features {
+        args.push("--all-features");
+    }
+    let tree = stdout(command("cargo", &args, root)?)?;
     let active: BTreeSet<_> = tree
         .lines()
         .filter_map(|line| {
@@ -210,7 +212,7 @@ fn copy_licenses(
     Ok(result)
 }
 
-fn build(target: &str, output_dir: &Path) -> Result<()> {
+fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
     let platform = TARGETS
         .iter()
         .find(|(candidate, _)| *candidate == target)
@@ -230,29 +232,30 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .ok_or("rustc host is missing")?;
-    let metadata: Value = serde_json::from_slice(
-        &command(
-            "cargo",
-            &["metadata", "--locked", "--format-version", "1"],
-            root,
-        )?
-        .stdout,
-    )?;
+    let mut metadata_args = vec!["metadata", "--locked", "--format-version", "1"];
+    if all_features {
+        metadata_args.push("--all-features");
+    }
+    let metadata: Value = serde_json::from_slice(&command("cargo", &metadata_args, root)?.stdout)?;
     let target_dir = PathBuf::from(
         metadata["target_directory"]
             .as_str()
             .ok_or("Cargo target directory is missing")?,
     );
+    let mut build_args = vec![
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "rdh-agent",
+        "--target",
+        target,
+    ];
+    if all_features {
+        build_args.push("--all-features");
+    }
     let status = Command::new("cargo")
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "-p",
-            "rdh-agent",
-            "--target",
-            target,
-        ])
+        .args(build_args)
         .current_dir(root)
         .status()?;
     if !status.success() {
@@ -266,7 +269,11 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
     let binary = target_dir.join(target).join("release").join(binary_name);
     validate_binary(&binary, target)?;
     let mut runtime_check = false;
-    if target == host {
+    let same_architecture = target.split('-').next() == host.split('-').next();
+    let same_os = ["-linux-", "-apple-darwin", "-windows-"]
+        .iter()
+        .any(|part| target.contains(*part) && host.contains(*part));
+    if same_architecture && same_os {
         let output = Command::new(&binary)
             .arg("--version")
             .env_clear()
@@ -296,7 +303,13 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
             fs::set_permissions(tree.join(binary_name), fs::Permissions::from_mode(0o755))?;
         }
     }
-    let dependencies = copy_licenses(root, target, &metadata, &tree.join("licenses"))?;
+    let dependencies = copy_licenses(
+        root,
+        target,
+        &metadata,
+        &tree.join("licenses"),
+        all_features,
+    )?;
     let source_commit = stdout(command("git", &["rev-parse", "HEAD"], root)?)?;
     let source_dirty = !command(
         "git",
@@ -314,10 +327,11 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
     }
     let manifest = json!({"schema":1,"kind":"native-agent-development", "version":env!("CARGO_PKG_VERSION"),
         "target":target,"platform":platform,"rustc":rustc,"source_commit":source_commit,"source_dirty":source_dirty,
+        "features":if all_features { "all" } else { "default" },
         "runtime_self_check":runtime_check,"release_ready":false,
         "project_license_included":project_license.is_some(),
         "binary":{"path":binary_name,"bytes":fs::metadata(&binary)?.len(),"sha256":hash(&binary)?},
-        "dependencies":dependencies});
+        "dependencies":dependencies,"files":archive::inventory(&tree)?});
     fs::write(
         tree.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,
@@ -337,39 +351,46 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
     let raw = output_dir.join(&raw_name);
     let raw_checksum = output_dir.join(format!("{raw_name}.sha256"));
     let channel = output_dir.join(format!("{basename}.channel.json"));
-    if [&archive, &checksum, &raw, &raw_checksum, &channel]
-        .iter()
-        .any(|path| fs::symlink_metadata(path).is_ok())
+    let verified = output_dir.join("verified");
+    if [
+        &archive,
+        &checksum,
+        &raw,
+        &raw_checksum,
+        &channel,
+        &verified,
+    ]
+    .iter()
+    .any(|path| fs::symlink_metadata(path).is_ok())
     {
         return Err("Artifact or checksum already exists; choose another output directory".into());
     }
     let temporary_archive = stage.0.join(format!("archive.{extension}"));
-    let status = if target.contains("windows") {
-        Command::new("zip")
-            .args([
-                "-qr",
-                temporary_archive
-                    .to_str()
-                    .ok_or("Non-Unicode output path")?,
-                &basename,
-            ])
-            .current_dir(&stage.0)
-            .status()?
-    } else {
-        Command::new("tar")
-            .args([
-                "-czf",
-                temporary_archive
-                    .to_str()
-                    .ok_or("Non-Unicode output path")?,
-                "-C",
-                stage.0.to_str().ok_or("Non-Unicode staging path")?,
-                &basename,
-            ])
-            .status()?
-    };
-    if !status.success() {
-        return Err("Archive creation failed".into());
+    archive::create(
+        &temporary_archive,
+        &stage.0,
+        &basename,
+        target.contains("windows"),
+    )?;
+    let restored = archive::restore_and_compare(
+        &temporary_archive,
+        &tree,
+        &stage.0.join("extracted"),
+        &basename,
+        target.contains("windows"),
+    )?;
+    validate_binary(&restored.join(binary_name), target)?;
+    if runtime_check {
+        let output = Command::new(restored.join(binary_name))
+            .arg("--version")
+            .env_clear()
+            .env("PATH", "")
+            .output()?;
+        if !output.status.success()
+            || String::from_utf8(output.stdout)?.trim() != env!("CARGO_PKG_VERSION")
+        {
+            return Err("Extracted native executable failed its version self-check".into());
+        }
     }
     let archive_hash = hash(&temporary_archive)?;
     let raw_hash = hash(&binary)?;
@@ -395,6 +416,7 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
         ),
     ];
     let mut created: Vec<PathBuf> = Vec::new();
+    let mut created_verified = false;
     let commit = (|| -> Result<()> {
         for (path, text) in outputs {
             let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -406,39 +428,50 @@ fn build(target: &str, output_dir: &Path) -> Result<()> {
         created.push(archive.clone());
         fs::hard_link(tree.join(binary_name), &raw)?;
         created.push(raw.clone());
+        fs::create_dir(&verified)?;
+        created_verified = true;
+        fs::rename(&restored, verified.join(&basename))?;
         #[cfg(unix)]
         File::open(&output_dir)?.sync_all()?;
         Ok(())
     })();
     if let Err(error) = commit {
+        if created_verified {
+            let _ = fs::remove_dir_all(&verified);
+        }
         for path in created.into_iter().rev() {
             let _ = fs::remove_file(path);
         }
         return Err(error);
     }
     println!(
-        "Development archive: {}\nArchive SHA-256: {}\nNative binary: {}\nBinary SHA-256: {}\nDevelopment index: {}\nNative self-check: {}\nRelease ready: false",
+        "Development archive: {}\nArchive SHA-256: {}\nNative binary: {}\nBinary SHA-256: {}\nDevelopment index: {}\nNative self-check: {}\nVerified extraction: {}\nRelease ready: false",
         archive.display(),
         archive_hash,
         raw.display(),
         raw_hash,
         channel.display(),
-        runtime_check
+        runtime_check,
+        verified.join(basename).display(),
     );
     Ok(())
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = if args.len() == 5 && args[1] == "--target" && args[3] == "--out" {
+    let all_features = args.len() == 6 && args[5] == "--all-features";
+    let result = if (args.len() == 5 || all_features) && args[1] == "--target" && args[3] == "--out"
+    {
         match args[0].as_str() {
-            "native-development" => build(&args[2], Path::new(&args[4])),
-            "native-test-candidate" => test_candidate::build(&args[2], Path::new(&args[4])),
+            "native-development" => build(&args[2], Path::new(&args[4]), all_features),
+            "native-test-candidate" if !all_features => {
+                test_candidate::build(&args[2], Path::new(&args[4]))
+            }
             _ => Err("Unknown native build command".into()),
         }
     } else {
         Err(
-            "usage: cargo run -p xtask -- native-development|native-test-candidate --target TARGET --out DIRECTORY"
+            "usage: cargo run -p xtask -- native-development --target TARGET --out DIRECTORY [--all-features]\n       cargo run -p xtask -- native-test-candidate --target TARGET --out DIRECTORY"
                 .into(),
         )
     };

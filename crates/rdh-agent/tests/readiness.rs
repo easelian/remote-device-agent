@@ -1,5 +1,8 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::io::Read;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -199,7 +202,7 @@ async fn readiness_tracks_connections_and_new_versions_and_rejects_stale_or_forg
     )
     .unwrap();
     std::fs::set_permissions(&version, std::fs::Permissions::from_mode(0o700)).unwrap();
-    std::fs::copy(env!("CARGO_BIN_EXE_rdh"), version.join("rdh")).unwrap();
+    std::fs::copy(initial_binary::path(), version.join("rdh")).unwrap();
     std::fs::set_permissions(version.join("rdh"), std::fs::Permissions::from_mode(0o700)).unwrap();
     let original_bytes = std::fs::read(version.join("rdh")).unwrap();
     storage::write_private_new(

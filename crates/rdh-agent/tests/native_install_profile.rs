@@ -3,6 +3,9 @@
     all(target_os = "macos", feature = "experimental-macos-install")
 ))]
 
+#[path = "support/initial_binary.rs"]
+mod initial_binary;
+
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -20,7 +23,7 @@ impl Drop for Fixture {
 }
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rdh"))
+    Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", root.join("empty"))
         .env("HOME", root.join("home"))

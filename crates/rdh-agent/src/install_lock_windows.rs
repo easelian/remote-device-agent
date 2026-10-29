@@ -364,7 +364,11 @@ fn read_marker(path: &Path) -> Result<(RunningRecord, FileIdentity)> {
     Ok((
         RunningRecord {
             pid,
-            config: config.into(),
+            // Earlier markers could store a Task's ordinary Win32 spelling,
+            // while profile registration has always stored the canonical path.
+            // Resolve the same file before comparing; never infer equivalence
+            // by removing a prefix or changing case in a string.
+            config: Path::new(config).canonicalize()?,
             nonce: nonce.into(),
         },
         file_identity(&object.file)?,
@@ -419,6 +423,7 @@ impl RunningInstall {
         record_profile(&self.prefix, config)
     }
     pub fn mark_running(&mut self, config: &Path, recover: bool) -> Result<()> {
+        let config = config.canonicalize()?;
         let existing = markers(&self.prefix)?;
         let selected: Vec<_> = existing
             .iter()
