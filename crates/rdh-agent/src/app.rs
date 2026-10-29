@@ -90,6 +90,9 @@ async fn launch_with_pairing(
 ) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     let _ = stop;
+    #[cfg(all(windows, feature = "experimental-windows-install"))]
+    let _service_installation =
+        crate::service_install::windows::update::runtime_guard(&args, state_directory.as_deref())?;
     let mut managed = RunningInstall::acquire_launch_current()?;
     let network = Network::from_env()?;
     if std::env::var_os("NODE_USE_ENV_PROXY").is_some()

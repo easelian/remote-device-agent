@@ -55,6 +55,10 @@ use windows_sys::Win32::{
     },
 };
 
+#[cfg(feature = "experimental-windows-install")]
+#[path = "support/native_candidate.rs"]
+mod native_candidate;
+
 const TOKEN: &str = "native-service-fixture-token-only";
 fn wide(value: &std::ffi::OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
@@ -525,6 +529,33 @@ async fn native_windows_installer_preserves_profile_and_runs_as_local_service() 
     fs::remove_file(&sentinel).unwrap();
     fs::remove_dir(&program).unwrap();
     let result = install();
+    if !result.status.success() {
+        // Read only ACL metadata for this unique fixture and its ancestors.
+        let mut paths: Vec<_> = directory
+            .ancestors()
+            .take(16)
+            .map(Path::to_path_buf)
+            .collect();
+        paths.extend([source.clone(), work.clone(), program.clone(), data.clone()]);
+        let paths = paths
+            .iter()
+            .map(|path| format!("'{}'", path.to_str().unwrap().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'; foreach ($path in @({paths})) {{ if (Test-Path -LiteralPath $path) {{ $acl = Get-Acl -LiteralPath $path; [Console]::WriteLine($path + ': ' + $acl.Sddl) }} }}"
+        );
+        let diagnostic = service_manager(
+            &powershell,
+            &["-NoProfile", "-NonInteractive", "-Command", &script],
+        )
+        .await;
+        eprintln!(
+            "Installer ACL metadata: {}\n{}",
+            String::from_utf8_lossy(&diagnostic.stdout),
+            String::from_utf8_lossy(&diagnostic.stderr)
+        );
+    }
     assert!(
         result.status.success(),
         "installer stdout={} stderr={}",
@@ -539,7 +570,12 @@ async fn native_windows_installer_preserves_profile_and_runs_as_local_service() 
         OpenServiceW(
             manager.0,
             service_name.as_ptr(),
-            SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | 0x0001_0000,
+            SERVICE_QUERY_STATUS
+                | SERVICE_START
+                | SERVICE_STOP
+                | 0x0001_0000
+                | windows_sys::Win32::System::Services::SERVICE_QUERY_CONFIG
+                | windows_sys::Win32::System::Services::SERVICE_CHANGE_CONFIG,
         )
     };
     assert!(!service.is_null());
@@ -570,6 +606,7 @@ async fn native_windows_installer_preserves_profile_and_runs_as_local_service() 
         "Duplicate installation must preserve the registered service"
     );
     assert_eq!(fixture.status().dwCurrentState, SERVICE_STOPPED);
+    exercise_service_updates(&listener, &fixture, &program, &config, &contents).await;
     exercise_service(
         &listener,
         "S-1-5-19",
@@ -580,6 +617,406 @@ async fn native_windows_installer_preserves_profile_and_runs_as_local_service() 
         true,
     )
     .await;
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn service_configuration(service: SC_HANDLE) -> Value {
+    use windows_sys::Win32::System::Services::{QUERY_SERVICE_CONFIGW, QueryServiceConfigW};
+    let mut size = 0;
+    assert_eq!(
+        unsafe { QueryServiceConfigW(service, null_mut(), 0, &mut size) },
+        0
+    );
+    assert!((size_of::<QUERY_SERVICE_CONFIGW>() as u32..=8192).contains(&size));
+    let mut memory = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
+    let capacity = size as usize;
+    let pointer = memory.as_mut_ptr().cast::<QUERY_SERVICE_CONFIGW>();
+    assert_ne!(
+        unsafe { QueryServiceConfigW(service, pointer, size, &mut size) },
+        0
+    );
+    let string = |pointer: *const u16| -> (String, *const u16) {
+        if pointer.is_null() {
+            return (String::new(), pointer);
+        }
+        let start = pointer as usize;
+        let first = memory.as_ptr() as usize;
+        let end = first + capacity;
+        assert!(
+            start >= first + size_of::<QUERY_SERVICE_CONFIGW>() && start < end && start % 2 == 0
+        );
+        let units = unsafe { std::slice::from_raw_parts(pointer, (end - start) / 2) };
+        let length = units.iter().position(|unit| *unit == 0).unwrap();
+        (String::from_utf16(&units[..length]).unwrap(), unsafe {
+            pointer.add(length + 1)
+        })
+    };
+    let data = unsafe { &*pointer };
+    let mut dependency = data.lpDependencies.cast_const();
+    let mut dependencies = Vec::new();
+    loop {
+        let (value, next) = string(dependency);
+        if value.is_empty() {
+            break;
+        }
+        dependencies.push(value);
+        dependency = next;
+    }
+    json!({"service_type":data.dwServiceType,"start_type":data.dwStartType,
+        "error_control":data.dwErrorControl,"binary_path":string(data.lpBinaryPathName).0,
+        "load_order_group":string(data.lpLoadOrderGroup).0,"tag_id":data.dwTagId,
+        "dependencies":dependencies,"account":string(data.lpServiceStartName).0,
+        "display_name":string(data.lpDisplayName).0})
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn set_service_command(service: SC_HANDLE, command: &str, display_name: Option<&str>) {
+    use windows_sys::Win32::System::Services::{ChangeServiceConfigW, SERVICE_NO_CHANGE};
+    let command = wide(command.as_ref());
+    let display_name = display_name.map(|value| wide(value.as_ref()));
+    assert_ne!(
+        unsafe {
+            ChangeServiceConfigW(
+                service,
+                SERVICE_NO_CHANGE,
+                SERVICE_NO_CHANGE,
+                SERVICE_NO_CHANGE,
+                command.as_ptr(),
+                null(),
+                null_mut(),
+                null(),
+                null(),
+                null(),
+                display_name.as_ref().map_or(null(), |value| value.as_ptr()),
+            )
+        },
+        0
+    );
+}
+
+#[cfg(feature = "experimental-windows-install")]
+async fn service_manager(executable: &Path, args: &[&str]) -> std::process::Output {
+    use std::process::Stdio;
+    tokio::time::timeout(
+        Duration::from_secs(90),
+        tokio::process::Command::new(executable)
+            .args(args)
+            .env("PATH", "")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("Service manager exceeded its fixture deadline")
+    .unwrap()
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn manager_success(result: std::process::Output) {
+    assert!(
+        result.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn fixture_program_record(path: &Path, value: &Value) {
+    fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    let _restore = Privilege::restore_owner();
+    program_acl(path, false);
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn process_image(process: &OwnedHandle) -> PathBuf {
+    use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+    let mut image = vec![0u16; 32_768];
+    let mut length = image.len() as u32;
+    assert_ne!(
+        unsafe {
+            QueryFullProcessImageNameW(process.as_raw_handle(), 0, image.as_mut_ptr(), &mut length)
+        },
+        0
+    );
+    PathBuf::from(String::from_utf16(&image[..length as usize]).unwrap())
+        .canonicalize()
+        .unwrap()
+}
+
+#[cfg(feature = "experimental-windows-install")]
+async fn stop_and_wait(fixture: &Fixture, owner: OwnedHandle) {
+    fixture.stop();
+    assert_eq!(fixture.state(SERVICE_STOPPED).await.dwWin32ExitCode, 0);
+    assert_eq!(
+        unsafe { WaitForSingleObject(owner.as_raw_handle(), 5000) },
+        WAIT_OBJECT_0
+    );
+}
+
+#[cfg(feature = "experimental-windows-install")]
+async fn exercise_service_updates(
+    listener: &TcpListener,
+    fixture: &Fixture,
+    program: &Path,
+    config: &Path,
+    contents: &[u8],
+) {
+    use rdh_agent::config::sha256_hex;
+    let (new_version, candidate) = native_candidate::load();
+    let old_version = env!("CARGO_PKG_VERSION");
+    let executable = |version: &str| program.join("versions").join(version).join("rdh.exe");
+    let original = executable(old_version);
+    let updated = executable(&new_version);
+    let manifest = program.join(".service-install.json");
+    let pending = program.join(".service-update-pending.json");
+    let current = || serde_json::from_slice::<Value>(&fs::read(&manifest).unwrap()).unwrap();
+    let old = current();
+    let before = service_configuration(fixture.service.0);
+    let artifact = fixture.directory.join("update-candidate.exe");
+    fs::write(&artifact, &candidate).unwrap();
+    let platform = if cfg!(target_arch = "aarch64") {
+        "win32-arm64"
+    } else {
+        "win32-x64"
+    };
+    let index = fixture.directory.join("channel.json");
+    fs::write(
+        &index,
+        serde_json::to_vec(&json!({"schema":2,"kind":"native-agent-channel",
+        "channel":"stable","version":new_version,"rollout":{"percent":100},
+        "platforms":{platform:{"url":artifact.to_str().unwrap(),"format":"native-binary",
+            "sha256":sha256_hex(&candidate),"bytes":candidate.len()}}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let upgrade = [
+        "upgrade",
+        "--index",
+        index.to_str().unwrap(),
+        "--force",
+        "--no-restart",
+    ];
+    manager_success(
+        service_manager(
+            &original,
+            &[
+                "upgrade",
+                "--check",
+                "--index",
+                index.to_str().unwrap(),
+                "--force",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(current(), old);
+    fixture.start();
+    let mut peer = Peer::connect(listener).await;
+    let owner = process(fixture.state(SERVICE_RUNNING).await.dwProcessId);
+    assert_eq!(process_sid(&owner), "S-1-5-19");
+    assert_eq!(process_image(&owner), original.canonicalize().unwrap());
+    peer.call(
+        "write_file",
+        json!({"root":"work","path":"upgrade.txt","content":"same device across service versions"}),
+    )
+    .await;
+    let refused = service_manager(&original, &upgrade).await;
+    assert!(
+        !refused.status.success(),
+        "An active service must exclude the update controller"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("active"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(current(), old);
+    assert_eq!(service_configuration(fixture.service.0), before);
+    stop_and_wait(fixture, owner).await;
+    drop(peer);
+    let mut bad_index: Value = serde_json::from_slice(&fs::read(&index).unwrap()).unwrap();
+    bad_index["platforms"][platform]["sha256"] = Value::String("0".repeat(64));
+    let bad_index_path = fixture.directory.join("bad-channel.json");
+    fs::write(&bad_index_path, serde_json::to_vec(&bad_index).unwrap()).unwrap();
+    let refused = service_manager(
+        &original,
+        &[
+            "upgrade",
+            "--index",
+            bad_index_path.to_str().unwrap(),
+            "--force",
+            "--no-restart",
+        ],
+    )
+    .await;
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("Invalid service update candidate"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(current(), old);
+    assert_eq!(service_configuration(fixture.service.0), before);
+    assert!(!updated.exists() && !pending.exists());
+    manager_success(service_manager(&original, &upgrade).await);
+    let next = current();
+    assert_eq!(next["current"]["version"], new_version);
+    assert_eq!(next["previous"], old["current"]);
+    for key in [
+        "schema",
+        "kind",
+        "service",
+        "account",
+        "config",
+        "server",
+        "install_id",
+    ] {
+        assert_eq!(next[key], old[key]);
+    }
+    assert_eq!(fs::read(config).unwrap(), contents);
+    let after = service_configuration(fixture.service.0);
+    let mut unchanged = after.clone();
+    unchanged["binary_path"] = before["binary_path"].clone();
+    assert_eq!(
+        unchanged, before,
+        "Only the service executable path may change"
+    );
+    assert!(!pending.exists());
+    fixture.start();
+    let mut peer = Peer::connect(listener).await;
+    let owner = process(fixture.state(SERVICE_RUNNING).await.dwProcessId);
+    assert_eq!(process_sid(&owner), "S-1-5-19");
+    assert_eq!(process_image(&owner), updated.canonicalize().unwrap());
+    assert_eq!(
+        peer.call("read_file", json!({"root":"work","path":"upgrade.txt"}))
+            .await["content"],
+        "same device across service versions"
+    );
+    assert!(
+        !service_manager(&updated, &["rollback", "--no-restart"])
+            .await
+            .status
+            .success()
+    );
+    stop_and_wait(fixture, owner).await;
+    drop(peer);
+    manager_success(service_manager(&updated, &["rollback", "--no-restart"]).await);
+    let restored = current();
+    assert_eq!(restored["current"], old["current"]);
+    assert_eq!(restored["previous"], next["current"]);
+    assert_eq!(service_configuration(fixture.service.0), before);
+    fixture.start();
+    let mut peer = Peer::connect(listener).await;
+    let owner = process(fixture.state(SERVICE_RUNNING).await.dwProcessId);
+    assert_eq!(process_image(&owner), original.canonicalize().unwrap());
+    assert_eq!(process_sid(&owner), "S-1-5-19");
+    assert_eq!(
+        peer.call("read_file", json!({"root":"work","path":"upgrade.txt"}))
+            .await["content"],
+        "same device across service versions"
+    );
+    stop_and_wait(fixture, owner).await;
+    drop(peer);
+
+    // Materialize each durable interruption boundary without adding a runtime
+    // fault-injection switch: pending only, SCM changed, then manifest changed.
+    let transaction = json!({"schema":1,"old":restored,"next":next,"before":before});
+    for phase in 0..3 {
+        fixture_program_record(&pending, &transaction);
+        if phase >= 1 {
+            set_service_command(
+                fixture.service.0,
+                after["binary_path"].as_str().unwrap(),
+                None,
+            );
+        }
+        if phase >= 2 {
+            fixture_program_record(&manifest, &next);
+        }
+        let saved_manifest = fs::read(&manifest).unwrap();
+        let saved_pending = fs::read(&pending).unwrap();
+        assert!(!service_manager(&original, &upgrade).await.status.success());
+        assert_eq!(fs::read(&manifest).unwrap(), saved_manifest);
+        assert_eq!(fs::read(&pending).unwrap(), saved_pending);
+        fixture.start();
+        assert_ne!(fixture.state(SERVICE_STOPPED).await.dwWin32ExitCode, 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), listener.accept())
+                .await
+                .is_err(),
+            "An interrupted service update must not launch the Agent"
+        );
+        if phase == 1 {
+            let command = after["binary_path"].as_str().unwrap();
+            set_service_command(
+                fixture.service.0,
+                command,
+                Some("Fixture administrator changed registration"),
+            );
+            let external = service_configuration(fixture.service.0);
+            let refused = service_manager(&original, &["upgrade", "--recover"]).await;
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains("changed independently"),
+                "{}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            assert_eq!(service_configuration(fixture.service.0), external);
+            assert_eq!(fs::read(&manifest).unwrap(), saved_manifest);
+            assert_eq!(fs::read(&pending).unwrap(), saved_pending);
+            set_service_command(
+                fixture.service.0,
+                command,
+                Some(before["display_name"].as_str().unwrap()),
+            );
+        }
+        manager_success(service_manager(&original, &["upgrade", "--recover"]).await);
+        assert!(!pending.exists());
+        assert_eq!(current(), restored);
+        assert_eq!(service_configuration(fixture.service.0), before);
+        assert_eq!(fs::read(config).unwrap(), contents);
+    }
+    // A controller can win the lock just before SCM starts the process.
+    // The process must exit before connecting or executing any device work.
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_READ, FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+            LockFileEx, UnlockFileEx,
+        };
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(program.join(".service-manager.lock"))
+            .unwrap();
+        let mut overlap = OVERLAPPED::default();
+        assert_ne!(
+            unsafe {
+                LockFileEx(
+                    lock.as_raw_handle(),
+                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                    0,
+                    1,
+                    0,
+                    &mut overlap,
+                )
+            },
+            0
+        );
+        fixture.start();
+        assert_ne!(fixture.state(SERVICE_STOPPED).await.dwWin32ExitCode, 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), listener.accept())
+                .await
+                .is_err()
+        );
+        assert_ne!(
+            unsafe { UnlockFileEx(lock.as_raw_handle(), 0, 1, 0, &mut overlap) },
+            0
+        );
+    }
 }
 
 async fn service_lifecycle(sid: &str, account: Option<&str>) {

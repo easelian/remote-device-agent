@@ -108,6 +108,10 @@ jobs:
       max-parallel: 1
       matrix:
         include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04
@@ -120,10 +124,6 @@ jobs:
             target: x86_64-apple-darwin
           - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: windows-2022
-            target: x86_64-pc-windows-msvc
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
     defaults:
       run:
         shell: bash
@@ -140,6 +140,93 @@ jobs:
             x86_64-*:X64|aarch64-*:ARM64) ;;
             *) printf 'Runner architecture does not match %s (%s)\n' "$RDH_TARGET" "$RUNNER_ARCH" >&2; exit 1 ;;
           esac
+      - name: Record Windows command and installation-parent diagnostics
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 4
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $since = Get-Date
+          ('RDH_COMMAND_DIAGNOSTIC_START=' + $since.ToUniversalTime().ToString('o')) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $directory = Join-Path $env:RUNNER_TEMP ('rdh-command-diagnostic-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          $commands = @(
+            'echo diagnostic-marker',
+            'echo shell-marker',
+            'cd',
+            'echo error-marker 1>&2',
+            'exit /b 7',
+            'echo shell-marker&cd',
+            'echo shell-marker&cd&echo error-marker',
+            'echo shell-marker&cd&echo error-marker 1>&2',
+            'echo shell-marker&cd&echo error-marker 1>&2&exit /b 7',
+            'echo shell-marker & cd & echo error-marker 1>&2 & exit /b 7'
+          )
+          $cases = foreach ($command in $commands) {
+            @{ Command=$command; Mode='inherited' }
+            @{ Command=$command; Mode='minimal' }
+          }
+          foreach ($case in $cases) {
+            $command = $case.Command
+            $label = $case.Mode + ': ' + $command
+            $process = [System.Diagnostics.Process]::new()
+            $start = $process.StartInfo
+            $start.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+            $start.Arguments = '/d /s /c "' + $command + '"'
+            $start.WorkingDirectory = $directory
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            if ($case.Mode -eq 'minimal') {
+              $start.Environment.Clear()
+              $start.Environment['SystemRoot'] = $env:SystemRoot
+              $start.Environment['WINDIR'] = $env:SystemRoot
+              $start.Environment['PATH'] = ''
+            }
+            try {
+              [void] $process.Start()
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              if (!$process.WaitForExit(10000)) {
+                $process.Kill($true)
+                $process.WaitForExit()
+                Write-Host ('Command timed out: ' + $label)
+              } else {
+                Write-Host ('Command exit=' + $process.ExitCode + ': ' + $label)
+                Write-Host ($stdout.GetAwaiter().GetResult())
+                Write-Host ($stderr.GetAwaiter().GetResult())
+              }
+            } catch {
+              Write-Host ('Command launch error: ' + $label + ': ' + $_.Exception.Message)
+            } finally {
+              $process.Dispose()
+            }
+          }
+          # Read only system-parent ACL metadata; do not change runner policy.
+          foreach ($path in @([System.IO.Path]::GetPathRoot($env:ProgramData), $env:ProgramData)) {
+            try {
+              $acl = Get-Acl -LiteralPath $path
+              Write-Host ('Installer ancestor ' + $path + ': ' + $acl.Sddl)
+            } catch {
+              Write-Host ('ACL diagnostic unavailable: ' + $_.Exception.Message)
+            }
+          }
+          foreach ($log in @('Microsoft-Windows-Windows Defender/Operational', 'Microsoft-Windows-CodeIntegrity/Operational', 'Microsoft-Windows-AppLocker/EXE and DLL')) {
+            try {
+              $events = Get-WinEvent -FilterHashtable @{LogName=$log; StartTime=$since} -MaxEvents 20 -ErrorAction Stop
+              foreach ($event in $events) {
+                $message = $event.Message
+                if ($message -match 'cmd\.exe|rdh-command-diagnostic') {
+                  Write-Host ($log + ' event ' + $event.Id + ' at ' + $event.TimeCreated.ToUniversalTime().ToString('o'))
+                  Write-Host ($message.Substring(0, [Math]::Min($message.Length, 4096)))
+                }
+              }
+            } catch {
+              Write-Host ('Event diagnostic unavailable or empty for ' + $log + ': ' + $_.Exception.Message)
+            }
+          }
+          Remove-Item -LiteralPath $directory
       - name: Install the pinned Rust toolchain and target
         env:
           RDH_TARGET: ${{ matrix.target }}
@@ -202,6 +289,26 @@ jobs:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" processes::native::platform::tests::cmd_shell_cwd_nonzero_exit_and_completion_hook -- --exact --nocapture --test-threads=1
+      - name: Record Windows process-denial events after the failed tests
+        if: ${{ !cancelled() && steps.native_tests.outcome == 'failure' && runner.os == 'Windows' }}
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $since = [datetime]::Parse($env:RDH_COMMAND_DIAGNOSTIC_START).ToLocalTime()
+          foreach ($log in @('Microsoft-Windows-Windows Defender/Operational', 'Microsoft-Windows-CodeIntegrity/Operational', 'Microsoft-Windows-AppLocker/EXE and DLL')) {
+            try {
+              $events = Get-WinEvent -FilterHashtable @{LogName=$log; StartTime=$since} -MaxEvents 30 -ErrorAction Stop
+              foreach ($event in $events) {
+                $message = $event.Message
+                if ($message -match 'cmd\.exe|rdh_agent|rdh-process-|rdh-command-diagnostic') {
+                  Write-Host ($log + ' event ' + $event.Id + ' at ' + $event.TimeCreated.ToUniversalTime().ToString('o'))
+                  Write-Host ($message.Substring(0, [Math]::Min($message.Length, 4096)))
+                }
+              }
+            } catch {
+              Write-Host ('Event diagnostic unavailable or empty for ' + $log + ': ' + $_.Exception.Message)
+            }
+          }
       - name: Check native LaunchAgent definition arguments
         if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && (matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS') }}
         env:

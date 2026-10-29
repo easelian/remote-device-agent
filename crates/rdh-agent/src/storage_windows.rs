@@ -827,7 +827,7 @@ pub(crate) fn open_child_request(
 /// Read only identity/attributes, sharing the writer's existing data and
 /// DELETE access. This can verify an exclusively held temporary without
 /// granting another data reader or reopening a checked pathname.
-fn named_identity(parent: &File, name: &[u16]) -> Result<Option<FileIdentity>> {
+pub(crate) fn named_identity(parent: &File, name: &[u16]) -> Result<Option<FileIdentity>> {
     match open_child_request(
         parent,
         name,
@@ -1041,10 +1041,16 @@ pub(crate) fn open_install_parent(path: &Path) -> Result<(Vec<File>, Vec<u16>)> 
 pub(crate) fn open_service_install_parent(path: &Path) -> Result<(Vec<File>, Vec<u16>)> {
     let (root, parts) = path_parts(path)?;
     let mut directories = vec![open_root(&root, true)?];
-    check_service_parent(directories.last().expect("root exists"))?;
-    for name in &parts[..parts.len() - 1] {
+    check_service_parent(directories.last().expect("root exists"))
+        .map_err(|error| Error::message(format!("Service installation root ACL: {error}")))?;
+    for (index, name) in parts[..parts.len() - 1].iter().enumerate() {
         let next = open_child(directories.last().expect("root exists"), name, true, true)?;
-        check_service_parent(&next)?;
+        check_service_parent(&next).map_err(|error| {
+            Error::message(format!(
+                "Service installation ancestor {} ACL: {error}",
+                index + 1
+            ))
+        })?;
         directories.push(next);
     }
     Ok((directories, parts.last().expect("path has a name").clone()))
@@ -1418,7 +1424,9 @@ mod tests {
             assert!(!accepted_kind(&identity, &descriptor, false));
             assert!(!accepted(&identity, &descriptor));
         }
-        for rights in ["FW", "FA", "WD", "WO", "SD", "DC"] {
+        // SDDL DC is directory-service DELETE_CHILD (0x2), which is
+        // FILE_ADD_FILE for a filesystem directory. FILE_DELETE_CHILD is 0x40.
+        for rights in ["FW", "FA", "WD", "WO", "SD", "0x00000040"] {
             assert!(
                 !accepted_policy(&identity, &make(rights), false, true),
                 "{rights}"

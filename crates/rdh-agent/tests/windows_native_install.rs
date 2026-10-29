@@ -139,7 +139,12 @@ async fn running_task_agent(prefix: &Path, expected: &Path, config: &Path) -> Ow
             if let Some(marker) = markers.first() {
                 let record: Value =
                     serde_json::from_slice(&fs::read(marker.path()).unwrap()).unwrap();
-                assert_eq!(record["config"], config.to_str().unwrap());
+                assert_eq!(
+                    Path::new(record["config"].as_str().unwrap())
+                        .canonicalize()
+                        .unwrap(),
+                    config.canonicalize().unwrap()
+                );
                 let pid = u32::try_from(record["pid"].as_u64().unwrap()).unwrap();
                 let raw = unsafe {
                     OpenProcess(
@@ -394,7 +399,12 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
                         serde_json::from_slice(&storage::read_private(&markers[0]).unwrap())
                             .unwrap();
                     assert_eq!(record["pid"], agent.id().unwrap());
-                    assert_eq!(record["config"], config.to_str().unwrap());
+                    assert_eq!(
+                        Path::new(record["config"].as_str().unwrap())
+                            .canonicalize()
+                            .unwrap(),
+                        config.canonicalize().unwrap()
+                    );
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;

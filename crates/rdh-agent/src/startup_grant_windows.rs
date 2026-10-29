@@ -441,7 +441,10 @@ mod tests {
             chain.last().unwrap(),
             &name,
             false,
-            READ_CONTROL | windows_sys::Win32::Storage::FileSystem::WRITE_DAC | SYNCHRONIZE,
+            READ_CONTROL
+                | FILE_READ_ATTRIBUTES
+                | windows_sys::Win32::Storage::FileSystem::WRITE_DAC
+                | SYNCHRONIZE,
             FILE_SHARE_READ,
         )
         .unwrap();

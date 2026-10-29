@@ -24,7 +24,7 @@ mod native {
     use crate::network::Network;
     use crate::profile_lock::ProfileLocks;
     use crate::storage;
-    use crate::update::{Channel, Decision, MAX_BINARY_BYTES};
+    use crate::update::{Artifact, Channel, Decision, MAX_BINARY_BYTES};
 
     const INDEX_LIMIT: usize = 256 * 1024;
     const DEFAULT_INDEX: &str =
@@ -499,6 +499,100 @@ mod native {
         }
         Ok(())
     }
+    async fn select_release(
+        options: &Options,
+        current: &str,
+        installation_id: &str,
+    ) -> Result<Option<(String, Artifact, Location)>> {
+        let channel = options.channel.as_deref().unwrap_or("stable");
+        // Keep the environment value alive while choosing the default.
+        let selected = if options.index.is_some() {
+            options.index.clone().unwrap()
+        } else if let Ok(value) = std::env::var("RDH_INDEX") {
+            value
+        } else {
+            format!("{DEFAULT_INDEX}/{channel}.json")
+        };
+        let source = location(&selected)?;
+        let raw = read(&source, INDEX_LIMIT).await?;
+        let value: serde_json::Value = serde_json::from_slice(&raw)?;
+        if value
+            .get("channel")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value != channel)
+        {
+            return Err(Error::message(
+                "Native update channel does not match the requested channel",
+            ));
+        }
+        let index = Channel::parse(&value)?;
+        let platform = platform()?;
+        let decision = index.decide(current, platform, installation_id, channel, options.force)?;
+        println!(
+            "Current version: {current} ({platform}); target version: {}",
+            index.version
+        );
+        let artifact = match decision {
+            Decision::None(reason) | Decision::Blocked(reason) => {
+                println!("{reason}");
+                return Ok(None);
+            }
+            Decision::Upgrade(artifact) => artifact,
+        };
+        let artifact_source = resolve(&source, &artifact.url)?;
+        if options.check || options.dry_run {
+            println!("Native update is available; no installation changes were made.");
+            return Ok(None);
+        }
+        Ok(Some((index.version, artifact, artifact_source)))
+    }
+
+    #[cfg(windows)]
+    async fn upgrade_service(options: &Options) -> Result<bool> {
+        use crate::service_install::windows::update::Lease;
+        let Some(lease) = Lease::acquire_current(options.recover, options.recover)? else {
+            return Ok(false);
+        };
+        if options.list_profiles || options.forget_profile.is_some() || options.recover_lock {
+            return Err(Error::message(
+                "Service installations use their recorded profile and kernel lock; profile catalog commands and --recover-lock are unavailable",
+            ));
+        }
+        if options.recover {
+            lease.recover()?;
+            println!(
+                "Interrupted service update restored. Start the service manually and verify Hub readiness."
+            );
+            return Ok(true);
+        }
+        let Some((version, artifact, source)) = select_release(
+            options,
+            &lease.record.current.version,
+            &lease.record.install_id,
+        )
+        .await?
+        else {
+            return Ok(true);
+        };
+        if !options.no_restart {
+            return Err(Error::message(
+                "Stop the service and use --no-restart for an offline service update",
+            ));
+        }
+        let manager = lease.exclusive(false)?;
+        let bytes = read(&source, MAX_BINARY_BYTES as usize).await?;
+        if bytes.len() as u64 != artifact.bytes {
+            return Err(Error::message(
+                "Native update size does not match the index",
+            ));
+        }
+        manager.stage_and_switch(&version, &bytes, &artifact.sha256)?;
+        println!(
+            "Service executable switched to {version}. Start the service manually and verify Hub readiness."
+        );
+        Ok(true)
+    }
+
     pub async fn upgrade(args: &[String]) -> Result<()> {
         if matches!(args, [help] if help == "--help" || help == "-h") {
             print!("{USAGE}");
@@ -516,6 +610,10 @@ mod native {
             return Err(Error::message(
                 "Coordinated service updates are unavailable on this platform; stop the Agent and use an offline update",
             ));
+        }
+        #[cfg(windows)]
+        if upgrade_service(&options).await? {
+            return Ok(());
         }
         let (prefix, executable) = current_installation()?
             .ok_or_else(|| Error::message("This binary is not in a managed native installation"))?;
@@ -541,11 +639,11 @@ mod native {
             return Ok(());
         }
         #[cfg(target_os = "linux")]
-        if let Some(config) = options.probe_profile {
+        if let Some(config) = options.probe_profile.as_deref() {
             let guard = RunningInstall::acquire_for_inspection()?
                 .ok_or_else(|| Error::message("Native installation is unavailable"))?;
             let snapshot =
-                crate::readiness::probe_profile(&guard, &prefix, Path::new(&config)).await?;
+                crate::readiness::probe_profile(&guard, &prefix, Path::new(config)).await?;
             println!("{}", serde_json::to_string(&snapshot)?);
             if !snapshot.ready {
                 return Err(Error::message(
@@ -567,12 +665,12 @@ mod native {
             return Ok(());
         }
         #[cfg(target_os = "linux")]
-        if let Some(config) = options.stop_if_idle {
+        if let Some(config) = options.stop_if_idle.as_deref() {
             let _controller = crate::install_lock::ControllerLock::acquire(&prefix, &executable)?;
             let guard = RunningInstall::acquire_current()?
                 .ok_or_else(|| Error::message("Native installation is unavailable"))?;
             let stopped =
-                crate::readiness::stop_if_idle(&guard, &prefix, Path::new(&config)).await?;
+                crate::readiness::stop_if_idle(&guard, &prefix, Path::new(config)).await?;
             println!(
                 "{}",
                 serde_json::json!({"stopped":true,"pid":stopped.pid,
@@ -586,8 +684,8 @@ mod native {
                 for path in manager.profiles()? {
                     println!("{}", path.display());
                 }
-            } else if let Some(config) = options.forget_profile {
-                manager.forget_profile(Path::new(&config))?;
+            } else if let Some(config) = options.forget_profile.as_deref() {
+                manager.forget_profile(Path::new(config))?;
                 println!(
                     "Profile removed from the native installation catalog; the configuration was retained."
                 );
@@ -597,52 +695,11 @@ mod native {
         let guard = RunningInstall::acquire_current()?
             .ok_or_else(|| Error::message("Native installation is unavailable"))?;
         let current = pointer(&prefix, "current")?;
-        let channel = options.channel.as_deref().unwrap_or("stable");
-        // Keep the environment value alive while choosing the default.
-        let selected = if options.index.is_some() {
-            options.index.clone().unwrap()
-        } else if let Ok(value) = std::env::var("RDH_INDEX") {
-            value
-        } else {
-            format!("{DEFAULT_INDEX}/{channel}.json")
-        };
-        let source = location(&selected)?;
-        let raw = read(&source, INDEX_LIMIT).await?;
-        let value: serde_json::Value = serde_json::from_slice(&raw)?;
-        if value
-            .get("channel")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|value| value != channel)
-        {
-            return Err(Error::message(
-                "Native update channel does not match the requested channel",
-            ));
-        }
-        let index = Channel::parse(&value)?;
-        let platform = platform()?;
-        let decision = index.decide(
-            &current,
-            platform,
-            &install_id(&prefix)?,
-            channel,
-            options.force,
-        )?;
-        println!(
-            "Current version: {current} ({platform}); target version: {}",
-            index.version
-        );
-        let artifact = match decision {
-            Decision::None(reason) | Decision::Blocked(reason) => {
-                println!("{reason}");
-                return Ok(());
-            }
-            Decision::Upgrade(artifact) => artifact,
-        };
-        let artifact_source = resolve(&source, &artifact.url)?;
-        if options.check || options.dry_run {
-            println!("Native update is available; no installation changes were made.");
+        let Some((version, artifact, artifact_source)) =
+            select_release(&options, &current, &install_id(&prefix)?).await?
+        else {
             return Ok(());
-        }
+        };
         #[cfg(target_os = "linux")]
         if let (Some(unit), Some(config)) = (
             options.service_unit.as_deref(),
@@ -661,7 +718,7 @@ mod native {
                 unit,
                 Path::new(config),
                 crate::service_controller::Candidate {
-                    version: &index.version,
+                    version: &version,
                     binary: &binary,
                     sha256: &artifact.sha256,
                 },
@@ -697,18 +754,18 @@ mod native {
                 "Native update size does not match the index",
             ));
         }
-        native_install::stage(&manager, &index.version, &binary, &artifact.sha256)?;
-        native_install::verify_stored(&prefix, &index.version)?;
-        let _profile_locks = native_install::validate_profiles(&manager, &index.version)?;
-        native_install::switch(&manager, &index.version)?;
+        native_install::stage(&manager, &version, &binary, &artifact.sha256)?;
+        native_install::verify_stored(&prefix, &version)?;
+        let _profile_locks = native_install::validate_profiles(&manager, &version)?;
+        native_install::switch(&manager, &version)?;
         #[cfg(windows)]
         println!(
             "Selected executable: {}",
-            crate::install_lock::version_binary(&prefix, &index.version)?.display()
+            crate::install_lock::version_binary(&prefix, &version)?.display()
         );
         println!(
             "Switched to {}; start the Agent manually and verify Hub readiness.",
-            index.version
+            version
         );
         Ok(())
     }
@@ -721,6 +778,16 @@ mod native {
             return Err(Error::message(
                 "Use rollback --no-restart after stopping the Agent",
             ));
+        }
+        #[cfg(windows)]
+        if let Some(manager) =
+            crate::service_install::windows::update::Lease::acquire_current(true, false)?
+        {
+            manager.rollback()?;
+            println!(
+                "Service executable rolled back. Start the service manually and verify Hub readiness."
+            );
+            return Ok(());
         }
         let (prefix, executable) = current_installation()?
             .ok_or_else(|| Error::message("This binary is not in a managed native installation"))?;

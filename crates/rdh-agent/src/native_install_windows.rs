@@ -29,7 +29,7 @@ use crate::{
 
 const VERSION_MANIFEST: &str = ".native-version.json";
 
-fn check_executable(bytes: &[u8]) -> Result<()> {
+pub(crate) fn check_executable(bytes: &[u8]) -> Result<()> {
     let invalid = || Error::message("Native update must be a matching 64-bit Windows executable");
     if bytes.len() < 64 || &bytes[..2] != b"MZ" {
         return Err(invalid());

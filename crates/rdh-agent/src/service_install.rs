@@ -3,7 +3,7 @@ use crate::error::Result;
 
 #[cfg(all(windows, feature = "experimental-windows-install"))]
 #[path = "service_install_windows.rs"]
-mod windows;
+pub(crate) mod windows;
 
 pub fn run(args: &[String]) -> Result<()> {
     if matches!(args, [help] if help == "--help" || help == "-h") {

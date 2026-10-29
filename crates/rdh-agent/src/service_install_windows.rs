@@ -10,7 +10,8 @@ use std::{
     time::Duration,
 };
 
-use serde_json::json;
+#[path = "service_update_windows.rs"]
+pub(crate) mod update;
 use windows_sys::Win32::{
     Foundation::{
         ERROR_NOT_ALL_ASSIGNED, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SUCCESS, GetLastError,
@@ -35,7 +36,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    config::{DeviceConfig, sha256_hex},
+    config::DeviceConfig,
     error::{Error, Result},
     policy,
     profile_lock::ProfileLocks,
@@ -45,7 +46,7 @@ use crate::{
         self,
         windows::{
             FileIdentity, check_service_object, create_service_child, delete_open_object,
-            file_identity, open_child_request, open_parent, open_service_install_parent,
+            file_identity, open_child, open_child_request, open_service_install_parent,
             require_child_absent,
         },
     },
@@ -63,8 +64,8 @@ struct Privilege {
 impl Privilege {
     fn owner_assignment() -> Result<Self> {
         let mut raw = null_mut();
-        // This command is synchronous and creates no runtime or worker threads.
-        // Restore the caller's original privilege state on every return path.
+        // The guarded ownership changes are synchronous. Restore the caller's
+        // token before any candidate subprocess can inherit the privilege.
         if unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
@@ -163,6 +164,7 @@ struct Created {
     path: PathBuf,
     identity: FileIdentity,
     directory: Option<File>,
+    is_directory: bool,
     program: bool,
 }
 #[derive(Default)]
@@ -175,13 +177,20 @@ struct Creation {
 impl Creation {
     fn root(&mut self, path: &Path, program: bool) -> Result<usize> {
         let (parents, name) = open_service_install_parent(path)?;
-        let file = create_service_child(parents.last().unwrap(), &name, true, program)?;
+        let file = create_service_child(parents.last().unwrap(), &name, true, program).map_err(
+            |error| {
+                Error::message(format!(
+                    "Cannot create service installation directory: {error}"
+                ))
+            },
+        )?;
         self.parents.extend(parents);
         let identity = file_identity(&file)?;
         self.objects.push(Created {
             path: path.into(),
             identity,
             directory: Some(file),
+            is_directory: true,
             program,
         });
         Ok(self.objects.len() - 1)
@@ -201,6 +210,7 @@ impl Creation {
             path,
             identity,
             directory: Some(file),
+            is_directory: true,
             program,
         });
         Ok(self.objects.len() - 1)
@@ -220,6 +230,7 @@ impl Creation {
             path: path.clone(),
             identity,
             directory: None,
+            is_directory: false,
             program,
         });
         // On failure the file is closed before Creation's identity-checked cleanup.
@@ -227,34 +238,107 @@ impl Creation {
         file.sync_all()?;
         Ok(path)
     }
-    fn remove_created(&mut self) -> Result<()> {
-        for object in self.objects.iter_mut().rev() {
-            if let Some(file) = object.directory.take() {
-                if file_identity(&file)? != object.identity {
-                    return Err(Error::message("Created service directory changed"));
-                }
-                // An extra file introduced after creation makes directory
-                // deletion fail. Never recurse into such unexpected content.
-                delete_open_object(&file)?;
-                drop(file);
-            } else {
-                let (parents, name) = open_parent(&object.path, false, false)?;
-                let parent = parents.last().unwrap();
-                let file = open_child_request(
-                    parent,
-                    &name,
-                    false,
-                    DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                )?;
-                check_service_object(&file, object.program)?;
-                if file_identity(&file)? != object.identity {
-                    return Err(Error::message("Created service file changed"));
-                }
-                delete_open_object(&file)?;
-                drop(file);
-                require_child_absent(parent, &name, false)?;
+    fn parent_name(&self, index: usize) -> Result<(File, Vec<u16>)> {
+        let object = &self.objects[index];
+        if let Some(parent) = self
+            .objects
+            .iter()
+            .find(|candidate| Some(candidate.path.as_path()) == object.path.parent())
+        {
+            let parent = parent
+                .directory
+                .as_ref()
+                .ok_or_else(|| Error::message("Created service object lost its pinned parent"))?
+                .try_clone()?;
+            let name = object
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| Error::message("Invalid created service filename"))?
+                .encode_utf16()
+                .collect();
+            Ok((parent, name))
+        } else {
+            // The original ancestor chain is also retained in self.parents.
+            let (parents, name) = open_service_install_parent(&object.path)?;
+            Ok((parents.last().unwrap().try_clone()?, name))
+        }
+    }
+    fn pin_directories_for_execution(&mut self) -> Result<()> {
+        for index in 0..self.objects.len() {
+            if !self.objects[index].is_directory {
+                continue;
             }
+            let (parent, name) = self.parent_name(index)?;
+            // Windows holds a child's cwd without delete sharing. A creator's
+            // DELETE-access handle cannot remain open when starting that child.
+            // Reopen relative to the pinned parent and confirm identity before
+            // permitting execution; the replacement still denies delete sharing.
+            drop(self.objects[index].directory.take());
+            let file = open_child(&parent, &name, true, true)?;
+            check_service_object(&file, self.objects[index].program)?;
+            if file_identity(&file)? != self.objects[index].identity {
+                return Err(Error::message(
+                    "Created service directory changed before execution",
+                ));
+            }
+            self.objects[index].directory = Some(file);
+        }
+        Ok(())
+    }
+    fn publish_directory(&mut self, index: usize, destination: &File, name: &[u16]) -> Result<()> {
+        if !self.objects[index].is_directory {
+            return Err(Error::message("Expected a created directory"));
+        }
+        let (parent, temporary) = self.parent_name(index)?;
+        drop(self.objects[index].directory.take());
+        let file = open_child_request(
+            &parent,
+            &temporary,
+            true,
+            DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        )?;
+        check_service_object(&file, self.objects[index].program)?;
+        if file_identity(&file)? != self.objects[index].identity {
+            return Err(Error::message(
+                "Created service directory changed before publication",
+            ));
+        }
+        self.objects[index].directory = Some(file);
+        // A failed rename can have an uncertain outcome. Never run cleanup
+        // against a directory after attempting to publish it under its final name.
+        self.keep = true;
+        crate::storage::windows::rename_file(
+            self.objects[index].directory.as_ref().unwrap(),
+            destination,
+            name,
+            false,
+        )
+    }
+    fn remove_created(&mut self) -> Result<()> {
+        for index in (0..self.objects.len()).rev() {
+            let (parent, name) = self.parent_name(index)?;
+            drop(self.objects[index].directory.take());
+            let object = &self.objects[index];
+            let file = open_child_request(
+                &parent,
+                &name,
+                object.is_directory,
+                DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+            )?;
+            check_service_object(&file, object.program)?;
+            if file_identity(&file)? != object.identity {
+                return Err(Error::message(
+                    "Created service object changed during cleanup",
+                ));
+            }
+            // Nonempty directories are retained. Never recurse into a child
+            // introduced by another process or a name with a different identity.
+            delete_open_object(&file)?;
+            drop(file);
+            require_child_absent(&parent, &name, object.is_directory)?;
         }
         Ok(())
     }
@@ -363,15 +447,20 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     }
     let config_path = options.config.canonicalize()?;
     let mut profile_locks =
-        ProfileLocks::acquire(&[config_path.clone(), startup::sidecar_path(&config_path)])?;
+        ProfileLocks::acquire(&[config_path.clone(), startup::sidecar_path(&config_path)])
+            .map_err(|error| {
+                Error::message(format!("Cannot lock source service profile: {error}"))
+            })?;
     crate::app::validate_config(&[
         "--config".into(),
         config_path.to_string_lossy().into_owned(),
-    ])?;
+    ])
+    .map_err(|error| Error::message(format!("Cannot validate source service profile: {error}")))?;
     let configuration = DeviceConfig::read(&config_path)?;
     let config_bytes = storage::read_private(&config_path)?;
     let policy_bytes = optional_private(&policy::sidecar_path(&config_path))?;
-    let startup_bytes = startup::new_service_state(&config_path, &options.name)?;
+    let startup_bytes = startup::new_service_state(&config_path, &options.name)
+        .map_err(|error| Error::message(format!("Cannot read source startup state: {error}")))?;
     let mut binary = File::open(std::env::current_exe()?)?;
     if binary.metadata()?.len() > crate::update::MAX_BINARY_BYTES {
         return Err(Error::message("Service executable is too large"));
@@ -398,20 +487,25 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     creation.file(data, "agent.json.startup.json", &startup_bytes, false)?;
     let executable = executable.canonicalize()?;
     let config = config.canonicalize()?;
+    let record = update::Record::new(
+        options.name.clone(),
+        config.clone(),
+        configuration.gateway_url.clone(),
+        version,
+        &binary_bytes,
+    )?;
     creation.file(
         program,
-        ".service-install.json",
-        &serde_json::to_vec(&json!({
-            "schema":1, "kind":"native-agent-service", "version":version,
-            "service":options.name, "account":"S-1-5-19", "config":config,
-            "binary":{"sha256":sha256_hex(&binary_bytes),"bytes":binary_bytes.len()}
-        }))?,
+        update::MANIFEST,
+        &serde_json::to_vec(&record)?,
         true,
     )?;
+    creation.file(program, update::LOCK, b"", true)?;
     // Confirm restoration before any subprocess inherits this token. Drop is
     // only the best-effort fallback on earlier error paths.
     privilege.restore()?;
     drop(privilege);
+    creation.pin_directories_for_execution()?;
     crate::processes::check_native_program(
         &executable,
         &["--version"],
@@ -421,28 +515,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     )?;
     let executable_text = startup_path(&executable)?;
     let config_text = startup_path(&config)?;
-    let state_text = startup_path(
-        config
-            .parent()
-            .ok_or_else(|| Error::message("Invalid service data directory"))?,
-    )?;
-    let command = [
-        executable_text.as_str(),
-        "service-run",
-        "--service-name",
-        &options.name,
-        "--config",
-        &config_text,
-        "--server",
-        &configuration.gateway_url,
-        "--state-directory",
-        &state_text,
-        "--recover-lock",
-    ]
-    .into_iter()
-    .map(crate::processes::windows_argument)
-    .collect::<Vec<_>>()
-    .join(" ");
+    let command = record.command(&options.prefix.canonicalize()?)?;
     let command = wide(&command);
     let account = wide(r"NT AUTHORITY\LocalService");
     let password = [0u16];

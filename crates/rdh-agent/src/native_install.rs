@@ -5,6 +5,8 @@
 #[path = "native_install_windows.rs"]
 mod windows;
 #[cfg(all(windows, feature = "experimental-windows-install"))]
+pub(crate) use windows::check_executable;
+#[cfg(all(windows, feature = "experimental-windows-install"))]
 pub(crate) use windows::install_for_locked_profile;
 #[cfg(all(windows, feature = "experimental-windows-install"))]
 pub use windows::{
