@@ -117,7 +117,7 @@ pub fn help() -> String {
         --pair-only        Exit after pairing without starting the Agent\n\n\
         Commands:\n  rdh startup --help         Manage future startup and local approvals\n\
           rdh install-native --help  Install a standalone development binary\n\
-          rdh install-service --help Install a native Windows LocalService registration\n\
+          rdh install-service --help Install a native system service\n\
           rdh migrate --help         Inspect or switch a stopped legacy service\n\
           rdh upgrade --help         Check or switch native versions offline\n\
           rdh rollback --help        Restore the previous native version offline\n\

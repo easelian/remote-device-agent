@@ -679,19 +679,21 @@ pub(crate) fn check_program(
                 None
             }
         };
-        if let Some(code) = observed {
-            if active == Some(0) && child.stdout.is_none() && child.stderr.is_none() {
-                if let Some(error) = failure {
-                    return Err(error);
-                }
-                return if code == 0
-                    && std::str::from_utf8(&stdout).ok().map(str::trim) == Some(expected)
-                {
-                    Ok(())
-                } else {
-                    Err(io::Error::other("Native binary self-check failed"))
-                };
+        if let Some(code) = observed
+            && active == Some(0)
+            && child.stdout.is_none()
+            && child.stderr.is_none()
+        {
+            if let Some(error) = failure {
+                return Err(error);
             }
+            return if code == 0
+                && std::str::from_utf8(&stdout).ok().map(str::trim) == Some(expected)
+            {
+                Ok(())
+            } else {
+                Err(io::Error::other("Native binary self-check failed"))
+            };
         }
         if Instant::now() >= deadline {
             failure.get_or_insert_with(|| {

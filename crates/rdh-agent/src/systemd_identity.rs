@@ -725,10 +725,10 @@ mod linux {
             if key.is_empty() {
                 return None;
             }
-            if let Some(name) = KEYS.iter().find(|name| name.as_bytes() == key) {
-                if !present.contains(name) {
-                    present.push(*name);
-                }
+            if let Some(name) = KEYS.iter().find(|name| name.as_bytes() == key)
+                && !present.contains(name)
+            {
+                present.push(*name);
             }
         }
         present.sort_unstable();

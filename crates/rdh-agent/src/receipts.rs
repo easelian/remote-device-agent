@@ -325,18 +325,17 @@ impl Receipts {
         result: &Value,
         code: Option<&str>,
     ) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(record) = state
+        if let Ok(mut state) = self.state.lock()
+            && let Some(record) = state
                 .records
                 .get_mut(operation_id)
                 .filter(|record| !record.settled)
-            {
-                record.state = outcome;
-                record.summary = result_summary(result);
-                record.error_code = code.map(str::to_owned);
-                record.settled = true;
-                record.expires = Instant::now() + self.ttl;
-            }
+        {
+            record.state = outcome;
+            record.summary = result_summary(result);
+            record.error_code = code.map(str::to_owned);
+            record.settled = true;
+            record.expires = Instant::now() + self.ttl;
         }
     }
 
@@ -392,10 +391,10 @@ impl Receipts {
         if instance.as_str() != Some(self.instance_id.as_str()) {
             return;
         }
-        if let (Some(id), Ok(mut state)) = (operation_id.as_str(), self.state.lock()) {
-            if let Some(record) = state.records.get_mut(id).filter(|record| record.settled) {
-                record.acknowledged = true;
-            }
+        if let (Some(id), Ok(mut state)) = (operation_id.as_str(), self.state.lock())
+            && let Some(record) = state.records.get_mut(id).filter(|record| record.settled)
+        {
+            record.acknowledged = true;
         }
     }
 }

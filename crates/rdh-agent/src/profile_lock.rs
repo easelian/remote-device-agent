@@ -164,10 +164,10 @@ mod platform {
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            if let Ok(metadata) = storage::private_metadata(&self.path, true) {
-                if same_object(&metadata, self.device, self.inode) {
-                    let _ = fs::remove_dir(&self.path);
-                }
+            if let Ok(metadata) = storage::private_metadata(&self.path, true)
+                && same_object(&metadata, self.device, self.inode)
+            {
+                let _ = fs::remove_dir(&self.path);
             }
         }
     }

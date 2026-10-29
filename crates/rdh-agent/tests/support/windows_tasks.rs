@@ -213,11 +213,11 @@ impl Task {
 impl Drop for Task {
     fn drop(&mut self) {
         if !self.removed {
-            if self.started {
-                if let Err(error) = self.stop_owned() {
-                    eprintln!("Retaining running Task fixture {}: {error}", self.name);
-                    return;
-                }
+            if self.started
+                && let Err(error) = self.stop_owned()
+            {
+                eprintln!("Retaining running Task fixture {}: {error}", self.name);
+                return;
             }
             if let Err(error) = unsafe { self.folder.DeleteTask(&BSTR::from(&self.name), 0) } {
                 eprintln!("Task fixture cleanup failed for {}: {error}", self.name);

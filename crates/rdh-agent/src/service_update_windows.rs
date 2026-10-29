@@ -701,7 +701,10 @@ impl Control {
                 return Ok((String::new(), pointer));
             }
             let start = pointer as usize;
-            if start < base + size_of::<QUERY_SERVICE_CONFIGW>() || start >= end || start % 2 != 0 {
+            if start < base + size_of::<QUERY_SERVICE_CONFIGW>()
+                || start >= end
+                || !start.is_multiple_of(2)
+            {
                 return Err(invalid());
             }
             let units = unsafe { std::slice::from_raw_parts(pointer, (end - start) / 2) };

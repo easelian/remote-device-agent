@@ -71,7 +71,11 @@ pub async fn launch(
 
 /// A service must use an already-paired identity. In particular, a deleted
 /// configuration must not turn an unattended service restart into pairing.
-#[cfg(all(windows, feature = "experimental-windows-startup"))]
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-startup")
+))]
 pub(crate) async fn launch_existing(
     args: LaunchArgs,
     shutdown: watch::Receiver<bool>,
@@ -93,6 +97,12 @@ async fn launch_with_pairing(
     #[cfg(all(windows, feature = "experimental-windows-install"))]
     let _service_installation =
         crate::service_install::windows::update::runtime_guard(&args, state_directory.as_deref())?;
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "experimental-macos-install")
+    ))]
+    let _service_installation =
+        crate::service_install::posix::runtime_guard(&args, state_directory.as_deref())?;
     let mut managed = RunningInstall::acquire_launch_current()?;
     let network = Network::from_env()?;
     if std::env::var_os("NODE_USE_ENV_PROXY").is_some()

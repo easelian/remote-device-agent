@@ -151,11 +151,11 @@ async fn wait_for_state(
     let result = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let output = probe(binary, root, config).await;
-            if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) {
-                if value["ready"] == ready {
-                    assert_eq!(output.status.success(), ready);
-                    return value;
-                }
+            if let Ok(value) = serde_json::from_slice::<Value>(&output.stdout)
+                && value["ready"] == ready
+            {
+                assert_eq!(output.status.success(), ready);
+                return value;
             }
             last = Some(output);
             tokio::time::sleep(Duration::from_millis(40)).await;

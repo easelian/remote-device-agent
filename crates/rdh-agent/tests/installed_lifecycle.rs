@@ -60,13 +60,13 @@ async fn wait_marker(
                     diagnostics(log)
                 );
             }
-            if let Ok(entries) = fs::read_dir(directory) {
-                if let Some(entry) = entries.filter_map(|entry| entry.ok()).find(|entry| {
+            if let Ok(entries) = fs::read_dir(directory)
+                && let Some(entry) = entries.filter_map(|entry| entry.ok()).find(|entry| {
                     entry.path().extension().is_some_and(|ext| ext == "json")
                         && previous != Some(entry.path().as_path())
-                }) {
-                    return entry.path();
-                }
+                })
+            {
+                return entry.path();
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

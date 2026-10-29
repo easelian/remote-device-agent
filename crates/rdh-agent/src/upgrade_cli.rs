@@ -39,7 +39,8 @@ mod native {
         rdh upgrade --stop-if-idle ABSOLUTE_PATH\n\
         rdh upgrade --inspect-service NAME --service-config ABSOLUTE_PATH\n\
         rdh rollback --no-restart\n\n\
-        Service updates are experimental and require a verified user-systemd unit.\n\
+        Automatic service updates are experimental and require a verified user-systemd unit.\n\
+        Root-owned system services require root, a stopped service and --no-restart; they do not accept --recover-lock.\n\
         The local probe reports the Agent's latest observed Hub connection state.\n\
         Offline updates require all managed Agents to be stopped.\n";
 
@@ -48,7 +49,9 @@ mod native {
         rdh upgrade --recover [--recover-lock]\n\
         rdh upgrade --list-profiles | --forget-profile ABSOLUTE_PATH\n\
         rdh rollback --no-restart\n\n\
-        Offline updates require all managed Agents to be stopped. Restart and verify the Agent after switching.\n";
+        Offline updates require all managed Agents to be stopped. Restart and verify the Agent after switching.\n\
+        Windows user installations also accept --recover-lock with upgrade --no-restart or rollback --no-restart, after confirming the prior Agent and its work have stopped.\n\
+        System service updates require administrator/root privileges and a stopped service; they do not accept --recover-lock.\n";
 
     #[derive(Default)]
     struct Options {
@@ -547,13 +550,24 @@ mod native {
         Ok(Some((index.version, artifact, artifact_source)))
     }
 
-    #[cfg(windows)]
     async fn upgrade_service(options: &Options) -> Result<bool> {
+        #[cfg(unix)]
+        use crate::service_install::posix::Lease;
+        #[cfg(windows)]
         use crate::service_install::windows::update::Lease;
         let Some(lease) = Lease::acquire_current(options.recover, options.recover)? else {
             return Ok(false);
         };
-        if options.list_profiles || options.forget_profile.is_some() || options.recover_lock {
+        if options.list_profiles
+            || options.forget_profile.is_some()
+            || options.recover_lock
+            || options.recover_service
+            || options.probe_profile.is_some()
+            || options.stop_if_idle.is_some()
+            || options.inspect_service.is_some()
+            || options.service_unit.is_some()
+            || options.service_config.is_some()
+        {
             return Err(Error::message(
                 "Service installations use their recorded profile and kernel lock; profile catalog commands and --recover-lock are unavailable",
             ));
@@ -611,7 +625,6 @@ mod native {
                 "Coordinated service updates are unavailable on this platform; stop the Agent and use an offline update",
             ));
         }
-        #[cfg(windows)]
         if upgrade_service(&options).await? {
             return Ok(());
         }
@@ -774,15 +787,31 @@ mod native {
             print!("{USAGE}");
             return Ok(());
         }
-        if !matches!(args, [flag] if flag == "--no-restart") {
-            return Err(Error::message(
-                "Use rollback --no-restart after stopping the Agent",
-            ));
-        }
+        let recover_lock = match args {
+            [flag] if flag == "--no-restart" => false,
+            [first, second]
+                if cfg!(windows)
+                    && ((first == "--no-restart" && second == "--recover-lock")
+                        || (first == "--recover-lock" && second == "--no-restart")) =>
+            {
+                true
+            }
+            _ => {
+                return Err(Error::message(
+                    "Use rollback --no-restart after stopping the Agent; Windows user installations also accept --recover-lock after confirming the prior Agent and its work have stopped",
+                ));
+            }
+        };
+        #[cfg(unix)]
+        use crate::service_install::posix::Lease as ServiceLease;
         #[cfg(windows)]
-        if let Some(manager) =
-            crate::service_install::windows::update::Lease::acquire_current(true, false)?
-        {
+        use crate::service_install::windows::update::Lease as ServiceLease;
+        if let Some(manager) = ServiceLease::acquire_current(true, false)? {
+            if recover_lock {
+                return Err(Error::message(
+                    "System service installations use their kernel lock; --recover-lock is only for user installations",
+                ));
+            }
             manager.rollback()?;
             println!(
                 "Service executable rolled back. Start the service manually and verify Hub readiness."
@@ -791,7 +820,8 @@ mod native {
         }
         let (prefix, executable) = current_installation()?
             .ok_or_else(|| Error::message("This binary is not in a managed native installation"))?;
-        let manager = ManagerLock::acquire(&prefix, &executable, false)?;
+        let manager =
+            ManagerLock::acquire_with_stale_recovery(&prefix, &executable, false, recover_lock)?;
         let current = pointer(&prefix, "current")?;
         let previous = pointer(&prefix, "previous")?;
         native_install::verify_stored(&prefix, &current)?;

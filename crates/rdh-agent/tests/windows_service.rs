@@ -646,7 +646,9 @@ fn service_configuration(service: SC_HANDLE) -> Value {
         let first = memory.as_ptr() as usize;
         let end = first + capacity;
         assert!(
-            start >= first + size_of::<QUERY_SERVICE_CONFIGW>() && start < end && start % 2 == 0
+            start >= first + size_of::<QUERY_SERVICE_CONFIGW>()
+                && start < end
+                && start.is_multiple_of(2)
         );
         let units = unsafe { std::slice::from_raw_parts(pointer, (end - start) / 2) };
         let length = units.iter().position(|unit| *unit == 0).unwrap();
@@ -1154,7 +1156,10 @@ async fn exercise_service(
         let audit = audit_directory.join("native-service.jsonl");
         let quote = |path: &Path| path.to_str().unwrap().replace('\'', "''");
         let command = format!(
-            "$ErrorActionPreference = 'Stop'; $text = [IO.File]::ReadAllText('{}'); \
+            "$ErrorActionPreference = 'Stop'; \
+            $stream = [IO.File]::Open('{}', [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)); \
+            $reader = [IO.StreamReader]::new($stream); \
+            try {{ $text = $reader.ReadToEnd() }} finally {{ $reader.Dispose(); $stream.Dispose() }}; \
             if (!$text.Contains('\"op\":\"write_file\"') -or $text.Contains('{TOKEN}')) {{ exit 21 }}; \
             $admin = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'); \
             foreach ($path in @('{}', '{}', '{}')) {{ \

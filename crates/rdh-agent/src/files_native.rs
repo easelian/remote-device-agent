@@ -266,7 +266,7 @@ impl Encoding {
                 .map(str::to_owned)
                 .map_err(|_| invalid());
         }
-        if b.len() % 2 != 0 {
+        if !b.len().is_multiple_of(2) {
             return Err(invalid());
         }
         let words: Vec<u16> = b
@@ -298,7 +298,7 @@ fn text_range(bytes: &[u8], offset: u64, length: usize) -> Result<TextRange, Str
     };
     encoding.decode(bytes)?; // Validate the whole file, preserving any BOM.
     let start = offset.min(bytes.len() as u64) as usize;
-    if encoding != Encoding::Utf8 && start % 2 != 0 {
+    if encoding != Encoding::Utf8 && !start.is_multiple_of(2) {
         return Err("offset must be aligned to a UTF-16 code unit".into());
     }
     let requested_end = (start + length).min(bytes.len());
@@ -553,10 +553,10 @@ fn multiple(files: &Files, p: &Value) -> Result<Value, String> {
         // The batch API uses nullish defaults, unlike read_file's strict
         // offset/length validation. Preserve this distinction.
         for name in ["offset", "length"] {
-            if request.get(name).is_some_and(Value::is_null) {
-                if let Some(object) = request.as_object_mut() {
-                    object.remove(name);
-                }
+            if request.get(name).is_some_and(Value::is_null)
+                && let Some(object) = request.as_object_mut()
+            {
+                object.remove(name);
             }
         }
         let outcome = (|| -> Result<Value, String> {

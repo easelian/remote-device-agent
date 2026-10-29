@@ -1,12 +1,12 @@
+use super::arguments;
 use crate::{
-    cli::{Action, LaunchArgs, parse},
+    cli::LaunchArgs,
     error::{Error, Result},
-    startup::valid_name,
 };
 use std::{
     ffi::c_void,
     io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     ptr::{null, null_mut},
     sync::{
         Mutex, OnceLock,
@@ -73,53 +73,6 @@ impl Context {
         status.dwWaitHint = if pending { 30_000 } else { 0 };
         self.report(&status)
     }
-}
-
-fn arguments(
-    args: &[String],
-    server: Option<&str>,
-) -> Result<(String, LaunchArgs, Option<PathBuf>)> {
-    let (name, remaining) = match args {
-        [flag, name, remaining @ ..] if flag == "--service-name" && valid_name(name) => {
-            (name, remaining)
-        }
-        _ => {
-            return Err(Error::message(
-                "Use service-run --service-name NAME --config ABSOLUTE_PATH --server URL",
-            ));
-        }
-    };
-    let mut launch_args = Vec::new();
-    let mut state_directory = None;
-    let mut items = remaining.iter();
-    while let Some(argument) = items.next() {
-        if argument == "--state-directory" {
-            let directory = items.next().filter(|value| Path::new(value).is_absolute() && !value.chars().any(char::is_control))
-                .ok_or_else(|| Error::message("--state-directory requires an absolute Unicode path without control characters"))?;
-            if state_directory.replace(PathBuf::from(directory)).is_some() {
-                return Err(Error::message("Duplicate service state directory"));
-            }
-        } else {
-            launch_args.push(argument.clone());
-        }
-    }
-    let Action::Launch(mut launch) = parse(&launch_args, server)? else {
-        return Err(Error::message("A service requires Agent launch arguments"));
-    };
-    if launch.pair_only
-        || launch.name.is_some()
-        || !launch.roots.is_empty()
-        || launch
-            .config
-            .as_deref()
-            .is_none_or(|path| !Path::new(path).is_absolute())
-    {
-        return Err(Error::message(
-            "A service requires an absolute existing --config and cannot change pairing",
-        ));
-    }
-    launch.no_browser = true;
-    Ok((name.clone(), launch, state_directory))
 }
 
 pub(super) fn run(args: &[String], server: Option<&str>) -> Result<()> {

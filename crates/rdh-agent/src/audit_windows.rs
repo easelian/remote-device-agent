@@ -194,10 +194,10 @@ impl Directory {
                 // needed by checked readers/retention, preserving its identity.
                 drop(created);
                 let file = self.open_file(&wide, true)?;
-                if let Some(expected) = expected {
-                    if file_identity(&file).map_err(storage)? != expected {
-                        return Err(fail("AUDIT_FILE_CHANGED"));
-                    }
+                if let Some(expected) = expected
+                    && file_identity(&file).map_err(storage)? != expected
+                {
+                    return Err(fail("AUDIT_FILE_CHANGED"));
                 }
                 file
             }

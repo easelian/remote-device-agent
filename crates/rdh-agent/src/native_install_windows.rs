@@ -196,12 +196,12 @@ impl Drop for Stage {
         }
         drop(root);
         let parent = self.parents.last().unwrap();
-        if let Ok(root) = open_private_directory_for_deletion(parent, &self.name) {
-            if file_identity(&root).ok() == Some(self.identity) {
-                let _ = storage::windows::delete_open_object(&root);
-                drop(root);
-                let _ = require_child_absent(parent, &self.name, true);
-            }
+        if let Ok(root) = open_private_directory_for_deletion(parent, &self.name)
+            && file_identity(&root).ok() == Some(self.identity)
+        {
+            let _ = storage::windows::delete_open_object(&root);
+            drop(root);
+            let _ = require_child_absent(parent, &self.name, true);
         }
     }
 }

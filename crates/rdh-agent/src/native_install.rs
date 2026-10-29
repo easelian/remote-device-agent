@@ -44,7 +44,7 @@ mod posix {
     }
 
     #[cfg(target_os = "linux")]
-    fn check_executable(path: &Path) -> Result<()> {
+    pub(crate) fn check_executable(path: &Path) -> Result<()> {
         let mut file = File::open(path)?;
         let mut header = [0u8; 20];
         file.read_exact(&mut header)?;
@@ -68,7 +68,7 @@ mod posix {
     }
 
     #[cfg(target_os = "macos")]
-    fn check_executable(path: &Path) -> Result<()> {
+    pub(crate) fn check_executable(path: &Path) -> Result<()> {
         let mut header = [0u8; 32];
         File::open(path)?.read_exact(&mut header)?;
         let cpu = u32::from_le_bytes(header[4..8].try_into().unwrap());
@@ -357,14 +357,13 @@ mod posix {
     }
     impl Drop for Stage {
         fn drop(&mut self) {
-            if let Ok(metadata) = fs::symlink_metadata(&self.path) {
-                if metadata.is_dir()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.dev() == self.device
-                    && metadata.ino() == self.inode
-                {
-                    let _ = fs::remove_dir_all(&self.path);
-                }
+            if let Ok(metadata) = fs::symlink_metadata(&self.path)
+                && metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+            {
+                let _ = fs::remove_dir_all(&self.path);
             }
         }
     }
@@ -550,13 +549,12 @@ mod posix {
     }
     impl Drop for TempLink {
         fn drop(&mut self) {
-            if let Ok(metadata) = fs::symlink_metadata(&self.path) {
-                if metadata.file_type().is_symlink()
-                    && metadata.dev() == self.device
-                    && metadata.ino() == self.inode
-                {
-                    let _ = fs::remove_file(&self.path);
-                }
+            if let Ok(metadata) = fs::symlink_metadata(&self.path)
+                && metadata.file_type().is_symlink()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+            {
+                let _ = fs::remove_file(&self.path);
             }
         }
     }
@@ -856,6 +854,11 @@ mod posix {
     }
 }
 
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-install")
+))]
+pub(crate) use posix::check_executable;
 #[cfg(any(
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-install")

@@ -501,7 +501,7 @@ fn reparse_target_size(data: &[u8]) -> Result<Option<u64>, String> {
         Ok(u32::from_le_bytes(bytes))
     }
     fn units(data: &[u8], start: usize, length: usize) -> Result<Vec<u16>, String> {
-        if length % 2 != 0 {
+        if !length.is_multiple_of(2) {
             return Err(invalid());
         }
         data.get(start..start.checked_add(length).ok_or_else(invalid)?)

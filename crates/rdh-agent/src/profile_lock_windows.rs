@@ -364,10 +364,10 @@ impl ProfileLocks {
                     true,
                 )
             });
-            if let Err(error) = outcome {
-                if cleanup_error.is_none() {
-                    cleanup_error = Some(error);
-                }
+            if let Err(error) = outcome
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(error);
             }
         }
         if let Some(cleanup) = cleanup_error {

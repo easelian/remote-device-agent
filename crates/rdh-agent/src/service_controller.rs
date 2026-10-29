@@ -106,22 +106,18 @@ mod linux {
                     if let Ok(identity) =
                         systemd_identity::inspect(&guard, controller.prefix(), config, &intent.unit)
                             .await
-                    {
-                        if let Ok(snapshot) =
+                        && let Ok(snapshot) =
                             probe_profile(&guard, controller.prefix(), config).await
-                        {
-                            if snapshot.ready
-                                && snapshot.version == expected_version(intent)?
-                                && identity.definition_hash == intent.original_definition
-                                && !identity.transient
-                                && identity.pid == snapshot.pid
-                                && identity.instance_id == snapshot.instance_id
-                                && identity.connection_generation == snapshot.connection_generation
-                                && identity.quarantined == snapshot.quarantined
-                            {
-                                return Ok((guard, snapshot, identity));
-                            }
-                        }
+                        && snapshot.ready
+                        && snapshot.version == expected_version(intent)?
+                        && identity.definition_hash == intent.original_definition
+                        && !identity.transient
+                        && identity.pid == snapshot.pid
+                        && identity.instance_id == snapshot.instance_id
+                        && identity.connection_generation == snapshot.connection_generation
+                        && identity.quarantined == snapshot.quarantined
+                    {
+                        return Ok((guard, snapshot, identity));
                     }
                 }
                 tokio::time::sleep(POLL).await;

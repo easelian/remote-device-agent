@@ -256,6 +256,12 @@ jobs:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service -- --ignored --test-threads=1
+      - name: Check native POSIX system service installation and recovery
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os != 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test posix_system_service -- --ignored --test-threads=1
       - name: Check native Windows startup settings and administrator grants
         if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
         env:

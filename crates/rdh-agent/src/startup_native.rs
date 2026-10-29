@@ -5,7 +5,7 @@
     all(target_os = "macos", feature = "experimental-macos-startup")
 ))]
 #[path = "startup_posix.rs"]
-mod posix;
+pub(crate) mod posix;
 
 #[cfg(any(
     all(target_os = "macos", feature = "experimental-macos-startup"),

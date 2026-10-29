@@ -21,15 +21,14 @@ pub(super) fn choose_stable_executable(
         {
             continue;
         }
-        if let Ok(metadata) = fs::metadata(&candidate) {
-            if metadata.is_file()
-                && metadata.dev() == expected.dev()
-                && metadata.ino() == expected.ino()
-            {
-                // Keep installation symlinks in the path: resolving them here
-                // would pin startup to the old version after an upgrade.
-                return Ok(candidate);
-            }
+        if let Ok(metadata) = fs::metadata(&candidate)
+            && metadata.is_file()
+            && metadata.dev() == expected.dev()
+            && metadata.ino() == expected.ino()
+        {
+            // Keep installation symlinks in the path: resolving them here
+            // would pin startup to the old version after an upgrade.
+            return Ok(candidate);
         }
     }
     Ok(actual.to_path_buf())
@@ -67,8 +66,13 @@ pub(super) fn run(
     args: &[&str],
     timeout: Duration,
 ) -> Result<(ExitStatus, String)> {
-    let mut child = Command::new(command)
-        .args(args)
+    let mut command = Command::new(command);
+    command.args(args);
+    run_command(command, timeout)
+}
+
+pub(crate) fn run_command(mut command: Command, timeout: Duration) -> Result<(ExitStatus, String)> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -162,15 +166,13 @@ impl Created {
 }
 impl Drop for Created {
     fn drop(&mut self) {
-        if !self.retain {
-            if let Ok(metadata) = fs::symlink_metadata(&self.path) {
-                if metadata.is_file()
-                    && metadata.dev() == self.device
-                    && metadata.ino() == self.inode
-                {
-                    let _ = fs::remove_file(&self.path);
-                }
-            }
+        if !self.retain
+            && let Ok(metadata) = fs::symlink_metadata(&self.path)
+            && metadata.is_file()
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }

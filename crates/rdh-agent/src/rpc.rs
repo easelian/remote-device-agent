@@ -385,30 +385,30 @@ impl Runtime {
     }
 
     fn unbind_with_grace(self: &Arc<Self>, generation: u64, grace: Duration) {
-        if let Ok(mut connection) = self.connection.lock() {
-            if connection
+        if let Ok(mut connection) = self.connection.lock()
+            && connection
                 .as_ref()
                 .is_some_and(|(active, _)| *active == generation)
-            {
-                *connection = None;
-                self.processes.mark_offline();
-                let epoch = self.offline_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                let runtime = Arc::downgrade(self);
-                tokio::spawn(async move {
-                    tokio::time::sleep(grace).await;
-                    if let Some(runtime) = runtime.upgrade() {
-                        runtime.expire_offline(epoch);
-                    }
-                });
-            }
+        {
+            *connection = None;
+            self.processes.mark_offline();
+            let epoch = self.offline_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            let runtime = Arc::downgrade(self);
+            tokio::spawn(async move {
+                tokio::time::sleep(grace).await;
+                if let Some(runtime) = runtime.upgrade() {
+                    runtime.expire_offline(epoch);
+                }
+            });
         }
     }
 
     fn expire_offline(&self, epoch: u64) {
-        if let Ok(connection) = self.connection.lock() {
-            if connection.is_none() && self.offline_epoch.load(Ordering::Acquire) == epoch {
-                self.processes.stop_offline_jobs();
-            }
+        if let Ok(connection) = self.connection.lock()
+            && connection.is_none()
+            && self.offline_epoch.load(Ordering::Acquire) == epoch
+        {
+            self.processes.stop_offline_jobs();
         }
     }
 
@@ -476,12 +476,11 @@ impl Runtime {
             "local_audit":audit_settings, "roots":self.config.roots, "expose":expose, "hiddenPaths":hidden_paths, "hiddenFiles":hidden_files});
         let revision = sha256_hex(&serde_json::to_vec(&identity).expect("policy identity is JSON"));
         let mut audit_health = audit_settings;
-        if let Some(audit) = &self.audit {
-            if let (Some(target), Some(stats)) =
+        if let Some(audit) = &self.audit
+            && let (Some(target), Some(stats)) =
                 (audit_health.as_object_mut(), audit.stats().as_object())
-            {
-                target.extend(stats.clone());
-            }
+        {
+            target.extend(stats.clone());
         }
         let hardening = json!({"version":1, "effective_operations":effective, "readonly_roots":readonly,
             "protected_paths":limited, "protected_paths_count":protected.len(),

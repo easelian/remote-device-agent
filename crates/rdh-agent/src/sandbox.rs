@@ -74,10 +74,11 @@ fn find_bwrap() -> Result<PathBuf> {
         std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/local/bin:/usr/bin:/bin"));
     for directory in std::env::split_paths(&paths) {
         let candidate = directory.join("bwrap");
-        if let Ok(metadata) = candidate.metadata() {
-            if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
-                return Ok(candidate.canonicalize()?);
-            }
+        if let Ok(metadata) = candidate.metadata()
+            && metadata.is_file()
+            && metadata.permissions().mode() & 0o111 != 0
+        {
+            return Ok(candidate.canonicalize()?);
         }
     }
     Err(Error::message(
