@@ -684,10 +684,16 @@ pub async fn run(args: &[String]) -> crate::error::Result<()> {
 
 #[cfg(not(any(
     target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
+    all(target_os = "macos", feature = "experimental-macos-install"),
+    all(windows, feature = "experimental-windows-install")
 )))]
 pub async fn run(_: &[String]) -> crate::error::Result<()> {
     Err(crate::error::Error::message(
-        "Legacy migration inspection is only implemented for Linux user installations",
+        "Legacy migration requires the native installation feature on this platform; read-only inspection is available on Linux",
     ))
+}
+
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+pub async fn run(args: &[String]) -> crate::error::Result<()> {
+    crate::legacy_migration_windows::run(args)
 }

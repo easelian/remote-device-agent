@@ -561,7 +561,7 @@ async fn legacy_launchagent_wrappers_migrate_and_restore_without_changing_the_pr
         let policy_bytes = br#"{"version":1,"audit":{"enabled":false}}"#;
         storage::write_private_new(&policy, policy_bytes).unwrap();
         let sidecar = PathBuf::from(format!("{}.startup.json", text(&fixture.config)));
-        let pending = json!({"request_id":"55555555-5555-4555-8555-555555555555","mode":"none","expires_at":
+        let pending = json!({"request_id":"55555555-5555-4555-8555-555555555555","mode":"user","expires_at":
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 600_000});
         let startup = serde_json::to_vec(
             &json!({"version":1,"binding":{"mode":"user","name":label},"pending":pending}),
@@ -669,16 +669,14 @@ async fn legacy_launchagent_wrappers_migrate_and_restore_without_changing_the_pr
         fixture.start();
         let mut native_peer = Peer::connect(&listener).await;
         let native_pid = fixture.running_binary(env!("CARGO_PKG_VERSION"));
-        assert_eq!(
-            native_peer
-                .call("read_file", json!({"root":"work","path":"handoff.txt"}))
-                .await["content"],
-            "old identity"
-        );
+        let before_write = native_peer
+            .call("read_file", json!({"root":"work","path":"handoff.txt"}))
+            .await;
+        assert_eq!(before_write["content"], "old identity");
         native_peer
             .call(
                 "write_file",
-                json!({"root":"work","path":"handoff.txt","content":"native identity"}),
+                json!({"root":"work","path":"handoff.txt","content":"native identity","expected_sha256":before_write["sha256"]}),
             )
             .await;
         let (status, output) = run(&fixture.directory, &current, &undo).unwrap();

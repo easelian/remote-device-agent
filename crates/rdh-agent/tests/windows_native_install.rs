@@ -25,6 +25,8 @@ use windows_sys::Win32::{
     },
 };
 
+#[path = "support/windows_legacy_task.rs"]
+mod legacy_task;
 #[path = "support/native_candidate.rs"]
 mod native_candidate;
 #[path = "support/windows.rs"]
@@ -35,6 +37,13 @@ mod windows_tasks;
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "Retaining failed Windows installation fixture: {}",
+                self.0.display()
+            );
+            return;
+        }
         let running = self.0.join("install/.running");
         if !running.exists()
             || fs::read_dir(running).is_ok_and(|mut entries| entries.next().is_none())

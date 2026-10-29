@@ -454,10 +454,13 @@ async fn system_service_preserves_user_data_across_install_update_rollback_and_i
         config: directory.join("paired '&.json"),
         state: directory.join("state '$%&"),
         directory,
-        prefix: PathBuf::from("/var/tmp")
-            .canonicalize()
-            .unwrap()
-            .join(format!("rdh root '$%&-{suffix}")),
+        prefix: PathBuf::from("/var/tmp").canonicalize().unwrap().join(
+            if cfg!(target_os = "linux") {
+                format!("rdh root $%&-{suffix}")
+            } else {
+                format!("rdh root '$%&-{suffix}")
+            },
+        ),
         name,
         registration,
         may_be_running: false,
@@ -508,6 +511,23 @@ async fn system_service_preserves_user_data_across_install_update_rollback_and_i
     ];
     fixture.rejected(false, initial_binary::path(), &install, "require root");
     assert!(!fixture.prefix.exists());
+    #[cfg(target_os = "linux")]
+    for character in ['\'', '"', '\\'] {
+        let bad = format!("/var/tmp/rdh-invalid-{character}-{suffix}");
+        let mut invalid_install = install;
+        invalid_install[2] = &bad;
+        fixture.rejected(
+            true,
+            initial_binary::path(),
+            &invalid_install,
+            "Systemd executable paths cannot contain",
+        );
+        assert!(!Path::new(&bad).exists());
+        assert!(!fixture.registration.exists());
+        let unchanged: Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert!(unchanged["binding"].is_null());
+        assert_eq!(unchanged["pending"], pending);
+    }
     fixture.checked(true, initial_binary::path(), &install);
     let bound_sidecar = fs::read(&sidecar).unwrap();
     let startup: Value = serde_json::from_slice(&bound_sidecar).unwrap();
@@ -944,14 +964,13 @@ async fn legacy_system_service_handoff_preserves_identity_and_can_be_undone() {
     fixture.start();
     let mut peer = Peer::connect(&listener).await;
     let pid = fixture.pid_and_executable(env!("CARGO_PKG_VERSION"));
-    assert_eq!(
-        peer.call("read_file", json!({"root":"work","path":"handoff.txt"}))
-            .await["content"],
-        "from legacy"
-    );
+    let before_write = peer
+        .call("read_file", json!({"root":"work","path":"handoff.txt"}))
+        .await;
+    assert_eq!(before_write["content"], "from legacy");
     peer.call(
         "write_file",
-        json!({"root":"work","path":"handoff.txt","content":"from Rust"}),
+        json!({"root":"work","path":"handoff.txt","content":"from Rust","expected_sha256":before_write["sha256"]}),
     )
     .await;
     let undo_owned = [

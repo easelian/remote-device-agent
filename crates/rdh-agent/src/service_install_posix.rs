@@ -510,6 +510,21 @@ fn arguments(prefix: &Path, record: &Record) -> Result<Vec<String>> {
         "--recover-lock".into(),
     ])
 }
+#[cfg(target_os = "linux")]
+fn systemd_executable(path: &Path) -> Result<()> {
+    // systemd 255 checks string_is_safe after unquoting/specifier expansion.
+    // Quotes and backslashes in the executable itself cannot be escaped past
+    // that check. Other arguments retain their separate quoted encoding.
+    if path_text(path)?
+        .chars()
+        .any(|c| matches!(c, '\'' | '"' | '\\'))
+    {
+        return Err(Error::message(
+            "Systemd executable paths cannot contain quotes or backslashes; choose another program prefix",
+        ));
+    }
+    Ok(())
+}
 fn definition(prefix: &Path, record: &Record) -> Result<Vec<u8>> {
     let account = Account::lookup(&record.user)?;
     if account.uid != record.uid || account.gid != record.gid {
@@ -518,6 +533,7 @@ fn definition(prefix: &Path, record: &Record) -> Result<Vec<u8>> {
     let args = arguments(prefix, record)?;
     #[cfg(target_os = "linux")]
     {
+        systemd_executable(Path::new(&args[0]))?;
         let quote = |s: &str| {
             format!(
                 "\"{}\"",
@@ -567,6 +583,7 @@ fn stopped(record: &Record) -> Result<()> {
     {
         let (status, output) = manager(&[
             "show",
+            "--all",
             &record.name,
             "--property=LoadState,ActiveState,SubState,MainPID,ControlPID,ControlGroup,DropInPaths",
         ])?;
@@ -680,6 +697,8 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     };
     let account = Account::lookup(required("--service-user")?)?;
     let prefix = store::parent_for_new(Path::new(required("--prefix")?))?;
+    #[cfg(target_os = "linux")]
+    systemd_executable(&prefix)?;
     let config = Path::new(required("--config")?);
     let state = Path::new(required("--state-directory")?);
     let name = required("--name")?;

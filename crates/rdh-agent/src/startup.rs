@@ -185,10 +185,13 @@ impl Startup {
             }
             Err(error) => return Err(StartupFailure::io(error)),
         };
+        Self::read_bytes(&bytes)
+    }
+    fn read_bytes(bytes: &[u8]) -> StartupResult<State> {
         if bytes.len() > 65536 {
             return Err(StartupFailure::io("Startup state is too large"));
         }
-        let value: Value = serde_json::from_slice(&bytes).map_err(StartupFailure::io)?;
+        let value: Value = serde_json::from_slice(bytes).map_err(StartupFailure::io)?;
         let object = value
             .as_object()
             .ok_or_else(|| StartupFailure::io("Invalid startup state"))?;
@@ -790,4 +793,22 @@ mod tests {
             );
         }
     }
+}
+
+/// Validate the same binding and pending-approval contract from a service
+/// profile already held open under LocalService ownership checks.
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+pub(crate) fn check_service_binding_bytes(bytes: &[u8], name: &str) -> Result<()> {
+    let state = Startup::read_bytes(bytes).map_err(|error| Error::message(error.message))?;
+    if state.binding
+        != Some(Binding {
+            mode: Mode::Service,
+            name: name.into(),
+        })
+    {
+        return Err(Error::message(
+            "Service profile is not bound to the requested service",
+        ));
+    }
+    Ok(())
 }

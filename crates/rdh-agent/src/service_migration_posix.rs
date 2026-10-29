@@ -158,6 +158,64 @@ fn legacy_definition(prefix: &Path, record: &Record) -> Result<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn no_environment_files(name: &str) -> Result<()> {
+    fn query(args: &[&str]) -> Result<serde_json::Value> {
+        let mut command = std::process::Command::new("/usr/bin/busctl");
+        command
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LC_ALL", "C")
+            .args(["--system", "--json=short"])
+            .args(args);
+        let (status, output) =
+            crate::startup_native::posix::run_command(command, std::time::Duration::from_secs(15))?;
+        if !status.success() {
+            return Err(invalid("cannot read effective service environment"));
+        }
+        serde_json::from_str(&output).map_err(|_| invalid("invalid D-Bus property response"))
+    }
+    let unit = query(&[
+        "call",
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+        // Stopped units may have been collected after systemctl show. Loading
+        // reads their definition without starting them; a lost object between
+        // these calls still fails the property query rather than implying empty.
+        "LoadUnit",
+        "s",
+        name,
+    ])?;
+    let path = unit["data"]
+        .as_array()
+        .filter(|v| v.len() == 1)
+        .and_then(|v| v[0].as_str())
+        .filter(|p| {
+            p.starts_with("/org/freedesktop/systemd1/unit/")
+                && p.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'/' | b'_'))
+        })
+        .ok_or_else(|| invalid("invalid system service object path"))?;
+    if unit["type"] != "o" {
+        return Err(invalid("invalid system service object type"));
+    }
+    // systemctl's EnvironmentFiles formatter emits one line per member and
+    // no line for an empty array, even with --all. Typed D-Bus data distinguishes
+    // an empty array from an absent/unsupported property or failed query.
+    let files = query(&[
+        "get-property",
+        "org.freedesktop.systemd1",
+        path,
+        "org.freedesktop.systemd1.Service",
+        "EnvironmentFiles",
+    ])?;
+    if files["type"] != "a(sb)" || !files["data"].as_array().is_some_and(Vec::is_empty) {
+        return Err(invalid("service EnvironmentFiles must be an empty array"));
+    }
+    Ok(())
+}
+
 fn manager_stopped(record: &Record, legacy: bool) -> Result<()> {
     // Reload before checking so systemd's cached properties describe the
     // exact on-disk definition that will be replaced. Root editors are trusted.
@@ -167,8 +225,9 @@ fn manager_stopped(record: &Record, legacy: bool) -> Result<()> {
         super::stopped(record)?;
         let (status, output) = manager(&[
             "show",
+            "--all",
             &record.name,
-            "--property=FragmentPath,User,Group,Environment,EnvironmentFiles,ControlPID",
+            "--property=FragmentPath,User,Group,Environment,ControlPID",
         ])?;
         let map: std::collections::BTreeMap<_, _> =
             output.lines().filter_map(|l| l.split_once('=')).collect();
@@ -184,13 +243,13 @@ fn manager_stopped(record: &Record, legacy: bool) -> Result<()> {
                     uid.as_str()
                 })
             || map.get("Group") != Some(&gid.as_str())
-            || map.get("EnvironmentFiles") != Some(&"")
             || (legacy && map.get("Environment") != Some(&""))
         {
             return Err(invalid(
                 "effective service account or environment is not recognized",
             ));
         }
+        no_environment_files(&record.name)?;
         // Both definitions run in the same system manager and therefore keep
         // its inherited environment. The exact file check rejects unit-local
         // overrides that cannot be represented by the native definition.

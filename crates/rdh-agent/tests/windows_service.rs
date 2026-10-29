@@ -305,6 +305,13 @@ impl Drop for Fixture {
                 DeleteService(self.service.0);
             }
         }
+        if std::thread::panicking() {
+            eprintln!(
+                "Retaining failed service fixture for inspection: {}",
+                self.directory.display()
+            );
+            return;
+        }
         let _ = fs::remove_dir_all(&self.directory);
     }
 }
@@ -313,13 +320,32 @@ struct Peer {
     socket: WebSocketStream<TcpStream>,
     instance: Value,
     next: u64,
+    receive_budget: Duration,
 }
 impl Peer {
     async fn connect(listener: &TcpListener) -> Self {
-        let (stream, _) = tokio::time::timeout(Duration::from_secs(45), listener.accept())
-            .await
-            .expect("Service did not connect to the fixture Hub")
-            .unwrap();
+        Self::connect_with_budget(listener, Duration::from_secs(45), None).await
+    }
+    async fn connect_with_budget(
+        listener: &TcpListener,
+        budget: Duration,
+        fixture: Option<&Fixture>,
+    ) -> Self {
+        let started = Instant::now();
+        let (stream, _) = tokio::time::timeout(budget, async {
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => break accepted,
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                        if let Some(fixture) = fixture {
+                            let status = fixture.status();
+                            assert!(started.elapsed() < Duration::from_secs(5) || status.dwCurrentState != SERVICE_STOPPED,
+                                "Service exited before connecting: {}", status.dwWin32ExitCode);
+                        }
+                    }
+                }
+            }
+        }).await.expect("Service did not connect to the fixture Hub").unwrap();
         let socket = accept_hdr_async(stream, |request: &Request, response: Response| {
             assert_eq!(request.uri().path(), "/agent/native-service");
             assert_eq!(
@@ -334,6 +360,11 @@ impl Peer {
             socket,
             instance: Value::Null,
             next: 0,
+            receive_budget: if budget == Duration::from_secs(45) {
+                Duration::from_secs(30)
+            } else {
+                budget
+            },
         };
         let hello = peer.receive().await;
         assert_eq!(hello["type"], "hello");
@@ -350,7 +381,7 @@ impl Peer {
         peer
     }
     async fn receive(&mut self) -> Value {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(self.receive_budget, async {
             loop {
                 match self.socket.next().await.unwrap().unwrap() {
                     Message::Text(text) => return serde_json::from_str(&text).unwrap(),
@@ -1311,3 +1342,7 @@ async fn exercise_service(
     assert_ne!(unsafe { DeleteService(fixture.service.0) }, 0);
     fixture.removed = true;
 }
+
+#[cfg(feature = "experimental-windows-install")]
+#[path = "support/windows_legacy_service.rs"]
+mod legacy_service;

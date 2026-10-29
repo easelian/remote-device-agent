@@ -12,6 +12,8 @@ pub mod legacy_inspect;
 mod legacy_migration;
 #[cfg(all(target_os = "macos", feature = "experimental-macos-install"))]
 mod legacy_migration_macos;
+#[cfg(all(windows, feature = "experimental-windows-install"))]
+mod legacy_migration_windows;
 #[cfg(any(
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-install")

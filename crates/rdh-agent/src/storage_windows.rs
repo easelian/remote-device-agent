@@ -320,7 +320,7 @@ fn validate_acl_kind(
     acl: *mut ACL,
     private: bool,
 ) -> Result<()> {
-    validate_acl_policy(identity, descriptor, owner, acl, private, false)
+    validate_acl_policy(identity, descriptor, owner, acl, private, false, true)
 }
 
 fn validate_acl_policy(
@@ -330,6 +330,7 @@ fn validate_acl_policy(
     acl: *mut ACL,
     private: bool,
     allow_new_children: bool,
+    require_owner_control: bool,
 ) -> Result<()> {
     if descriptor.is_null() || owner.is_null() || acl.is_null() {
         return Err(unsafe_storage());
@@ -456,7 +457,7 @@ fn validate_acl_policy(
     // the administrators group (rather than that owner) full control. Service
     // installation separately checks that owner against a fixed trusted set;
     // creating the child must still pass the kernel's access check.
-    if !user_control && !allow_new_children {
+    if !user_control && require_owner_control {
         return Err(unsafe_storage());
     }
     Ok(())
@@ -533,7 +534,34 @@ fn check_service_parent(file: &File) -> Result<()> {
             system: Sid::well_known(WinLocalSystemSid)?,
             administrators: Sid::well_known(WinBuiltinAdministratorsSid)?,
         };
-        validate_acl_policy(&identity, descriptor, owner, acl, false, true)
+        validate_acl_policy(&identity, descriptor, owner, acl, false, true, false)
+    })
+}
+
+/// Old installer program files inherit their protected system parent's ACL.
+/// Permit public reads, but no writes by an untrusted principal. The current
+/// SID is accepted only by the elevated migration caller.
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn check_legacy_service_program(file: &File) -> Result<()> {
+    with_acl(file, |descriptor, owner, acl| {
+        let mut candidates = vec![
+            Sid::current()?,
+            Sid::well_known(WinBuiltinAdministratorsSid)?,
+            Sid::well_known(WinLocalSystemSid)?,
+        ];
+        if let Ok(installer) = Sid::trusted_installer() {
+            candidates.push(installer);
+        }
+        let user = candidates
+            .into_iter()
+            .find(|sid| unsafe { EqualSid(owner, sid.as_ptr()) } != 0)
+            .ok_or_else(unsafe_storage)?;
+        let identity = Identity {
+            user,
+            system: Sid::well_known(WinLocalSystemSid)?,
+            administrators: Sid::well_known(WinBuiltinAdministratorsSid)?,
+        };
+        validate_acl_policy(&identity, descriptor, owner, acl, false, false, false)
     })
 }
 
@@ -777,6 +805,42 @@ pub(crate) fn open_child_request(
     desired: u32,
     sharing: u32,
 ) -> Result<File> {
+    open_child_options(parent, name, directory, desired, sharing, 0)
+}
+
+/// Inspect existing LocalService data without changing its ACL. The caller
+/// holds SeBackupPrivilege only while acquiring these read-only handles.
+/// Reparse, type and link checks remain identical to ordinary opens.
+#[cfg(feature = "experimental-windows-install")]
+pub(crate) fn open_service_data_child(
+    parent: &File,
+    name: &[u16],
+    directory: bool,
+    sharing: u32,
+) -> Result<File> {
+    let desired = if directory {
+        FILE_READ_ATTRIBUTES | FILE_TRAVERSE | READ_CONTROL | SYNCHRONIZE
+    } else {
+        GENERIC_READ | READ_CONTROL | SYNCHRONIZE
+    };
+    open_child_options(
+        parent,
+        name,
+        directory,
+        desired,
+        sharing,
+        windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_FOR_BACKUP_INTENT,
+    )
+}
+
+fn open_child_options(
+    parent: &File,
+    name: &[u16],
+    directory: bool,
+    desired: u32,
+    sharing: u32,
+    options: u32,
+) -> Result<File> {
     let bytes = name.len().checked_mul(2).ok_or_else(unsafe_storage)?;
     let length = u16::try_from(bytes).map_err(|_| unsafe_storage())?;
     let text = UNICODE_STRING {
@@ -807,7 +871,7 @@ pub(crate) fn open_child_request(
             0,
             sharing,
             FILE_OPEN,
-            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT | options,
             null(),
             0,
         )
@@ -1401,6 +1465,7 @@ mod tests {
                 acl,
                 private,
                 allow_new_children,
+                !allow_new_children,
             )
             .is_ok()
     }

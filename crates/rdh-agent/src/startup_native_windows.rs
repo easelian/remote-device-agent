@@ -126,7 +126,7 @@ impl Service {
 }
 
 #[path = "startup_tasks_windows.rs"]
-mod tasks;
+pub(crate) mod tasks;
 
 pub(crate) fn startup_path(path: &Path) -> Result<String> {
     let text = path
@@ -309,18 +309,18 @@ pub(crate) fn prepare_update_task(
         ));
     }
     let mut target = expected_task(config, &binding.name, old, new)?;
-    let (executable, fingerprint) = tasks::target_snapshot(
-        &target.name,
-        &target.sid,
-        &target.arguments,
-        &target.directory,
-    )
-    .map_err(task_error)?;
+    let (executable, directory, fingerprint) =
+        tasks::target_snapshot(&target.name, &target.sid, &target.arguments, None)
+            .map_err(task_error)?;
     if executable != target.old_executable {
         return Err(Error::message(
             "Startup task does not execute this installation's current native version",
         ));
     }
+    // A migrated task retains its original working directory. Capture that
+    // directory with the complete task fingerprint instead of rewriting it.
+    check_task_directory(&directory)?;
+    target.directory = directory;
     target.fingerprint = fingerprint;
     Ok(target)
 }
@@ -336,7 +336,6 @@ pub(crate) fn verify_update_task(target: &UpdateTask, old: &Path, new: &Path) ->
         })
         || target.sid != expected.sid
         || target.arguments != expected.arguments
-        || target.directory != expected.directory
         || target.old_executable != expected.old_executable
         || target.new_executable != expected.new_executable
         || target.fingerprint.len() != 64
@@ -349,11 +348,12 @@ pub(crate) fn verify_update_task(target: &UpdateTask, old: &Path, new: &Path) ->
             "Interrupted startup target no longer matches the registered profile",
         ));
     }
-    let (executable, fingerprint) = tasks::target_snapshot(
+    check_task_directory(&target.directory)?;
+    let (executable, _, fingerprint) = tasks::target_snapshot(
         &target.name,
         &target.sid,
         &target.arguments,
-        &target.directory,
+        Some(&target.directory),
     )
     .map_err(task_error)?;
     if fingerprint != target.fingerprint
@@ -361,6 +361,19 @@ pub(crate) fn verify_update_task(target: &UpdateTask, old: &Path, new: &Path) ->
     {
         return Err(Error::message(
             "Startup task changed during the interrupted native update",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "experimental-windows-install")]
+fn check_task_directory(directory: &str) -> Result<()> {
+    if !Path::new(directory).is_absolute()
+        || directory.len() > 32768
+        || directory.chars().any(char::is_control)
+    {
+        return Err(Error::message(
+            "Managed task needs an absolute Unicode working directory",
         ));
     }
     Ok(())

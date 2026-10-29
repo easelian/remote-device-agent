@@ -96,9 +96,10 @@ jobs:
   native-target:
     name: Development checks (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    # ARM64's real legacy PowerShell ACL checks run sequentially in the lock
-    # and audit handoff fixtures. Their individual 60 s limits stay unchanged.
-    timeout-minutes: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 75 || 45 }}
+    # ARM64's old PowerShell ACL calls take up to 60 s each. The real Node
+    # task/service round trips add serial compositions of those calls; native
+    # operation deadlines stay unchanged. The matrix still has one executor.
+    timeout-minutes: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 240 || 60 }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -255,7 +256,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service native_windows_ -- --ignored --test-threads=1
       - name: Check native POSIX system service installation and recovery
         if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os != 'Windows' }}
         env:
@@ -273,7 +274,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_native_install -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_native_install managed_windows_task_targets -- --ignored --test-threads=1
       - name: Set up Node for legacy comparison fixtures
         if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' }}
         uses: actions/setup-node@v7
@@ -290,7 +291,7 @@ jobs:
           mkdir -p .build
       - name: Build the legacy program for migration fixtures
         id: legacy_program
-        if: ${{ !cancelled() && steps.legacy_dependencies.outcome == 'success' && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && steps.legacy_dependencies.outcome == 'success' }}
         run: node scripts/build.mjs
       - name: Check legacy POSIX system service handoff and undo
         if: ${{ !cancelled() && steps.legacy_program.outcome == 'success' && runner.os != 'Windows' }}
@@ -308,6 +309,40 @@ jobs:
           export RDH_LEGACY_SOURCE="$PWD"
           export RDH_LEGACY_NODE="$(node -p 'process.execPath')"
           cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test macos_launchd legacy_launchagent_wrappers -- --ignored --test-threads=1
+      - name: Check legacy Windows user task handoff and undo
+        if: ${{ !cancelled() && steps.legacy_program.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          export RDH_LEGACY_SOURCE="$(node -p 'process.cwd()')"
+          export RDH_LEGACY_NODE="$(node -p 'process.execPath')"
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_native_install legacy_windows_task_handoff -- --ignored --test-threads=1
+      - name: Check out the old pinned Windows service host
+        if: ${{ !cancelled() && steps.legacy_program.outcome == 'success' && runner.os == 'Windows' }}
+        uses: actions/checkout@v7
+        with:
+          repository: mtkennerly/shawl
+          ref: dbc4014c6d67027dc75a565d79fe9f493e897eb2 # v1.9.0, old release host
+          path: .build/legacy-shawl-source
+          persist-credentials: false
+      - name: Build the old pinned Windows service host
+        id: legacy_service_host
+        if: ${{ !cancelled() && steps.legacy_program.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/rdh-legacy-shawl-target"
+          cargo +1.93.0 build --locked --release --target "$RDH_TARGET" --manifest-path .build/legacy-shawl-source/Cargo.toml
+      - name: Check legacy Windows LocalService handoff and undo
+        if: ${{ !cancelled() && steps.legacy_service_host.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          export RDH_LEGACY_SOURCE="$(node -p 'process.cwd()')"
+          export RDH_LEGACY_NODE="$(node -p 'process.execPath')"
+          export RDH_LEGACY_SHAWL="$(cygpath -w "$RUNNER_TEMP/rdh-legacy-shawl-target/$RDH_TARGET/release/shawl.exe")"
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_service legacy_windows_service_handoff -- --ignored --test-threads=1
       - name: Compare legacy system hostname and release
         if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' || runner.os == 'macOS'
         env:

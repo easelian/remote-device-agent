@@ -10,6 +10,8 @@ use std::{
     time::Duration,
 };
 
+#[path = "service_migration_windows.rs"]
+mod migration;
 #[path = "service_update_windows.rs"]
 pub(crate) mod update;
 use windows_sys::Win32::{
@@ -63,9 +65,15 @@ struct Privilege {
 }
 impl Privilege {
     fn owner_assignment() -> Result<Self> {
+        Self::enable("SeRestorePrivilege")
+    }
+    fn backup_read() -> Result<Self> {
+        Self::enable("SeBackupPrivilege")
+    }
+    fn enable(privilege: &str) -> Result<Self> {
         let mut raw = null_mut();
-        // The guarded ownership changes are synchronous. Restore the caller's
-        // token before any candidate subprocess can inherit the privilege.
+        // Ownership changes and backup reads are synchronous. Restore the
+        // caller's token before any subprocess can inherit the privilege.
         if unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
@@ -77,7 +85,7 @@ impl Privilege {
             return Err(io::Error::last_os_error().into());
         }
         let token = unsafe { OwnedHandle::from_raw_handle(raw) };
-        let name = wide("SeRestorePrivilege");
+        let name = wide(privilege);
         let mut requested = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
             ..TOKEN_PRIVILEGES::default()
@@ -108,9 +116,9 @@ impl Privilege {
             return Err(io::Error::last_os_error().into());
         }
         if unsafe { GetLastError() } == ERROR_NOT_ALL_ASSIGNED {
-            return Err(Error::message(
-                "Service installation requires the administrator's restore privilege",
-            ));
+            return Err(Error::message(format!(
+                "Service installation requires the administrator's {privilege}",
+            )));
         }
         Ok(Self {
             token,
@@ -417,6 +425,9 @@ fn optional_private(path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    if migration::run(args)? {
+        return Ok(());
+    }
     let options = options(args)?;
     if !administrator() {
         return Err(Error::message(

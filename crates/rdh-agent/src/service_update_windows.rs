@@ -48,7 +48,7 @@ use crate::{
 
 pub(super) const MANIFEST: &str = ".service-install.json";
 pub(super) const LOCK: &str = ".service-manager.lock";
-const PENDING: &str = ".service-update-pending.json";
+pub(super) const PENDING: &str = ".service-update-pending.json";
 const RECORD_LIMIT: usize = 128 * 1024;
 
 fn invalid() -> Error {
@@ -93,10 +93,10 @@ impl Version {
 pub(crate) struct Record {
     schema: u32,
     kind: String,
-    service: String,
+    pub(super) service: String,
     account: String,
-    config: PathBuf,
-    server: String,
+    pub(super) config: PathBuf,
+    pub(super) server: String,
     pub install_id: String,
     pub current: Version,
     previous: Option<Version>,
@@ -130,7 +130,7 @@ impl Record {
         }
         Ok(result)
     }
-    fn validate(&self) -> Result<()> {
+    pub(super) fn validate(&self) -> Result<()> {
         let url = url::Url::parse(&self.server).map_err(|_| invalid())?;
         if self.schema != 2
             || self.kind != "native-agent-service"
@@ -183,6 +183,14 @@ impl Record {
         .collect::<Vec<_>>()
         .join(" "))
     }
+    pub(super) fn same_installation(&self, other: &Self) -> Result<bool> {
+        self.validate()?;
+        other.validate()?;
+        let mut expected = self.clone();
+        expected.current = other.current.clone();
+        expected.previous = other.previous.clone();
+        Ok(expected == *other)
+    }
     fn with_version(&self, version: Version) -> Self {
         let mut next = self.clone();
         next.previous = Some(self.current.clone());
@@ -200,7 +208,7 @@ fn binary(prefix: &Path, version: &Version) -> PathBuf {
 // Program objects and every ancestor stay pinned without delete sharing.
 // The record is read under a kernel lock; data never comes from an LS-writable
 // program manifest or a user-owned replacement of a checked ancestor.
-struct Object {
+pub(super) struct Object {
     file: File,
     _parents: Vec<File>,
 }
@@ -224,7 +232,7 @@ fn object(prefix: &Path, path: &Path) -> Result<Object> {
         _parents: parents,
     })
 }
-fn read_record<T: serde::de::DeserializeOwned>(prefix: &Path, name: &str) -> Result<T> {
+pub(super) fn read_record<T: serde::de::DeserializeOwned>(prefix: &Path, name: &str) -> Result<T> {
     let mut object = object(prefix, &prefix.join(name))?;
     if object.file.metadata()?.len() > RECORD_LIMIT as u64 {
         return Err(invalid());
@@ -238,7 +246,7 @@ fn read_record<T: serde::de::DeserializeOwned>(prefix: &Path, name: &str) -> Res
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
-fn verify_binary(prefix: &Path, version: &Version) -> Result<Object> {
+pub(super) fn verify_binary(prefix: &Path, version: &Version) -> Result<Object> {
     version.validate()?;
     let mut object = object(prefix, &binary(prefix, version))?;
     if object.file.metadata()?.len() != version.bytes {
@@ -257,7 +265,12 @@ fn verify_binary(prefix: &Path, version: &Version) -> Result<Object> {
     Ok(object)
 }
 
-fn write_record<T: Serialize>(prefix: &Path, name: &str, value: &T, replace: bool) -> Result<()> {
+pub(super) fn write_record<T: Serialize>(
+    prefix: &Path,
+    name: &str,
+    value: &T,
+    replace: bool,
+) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > RECORD_LIMIT {
         return Err(invalid());
@@ -315,6 +328,45 @@ fn current_prefix() -> Result<Option<(PathBuf, PathBuf)>> {
     Ok(Some((prefix.into(), executable)))
 }
 
+pub(super) fn manager_lock(prefix: &Path, exclusive: bool) -> Result<Object> {
+    let (parents, name) = open_service_install_parent(&prefix.join(LOCK))?;
+    check_service_object(parents.last().unwrap(), true)?;
+    let file = open_child_request(
+        parents.last().unwrap(),
+        &name,
+        false,
+        GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+    )?;
+    check_service_object(&file, true)?;
+    if file.metadata()?.len() != 0 {
+        return Err(invalid());
+    }
+    let mut overlap = OVERLAPPED::default();
+    let flags = LOCKFILE_FAIL_IMMEDIATELY
+        | if exclusive {
+            LOCKFILE_EXCLUSIVE_LOCK
+        } else {
+            0
+        };
+    if unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut overlap) } == 0 {
+        let error = io::Error::last_os_error();
+        return Err(
+            if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+                Error::message(
+                    "A service Agent or update controller is active; stop the Agent before updating",
+                )
+            } else {
+                error.into()
+            },
+        );
+    }
+    Ok(Object {
+        file,
+        _parents: parents,
+    })
+}
+
 pub(crate) struct Lease {
     prefix: PathBuf,
     executable: PathBuf,
@@ -348,38 +400,7 @@ impl Lease {
                 "Service updates require an elevated administrator",
             ));
         }
-        let (parents, name) = open_service_install_parent(&prefix.join(LOCK))?;
-        check_service_object(parents.last().unwrap(), true)?;
-        let file = open_child_request(
-            parents.last().unwrap(),
-            &name,
-            false,
-            GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-        )?;
-        check_service_object(&file, true)?;
-        if file.metadata()?.len() != 0 {
-            return Err(invalid());
-        }
-        let mut overlap = OVERLAPPED::default();
-        let flags = LOCKFILE_FAIL_IMMEDIATELY
-            | if exclusive {
-                LOCKFILE_EXCLUSIVE_LOCK
-            } else {
-                0
-            };
-        if unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut overlap) } == 0 {
-            let error = io::Error::last_os_error();
-            return Err(
-                if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
-                    Error::message(
-                        "A service Agent or update controller is active; stop the Agent before updating",
-                    )
-                } else {
-                    error.into()
-                },
-            );
-        }
+        let lock = manager_lock(&prefix, exclusive)?;
         // Closing this handle releases the lock if a subsequent read fails.
         let record: Record = read_record(&prefix, MANIFEST)?;
         record.validate()?;
@@ -388,6 +409,7 @@ impl Lease {
                 "Interrupted service update; stop the service and run upgrade --recover",
             ));
         }
+        super::migration::require_complete(&prefix)?;
         let source = std::iter::once(&record.current)
             .chain(record.previous.iter())
             .find(|version| binary(&prefix, version) == executable)
@@ -400,10 +422,7 @@ impl Lease {
         let lease = Self {
             prefix,
             executable,
-            lock: Object {
-                file,
-                _parents: parents,
-            },
+            lock,
             record,
             exclusive,
         };
@@ -603,15 +622,15 @@ pub(crate) fn runtime_guard(
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct ServiceConfig {
-    service_type: u32,
-    start_type: u32,
+pub(super) struct ServiceConfig {
+    pub(super) service_type: u32,
+    pub(super) start_type: u32,
     error_control: u32,
-    binary_path: String,
+    pub(super) binary_path: String,
     load_order_group: String,
     tag_id: u32,
     dependencies: Vec<String>,
-    account: String,
+    pub(super) account: String,
     display_name: String,
 }
 impl ServiceConfig {
@@ -629,9 +648,9 @@ impl ServiceConfig {
         Ok(())
     }
 }
-struct Control(Service);
+pub(super) struct Control(Service);
 impl Control {
-    fn open(name: &str, change: bool) -> Result<Self> {
+    pub(super) fn open(name: &str, change: bool) -> Result<Self> {
         if !valid_name(name) {
             return Err(invalid());
         }
@@ -655,7 +674,7 @@ impl Control {
         }
         Ok(Self(Service(raw)))
     }
-    fn stopped(&self) -> Result<()> {
+    pub(super) fn stopped(&self) -> Result<()> {
         let mut status = SERVICE_STATUS_PROCESS::default();
         let mut bytes = 0;
         if unsafe {
@@ -677,7 +696,7 @@ impl Control {
         }
         Ok(())
     }
-    fn configuration(&self) -> Result<ServiceConfig> {
+    pub(super) fn configuration(&self) -> Result<ServiceConfig> {
         let mut needed = 0;
         if unsafe { QueryServiceConfigW(self.0.0, null_mut(), 0, &mut needed) } != 0
             || io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
@@ -738,7 +757,7 @@ impl Control {
             display_name: string(raw.lpDisplayName)?.0,
         })
     }
-    fn replace(&self, expected: &ServiceConfig, next: &ServiceConfig) -> Result<()> {
+    pub(super) fn replace(&self, expected: &ServiceConfig, next: &ServiceConfig) -> Result<()> {
         self.stopped()?;
         if self.configuration()? != *expected {
             return Err(Error::message(
@@ -809,7 +828,14 @@ impl Pending {
     }
 }
 fn remove_pending(prefix: &Path, expected: &Pending) -> Result<()> {
-    let (parents, name) = open_service_install_parent(&prefix.join(PENDING))?;
+    remove_record(prefix, PENDING, expected)
+}
+pub(super) fn remove_record<T: serde::de::DeserializeOwned + PartialEq>(
+    prefix: &Path,
+    filename: &str,
+    expected: &T,
+) -> Result<()> {
+    let (parents, name) = open_service_install_parent(&prefix.join(filename))?;
     let parent = parents.last().unwrap();
     let mut file = open_child_request(
         parent,
@@ -823,7 +849,7 @@ fn remove_pending(prefix: &Path, expected: &Pending) -> Result<()> {
     (&mut file)
         .take(RECORD_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > RECORD_LIMIT || serde_json::from_slice::<Pending>(&bytes)? != *expected {
+    if bytes.len() > RECORD_LIMIT || serde_json::from_slice::<T>(&bytes)? != *expected {
         return Err(Error::message(
             "Pending service update changed; retaining it for inspection",
         ));
