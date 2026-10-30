@@ -272,6 +272,13 @@ mod posix;
     all(target_os = "macos", feature = "experimental-macos-audit"),
     all(windows, feature = "experimental-windows-audit")
 ))]
+mod history;
+
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "experimental-macos-audit"),
+    all(windows, feature = "experimental-windows-audit")
+))]
 pub(crate) mod implementation {
     use super::*;
     use serde_json::{Map, json};
@@ -759,17 +766,26 @@ pub(crate) mod implementation {
             if metadata.len() != self.size {
                 return Err(fail("AUDIT_SIZE_CHANGED"));
             }
-            if self.size.saturating_add(bytes.len() as u64) > self.max_bytes {
+            let rotated = self.size.saturating_add(bytes.len() as u64) > self.max_bytes;
+            if rotated {
                 self.rotate()?;
             }
-            if self.retained >= MAX_ENTRIES {
+            let pruned = self.retained >= MAX_ENTRIES;
+            if pruned {
                 self.prune(1)?;
             }
             let file = self
                 .active
                 .as_ref()
                 .ok_or_else(|| fail("AUDIT_NO_HANDLE"))?;
-            let metadata = self.verify_file(&self.name, file)?;
+            // Without retention work, no I/O or lock release separates this
+            // append from the verified snapshot above. Recheck after any
+            // rotation/compaction, which may have replaced the active file.
+            let metadata = if rotated || pruned {
+                self.verify_file(&self.name, file)?
+            } else {
+                metadata
+            };
             if metadata.len() != self.size {
                 return Err(fail("AUDIT_SIZE_CHANGED"));
             }
@@ -812,11 +828,11 @@ pub(crate) mod implementation {
                 format!("{}.{index}", self.name)
             }
         }
-        fn tail(&self, name: &str, remaining: usize) -> Result<(Vec<Vec<u8>>, Metadata)> {
+        fn tail(&self, name: &str, remaining: usize) -> Result<(Vec<u8>, usize, Metadata)> {
             let file = self.open_named(name, false)?;
             let before = self.verify_file(name, &file)?;
             if remaining == 0 {
-                return Ok((Vec::new(), before));
+                return Ok((Vec::new(), 0, before));
             }
             let length = before.len().min(((remaining + 1) * MAX_RECORD) as u64) as usize;
             let start = before.len() - length as u64;
@@ -857,12 +873,10 @@ pub(crate) mod implementation {
                     if line.len() > MAX_RECORD {
                         return Err(fail("AUDIT_HISTORY_RECORD_TOO_LARGE"));
                     }
-                    let parsed: Value =
-                        serde_json::from_slice(line).map_err(|_| fail("AUDIT_INVALID_HISTORY"))?;
-                    if !parsed.is_object() {
+                    if !history::valid_object(line) {
                         return Err(fail("AUDIT_INVALID_HISTORY"));
                     }
-                    lines.push(line.to_vec());
+                    lines.push(line);
                 }
             }
             let mut size: u64 = lines.iter().map(|line| line.len() as u64).sum();
@@ -871,10 +885,7 @@ pub(crate) mod implementation {
                 size -= lines[keep].len() as u64;
                 keep += 1;
             }
-            if keep != 0 {
-                lines.drain(..keep);
-            }
-            Ok((lines, before))
+            Ok((lines[keep..].concat(), lines.len() - keep, before))
         }
         fn unlink(&self, name: &str) -> Result<()> {
             self.directory.unlink(name, self.required)
@@ -906,19 +917,18 @@ pub(crate) mod implementation {
             // eligible, exactly as in the existing Agent's retention contract.
             for index in 0..ARCHIVES {
                 let name = self.archive(index);
-                let (lines, before) = match self.tail(&name, remaining) {
+                let (bytes, count, before) = match self.tail(&name, remaining) {
                     Ok(tail) => tail,
                     Err(error) if error.0 == "ENOENT" => continue,
                     Err(error) => return Err(error),
                 };
-                let bytes: Vec<u8> = lines.iter().flatten().copied().collect();
-                if index != 0 && lines.is_empty() {
+                if index != 0 && count == 0 {
                     self.unlink(&name)?;
                 } else if bytes.len() as u64 != before.len() {
                     self.replace(&name, &bytes, &before)?;
                 }
-                remaining -= lines.len();
-                retained += lines.len();
+                remaining -= count;
+                retained += count;
             }
             self.retained = retained;
             self.needs_prune = false;
@@ -1138,6 +1148,24 @@ pub(crate) mod implementation {
             log.record(entry("next")).unwrap();
             assert_eq!(fixture.all().len(), 1000);
             assert_eq!(fixture.all().last().unwrap()["id"], "next");
+        }
+
+        #[test]
+        fn invalid_complete_history_is_rejected_without_rewriting_it() {
+            for invalid in [
+                b"{\"bad\":\"\xff\"}\n".as_slice(),
+                b"{\"bad\":\"\\uD800\"}\n",
+                b"{\"bad\":1e9999}\n",
+                b"{\"bad\":true,}\n",
+                b"[]\n",
+            ] {
+                let fixture = Fixture::new();
+                fixture.write("device.jsonl", invalid);
+                let result = AuditLog::open(&fixture.0, "device", 4096, 3, false);
+                assert!(result.err().unwrap().contains("AUDIT_INVALID_HISTORY"));
+                assert_eq!(fixture.raw(), invalid);
+                assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
+            }
         }
 
         #[test]

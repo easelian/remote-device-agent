@@ -215,17 +215,16 @@ fn proc_state(path: &std::path::Path) -> io::Result<(u32, u8)> {
         .iter()
         .rposition(|b| *b == b')')
         .ok_or_else(|| io::Error::other("Invalid proc stat"))?;
-    let fields = bytes[end + 1..]
+    let mut fields = bytes[end + 1..]
         .split(|b| b.is_ascii_whitespace())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
+        .filter(|part| !part.is_empty());
     let state = fields
-        .first()
+        .next()
         .and_then(|value| value.first())
         .copied()
         .ok_or_else(|| io::Error::other("Invalid proc state"))?;
     let pgrp = fields
-        .get(2)
+        .nth(1)
         .and_then(|value| std::str::from_utf8(value).ok())
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| io::Error::other("Invalid proc pgrp"))?;
@@ -239,12 +238,20 @@ fn group_has_live_members(pid: u32) -> io::Result<bool> {
     // threads, so inspect its task directory as well.
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
-        if !entry
-            .file_name()
-            .as_encoded_bytes()
-            .iter()
-            .all(u8::is_ascii_digit)
-        {
+        let name = entry.file_name();
+        let Some(member) = name
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        // Query unrelated groups without opening a stat file for every process
+        // on the host. A matching group still needs the complete state/task
+        // checks below, including a zombie leader with live threads. Fall back
+        // on every error: a restricted syscall is not proof of disappearance.
+        // SAFETY: getpgid only observes the numeric PID; it sends no signal.
+        let group = unsafe { libc::getpgid(member) };
+        if group >= 0 && group as u32 != pid {
             continue;
         }
         match proc_state(&entry.path().join("stat")) {
@@ -314,6 +321,21 @@ pub(super) fn supervise(job: &Job, mut child: Child, timeout: Duration, hook: Op
         .unwrap_or_else(Instant::now);
     let mut stopping = output_failed;
     loop {
+        // Observe after draining: EOF may arrive as the leader exits. Checking
+        // waitid first would then poll two closed pipes using stale exit state.
+        for result in [
+            drain(&mut stdout, &mut decoders[0], job),
+            drain(&mut stderr, &mut decoders[1], job),
+        ] {
+            if let Err(error) = result {
+                let mut state = lock(&job.state);
+                state.error = Some(os_error(&error, "read"));
+                state.status = "failed";
+                stopping = true;
+                stdout.take();
+                stderr.take();
+            }
+        }
         let observed = match observe(pid) {
             Ok(observed) => observed,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -333,19 +355,6 @@ pub(super) fn supervise(job: &Job, mut child: Child, timeout: Duration, hook: Op
             let mut state = lock(&job.state);
             state.exit_code = code.map(i64::from);
             state.signal = signal;
-        }
-        for result in [
-            drain(&mut stdout, &mut decoders[0], job),
-            drain(&mut stderr, &mut decoders[1], job),
-        ] {
-            if let Err(error) = result {
-                let mut state = lock(&job.state);
-                state.error = Some(os_error(&error, "read"));
-                state.status = "failed";
-                stopping = true;
-                stdout.take();
-                stderr.take();
-            }
         }
         if job.stop.load(Ordering::Acquire) {
             stopping = true;
@@ -812,6 +821,117 @@ mod tests {
                 .unwrap()["cleanup_pending"],
             false
         );
+    }
+
+    #[test]
+    fn exited_parent_with_closed_pipes_still_cleans_its_descendants() {
+        let exits = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&exits);
+        let hook: ExitHook = Arc::new(move |_, result| {
+            let pid = result["pid"].as_u64().unwrap() as u32;
+            #[cfg(target_os = "linux")]
+            assert!(!group_has_live_members(pid).unwrap());
+            assert_eq!(observe(pid).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+            lock(&captured).push(result);
+        });
+        let fixture = Fixture::configured(|_| {}, Some(hook), vec![]);
+        let job = fixture.start("sleep 30 >/dev/null 2>&1 & exit 7", 2.0);
+        let result = fixture.done(job["job_id"].as_str().unwrap());
+        assert_eq!(result["status"], "exited");
+        assert_eq!(result["exit_code"], 7);
+        assert_eq!(result["cleanup_pending"], false);
+        assert_eq!(lock(&exits).len(), 1);
+        assert!(fixture.processes.quiescent());
+    }
+
+    #[test]
+    fn closed_output_does_not_finish_a_running_leader_or_block_termination() {
+        let fixture = Fixture::new();
+        let job = fixture.start("exec >/dev/null 2>&1; sleep 30", 0.1);
+        let id = job["job_id"].as_str().unwrap();
+        let pid = job["pid"].as_u64().unwrap() as u32;
+        assert_eq!(job["status"], "running");
+        assert_eq!(observe(pid).unwrap(), None);
+        fixture
+            .call("terminate_process", json!({"job_id":id}))
+            .unwrap();
+        let result = fixture.done(id);
+        assert_eq!(result["status"], "terminated");
+        assert_eq!(result["cleanup_pending"], false);
+        assert_eq!(observe(pid).unwrap_err().raw_os_error(), Some(libc::ECHILD));
+        assert!(fixture.processes.quiescent());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn restricted_group_query_falls_back_to_procfs() {
+        const MODE: &str = "RDH_TEST_GETPGID_ERRNO";
+        let Ok(errno) = std::env::var(MODE) else {
+            // The filter must never affect the main test runner's threads.
+            let test = concat!(
+                module_path!(),
+                "::restricted_group_query_falls_back_to_procfs"
+            );
+            let test = test.split_once("::").unwrap().1;
+            for errno in [libc::ESRCH, libc::EPERM, libc::ENOSYS] {
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", test, "--nocapture"])
+                    .env(MODE, errno.to_string())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{errno}: {output:?}");
+            }
+            return;
+        };
+        let errno: i32 = errno.parse().unwrap();
+        let mut filter = [
+            libc::sock_filter {
+                code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                jt: 0,
+                jf: 0,
+                k: 0,
+            },
+            libc::sock_filter {
+                code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 1,
+                k: libc::SYS_getpgid as u32,
+            },
+            libc::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ERRNO | errno as u32,
+            },
+            libc::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ALLOW,
+            },
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_mut_ptr(),
+        };
+        // SAFETY: the program references the live filter array. The filter is
+        // installed only in this isolated test child and its future children.
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+            assert_eq!(
+                libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program),
+                0
+            );
+        }
+        let fixture = Fixture::new();
+        let job = fixture.start("sleep 30", 0.0);
+        let pid = job["pid"].as_u64().unwrap() as u32;
+        // SAFETY: this is a read-only process-group query.
+        assert_eq!(unsafe { libc::getpgid(pid as i32) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(errno));
+        assert!(group_has_live_members(pid).unwrap());
+        assert!(fixture.processes.close(Duration::from_secs(3)));
+        assert!(!group_has_live_members(pid).unwrap());
     }
 
     #[test]
