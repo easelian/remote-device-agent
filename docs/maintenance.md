@@ -4,6 +4,7 @@ The repository builds the Rust Agent with Cargo and a Rust `xtask` artifact
 builder. Use Rust `1.93.0` and the checked-in `Cargo.lock`. No Server checkout,
 Node, npm or Python is required by the Agent build and test chain. OS SDKs,
 linkers and platform service tools are still required for their respective targets.
+See [Code navigation](code-structure.md) for module ownership and extension points.
 
 ## Build and validate
 
@@ -12,12 +13,21 @@ Run from the repository root:
 ```sh
 cargo +1.93.0 fmt --all -- --check
 cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
+mkdir -p .build
+cargo +1.93.0 run --locked -p xtask -- native-test-candidate \
+  --target x86_64-unknown-linux-gnu --out "$PWD/.build/native-test-candidate"
+RDH_NATIVE_TEST_CANDIDATE_DIR="$PWD/.build/native-test-candidate" \
+  cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
 ```
 
-Some integration tests require an independently built update candidate or a real
-service manager and are explicitly ignored in an ordinary local run. Ignored
-tests are not passing evidence. [Agent CI](../.github/workflows/ci.yml) records
+Replace the target with the host target and choose a new candidate output
+directory for each source snapshot. Upgrade and readiness tests require the
+independently built candidate selected by `RDH_NATIVE_TEST_CANDIDATE_DIR`;
+they fail if it is missing. Session tests open local TCP and Unix sockets, and
+the Linux isolation test creates namespaces.
+
+Tests requiring real service registrations are explicitly ignored in an ordinary
+local run. Ignored tests are not passing evidence. [Agent CI](../.github/workflows/ci.yml) records
 the exact platform commands, creates the candidates and runs those fixtures on
 eight native OS/CPU/libc targets, one job at a time. Run privileged service tests
 only on disposable hosts: they create real temporary service registrations and

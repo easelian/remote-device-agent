@@ -16,16 +16,16 @@ flowchart LR
 
 | Source | Responsibility |
 | --- | --- |
-| [main.rs](../crates/rdh-agent/src/main.rs), [cli.rs](../crates/rdh-agent/src/cli.rs) | Parse commands; synchronous management avoids creating an async runtime. |
-| [app.rs](../crates/rdh-agent/src/app.rs), [pairing.rs](../crates/rdh-agent/src/pairing.rs), [config.rs](../crates/rdh-agent/src/config.rs) | Validate local state, pair or reuse identity, coordinate launch and cleanup. |
-| [profile_lock.rs](../crates/rdh-agent/src/profile_lock.rs), [storage.rs](../crates/rdh-agent/src/storage.rs) | Enforce profile exclusion and private platform storage. |
-| [session.rs](../crates/rdh-agent/src/session.rs), [transport.rs](../crates/rdh-agent/src/transport.rs), [rpc.rs](../crates/rdh-agent/src/rpc.rs) | Session state, request admission, bounded output, dispatch and deadlines. |
-| [files.rs](../crates/rdh-agent/src/files.rs), [searches.rs](../crates/rdh-agent/src/searches.rs) | Shared file/search contracts with POSIX descriptor and Windows handle backends. |
-| [processes.rs](../crates/rdh-agent/src/processes.rs) | Own process jobs, pipes, output and POSIX process-group or Windows Job Object cleanup. |
-| [policy.rs](../crates/rdh-agent/src/policy.rs), [sandbox.rs](../crates/rdh-agent/src/sandbox.rs), [audit.rs](../crates/rdh-agent/src/audit.rs) | Local restrictions, command isolation, redacted durable audit records. |
-| [startup.rs](../crates/rdh-agent/src/startup.rs), [service_host.rs](../crates/rdh-agent/src/service_host.rs) | Future startup approvals and platform registration; native service entry and shutdown. |
-| [native_install.rs](../crates/rdh-agent/src/native_install.rs), [service_install.rs](../crates/rdh-agent/src/service_install.rs) | User/system installation, ownership and retained native versions. |
-| [upgrade_cli.rs](../crates/rdh-agent/src/upgrade_cli.rs), [service_controller.rs](../crates/rdh-agent/src/service_controller.rs) | Version selection, offline updates, verified Linux automatic updates and recovery. |
+| [main.rs](../src/main.rs), [cli.rs](../src/cli.rs) | Parse commands; synchronous management avoids creating an async runtime. |
+| [app.rs](../src/app.rs), [pairing.rs](../src/pairing.rs), [config.rs](../src/config.rs) | Validate local state, pair or reuse identity, coordinate launch and cleanup. |
+| [profile_lock](../src/profile_lock/mod.rs), [storage](../src/storage/mod.rs) | Enforce profile exclusion and private platform storage. |
+| [session.rs](../src/session.rs), [transport.rs](../src/transport.rs), [rpc.rs](../src/rpc.rs) | Session state, request admission, bounded output, dispatch and deadlines. |
+| [files](../src/files/mod.rs), [searches.rs](../src/searches.rs) | Shared file/search contracts with POSIX descriptor and Windows handle backends. |
+| [processes/mod.rs](../src/processes/mod.rs) | Own process jobs, pipes, output and POSIX process-group or Windows Job Object cleanup. |
+| [policy.rs](../src/policy.rs), [sandbox.rs](../src/sandbox.rs), [audit](../src/audit/mod.rs) | Local restrictions, command isolation, redacted durable audit records. |
+| [startup](../src/startup/mod.rs), [service_host](../src/service_host/mod.rs) | Future startup approvals and platform registration; native service entry and shutdown. |
+| [native_install](../src/native_install/mod.rs), [service_install](../src/service_install/mod.rs) | User/system installation, ownership and retained native versions. |
+| [upgrade_cli.rs](../src/upgrade_cli.rs), [service_controller.rs](../src/service_controller.rs) | Version selection, offline updates, verified Linux automatic updates and recovery. |
 | [xtask](../xtask/src/main.rs) | Native artifacts, provenance, license collection and archive round-trip checks. |
 
 ## Startup and connection

@@ -17,12 +17,17 @@ Use Rust 1.93.0, the target's native linker/SDK and the checked-in lockfile:
 ```sh
 cargo +1.93.0 fmt --all -- --check
 cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
+mkdir -p .build
+cargo +1.93.0 run --locked -p xtask -- native-test-candidate \
+  --target x86_64-unknown-linux-gnu --out "$PWD/.build/native-test-candidate"
+RDH_NATIVE_TEST_CANDIDATE_DIR="$PWD/.build/native-test-candidate" \
+  cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
 cargo +1.93.0 run --locked -p xtask -- native-development \
   --target x86_64-unknown-linux-gnu --out .build/native-development
 ```
 
-Change the target to match the host. The builder creates the raw executable,
+Change the target to match the host and use new output directories for each build.
+The builder creates the raw executable,
 checksum, archive, provenance record and a verified extraction. Integration tests
 which need an independent update candidate or a real service manager have
 additional prerequisites: follow [Maintenance](docs/maintenance.md) and
@@ -140,7 +145,7 @@ contracts and the design's acceptance section for platform evidence.
 ## Hub and network settings
 
 Hub selection is `--server`, then `RDH_SERVER`, then the committed default in
-[deployment_defaults.rs](crates/rdh-agent/src/deployment_defaults.rs). The exact
+[deployment_defaults.rs](src/deployment_defaults.rs). The exact
 public and MCP origins listed there share profile aliases and locks. Custom
 origins remain isolated; an explicit configuration for a different Hub is rejected
 without forwarding its token. Changing defaults does not rewrite installed
@@ -153,6 +158,7 @@ See [Network configuration](docs/network.md).
 ## Documentation
 
 - [Architecture](docs/architecture.md): components, protocol and work lifetimes.
+- [Code navigation / 代码导航](docs/code-structure.md): reading order, directory ownership and extension points.
 - [Hardening](docs/hardening.md): policies, sandbox, environment and audit.
 - [Distribution](docs/distribution.md): artifacts, bootstrap and channel format.
 - [Maintenance](docs/maintenance.md): checks, upgrades and recovery.

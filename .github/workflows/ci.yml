@@ -6,7 +6,8 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
+      - 'src/**'
+      - 'tests/**'
       - 'xtask/**'
       - 'packaging/**'
       - .github/workflows/ci.yml
@@ -14,7 +15,8 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
+      - 'src/**'
+      - 'tests/**'
       - 'xtask/**'
       - 'packaging/**'
       - .github/workflows/ci.yml
@@ -175,7 +177,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup_native::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
       - name: Check native LaunchAgent installed update and rollback
         if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'macOS' }}
         env:

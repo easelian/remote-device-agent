@@ -83,12 +83,7 @@ pub(super) fn build(target: &str, output: &Path) -> Result<()> {
     let target_dir = Staging(output.join("target"));
     fs::create_dir(&target_dir.0)?;
     let mut digest = Sha256::new();
-    for relative in [
-        "Cargo.toml",
-        "Cargo.lock",
-        "crates/rdh-agent/Cargo.toml",
-        "xtask/Cargo.toml",
-    ] {
+    for relative in ["Cargo.toml", "Cargo.lock", "xtask/Cargo.toml"] {
         let path = root.join(relative);
         if !fs::symlink_metadata(&path)?.file_type().is_file() {
             return Err("Upgrade fixture manifests must be regular files".into());
@@ -102,7 +97,7 @@ pub(super) fn build(target: &str, output: &Path) -> Result<()> {
         fs::create_dir_all(destination.parent().unwrap())?;
         fs::write(destination, bytes)?;
     }
-    for relative in ["crates/rdh-agent/src", "xtask/src"] {
+    for relative in ["src", "xtask/src"] {
         digest.update((relative.len() as u64).to_le_bytes());
         digest.update(relative.as_bytes());
         copy_source(&root.join(relative), &source.0.join(relative), &mut digest)?;

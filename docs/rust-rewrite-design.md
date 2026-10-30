@@ -16,13 +16,13 @@
 | `processes` | 有界输出、stdin、进程状态和进程树清理。 |
 | `policy`、`sandbox`、`audit` | 本地权限、Linux 隔离与资源限制、脱敏审计。 |
 | `storage`、`profile_lock` | 私有文件权限、对象身份与单配置实例互斥。 |
-| `startup`、`startup_native`、`startup_grant` | 用户启动项、服务启动类型、审批及管理员授权。 |
+| `startup` | 用户启动项、服务启动类型、审批及管理员授权；命令入口为 `startup::cli`。 |
 | `native_install`、`install_lock`、`native_launcher` | 原生版本目录、安装互斥、稳定命令入口与切换恢复。 |
 | `service_install`、`service_host` | 服务账户安装、原生 SCM 入口及服务关闭。 |
 | `upgrade_cli`、`update`、`service_controller`、`service_update` | 更新索引、候选验证、停机切换和 Linux systemd 自动更新。 |
 | `xtask` | 原生产物、来源清单、依赖许可证及归档往返校验。 |
 
-代码入口见 [lib.rs](../crates/rdh-agent/src/lib.rs)。模块、协议及资源生命周期详见 [architecture.md](architecture.md)，配置约束见 [hardening.md](hardening.md)。
+代码入口见 [lib.rs](../src/lib.rs)。模块、协议及资源生命周期详见 [architecture.md](architecture.md)，配置约束见 [hardening.md](hardening.md)。
 
 ## 协议与生命周期
 
