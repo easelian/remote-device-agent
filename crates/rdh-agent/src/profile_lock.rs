@@ -54,7 +54,7 @@ mod platform {
     }
 
     fn lock_path(config: &Path) -> PathBuf {
-        append(config, ".node-lock")
+        append(config, ".rdh-lock")
     }
 
     fn owner_error() -> Error {
@@ -324,7 +324,7 @@ mod platform {
         }
 
         #[test]
-        fn exclusive_acquire_and_release_uses_legacy_lock_name() {
+        fn exclusive_acquire_and_release_uses_agent_lock_name() {
             let (dir, config) = fixture();
             let mut held = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
             assert!(lock_path(&config).join("owner.json").is_file());

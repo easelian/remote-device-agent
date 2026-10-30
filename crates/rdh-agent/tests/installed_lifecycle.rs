@@ -214,6 +214,6 @@ async fn crash_marker_blocks_updates_until_profile_is_recovered() {
     );
     let status = wait_exit(&mut recovered, &recovered_log).await;
     assert!(status.success(), "{}", diagnostics(&recovered_log));
-    assert!(!marker.exists() && !PathBuf::from(format!("{}.node-lock", config.display())).exists());
+    assert!(!marker.exists() && !PathBuf::from(format!("{}.rdh-lock", config.display())).exists());
     assert!(ManagerLock::acquire(&prefix, &installed, false).is_ok());
 }

@@ -119,7 +119,7 @@ impl Fixture {
         self.prefix.join("rdh")
     }
     fn clean(&self) -> bool {
-        matches!(fs::symlink_metadata(self.config.with_file_name(format!("{}.node-lock", self.config.file_name().unwrap().to_str().unwrap()))), Err(e) if e.kind() == io::ErrorKind::NotFound)
+        matches!(fs::symlink_metadata(self.config.with_file_name(format!("{}.rdh-lock", self.config.file_name().unwrap().to_str().unwrap()))), Err(e) if e.kind() == io::ErrorKind::NotFound)
     }
     fn start(&mut self) {
         self.may_be_running = true;

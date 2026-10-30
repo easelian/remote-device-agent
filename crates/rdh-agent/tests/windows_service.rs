@@ -1332,7 +1332,7 @@ async fn exercise_service(
     assert!(
         !config
             .with_file_name(format!(
-                "{}.node-lock",
+                "{}.rdh-lock",
                 config.file_name().unwrap().to_string_lossy()
             ))
             .exists()

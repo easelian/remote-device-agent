@@ -502,7 +502,7 @@ async fn native_install_upgrade_rollback_and_crash_recovery_preserve_identity() 
         assert_eq!(selected(&prefix, "current"), current);
         assert_eq!(selected(&prefix, "previous"), next);
         assert!(!prefix.join(install_lock::PENDING).exists());
-        assert!(!PathBuf::from(format!("{}.node-lock", config.display())).exists());
+        assert!(!PathBuf::from(format!("{}.rdh-lock", config.display())).exists());
         assert_eq!(fs::read_dir(prefix.join(".running")).unwrap().count(), 0);
     }
 

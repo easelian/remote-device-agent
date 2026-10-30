@@ -115,7 +115,7 @@ impl Fixture {
             Err(error) => error.kind() == io::ErrorKind::NotFound,
         };
         let lock = self.config.with_file_name(format!(
-            "{}.node-lock",
+            "{}.rdh-lock",
             self.config.file_name().unwrap().to_str().unwrap()
         ));
         marker_clear

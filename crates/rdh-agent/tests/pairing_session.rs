@@ -523,7 +523,7 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
             |line| line.contains("\"op\":\"process_exit\"") && line.contains("\"exit_code\":7")
         )
     );
-    assert!(!temp.0.join("device.json.node-lock").exists());
+    assert!(!temp.0.join("device.json.rdh-lock").exists());
     let output = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)

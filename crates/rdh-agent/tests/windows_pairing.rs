@@ -146,7 +146,7 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
     assert!(
         !config
             .with_file_name(format!(
-                "{}.node-lock",
+                "{}.rdh-lock",
                 config.file_name().unwrap().to_string_lossy()
             ))
             .exists()

@@ -1032,7 +1032,7 @@ mod posix {
             let mut lock_paths = Vec::new();
             for config in [&fixture.config, &sidecar] {
                 let lock = config.with_file_name(format!(
-                    "{}.node-lock",
+                    "{}.rdh-lock",
                     config.file_name().unwrap().to_str().unwrap()
                 ));
                 let owner = lock.join("owner.json");

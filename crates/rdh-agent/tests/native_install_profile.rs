@@ -65,7 +65,7 @@ fn prepare_existing_profile_requires_lock_and_valid_private_inputs() {
     ];
 
     let lock = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
-    let lock_path = PathBuf::from(format!("{}.node-lock", config.display()));
+    let lock_path = PathBuf::from(format!("{}.rdh-lock", config.display()));
     let owner = fs::read(lock_path.join("owner.json")).unwrap();
     let busy = run(&fixture.0, &args);
     assert!(!busy.status.success());

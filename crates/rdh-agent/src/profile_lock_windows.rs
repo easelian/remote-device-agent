@@ -1,7 +1,7 @@
-//! Experimental Windows profile exclusion using the legacy lock names.
+//! Windows profile exclusion using Agent-owned lock directories.
 //!
-//! The implementation is disabled by default. Recovery requires the same
-//! process visibility as the previous owner and native Windows validation.
+//! Recovery requires the same process visibility as the previous owner and
+//! native Windows validation.
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
@@ -225,7 +225,7 @@ impl ProfileLocks {
             release_on_drop: true,
         };
         for config in paths {
-            let path = append(&config, ".node-lock");
+            let path = append(&config, ".rdh-lock");
             storage::ensure_parent(&path)?;
             let (directories, name) = open_parent(&path, false, true)?;
             let guard_name = guard_name(&name)?;
@@ -293,7 +293,7 @@ impl ProfileLocks {
         let mut deletion_started = false;
         let result = (|| -> Result<()> {
             for config in paths {
-                let path = append(&config, ".node-lock");
+                let path = append(&config, ".rdh-lock");
                 storage::ensure_parent(&path)?;
                 let (directories, lock_name) = open_parent(&path, false, true)?;
                 let name = guard_name(&lock_name)?;
@@ -397,7 +397,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_owner_validation_rejects_unsafe_or_incomplete_records() {
+    fn owner_validation_rejects_unsafe_or_incomplete_records() {
         let nonce = "a".repeat(32);
         let owner =
             owner_from_bytes(format!("{{\"pid\":17,\"nonce\":\"{nonce}\"}}").as_bytes()).unwrap();

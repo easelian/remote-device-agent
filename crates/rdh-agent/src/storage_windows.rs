@@ -1955,8 +1955,8 @@ mod tests {
 
         let fixture = Fixture::new();
         let config = fixture.private_directory("private").join("device.json");
-        let lock = config.with_file_name("device.json.node-lock");
-        let guard = config.with_file_name("device.json.node-lock.reclaiming");
+        let lock = config.with_file_name("device.json.rdh-lock");
+        let guard = config.with_file_name("device.json.rdh-lock.reclaiming");
         let mut held = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
         let owner_path = lock.join("owner.json");
         let owner = std::fs::read(&owner_path).unwrap();
@@ -1988,8 +1988,8 @@ mod tests {
 
         let fixture = Fixture::new();
         let config = fixture.private_directory("private").join("device.json");
-        let lock = config.with_file_name("device.json.node-lock");
-        let guard = config.with_file_name("device.json.node-lock.reclaiming");
+        let lock = config.with_file_name("device.json.rdh-lock");
+        let guard = config.with_file_name("device.json.rdh-lock.reclaiming");
         std::fs::create_dir(&guard).unwrap();
         assert!(ProfileLocks::acquire(std::slice::from_ref(&config)).is_err());
         assert!(ProfileLocks::recover(std::slice::from_ref(&config)).is_err());
@@ -2012,8 +2012,8 @@ mod tests {
         let directory = fixture.private_directory("private");
         let first = directory.join("first.json");
         let second = directory.join("second.json");
-        let first_lock = directory.join("first.json.node-lock");
-        let second_lock = directory.join("second.json.node-lock");
+        let first_lock = directory.join("first.json.rdh-lock");
+        let second_lock = directory.join("second.json.rdh-lock");
         let mut held = ProfileLocks::acquire(&[first.clone(), second.clone()]).unwrap();
         held.retain_on_drop();
         drop(held);
@@ -2043,8 +2043,8 @@ mod tests {
 
         ProfileLocks::recover(&[first.clone(), second.clone()]).unwrap();
         assert!(!first_lock.exists() && !second_lock.exists());
-        assert!(!directory.join("first.json.node-lock.reclaiming").exists());
-        assert!(!directory.join("second.json.node-lock.reclaiming").exists());
+        assert!(!directory.join("first.json.rdh-lock.reclaiming").exists());
+        assert!(!directory.join("second.json.rdh-lock.reclaiming").exists());
         let mut next = ProfileLocks::acquire(&[first, second]).unwrap();
         next.release().unwrap();
     }
@@ -2056,7 +2056,7 @@ mod tests {
         let fixture = Fixture::new();
         let directory = fixture.private_directory("private");
         let config = directory.join("device.json");
-        let lock = directory.join("device.json.node-lock");
+        let lock = directory.join("device.json.rdh-lock");
         let mut held = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
         held.retain_on_drop();
         drop(held);
@@ -2080,7 +2080,7 @@ mod tests {
         let fixture = Fixture::new();
         let directory = fixture.private_directory("private");
         let config = directory.join("device.json");
-        let lock = directory.join("device.json.node-lock");
+        let lock = directory.join("device.json.rdh-lock");
         let mut held = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
         let owner = lock.join("owner.json");
         let wide: Vec<u16> = owner.as_os_str().encode_wide().chain(Some(0)).collect();

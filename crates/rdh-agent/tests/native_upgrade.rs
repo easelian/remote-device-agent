@@ -465,11 +465,11 @@ async fn native_install_offline_upgrade_rollback_and_interrupted_recovery() {
         PathBuf::from(format!("versions/{next}"))
     );
     assert!(!prefix.join(".update-pending.json").exists());
-    assert!(!PathBuf::from(format!("{}.node-lock", config.display())).exists());
+    assert!(!PathBuf::from(format!("{}.rdh-lock", config.display())).exists());
     // An updater interrupted before the pointer transaction can leave a
     // legacy-compatible profile lock even when no running marker exists.
     let mut abandoned = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
-    let lock_path = PathBuf::from(format!("{}.node-lock", config.display()));
+    let lock_path = PathBuf::from(format!("{}.rdh-lock", config.display()));
     let owner_path = lock_path.join("owner.json");
     let mut owner: serde_json::Value =
         serde_json::from_slice(&fs::read(&owner_path).unwrap()).unwrap();
