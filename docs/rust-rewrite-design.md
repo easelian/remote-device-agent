@@ -1,69 +1,69 @@
-# Agent Rust 实现与版本更新设计
+# Agent Rust implementation and update design
 
-本阶段把 Remote Device Hub Agent 的运行、业务、平台适配、构建和测试全部替换为 Rust。交付物是独立的 `rdh` 原生程序，保持现有 Hub 协议与设备操作。当前版本为尚未发布的 `0.7.2-rust.1`。
+The Remote Device Hub Agent runtime, features, platform integration, build and tests are implemented in Rust. The standalone native executable `rdh` retains the Hub protocol and device operations. The current version is `0.8.0`, which has not been released.
 
-原生运行和安装支持 Rust 版本之间的升级、失败恢复与回滚。旧 Node 安装迁移、还原旧服务及相应测试已删除。发布流程使用 npm 包分发原生程序；平台签名和生产部署仍需单独完成。
+Native installation supports upgrades, failure recovery and rollback between Rust versions. Migration from old Node installations, restoration of old services and their tests have been removed. The release process distributes native programs through npm; platform signing and production deployment require separate work.
 
-## 实现结构
+## Implementation structure
 
-共享模块负责协议、策略和工作生命周期；平台模块负责文件句柄、进程、私有存储与服务注册。管理命令直接执行；配对、连接和更新下载按需建立 Tokio 运行时，调度线程为一至四个。该数量不包含阻塞任务、搜索及进程监督线程。
+Shared modules handle protocol, policy and work lifetimes; platform modules handle file handles, processes, private storage and service registration. Management commands execute directly. Pairing, connections and update downloads create a Tokio runtime as needed, with one to four scheduler threads, excluding blocking work, search and process supervision threads.
 
-| 模块 | 职责 |
+| Modules | Responsibilities |
 | --- | --- |
-| `cli`、`app`、`config`、`pairing` | 参数、私有配置、浏览器配对、已有设备身份及启动顺序。 |
-| `transport`、`session`、`rpc`、`receipts` | 认证 WebSocket、ready 状态、心跳、请求准入、期限和结果回执。 |
-| `files`、`searches` | 根目录相对操作、编码、摘要、分页、搜索及取消。 |
-| `processes` | 有界输出、stdin、进程状态和进程树清理。 |
-| `policy`、`sandbox`、`audit` | 本地权限、Linux 隔离与资源限制、脱敏审计。 |
-| `storage`、`profile_lock` | 私有文件权限、对象身份与单配置实例互斥。 |
-| `startup` | 用户启动项、服务启动类型、审批及管理员授权；命令入口为 `startup::cli`。 |
-| `native_install`、`install_lock`、`native_launcher` | 原生版本目录、安装互斥、稳定命令入口与切换恢复。 |
-| `service_install`、`service_host` | 服务账户安装、原生 SCM 入口及服务关闭。 |
-| `upgrade_cli`、`update`、`service_controller`、`service_update` | 更新索引、候选验证、停机切换和 Linux systemd 自动更新。 |
-| `xtask` | 原生产物、来源清单、依赖许可证及归档往返校验。 |
+| `cli`, `app`, `config`, `pairing` | Arguments, private configuration, browser pairing, existing device identity and startup order. |
+| `transport`, `session`, `rpc`, `receipts` | Authenticated WebSocket, ready state, heartbeats, request admission, deadlines and result receipts. |
+| `files`, `searches` | Root-relative operations, encoding, hashes, pagination, search and cancellation. |
+| `processes` | Bounded output, stdin, process state and process tree cleanup. |
+| `policy`, `sandbox`, `audit` | Local permissions, Linux isolation and resource limits, redacted audit records. |
+| `storage`, `profile_lock` | Private file permissions, object identity and single-instance exclusion per profile. |
+| `startup` | User startup, service startup type, approval and administrator grants; the CLI entry is `startup::cli`. |
+| `native_install`, `install_lock`, `native_launcher` | Native version directories, installation exclusion, stable entry points and switch recovery. |
+| `service_install`, `service_host` | Service account installation, native SCM entry and service shutdown. |
+| `upgrade_cli`, `update`, `service_controller`, `service_update` | Update indexes, candidate validation, offline switching and Linux systemd automatic updates. |
+| `xtask` | Native artifacts, provenance manifests, dependency licenses and archive round-trip validation. |
 
-代码入口见 [lib.rs](../src/lib.rs)。模块、协议及资源生命周期详见 [architecture.md](architecture.md)，配置约束见 [hardening.md](hardening.md)。
+See [lib.rs](../src/lib.rs), [architecture.md](architecture.md) for modules, protocols and resource lifetimes, and [hardening.md](hardening.md) for configuration constraints.
 
-## 协议与生命周期
+## Protocol and lifetime
 
-Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `discovery_url` 时，长期设备凭据仅用于向 Gate 认证；Agent 使用 Gate 签发、绑定本进程及目标 Core 的一次性 v2 票据建立 WSS，完成 `hello`、`ready`、`ready_ack` 后确认连接。没有发现配置时保留旧服务器的直接凭据连接方式；新的 Gate/Core 认证边界不接受旧 v1 发现客户端。用户通过浏览器批准新设备；已有私有配置保存设备身份。Hub 选择顺序为 `--server`、`RDH_SERVER`、源码默认地址，其他 Hub 的凭据不会随意复用。
+The Agent connects to the Hub and does not expose a local HTTP or MCP listener. With `discovery_url` configured, long-term device credentials authenticate only to the Gate; the Agent establishes WSS using a one-time v2 ticket issued by the Gate and bound to the process and target Core. The connection is confirmed after `hello`, `ready` and `ready_ack`. Without discovery configuration, direct credential connections to older servers remain supported; the new Gate/Core authentication boundary does not accept old v1 discovery clients. Users approve new devices in a browser and existing private configuration retains device identity. Hub selection follows `--server`, `RDH_SERVER`, then the source default; credentials for other Hubs are not reused arbitrarily.
 
-普通请求最多同时执行八个。响应期限和实际工作生命周期分开：RPC 超时或断线不代表文件操作已经取消，也不代表没有发生写入；未完成工作继续占用名额。运行时回执、搜索、进程输出及发送队列均有容量和期限约束。旧连接的迟到回复不能进入新连接。
+At most eight ordinary requests execute concurrently. Response deadlines and actual work lifetimes are separate: RPC timeout or disconnection does not mean a file operation was canceled or that no write occurred. Unfinished work continues to occupy a slot. Runtime receipts, searches, process output and send queues have capacity and deadline limits; late replies from an old connection cannot enter a new one.
 
-短时断线保留受管进程，持续离线、认证被拒绝或正常关闭会进入清理。配置锁在受管工作尚未完成时保持。POSIX 使用进程组，Windows 使用 Job Object；主动脱离 POSIX 进程组的程序不在同一清理保证内。文件根目录约束文件工具，不能代替 shell 的操作系统权限边界。
+Managed processes survive brief disconnects; prolonged offline state, authentication rejection or normal shutdown starts cleanup. The profile lock remains held while managed work is unfinished. POSIX uses process groups and Windows uses Job Objects; programs that deliberately leave a POSIX process group are outside the same cleanup guarantee. File roots constrain file tools and do not replace operating system permissions for shell commands.
 
-连接默认直连。`RDH_USE_ENV_PROXY=1` 显式启用代理变量，`RDH_CA_BUNDLE` 增加 PEM 信任根。配对、更新与 WebSocket 共用网络策略；TLS 证书和主机名校验保持开启。详见 [network.md](network.md)。
+Connections are direct by default. `RDH_USE_ENV_PROXY=1` explicitly enables proxy environment variables; `RDH_CA_BUNDLE` adds PEM trust roots. Pairing, updates and WebSocket share network policy; TLS certificate and hostname verification remain enabled. See [network.md](network.md).
 
-## 原生安装
+## Native installation
 
-`install-native` 在新的私有目录安装程序。Linux/macOS 使用版本目录及 `current` 链接，Windows 使用受校验的版本记录和原生命令转发。三个稳定命令名为 `rdh`、`remote-device-agent`、`remote-device-hub`，Windows 带 `.exe` 后缀。版本选择发生变化后，从这些入口运行会选择当前版本。
+`install-native` installs into a new private directory. Linux and macOS use version directories and a `current` link; Windows uses validated version records and native command forwarding. The stable commands are `rdh`, `remote-device-agent` and `remote-device-hub`, with `.exe` suffixes on Windows. They select the current version when invoked after a version change.
 
-安装可登记一个已停机、已配对的私有配置。配置保留在原路径。正常 Agent 持有共享安装锁，更新管理器取得排他锁，并锁定已登记配置；有 Agent 或受管工作仍在运行时拒绝切换。
+An installation can register a stopped, paired private profile, which remains at its original path. A normal Agent holds a shared installation lock; the update manager acquires an exclusive lock and locks registered profiles. Switching is refused while an Agent or managed work is still running.
 
-用户后台启动使用 systemd、LaunchAgent 或 Task Scheduler。`startup set` 管理未来启动状态，不负责停止当前连接。系统服务通过 `install-service` 创建：POSIX 要求 root、已有非 root 服务账户及其私有配置和状态目录；Windows 使用管理员所有的程序目录及 LocalService 数据目录。新服务以禁用或手动启动状态注册，操作者在本机启动后核对 Hub 连接。
+User background startup uses systemd, LaunchAgent or Task Scheduler. `startup set` changes future startup state and does not stop the current connection. `install-service` creates system services: POSIX requires root, an existing non-root service account and its private profile and state directories; Windows uses an administrator-owned program directory and LocalService data directory. New services are registered disabled or for manual startup; the operator starts them locally and checks the Hub connection.
 
-引导脚本只负责取得正确平台的原生文件、校验摘要与版本，再调用 Rust 安装入口。原生构建、安装、运行及 Rust 测试不调用 Node/npm；npm 分发及其测试需要 Node/npm。具体命令见 [README](../README.md#install-and-run) 和 [distribution.md](distribution.md)。
+Bootstrap scripts obtain the correct platform binary, check its digest and version, then call the Rust installation entry point. Native builds, installation, execution and Rust tests do not invoke Node/npm; npm distribution and its tests require Node/npm. See [README](../README.md#install-and-run) and [distribution.md](distribution.md).
 
-## Rust 版本之间的更新与回滚
+## Updates and rollback between Rust versions
 
-### 版本与数据兼容规则
+### Version and data compatibility
 
-原生更新索引采用 schema `2`、格式 `native-binary`，记录版本、大小、SHA-256、平台和灰度比例，可用 `min_from` 限定最低来源版本。客户端检查目标架构、内容摘要、候选报告的版本及已登记配置。索引中的摘要验证文件一致性；发布渠道的来源信任、签名和不可变托管在发布阶段落实。
+The native update index uses schema `2` and format `native-binary`, recording version, size, SHA-256, platform and rollout percentage; `min_from` can set a minimum source version. The client checks target architecture, digest, the candidate's reported version and registered profiles. The index digest checks file consistency; source trust, signatures and immutable hosting are release-channel responsibilities.
 
-本阶段更新不改写设备凭据和配置模式。候选程序先验证现有配置与策略，通过后才允许选中；回滚前同样验证旧程序仍能读取当前数据。这样可以在当前兼容格式内切换 Rust 版本，不能据此承诺未来任意数据格式都能回退。
+Updates in this phase do not rewrite device credentials or the configuration schema. A candidate must validate existing configuration and policy before selection; rollback likewise checks that the old program can read current data. This permits switching within the current compatible format, not a guarantee of rollback across arbitrary future formats.
 
-后续版本如果需要改变持久化格式，应先声明可读取的格式和最低可升级版本。可兼容字段应保留回退能力；不兼容转换必须另行实现备份、转换成功确认和恢复测试，在具备这些机制前拒绝跨越不兼容版本。不得只切回旧二进制却让它读取不可识别的新格式。
+A future persistent-format change should declare readable formats and the minimum upgrade version. Compatible fields should preserve rollback; incompatible conversion needs separate backup, conversion confirmation and recovery tests, and must be refused until those mechanisms exist. Switching the binary alone must not leave an old program reading an incompatible format.
 
-### 停机更新
+### Offline update
 
-所有平台均支持停止 Agent 后更新。macOS、Windows 和系统服务使用停机切换与手动重启；Linux 用户 systemd 另有下述自动更新路径。
+All platforms support updating after the Agent stops. macOS, Windows and system services use offline switching and manual restart; Linux user systemd also has the automatic path below.
 
-1. 结束进程、搜索等受管工作，停止使用该安装的 Agent 和服务。
-2. 执行 `upgrade --no-restart`，校验候选及注册配置，保存切换意图，更新版本选择并保留前一版本。
-3. 从稳定入口或本机服务管理器启动，核对新版本、原设备身份和 Hub 连接。
-4. 需要返回前一版本时，再次停机，执行 `rollback --no-restart`，然后启动并验证。
+1. Finish managed processes, searches and other work, then stop Agents and services using the installation.
+2. Run `upgrade --no-restart` to validate the candidate and registered profiles, save switch intent, update version selection and retain the previous version.
+3. Start from a stable entry point or local service manager and verify the new version, original device identity and Hub connection.
+4. To return to the previous version, stop again, run `rollback --no-restart`, then start and verify.
 
-以下绝对路径均为占位值。命令使用同一安装的稳定入口，索引必须来自所需平台的可信来源：
+The absolute paths below are placeholders. Use the stable entry point for the same installation and an index from a trusted source for the required platform:
 
 ```sh
 /absolute/install/rdh upgrade --index /absolute/native-index.json --channel canary --check
@@ -71,36 +71,36 @@ Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `dis
 /absolute/install/rdh rollback --no-restart
 ```
 
-Windows 使用对应的 `rdh.exe`。系统服务更新需保持原服务账户、配置和服务定义一致；管理员先停止服务，再执行更新。更新不会取得用户凭据的所有权，也不会以管理员身份运行服务的候选配置验证。
+On Windows use the corresponding `rdh.exe`. Service updates must preserve the service account, profile and service definition; an administrator stops the service before updating. Updates do not take ownership of user credentials or run service candidate profile validation as administrator.
 
-### 中断恢复
+### Interrupted switch recovery
 
-更新先持久化 pending 记录，再修改当前版本选择和安装记录。存在未完成切换时禁止正常启动。`upgrade --recover` 只接受记录中的旧、新版本及预期文件状态，继续或恢复该次切换；记录缺失、文件摘要变化或额外外部修改会导致拒绝，并保留现场。
+Updates persist a pending record before changing the current version selection and installation record. Normal startup is blocked while a switch is unfinished. `upgrade --recover` accepts only the recorded old and new versions and expected file state, then continues or restores that switch. Missing records, changed digests or extra external modifications cause refusal and leave the evidence in place.
 
 ```sh
 /absolute/install/rdh upgrade --recover
 ```
 
-恢复完成后重新检查所选版本，再启动 Agent。配置锁恢复是另一项操作：只有确认原进程及其工作已结束，才使用显式 `--recover-lock`；活进程或无法核实的所有者会使恢复拒绝。不能通过删除锁绕过正在执行的工作。
+After recovery, check the selected version before starting the Agent. Profile lock recovery is separate: use explicit `--recover-lock` only after confirming the original process and its work have ended. Recovery is refused for a live or unverifiable owner. Do not delete the lock to bypass ongoing work.
 
-### Linux systemd 自动更新
+### Linux systemd automatic update
 
-受支持的用户 systemd 路径核对单元定义、安装、配置与当前实例，确认工作已空闲后停机、切换并重启。试运行实例只有在持久化提交和明确激活后才执行远程请求。就绪判断核对该实例本次连接收到的 Hub ready；失败会切回保留的版本，控制器中断可从持久化记录恢复。
+The supported user systemd path checks the unit definition, installation, profile and current instance, then stops, switches and restarts after work is idle. A trial instance executes remote requests only after durable commit and explicit activation. Readiness checks the Hub ready received by that instance on its current connection. Failure switches back to the retained version; an interrupted controller can recover from its persisted record.
 
-该入口仅控制可核实的目标单元，不是任意服务的通用控制器。macOS 和 Windows 的自动停机、自动重启与 Hub 就绪回退不在本阶段；它们仍可停机更新和回滚。详细参数见 `upgrade --help` 及 [maintenance.md](maintenance.md#update-and-recover-an-installation)。
+This entry controls only a verifiable target unit and is not a general controller for arbitrary services. Automatic stopping, restarting and Hub readiness rollback on macOS and Windows are outside this phase; offline update and rollback remain available. See `upgrade --help` and [maintenance.md](maintenance.md#update-and-recover-an-installation).
 
-## 平台与验证
+## Platforms and validation
 
-正常构建默认开启已经实现的平台后端；保留的 `experimental-*` 名称用于显式裁剪构建。CI 用 `--no-default-features` 检查主动关闭能力时的错误行为。
+Normal builds enable implemented platform backends by default; retained `experimental-*` names allow explicit build trimming. CI uses `--no-default-features` to check errors when capabilities are deliberately disabled.
 
-[Agent CI](../.github/workflows/ci.yml) 在独立构建机上并行验证以下八个原生目标：Linux x86_64/ARM64 的 glibc/musl、macOS x86_64/ARM64、Windows x86_64/ARM64。每个目标构建独立版本候选，执行 Clippy、优化构建测试、产物归档与解包校验，以及适用的真实用户启动项和系统服务测试。服务测试使用临时对象，只应在可丢弃的 CI 主机执行。
+[Agent CI](../.github/workflows/ci.yml) validates eight native targets in parallel on independent runners: Linux x86_64 and ARM64 with glibc and musl, macOS x86_64 and ARM64, and Windows x86_64 and ARM64. Each target builds a separate candidate and runs Clippy, optimized tests, archive and extraction checks, and applicable real user startup and system service tests. Service tests use temporary objects and should run only on disposable CI hosts.
 
-最终验收覆盖删除迁移代码、启用默认后端和加入稳定命令入口后的完整版本。历史提交的通过记录不能替代这些变化后的验收；结果以 [草稿 PR #1](https://github.com/easelian/remote-device-agent/pull/1) 当前提交对应的 CI 为准。仅记录范围变更的 CI 作业不算测试通过。
+Final acceptance covers the complete version after migration code removal, default backend enablement and stable entry points. Historical results do not replace validation after those changes; consult the CI run for the relevant commit. A job that only records a scope change is not a passing test.
 
-本机 Linux 验证与 Windows 交叉检查、Darwin 模块检查提供不同层次的证据。交叉编译不证明 Windows ACL、Task Scheduler、SCM 或 launchd 的实际行为；模块检查也不代替完整链接。CI 服务验证不证明重登录、生产 Hub、特定企业代理、SMB 或断电持久性。当前阶段没有部署到用户设备。
+Local Linux validation, Windows cross-checks and Darwin module checks provide different evidence. Cross-compilation does not prove Windows ACL, Task Scheduler, SCM or launchd behavior; module checks do not replace full linking. CI service validation does not prove behavior across relogin, production Hubs, particular enterprise proxies, SMB or power loss. This phase has not been deployed to user devices.
 
-## 构建与发布边界
+## Build and release boundary
 
-仓库使用 Rust `1.93.0` 和固定 `Cargo.lock`。`xtask native-development` 生成二进制、校验文件、归档、来源清单和许可证集合；清单记录源码摘要、提交、脏工作树状态、工具链和目标。归档被重新解包，逐文件比较，并在本机目标运行解包后的版本检查。
+The repository uses Rust `1.93.0` and a locked `Cargo.lock`. `xtask native-development` generates a binary, checksums, archive, provenance manifest and license collection. The manifest records the source digest, commit, dirty state, toolchain and target. Archives are extracted again and compared file by file; the extracted version is run on the native target.
 
-仓库采用 Apache-2.0 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。当前提交的多平台结果以对应 CI 运行记录为准，GitHub 草稿和 npm 包尚未实际发布。
+The repository is licensed under Apache-2.0. `xtask native-release-candidate` requires a clean source tree, a `v` plus workspace-version tag at the current commit, all features enabled, and native self-checks on a matching OS and CPU. Candidates remain marked `release_ready: false`. The [release workflow](distribution.md#prepare-and-publish-a-release) assembles artifacts after all eight native targets pass, creates attestations and creates a draft GitHub release; the npm package handles platform selection and native binary distribution. Consult the corresponding CI run for the current commit's multi-platform results.

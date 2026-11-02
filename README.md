@@ -6,7 +6,7 @@ process operations under the device user's authority. The native Agent runtime,
 business logic, Rust build and Rust tests do not require Node or npm. The npm
 distribution and its packaging tests require Node and npm.
 
-This branch contains the `0.7.2-rust.1` Rust replacement.
+This repository contains the `0.8.0` Rust Agent.
 The latest validation scope and remaining work are recorded in the
 [rewrite design](docs/rust-rewrite-design.md). See [distribution](docs/distribution.md)
 for release preparation and npm publishing; development artifacts are not a
@@ -167,11 +167,11 @@ See [Network configuration](docs/network.md).
 ## Documentation
 
 - [Architecture](docs/architecture.md): components, protocol and work lifetimes.
-- [Code navigation / 代码导航](docs/code-structure.md): reading order, directory ownership and extension points.
+- [Code navigation](docs/code-structure.md) ([zhCN](docs/code-structure-zhCN.md)): reading order, directory ownership and extension points.
 - [Hardening](docs/hardening.md): policies, sandbox, environment and audit.
 - [Distribution](docs/distribution.md): artifacts, bootstrap and channel format.
 - [Maintenance](docs/maintenance.md): checks, upgrades and recovery.
-- [Rust replacement design](docs/rust-rewrite-design.md): decisions and acceptance.
+- [Rust replacement design](docs/rust-rewrite-design.md) ([zhCN](docs/rust-rewrite-design-zhCN.md)): decisions and acceptance.
 
 ## License
 

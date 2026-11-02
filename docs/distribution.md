@@ -34,7 +34,7 @@ and executable version. They delegate installation to Rust.
 For a local Linux x64 musl artifact, replace the absolute paths:
 
 ```sh
-sh packaging/install.sh --offline /absolute/artifacts/rdh-0.7.2-rust.1-linux-x64-musl \
+sh packaging/install.sh --offline /absolute/artifacts/rdh-0.8.0-linux-x64-musl \
   -- --prefix /absolute/new-install
 ```
 
@@ -42,7 +42,7 @@ The sibling `.sha256` file is required. Linux defaults to musl; use `--libc gnu`
 for a glibc executable. On macOS use the matching `darwin` filename. On Windows:
 
 ```powershell
-.\packaging\install.ps1 -Offline 'C:\Artifacts\rdh-0.7.2-rust.1-win32-x64.exe' `
+.\packaging\install.ps1 -Offline 'C:\Artifacts\rdh-0.8.0-win32-x64.exe' `
   -NativeArguments @('--prefix', 'C:\Path\NewInstall')
 ```
 
@@ -68,7 +68,7 @@ records version, byte length and SHA-256; it can also constrain `min_from` and
 Use the explicit index when testing a development build:
 
 ```sh
-/absolute/install/rdh upgrade --index /absolute/artifacts/rdh-0.7.2-rust.1-linux-x64-musl.channel.json --channel canary --check
+/absolute/install/rdh upgrade --index /absolute/artifacts/rdh-0.8.0-linux-x64-musl.channel.json --channel canary --check
 ```
 
 Use the generated index's actual filename. A check does not switch versions.
