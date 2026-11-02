@@ -72,6 +72,13 @@ profile. To register an existing stopped profile with an installation, pass
 `--config /absolute/paired.json` to `install-native`; it is validated and retained
 at that path, without copying credentials.
 
+When pairing returns `discovery_url`, the Agent authenticates to that Gate with
+its saved device credential. The Gate returns a short-lived, single-use ticket
+bound to the assigned Core and this Agent instance; only that ticket is sent to
+the Core. The current Gate authority protocol requires this v2-capable Rust
+Agent. Previously published Node artifacts and v1 discovery clients do not
+implement it. See [Network configuration](docs/network.md#cluster-discovery).
+
 ### Background startup
 
 After pairing with an installed command, inspect and enable user startup:

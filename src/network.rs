@@ -220,6 +220,39 @@ impl Network {
             .map_err(|error| Error::message(format!("Hub request failed: {}", error.without_url())))
     }
 
+    pub async fn assign(
+        &self,
+        origin: &str,
+        token: &str,
+        request: &crate::cluster::AssignmentRequest<'_>,
+    ) -> std::result::Result<crate::cluster::Assignment, WebSocketError> {
+        let url = url::Url::parse(origin)
+            .and_then(|url| url.join("/agent/assign"))
+            .map_err(|_| WebSocketError::Network("Invalid discovery URL".into()))?;
+        let response = self
+            .client
+            .post(url)
+            .header("x-rdh-agent-transport", "direct-ip-v2")
+            .bearer_auth(token)
+            .json(request)
+            .send()
+            .await
+            .map_err(|_| WebSocketError::Network("Cluster discovery unavailable".into()))?;
+        if matches!(response.status().as_u16(), 401 | 403) {
+            return Err(WebSocketError::Unauthorized(response.status().as_u16()));
+        }
+        if !response.status().is_success() {
+            return Err(WebSocketError::Network(
+                "Cluster assignment unavailable".into(),
+            ));
+        }
+        let value = Self::response_json(response)
+            .await
+            .map_err(|_| WebSocketError::Network("Invalid cluster discovery response".into()))?;
+        serde_json::from_value(value)
+            .map_err(|_| WebSocketError::Network("Invalid cluster assignment".into()))
+    }
+
     /// Download update metadata or a binary without device credentials. Each
     /// redirect is checked independently; HTTPS cannot downgrade to HTTP.
     pub async fn get_update(&self, initial: &Url, limit: usize) -> Result<Vec<u8>> {
@@ -312,8 +345,25 @@ impl Network {
         device_id: &str,
         token: &str,
     ) -> std::result::Result<WebSocket, WebSocketError> {
+        self.websocket_at(origin, None, device_id, token).await
+    }
+
+    pub async fn websocket_at(
+        &self,
+        origin: &str,
+        connect_ip: Option<std::net::IpAddr>,
+        device_id: &str,
+        token: &str,
+    ) -> std::result::Result<WebSocket, WebSocketError> {
         let mut destination =
             Url::parse(origin).map_err(|_| WebSocketError::Network("Invalid Hub URL".into()))?;
+        if connect_ip.is_some_and(|ip| {
+            destination.scheme() != "https" || ip.is_unspecified() || ip.is_multicast()
+        }) {
+            return Err(WebSocketError::Network(
+                "Invalid direct Core address".into(),
+            ));
+        }
         destination.set_path(&format!("/agent/{device_id}"));
         let target = destination.clone();
         let scheme = if destination.scheme() == "https" {
@@ -345,7 +395,13 @@ impl Network {
                 .intercept(&target)
                 .map_err(|_| WebSocketError::Network("Invalid network destination".into()))?;
             let stream = if let Some(proxy) = proxy {
-                self.proxy_tunnel(&target, &proxy).await?
+                let mut dial_target = target.clone();
+                if let Some(ip) = connect_ip {
+                    dial_target.set_ip_host(ip).map_err(|_| {
+                        WebSocketError::Network("Invalid direct Core address".into())
+                    })?;
+                }
+                self.proxy_tunnel(&dial_target, &proxy).await?
             } else {
                 let host = target
                     .host_str()
@@ -354,8 +410,11 @@ impl Network {
                     .port_or_known_default()
                     .ok_or_else(|| WebSocketError::Network("Invalid Hub port".into()))?;
                 let host = host.trim_start_matches('[').trim_end_matches(']');
-                let stream = TcpStream::connect((host, port))
-                    .await
+                let connected = match connect_ip {
+                    Some(ip) => TcpStream::connect(std::net::SocketAddr::new(ip, port)).await,
+                    None => TcpStream::connect((host, port)).await,
+                };
+                let stream = connected
                     .map_err(|_| WebSocketError::Network("Gateway connection failed".into()))?;
                 Box::new(stream) as Box<dyn Socket>
             };
@@ -619,5 +678,47 @@ mod tests {
         );
         assert!(!request.contains("device-token-secret"));
         assert!(!request.contains("\r\nAuthorization:"));
+    }
+
+    #[tokio::test]
+    async fn direct_ip_connect_uses_numeric_authority_without_device_credentials() {
+        for (ip, authority) in [
+            ("192.0.2.10", "192.0.2.10:8443"),
+            ("2001:db8::10", "[2001:db8::10]:8443"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).await.unwrap();
+                    bytes.push(byte[0]);
+                }
+                socket
+                    .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                String::from_utf8(bytes).unwrap()
+            });
+            let network = Network::new(None, Some(format!("http://{address}")), "", None).unwrap();
+            assert!(
+                network
+                    .websocket_at(
+                        "https://unresolvable.invalid:8443",
+                        Some(ip.parse().unwrap()),
+                        "device",
+                        "secret-device-credential"
+                    )
+                    .await
+                    .is_err()
+            );
+            let request = server.await.unwrap();
+            assert!(request.starts_with(&format!("CONNECT {authority} HTTP/1.1\r\n")));
+            assert!(
+                !request.contains("secret-device") && !request.contains("unresolvable.invalid")
+            );
+        }
     }
 }

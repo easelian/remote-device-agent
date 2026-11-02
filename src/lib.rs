@@ -2,6 +2,7 @@ pub mod app;
 pub mod audit;
 mod cgroup;
 pub mod cli;
+pub mod cluster;
 pub mod config;
 pub mod deployment_defaults;
 pub mod error;

@@ -30,6 +30,42 @@ Node runtime variables do not configure this executable. The Agent reports
 ignored variable names without printing their values. Use the Rust settings
 above; certificate and hostname verification cannot be disabled.
 
+## Cluster discovery
+
+A paired `discovery_url` identifies the Gate. The saved device credential is sent
+only to its `/agent/assign` endpoint. The request declares `direct-ip-v2` and binds
+the Agent process instance; the version 2 reply supplies a short-lived admission
+ticket, assignment identity and Core address. Reconnects request a new ticket.
+Invalid or missing tickets fail discovery; the Agent does not fall back to sending
+the device credential to the Core. The legacy connection path remains available
+only for configurations without discovery and is not accepted by a v2 Core.
+
+If the assignment includes `connect_ip`, only the socket destination changes.
+The Core URL hostname still selects proxy bypass rules, WebSocket Host and TLS
+SNI/certificate verification. WSS is required, and a failed hinted connection
+returns to discovery instead of retrying that connection through DNS.
+
+After detecting a lost active connection, the Agent disables the old control
+generation and requests a fresh ticket from Gate with its complete previous
+connection identity. Gate can release that exact predecessor after checking the
+device credential and process instance, without waiting for its lease to expire.
+An available previous Core is tried first; a failed connection returns to Gate
+for a different Core. Update Gate and Core before deploying this Agent change.
+
+Fast recovery shares a 10-second budget from disconnect detection through the
+new Core's `active` confirmation. Discovery gets at most 2 seconds; the first
+Core connection and handshake get 2 seconds, and subsequent attempts get at most
+4 seconds, all capped by the remaining budget. Initial fast retries add 0–199 ms
+of jitter. If recovery still fails, retries use exponential backoff from 1 to 30
+seconds with less than 1 second of additional jitter. Ownership conflicts do not
+mark a healthy Core unreachable. Recovery requires Gate, its database and a Core
+to be available; silent packet loss still has to reach the heartbeat deadline
+before this recovery clock starts.
+
+`Connection lifecycle` log records expose `disconnected` and `ready` events with
+process-local `monotonic_ms` values. Their difference measures detected-disconnect
+to active control recovery without depending on remote wall-clock synchronization.
+
 ## Managed services
 
 Configure the environment of the actual service or logon task. Installing a
@@ -62,8 +98,8 @@ make a validation pass without preserving its required network settings.
 
 Remote shell processes do not inherit proxy variables or Agent credentials under
 the default allowlist. A local policy can explicitly allow named environment
-variables. HTTPS CONNECT contains only proxy authentication; the device bearer
-token is sent inside the verified destination TLS connection.
+variables. HTTPS CONNECT contains only proxy authentication; the Gate credential
+or Core admission ticket is sent only inside its verified destination TLS connection.
 
 Rust loopback fixtures exercise direct connections, proxy opt-in, bypass lists,
 private CAs and CONNECT authentication separation. They do not prove that a

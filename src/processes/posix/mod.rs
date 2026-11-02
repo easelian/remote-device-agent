@@ -457,6 +457,7 @@ mod tests {
             fs::create_dir(&path).unwrap();
             let mut config = DeviceConfig {
                 gateway_url: "http://localhost".into(),
+                discovery_url: None,
                 device_id: "test".into(),
                 token: "test".into(),
                 roots: BTreeMap::from([("work".into(), path.to_str().unwrap().into())]),

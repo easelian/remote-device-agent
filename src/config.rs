@@ -16,6 +16,8 @@ pub const DEFAULT_SERVER: &str = PUBLIC_URL;
 #[derive(Clone, Serialize)]
 pub struct DeviceConfig {
     pub gateway_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery_url: Option<String>,
     pub device_id: String,
     pub token: String,
     pub roots: BTreeMap<String, String>,
@@ -200,6 +202,7 @@ impl DeviceConfig {
             .ok_or_else(|| Error::message("Invalid device configuration"))?;
         const KEYS: &[&str] = &[
             "gateway_url",
+            "discovery_url",
             "device_id",
             "token",
             "roots",
@@ -215,6 +218,15 @@ impl DeviceConfig {
             )));
         }
         let gateway_url = validate_gateway(required_string(map, "gateway_url")?)?;
+        let discovery_url = map
+            .get("discovery_url")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| Error::message("Invalid discovery URL"))
+                    .and_then(validate_gateway)
+            })
+            .transpose()?;
         let device_id = required_string(map, "device_id")?.to_owned();
         let token = required_string(map, "token")?.to_owned();
         if !valid_name(&device_id) {
@@ -249,6 +261,7 @@ impl DeviceConfig {
         };
         Ok(Self {
             gateway_url,
+            discovery_url,
             device_id,
             token,
             roots,

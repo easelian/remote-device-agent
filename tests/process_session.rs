@@ -248,6 +248,7 @@ async fn process_rpc_receipts_reconnect_stdin_termination_and_shutdown() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let config = DeviceConfig {
         gateway_url: format!("http://{}", listener.local_addr().unwrap()),
+        discovery_url: None,
         device_id: "process-session".into(),
         token: TOKEN.into(),
         roots: local_roots(&[format!("work={}", fixture.0.display())]).unwrap(),

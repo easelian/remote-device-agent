@@ -174,6 +174,7 @@ pub struct Runtime {
     generation: AtomicU64,
     offline_epoch: AtomicU64,
     connection: Mutex<Option<(u64, Sender)>>,
+    control_fence: Mutex<crate::cluster::Fence>,
     #[cfg(test)]
     completion_gate: Mutex<Option<Arc<CompletionGate>>>,
 }
@@ -280,6 +281,7 @@ impl Runtime {
             generation: AtomicU64::new(0),
             offline_epoch: AtomicU64::new(0),
             connection: Mutex::new(None),
+            control_fence: Mutex::new(crate::cluster::Fence::default()),
             #[cfg(test)]
             completion_gate: Mutex::new(None),
         }))
@@ -366,6 +368,21 @@ impl Runtime {
     }
 
     pub fn bind(&self, generation: u64, sender: Sender) -> bool {
+        let Ok(fence) = self.control_fence.lock() else {
+            return false;
+        };
+        if fence.highest.is_some() {
+            return false;
+        }
+        if !self.install_connection(generation, sender) {
+            return false;
+        }
+        drop(fence);
+        self.notify_pending_receipts();
+        true
+    }
+
+    fn install_connection(&self, generation: u64, sender: Sender) -> bool {
         {
             let Ok(mut connection) = self.connection.lock() else {
                 return false;
@@ -374,10 +391,59 @@ impl Runtime {
             self.processes.mark_online();
             *connection = Some((generation, sender));
         }
+        true
+    }
+
+    fn notify_pending_receipts(&self) {
         for id in self.receipts.pending() {
             self.notify_receipt(&id);
         }
+    }
+
+    pub fn last_cluster_identity(&self) -> Option<crate::cluster::Identity> {
+        self.control_fence.lock().ok()?.highest.clone()
+    }
+
+    pub fn bind_cluster(
+        &self,
+        generation: u64,
+        identity: crate::cluster::Identity,
+        sender: Sender,
+    ) -> bool {
+        let Ok(mut fence) = self.control_fence.lock() else {
+            return false;
+        };
+        if !fence.accepts(&identity)
+            || identity.device_id != self.config.device_id
+            || identity.instance_id != self.receipts.instance_id
+        {
+            return false;
+        }
+        if !self.install_connection(generation, sender.clone()) {
+            return false;
+        }
+        fence.highest = Some(identity.clone());
+        fence.current = Some((generation, identity.clone()));
+        // Switch the control fence before acknowledging. Receipt replay is
+        // queued afterwards so Core sees ready_ack as the first handshake frame.
+        if sender
+            .json(&json!({"type":"ready_ack","cluster":identity}))
+            .is_err()
+        {
+            return false;
+        }
+        drop(fence);
+        self.notify_pending_receipts();
         true
+    }
+
+    fn begin_control(&self, identity: Option<&crate::cluster::Identity>) -> bool {
+        // Execution admission and connection replacement serialize here. Once
+        // admitted, an operation keeps its receipt and concurrency permit while
+        // the new control connection is established. Queued old work is denied.
+        self.control_fence
+            .lock()
+            .is_ok_and(|fence| fence.can_start(identity))
     }
 
     pub fn unbind(self: &Arc<Self>, generation: u64) {
@@ -385,6 +451,16 @@ impl Runtime {
     }
 
     fn unbind_with_grace(self: &Arc<Self>, generation: u64, grace: Duration) {
+        let Ok(mut fence) = self.control_fence.lock() else {
+            return;
+        };
+        if fence
+            .current
+            .as_ref()
+            .is_some_and(|(g, _)| *g == generation)
+        {
+            fence.current = None;
+        }
         if let Ok(mut connection) = self.connection.lock()
             && connection
                 .as_ref()
@@ -763,6 +839,19 @@ impl Runtime {
         sender: &Sender,
         ids: &ActiveIds,
     ) -> std::result::Result<(), InvalidRequest> {
+        let control = message
+            .get("cluster")
+            .map(|v| serde_json::from_value::<crate::cluster::Identity>(v.clone()))
+            .transpose()
+            .map_err(|_| InvalidRequest)?;
+        if !self
+            .control_fence
+            .lock()
+            .map_err(|_| InvalidRequest)?
+            .can_start(control.as_ref())
+        {
+            return Err(InvalidRequest);
+        }
         let id = message
             .get("id")
             .and_then(Value::as_str)
@@ -933,7 +1022,18 @@ impl Runtime {
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                flight.runtime.execute(&request, started)
+                // The blocking executor may have queued this request before a
+                // later ready_ack. Starting and changing generation serialize
+                // through the same fence; already started work keeps its ID.
+                if flight.runtime.begin_control(control.as_ref()) {
+                    flight.runtime.execute(&request, started)
+                } else {
+                    Outcome::Failure(Failure::new(
+                        "cluster_connection_stale",
+                        "Control connection changed before execution",
+                        "not_sent",
+                    ))
+                }
             }))
             .unwrap_or_else(|_| {
                 Outcome::Failure(Failure::new(
@@ -1168,6 +1268,121 @@ mod tests {
         })
         .await
         .expect("worker did not finish");
+    }
+
+    fn cluster_identity(runtime: &Runtime, generation: i64) -> crate::cluster::Identity {
+        crate::cluster::Identity {
+            device_id: "fixture".into(),
+            node_id: "node".into(),
+            boot_id: format!("boot{generation}"),
+            connection_id: format!("conn{generation}"),
+            generation,
+            instance_id: runtime.receipts.instance_id.clone(),
+        }
+    }
+
+    #[test]
+    fn cluster_fence_rejects_work_queued_before_a_new_ready_ack() {
+        let executor = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        executor.block_on(async {
+            let fixture = Fixture::new();
+            let runtime = fixture.runtime(None);
+            let (sender, mut rx, _) = channel();
+            let first = cluster_identity(&runtime, 1);
+            let second = cluster_identity(&runtime, 2);
+            assert!(runtime.bind_cluster(1, first.clone(), sender.clone()));
+            assert_eq!(next_frame(&mut rx).await["type"], "ready_ack");
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = entered.send(());
+                let _ = blocked.recv_timeout(Duration::from_secs(5));
+            });
+            waiting.await.unwrap();
+            let mut request = write("queued", 5000, None);
+            request["cluster"] = json!(first);
+            runtime.receive(&request, &sender, &ids()).unwrap();
+            assert!(runtime.bind_cluster(2, second.clone(), sender.clone()));
+            assert_eq!(next_frame(&mut rx).await["cluster"], json!(second));
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            let rejected = result(&mut rx, "queued").await;
+            assert_eq!(rejected["error_code"], "cluster_connection_stale");
+            assert_eq!(rejected["execution_state"], "not_sent");
+            assert!(!fixture.0.join("output").exists());
+            assert!(!runtime.bind_cluster(3, first.clone(), sender.clone()));
+            assert!(runtime.receive(&request, &sender, &ids()).is_err());
+            runtime.unbind(1); // Delayed cleanup cannot retire the successor.
+            request["cluster"] = json!(second);
+            request["id"] = json!("new");
+            runtime.receive(&request, &sender, &ids()).unwrap();
+            assert!(result(&mut rx, "new").await["result"]["sha256"].is_string());
+            assert!(runtime.shutdown().await);
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cluster_handover_keeps_started_work_and_delivers_its_receipt_on_the_successor() {
+        let fixture = Fixture::new();
+        let runtime = fixture.runtime(None);
+        let gate = Arc::new(CompletionGate::default());
+        let _release_on_failure = GateGuard(gate.clone());
+        *runtime.completion_gate.lock().unwrap() = Some(gate.clone());
+        let (old_sender, mut old_rx, _) = channel();
+        let (new_sender, mut new_rx, _) = channel();
+        let first = cluster_identity(&runtime, 1);
+        let second = cluster_identity(&runtime, 2);
+        assert!(runtime.bind_cluster(1, first.clone(), old_sender.clone()));
+        next_frame(&mut old_rx).await;
+        let operation_id = "c".repeat(32);
+        let mut request = write(
+            "running",
+            5000,
+            Some((&operation_id, &runtime.receipts.instance_id)),
+        );
+        request["cluster"] = json!(first);
+        runtime.receive(&request, &old_sender, &ids()).unwrap();
+        // The write has happened, but execution and its ordinary concurrency
+        // permit are still held until this explicit completion barrier opens.
+        tokio::time::timeout(Duration::from_secs(2), gate.entered.notified())
+            .await
+            .unwrap();
+        let available = runtime.ordinary.available_permits();
+        assert!(runtime.active.load(Ordering::Acquire) > 0);
+        runtime.unbind(1);
+        assert!(runtime.bind_cluster(2, second.clone(), new_sender.clone()));
+        assert_eq!(next_frame(&mut new_rx).await["cluster"], json!(second));
+        assert_eq!(runtime.ordinary.available_permits(), available);
+        assert!(runtime.receive(&request, &old_sender, &ids()).is_err());
+        gate.release();
+        assert!(result(&mut old_rx, "running").await["result"]["sha256"].is_string());
+        loop {
+            let receipt = next_frame(&mut new_rx).await;
+            if receipt["type"] == "operation_result" && receipt["execution_state"] == "succeeded" {
+                assert_eq!(receipt["operation_id"], operation_id);
+                break;
+            }
+        }
+        // Replaying the operation through the new generation must not write again.
+        std::fs::write(fixture.0.join("output"), "after the original write").unwrap();
+        request["cluster"] = json!(second);
+        request["id"] = json!("replay");
+        runtime.receive(&request, &new_sender, &ids()).unwrap();
+        let replay = result(&mut new_rx, "replay").await;
+        assert_eq!(replay["execution_state"], "succeeded");
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join("output")).unwrap(),
+            "after the original write"
+        );
+        assert!(!runtime.bind_cluster(3, first, old_sender));
+        runtime.unbind(1);
+        assert_eq!(runtime.last_cluster_identity(), Some(second));
+        assert!(runtime.shutdown().await);
     }
 
     #[cfg(target_os = "linux")]

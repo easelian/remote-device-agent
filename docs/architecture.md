@@ -34,13 +34,22 @@ Startup uses `--server`, then `RDH_SERVER`, then the committed public deployment
 
 The two default origins are aliases for one Hub and can reuse an existing pairing. Custom Hubs retain same-origin pairing validation and credential separation. Profile locks cover the configuration paths used for reuse. Pairing requests browser approval before the Agent saves and uses a new device credential.
 
-After configuration and hardening validation, the Agent connects to `/agent/<device_id>` with a bearer token, sends `hello` with device information, and waits for `ready` before accepting requests. Device information includes operations, limits, and effective restrictions. Session heartbeats detect lost connections. See [Hardening configuration](hardening.md) for policy reporting and configuration privacy.
+After configuration and hardening validation, discovery-enabled Agents authenticate to the Gate with their saved device credential and receive a single-use v2 ticket. They connect to the assigned Core at `/agent/<device_id>` using only that ticket, send `hello` with device information, and complete the `ready`/`ready_ack` handshake before the connection becomes active. The ticket binds the device, assignment, Core node and boot, credential version, and Agent process instance. Configurations without discovery retain the legacy direct bearer path for older servers. Device information includes operations, limits, and effective restrictions. Session heartbeats detect lost connections. See [Hardening configuration](hardening.md) for policy reporting and configuration privacy.
 
 ## Request execution
 
 The Agent validates each request envelope and request ID before dispatch. At most eight operations may be in flight. Dispatch applies operation and file-write policies, records any required pre-execution audit event, and calls the file, process, or search component. The reply contains the same request ID and enters a bounded send queue.
 
 The default RPC response deadline is 20 seconds. Expiring a response or losing its socket does not cancel underlying filesystem I/O; that operation keeps its concurrency slot until it settles. An expired mutation can still have effects. Inspect the target state before retrying an operation with an unknown outcome.
+
+Execution admission and control-generation changes share one lock. A disconnect
+disables the old control entry; queued requests that have not passed execution
+admission are rejected. Already admitted operations keep their concurrency slots
+and original receipts while a replacement control connection becomes active.
+They do not have to finish before reconnecting. Pending receipts are sent through
+the new connection, and recovery by the original operation ID does not execute
+the operation again. See [Cluster discovery](network.md#cluster-discovery) for
+the bounded recovery sequence and timing records.
 
 Starting a process returns a job that can continue after the RPC finishes. Its execution timeout is separate from the response deadline. A later `process_exit` audit event records final status and exit code; a successful `start_process` response alone does not establish command success.
 
