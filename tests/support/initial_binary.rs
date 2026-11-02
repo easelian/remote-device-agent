@@ -1,4 +1,4 @@
-//! Use the extracted development artifact for installation acceptance in CI.
+//! Use the extracted native artifact for installation acceptance in CI.
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -17,7 +17,15 @@ pub fn path() -> &'static Path {
         assert!(std::fs::metadata(&manifest).unwrap().len() <= 1024 * 1024);
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-        assert_eq!(manifest["kind"], "native-agent-development");
+        match manifest["kind"].as_str() {
+            Some("native-agent-development") => {}
+            Some("native-agent-release-candidate") => {
+                assert_eq!(manifest["source_dirty"], false);
+                assert_eq!(manifest["project_license_included"], true);
+            }
+            _ => panic!("Unexpected native artifact kind"),
+        }
+        assert_eq!(manifest["release_ready"], false);
         assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(manifest["features"], "all");
         assert_eq!(manifest["runtime_self_check"], true);
