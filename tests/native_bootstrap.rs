@@ -314,12 +314,9 @@ fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
     );
     for shell in ["sh", "bash", "zsh", "fish"] {
         if Command::new(shell).arg("--version").output().is_err() {
+            #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
             assert!(
-                !(cfg!(all(
-                    target_os = "linux",
-                    target_env = "gnu",
-                    target_arch = "x86_64"
-                )) && std::env::var_os("CI").is_some()),
+                std::env::var_os("CI").is_none(),
                 "CI must install the {shell} startup test tool"
             );
             eprintln!("Skipping unavailable shell: {shell}");
