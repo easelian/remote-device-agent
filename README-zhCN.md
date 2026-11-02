@@ -15,31 +15,18 @@
 **Linux 和 macOS**：需要 `curl`，以及 `sha256sum` 或 `shasum`。
 
 ```sh
-rdh_version=0.8.0
-rdh_release="https://github.com/easelian/remote-device-agent/releases/download/v${rdh_version}"
-curl -fsSL "$rdh_release/install.sh" -o install-rdh.sh
-sh install-rdh.sh --version "$rdh_version" --base "$rdh_release" \
-  -- --prefix "$HOME/.local/lib/rdh"
-export PATH="$HOME/.local/lib/rdh:$PATH"
-rdh --version
+curl -fsSL https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.sh | sh
 ```
 
-Linux 默认安装 musl 版本。在 `--` 前添加 `--libc gnu` 可选择 GNU 版本，该版本要求 glibc 2.39 或更高版本。macOS 自动选择对应的原生二进制文件。
-
-**Windows**：在允许执行脚本的 PowerShell 中运行。
+**Windows**：在 PowerShell 中运行。
 
 ```powershell
-$rdhVersion = '0.8.0'
-$rdhRelease = "https://github.com/easelian/remote-device-agent/releases/download/v$rdhVersion"
-$rdhPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
-Invoke-WebRequest "$rdhRelease/install.ps1" -OutFile install-rdh.ps1
-.\install-rdh.ps1 -Version $rdhVersion -Base $rdhRelease `
-  -NativeArguments @('--prefix', $rdhPrefix)
-$env:PATH = "$rdhPrefix;$env:PATH"
-rdh --version
+irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1 | iex
 ```
 
-请使用尚不存在的安装目录，脚本不会覆盖已有安装。上述 PATH 设置仅对当前终端生效；将安装目录加入用户 PATH 后，新终端也能使用 `rdh`。离线安装和自定义下载地址见[分发说明](docs/distribution.md#bootstrap-installation)。
+脚本默认安装 `0.8.0`：Linux/macOS 安装到 `~/.local/lib/rdh`，Windows 安装到 `%LOCALAPPDATA%\RemoteDeviceAgent`。将该目录加入用户 PATH 后即可运行 `rdh`。Linux 默认选择 musl，macOS 和 Windows 选择对应的原生二进制文件，无需填写版本或安装目录。
+
+脚本不会覆盖已有安装。自定义目录、版本、GNU libc 构建及离线安装见[分发说明](docs/distribution.md#bootstrap-installation)。
 
 ### npm 安装
 
@@ -49,7 +36,6 @@ rdh --version
 
 ```sh
 npm install --global https://github.com/easelian/remote-device-agent/releases/download/v0.8.0/easelian-remote-device-agent-0.8.0.tgz
-rdh --version
 ```
 
 包名为 `@easelian/remote-device-agent`，内含各平台的原生二进制文件，启动时选择匹配的平台。同一条命令适用于 Linux、macOS 和 Windows；npm 的全局可执行文件目录需要位于 PATH 中。

@@ -3,20 +3,25 @@
 set -eu
 umask 077
 
-rdh_base=${RDH_BASE:-https://github.com/easelian/remote-device-agent/releases/latest/download}
-rdh_version=
+rdh_default_version=0.8.0
+rdh_base=${RDH_BASE:-}
+rdh_version=${RDH_VERSION:-}
 rdh_offline=
-rdh_libc=musl
+rdh_libc=${RDH_LIBC:-musl}
 rdh_command=install-native
 rdh_temporary=
 
 usage() {
     cat <<'USAGE'
-usage: install.sh --version VERSION [--base HTTPS_URL|DIRECTORY] [--libc musl|gnu] -- NATIVE_ARGUMENTS...
+usage: install.sh [--version VERSION] [--base HTTPS_URL|DIRECTORY] [--libc musl|gnu] [-- NATIVE_ARGUMENTS...]
        install.sh --offline NATIVE_BINARY -- NATIVE_ARGUMENTS...
 
 The native binary must have a matching entry in SHA256SUMS, or a per-binary sibling
 .sha256 file. Linux defaults to musl; --libc gnu selects glibc. No Node/npm is used.
+
+With no arguments, install the bundled default release into $HOME/.local/lib/rdh.
+RDH_VERSION, RDH_BASE, RDH_LIBC and RDH_INSTALL_DIR override these defaults.
+The installer prints the command directory to add to PATH.
 
 By default arguments after -- are passed to rdh install-native. Use
 --service to call rdh install-service, using its explicit service account options.
@@ -44,7 +49,17 @@ while [ "$#" -gt 0 ]; do
         *) die "unknown bootstrap option: $1; native options follow --" ;;
     esac
 done
-[ "$#" -gt 0 ] || die 'supply native installation arguments after --'
+rdh_default_prefix=
+if [ "$#" -eq 0 ]; then
+    [ "$rdh_command" = install-native ] || die 'supply service installation arguments after --'
+    if [ -n "${RDH_INSTALL_DIR:-}" ]; then
+        rdh_default_prefix=$RDH_INSTALL_DIR
+    else
+        [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_INSTALL_DIR or pass -- --prefix PATH'
+        rdh_default_prefix=$HOME/.local/lib/rdh
+    fi
+    set -- --prefix "$rdh_default_prefix"
+fi
 case $rdh_libc in musl|gnu) ;; *) die '--libc must be musl or gnu' ;; esac
 rdh_system=$(uname -s)
 rdh_arch=$(uname -m)
@@ -63,12 +78,13 @@ if [ -n "$rdh_offline" ]; then
     [ -z "$rdh_version" ] || [ "$rdh_version" = "$rdh_detected" ] || die 'offline binary version differs from --version'
     rdh_version=$rdh_detected
 fi
-[ -n "$rdh_version" ] || die '--version is required when downloading'
+rdh_version=${rdh_version:-$rdh_default_version}
 printf '%s\n' "$rdh_version" | LC_ALL=C awk '
     /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$/ { valid=1 }
     END { exit !valid }' || die 'invalid version'
 case $rdh_version in *'
 '*) die 'invalid version' ;; esac
+rdh_base=${rdh_base:-https://github.com/easelian/remote-device-agent/releases/download/v$rdh_version}
 rdh_name=rdh-$rdh_version-$rdh_platform
 rdh_temporary=$(mktemp -d "${TMPDIR:-/tmp}/rdh-install.XXXXXXXX") || die 'cannot create temporary directory'
 trap 'if [ -n "$rdh_temporary" ]; then rm -rf "$rdh_temporary"; fi' 0
@@ -121,3 +137,6 @@ chmod 700 "$rdh_temporary/$rdh_name"
 rdh_reported=$("$rdh_temporary/$rdh_name" --version) || die 'native executable self-check failed'
 [ "$rdh_reported" = "$rdh_version" ] || die 'native executable version mismatch'
 "$rdh_temporary/$rdh_name" "$rdh_command" "$@"
+if [ -n "$rdh_default_prefix" ]; then
+    printf '\nInstalled commands in %s\nAdd this directory to PATH to run rdh.\n' "$rdh_default_prefix"
+fi

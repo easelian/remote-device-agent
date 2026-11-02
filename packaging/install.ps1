@@ -1,7 +1,7 @@
 # Download and verify one native executable; Rust owns installation.
 [CmdletBinding()]
 param(
-    [string]$Base = 'https://github.com/easelian/remote-device-agent/releases/latest/download',
+    [string]$Base = '',
     [string]$Version = '',
     [string]$Offline = '',
     [switch]$Service,
@@ -9,13 +9,17 @@ param(
     [string[]]$NativeArguments = @()
 )
 $ErrorActionPreference = 'Stop'
+$rdhDefaultVersion = '0.8.0'
 if ($Help) {
     Write-Output @'
-usage: install.ps1 -Version VERSION [-Base HTTPS_URL|DIRECTORY] [-Service] -NativeArguments @(...)
+usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Service] [-NativeArguments @(...)]
        install.ps1 -Offline NATIVE_BINARY [-Service] -NativeArguments @(...)
 
 The native binary must have a matching SHA256SUMS entry or per-binary .sha256 file.
 No Node/npm is used.
+With no arguments, install the bundled default release into
+%LOCALAPPDATA%\RemoteDeviceAgent. RDH_VERSION, RDH_BASE and RDH_INSTALL_DIR
+override these defaults. Add the printed command directory to PATH.
 NativeArguments go to rdh install-native, or install-service with -Service.
 The Rust command owns all profile, ownership, existing-install and recovery checks.
 It does not pair a device, start a service or overwrite an installation.
@@ -28,7 +32,18 @@ Examples (replace the version and absolute paths):
     exit 0
 }
 if ($env:OS -ne 'Windows_NT') { throw 'Use install.sh on Linux and macOS.' }
-if (!$NativeArguments -or $NativeArguments.Count -eq 0) { throw 'Supply native installation arguments such as --prefix and --config.' }
+$rdhDefaultPrefix = ''
+if (!$NativeArguments -or $NativeArguments.Count -eq 0) {
+    if ($Service) { throw 'Supply service installation arguments in -NativeArguments.' }
+    $rdhDefaultPrefix = $env:RDH_INSTALL_DIR
+    if (!$rdhDefaultPrefix) {
+        if (!$env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unset; set RDH_INSTALL_DIR or pass --prefix in -NativeArguments.' }
+        $rdhDefaultPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
+    }
+    $NativeArguments = @('--prefix', $rdhDefaultPrefix)
+}
+if (!$Base) { $Base = $env:RDH_BASE }
+if (!$Version) { $Version = $env:RDH_VERSION }
 $rdhCpu = $env:PROCESSOR_ARCHITEW6432
 if (!$rdhCpu) { $rdhCpu = $env:PROCESSOR_ARCHITECTURE }
 $rdhArch = switch ($rdhCpu.ToUpperInvariant()) {
@@ -47,9 +62,11 @@ if ($Offline) {
     if ($Version -and $Version -ne $rdhDetected) { throw 'Offline version differs from -Version.' }
     $Version = $rdhDetected
 }
+if (!$Version) { $Version = $rdhDefaultVersion }
 if ($Version -notmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?\z') {
     throw 'Supply a valid -Version when downloading.'
 }
+if (!$Base) { $Base = "https://github.com/easelian/remote-device-agent/releases/download/v$Version" }
 $rdhName = "rdh-$Version-$rdhPlatform.exe"
 $rdhTemporary = Join-Path ([IO.Path]::GetTempPath()) ('rdh-install-' + [Guid]::NewGuid().ToString('N'))
 $rdhIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -109,7 +126,8 @@ function Fetch-Native([string]$Name, [string]$Destination) {
     } else {
         # Treat local bases as filesystem paths, including verbatim \\?\ paths,
         # rather than asking the PowerShell provider to resolve a drive.
-        Copy-Item -LiteralPath ([IO.Path]::Combine($Base, $Name)) -Destination $Destination
+        Copy-Item -LiteralPath ([IO.Path]::Combine($Base, $Name)) -Destination $Destination -ErrorAction Stop
+        if (![IO.File]::Exists($Destination)) { throw "Local source did not provide $Name." }
     }
 }
 try {
@@ -153,6 +171,10 @@ try {
     & $rdhBinary $rdhCommand @NativeArguments
     $rdhExit = $LASTEXITCODE
     if ($rdhExit -ne 0) { throw "Native installation failed with exit code $rdhExit. Inspect its diagnostic before retrying." }
+    if ($rdhDefaultPrefix) {
+        Write-Output "Installed commands in $rdhDefaultPrefix"
+        Write-Output 'Add this directory to PATH to run rdh.'
+    }
 } finally {
     Remove-Item -LiteralPath $rdhTemporary -Recurse -Force
 }

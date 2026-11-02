@@ -20,36 +20,23 @@ x86_64 and ARM64. This method does not require Node.js or npm.
 **Linux and macOS** — requires `curl` and either `sha256sum` or `shasum`:
 
 ```sh
-rdh_version=0.8.0
-rdh_release="https://github.com/easelian/remote-device-agent/releases/download/v${rdh_version}"
-curl -fsSL "$rdh_release/install.sh" -o install-rdh.sh
-sh install-rdh.sh --version "$rdh_version" --base "$rdh_release" \
-  -- --prefix "$HOME/.local/lib/rdh"
-export PATH="$HOME/.local/lib/rdh:$PATH"
-rdh --version
+curl -fsSL https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.sh | sh
 ```
 
-Linux uses the musl binary by default; add `--libc gnu` before `--` to select
-glibc 2.39 or later. macOS selects its native binary automatically.
-
-**Windows** — run in PowerShell with script execution enabled:
+**Windows** — run in PowerShell:
 
 ```powershell
-$rdhVersion = '0.8.0'
-$rdhRelease = "https://github.com/easelian/remote-device-agent/releases/download/v$rdhVersion"
-$rdhPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
-Invoke-WebRequest "$rdhRelease/install.ps1" -OutFile install-rdh.ps1
-.\install-rdh.ps1 -Version $rdhVersion -Base $rdhRelease `
-  -NativeArguments @('--prefix', $rdhPrefix)
-$env:PATH = "$rdhPrefix;$env:PATH"
-rdh --version
+irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1 | iex
 ```
 
-Choose a new installation directory; the scripts do not overwrite an existing
-installation. The PATH changes above apply to the current terminal. Add the
-installation directory to your user PATH to use `rdh` in future terminals.
-See [Distribution](docs/distribution.md#bootstrap-installation) for offline
-installation and custom download sources.
+The scripts install release `0.8.0` into `~/.local/lib/rdh` on Linux/macOS or
+`%LOCALAPPDATA%\RemoteDeviceAgent` on Windows. Add that directory to your user
+PATH to run `rdh`. Linux selects musl; macOS and Windows select their native
+binaries. No version or destination arguments are required.
+
+An existing installation is not overwritten. For custom directories, versions,
+GNU libc builds and offline installation, see
+[Distribution](docs/distribution.md#bootstrap-installation).
 
 ### Install with npm
 
@@ -62,7 +49,6 @@ Install the npm package attached to the
 
 ```sh
 npm install --global https://github.com/easelian/remote-device-agent/releases/download/v0.8.0/easelian-remote-device-agent-0.8.0.tgz
-rdh --version
 ```
 
 The package is named `@easelian/remote-device-agent`. It bundles the native

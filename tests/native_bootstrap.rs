@@ -135,6 +135,50 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
     command.current_dir(directory).output().unwrap()
 }
 
+fn bootstrap_defaults(directory: &Path, prefix: &Path) -> Output {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sh");
+        command.stdin(fs::File::open(repository.join("packaging/install.sh")).unwrap());
+        #[cfg(target_os = "linux")]
+        command.env(
+            "RDH_LIBC",
+            if cfg!(target_env = "musl") {
+                "musl"
+            } else {
+                "gnu"
+            },
+        );
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let system = std::env::var_os("SystemRoot").expect("Windows system directory");
+        let mut command =
+            Command::new(Path::new(&system).join("System32/WindowsPowerShell/v1.0/powershell.exe"));
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)",
+        ]);
+        command.env(
+            "RDH_TEST_INSTALLER",
+            repository.join("packaging/install.ps1"),
+        );
+        command
+    };
+    command
+        .env("RDH_BASE", directory)
+        .env("RDH_INSTALL_DIR", prefix)
+        .env_remove("RDH_VERSION")
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
 fn success(output: Output) {
     assert!(
         output.status.success(),
@@ -159,6 +203,24 @@ fn selected_binary(prefix: &Path, version: &str) -> PathBuf {
         .join("versions")
         .join(version)
         .join(if cfg!(windows) { "rdh.exe" } else { "rdh" })
+}
+
+#[test]
+fn bootstrap_accepts_script_input_without_arguments() {
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    let bytes = fs::read(initial_binary::path()).unwrap();
+    artifact(&fixture.0, version, &bytes);
+    let prefix = fixture.0.join("default install ' 雪");
+    success(bootstrap_defaults(&fixture.0, &prefix));
+    assert_eq!(
+        sha256_hex(&fs::read(selected_binary(&prefix, version)).unwrap()),
+        sha256_hex(&bytes)
+    );
+    failure(
+        bootstrap_defaults(&fixture.0, &prefix),
+        "prefix already exists",
+    );
 }
 
 #[test]
