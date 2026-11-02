@@ -1,4 +1,4 @@
-//! Real systemd/LaunchDaemon acceptance with a temporary registration. Requires
+//! Real systemd/LaunchDaemon integration tests with a temporary registration. Requires
 //! passwordless sudo on a disposable native runner; it is never run by default.
 #![cfg(any(
     target_os = "linux",

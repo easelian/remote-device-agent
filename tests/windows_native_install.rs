@@ -708,10 +708,9 @@ async fn managed_windows_task_targets_follow_offline_update_and_recovery() {
     assert!(!run(&old_binary, &root, &upgrade).await.status.success());
     task.stop();
     stopped_task_agent(&first);
-    // Older Agents could persist the Task action's ordinary Win32 path,
-    // although the profile catalog already used an extended canonical path.
-    // Recovery must resolve that existing metadata, as well as producing
-    // canonical metadata for newly started Agents.
+    // Task action markers may contain ordinary Win32 paths while the
+    // profile catalog uses extended canonical paths. Recovery must resolve
+    // both spellings to the same file; startup records canonical paths.
     let markers: Vec<_> = fs::read_dir(prefix.join(".running"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

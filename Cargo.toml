@@ -26,27 +26,27 @@ path = "src/main.rs"
 
 [features]
 default = ["experimental-windows-install", "experimental-macos-install"]
-# Requires native private installation, target switching and crash recovery checks.
+# Windows native installation, version switching and recovery.
 experimental-windows-install = ["experimental-windows-processes", "experimental-windows-startup", "experimental-windows-audit"]
-# Requires native Mach-O, installation exclusion, pointer recovery and upgrade checks.
+# macOS native installation, version switching and recovery.
 experimental-macos-install = ["experimental-macos-files", "experimental-macos-processes", "experimental-macos-startup", "experimental-macos-audit"]
-# Requires native task/service registration and administrator grant validation.
+# Windows task/service registration and administrator grants.
 experimental-windows-startup = ["experimental-windows-processes", "experimental-windows-private-storage", "dep:windows"]
-# Requires native Job Object, pipe, inheritance, tree cleanup and session checks.
+# Windows Job Object process supervision and pipe handling.
 experimental-windows-processes = ["experimental-windows-files"]
-# Requires native device-file, directory and atomic mutation checks.
+# Windows handle-relative file operations.
 experimental-windows-files = []
-# Requires native Windows ACL, path, and lock interoperability validation.
+# Windows private storage, ACL validation and profile locking.
 experimental-windows-private-storage = []
-# Requires native audit ACL, rotation and recovery validation.
+# Windows private audit files, rotation and recovery.
 experimental-windows-audit = ["experimental-windows-private-storage"]
-# Requires native macOS filesystem, synchronization and audit handoff validation.
+# macOS audit file synchronization and rotation.
 experimental-macos-audit = []
-# Requires native launchd, filesystem and local approval validation.
+# macOS launchd registration and local approval.
 experimental-macos-startup = []
-# Requires native path and filesystem mutation validation.
+# macOS descriptor-relative file operations.
 experimental-macos-files = []
-# Requires native process-group observation, pipe, reap and shutdown validation.
+# macOS process-group observation and cleanup.
 experimental-macos-processes = ["experimental-macos-files"]
 
 [dependencies]

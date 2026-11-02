@@ -30,7 +30,7 @@ remote-device-agent/
 └── .github/workflows/      # Native platform CI
 ```
 
-Single-file features such as `network.rs`, `config.rs`, `rpc.rs` and `searches.rs` remain at the `src/` root; the tree omits some of them. Features with multiple files are grouped in directories containing their public interface and shared implementation. Where needed, platform code and tests live directly in `posix/`, `linux/`, `macos/` or `windows/` subdirectories. `posix/` contains code shared by Linux and macOS. Avoid classification-only intermediate directories and splitting existing single-file implementations solely to reorganize the tree.
+Single-file features such as `network.rs`, `config.rs`, `rpc.rs` and `searches.rs` live at the `src/` root; the tree omits some of them. Features with multiple files are grouped in directories containing their public interface and shared implementation. Where needed, platform code and tests live directly in `posix/`, `linux/`, `macos/` or `windows/` subdirectories. `posix/` contains code shared by Linux and macOS. Avoid classification-only intermediate directories and splitting existing single-file implementations solely to reorganize the tree.
 
 Cargo output goes in `target/`; candidate releases and validation logs go in the ignored `.build/` directory.
 
@@ -42,21 +42,21 @@ Cargo output goes in `target/`; candidate releases and validation logs go in the
 | `processes/` | `mod.rs` exposes the interface, `native.rs` manages processes, and platform directories handle process groups, Job Objects, pipes and reaping. |
 | `audit/` | `mod.rs` handles audit records and rotation; `posix/` contains POSIX file operations. |
 | `storage/` | Private storage and permission checks; `posix/` contains POSIX file operations, `windows/` contains ACL and handle code, and `macos/acl.rs` checks macOS ACLs. |
-| `profile_lock/`, `install_lock/` | `mod.rs` selects platforms and exports the existing lock interfaces; `posix/` and `windows/` contain their implementations. |
+| `profile_lock/`, `install_lock/` | `mod.rs` selects platforms and exports the lock interfaces; `posix/` and `windows/` contain their implementations. |
 | `native_install/` | Native installation and version selection, implemented in `posix/` and `windows/`. |
 | `service_host/` | System service entry point and platform-specific startup and shutdown. |
 | `service_install/` | System service installation, including POSIX account, profile and storage operations and Windows installation and updates. |
 | `startup/` | Startup settings, CLI, grants and platform selection. Platform directories contain native registration; `posix/` contains shared helpers and grants, and `windows/tasks.rs` handles Task Scheduler. |
 
-Low-level Windows audit and startup grant operations remain in `storage/windows/audit.rs` and `storage/windows/startup_grants.rs`, reusing private storage ACL and handle operations. `audit/` and `startup/` call them through existing interfaces.
+Low-level Windows audit and startup grant operations live in `storage/windows/audit.rs` and `storage/windows/startup_grants.rs`, reusing private storage ACL and handle operations. `audit/` and `startup/` call them through existing interfaces.
 
 `app.rs` uses `service_install::runtime_guard` to validate system service startup and hold the installation lock. `service_install/mod.rs` exports implementations according to platform and build features: Linux and macOS with installation enabled use POSIX; Windows with installation enabled uses Windows. The caller holds the returned guard through startup and shutdown cleanup. Builds without native service installation return `None` and do not acquire this lock.
 
-Upgrade commands acquire a service installation lease through `service_install::Lease`; the POSIX service entry point checks installation state through `service_install::check_service_entry`. The Windows stable launcher obtains and holds the selected program through `install_lock::command_target` or `service_install::command_target`. Existing implementations retain ownership and release ordering for locks and handles.
+Upgrade commands acquire a service installation lease through `service_install::Lease`; the POSIX service entry point checks installation state through `service_install::check_service_entry`. The Windows stable launcher obtains and holds the selected program through `install_lock::command_target` or `service_install::command_target`. Platform implementations own the locks and handles and control their release order.
 
-The canonical startup management entry point is `startup::cli`; `grant`, `native` and platform implementations are declared inside `startup`. Other features use the exported command execution, administrator checks and task update interfaces. `lib.rs` retains the public `startup_cli` alias, so `startup_cli::run` still points to the same function.
+The canonical startup management entry point is `startup::cli`; `grant`, `native` and platform implementations are declared inside `startup`. Other features use the exported command execution, administrator checks and task update interfaces. `lib.rs` exports `startup::cli` as `startup_cli`; both paths resolve to the same module.
 
-`profile_lock/posix/mod.rs` and `storage/posix/mod.rs` map to each feature's internal `platform` via `#[path]`; `startup/posix/grant.rs` is loaded by `startup::grant::posix`. Platform feature conditions remain unchanged. Startup tests and the CI native LaunchAgent selector use paths under `startup::`.
+`profile_lock/posix/mod.rs` and `storage/posix/mod.rs` map to each feature's internal `platform` via `#[path]`; `startup/posix/grant.rs` is loaded by `startup::grant::posix`. Startup tests and the CI native LaunchAgent selector use paths under `startup::`.
 
 ## Reading order
 
@@ -67,15 +67,15 @@ The canonical startup management entry point is `startup::cli`; `grant`, `native
 
 `system.rs` supplies system information and local browser launching. Pairing uses `system::open_browser` to open a validated verification URL; the helper selects platform commands, checks SSH and Linux display environments and reaps background children. Pairing decides whether to honor `--no-browser`; a browser launch failure does not stop polling.
 
-`processes/mod.rs` contains the public interface, capability declaration and platform gates. `processes/native.rs` manages shared process state, output buffers and lifecycle; `posix/mod.rs` implements process groups and reaping, `macos/mod.rs` observes macOS process groups, and `windows/` contains Job Object, pipe and test code. The Rust module remains `processes::native::platform` and callers and test selectors retain that path.
+`processes/mod.rs` contains the public interface, capability declaration and platform gates. `processes/native.rs` manages shared process state, output buffers and lifecycle; `posix/mod.rs` implements process groups and reaping, `macos/mod.rs` observes macOS process groups, and `windows/` contains Job Object, pipe and test code. The platform implementation is loaded as `processes::native::platform`; callers and test selectors use that module path.
 
 RPC reads the backend's termination mechanism from `Processes::TREE_TERMINATION`: `process-group` on POSIX, `job-object` on Windows and `unavailable` without a compiled backend. This is reported separately from the local `allow_shell` permission.
 
-See [architecture.md](architecture.md) for module responsibilities and resource lifetimes. Local management commands are organized in `startup/cli.rs` and `upgrade_cli.rs`; installation and version selection start at `native_install/mod.rs`, `install_lock/mod.rs` and `update.rs`, while system service execution and installation start at `service_host/mod.rs` and `service_install/mod.rs`. Online update coordination remains in `service_controller.rs` and `service_update.rs`.
+See [architecture.md](architecture.md) for module responsibilities and resource lifetimes. Local management commands are organized in `startup/cli.rs` and `upgrade_cli.rs`; installation and version selection start at `native_install/mod.rs`, `install_lock/mod.rs` and `update.rs`, while system service execution and installation start at `service_host/mod.rs` and `service_install/mod.rs`. Online update coordination lives in `service_controller.rs` and `service_update.rs`.
 
 ## Build and test entry points
 
-Run the commands in [maintenance.md](maintenance.md#build-and-validate) from the repository root. The package remains `rdh-agent` and the executable remains `rdh`; existing `cargo ... -p rdh-agent` and `cargo ... -p xtask` commands still apply.
+Run the commands in [maintenance.md](maintenance.md#build-and-validate) from the repository root. The package is `rdh-agent` and the executable is `rdh`. Select the Agent or build helper with `cargo ... -p rdh-agent` or `cargo ... -p xtask`.
 
 Unit tests live in their source modules. `files/mod.rs` lists public types and primary methods first, with tests at the end. Files in `tests/` are Cargo integration test entry points; for example, `cargo test --test native_bootstrap` verifies installation bootstrap scripts. Upgrade and readiness tests require a separate candidate built with `xtask native-test-candidate` and `RDH_NATIVE_TEST_CANDIDATE_DIR` set to its directory.
 

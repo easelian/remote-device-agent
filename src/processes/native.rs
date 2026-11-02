@@ -20,7 +20,6 @@ use platform::{Child, os_error, supervise};
 const MAX_OUTPUT: usize = 256 * 1024;
 const MAX_JOBS: usize = 64;
 const TICK: Duration = Duration::from_millis(5);
-const SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 // Each element is one Unicode scalar value. The allocation is bounded by
 // MAX_OUTPUT * size_of::<char>(), independently of UTF-8 byte length.
@@ -131,7 +130,7 @@ impl Job {
             stdin_serial: Mutex::new(()),
         }
     }
-    fn read(&self, offset: f64, limit: usize, output: bool) -> Value {
+    fn read(&self, offset: u64, limit: usize, output: bool) -> Value {
         let state = lock(&self.state);
         let mut result = json!({
             "job_id":self.id, "pid":state.pid, "status":state.status,
@@ -142,12 +141,9 @@ impl Job {
             result["error"] = error.clone();
         }
         if output {
-            let base = state.output.base as f64;
+            let base = state.output.base;
             let start = offset.max(base);
-            // Float-to-usize conversion saturates for an offset beyond the
-            // retained buffer. That lets all finite integral JS Numbers
-            // produce the same empty page without allocating or looping.
-            let relative = (start - base) as usize;
+            let relative = usize::try_from(start - base).unwrap_or(usize::MAX);
             let content: String = state
                 .output
                 .chars
@@ -155,15 +151,8 @@ impl Job {
                 .skip(relative)
                 .take(limit)
                 .collect();
-            let cursor = |value: f64| {
-                if value <= SAFE_INTEGER as f64 {
-                    json!(value as u64)
-                } else {
-                    json!(value)
-                }
-            };
-            result["offset"] = cursor(start);
-            result["next_offset"] = cursor(start + content.chars().count() as f64);
+            result["offset"] = json!(start);
+            result["next_offset"] = json!(start + content.chars().count() as u64);
             result["output_dropped"] = json!(offset < base);
             result["output"] = json!(content);
         }
@@ -250,10 +239,8 @@ fn integer(
 ) -> Result<u64, ProcessFailure> {
     match params.get(key) {
         None => Ok(default),
-        Some(value) => value
-            .as_f64()
-            .filter(|n| n.is_finite() && n.fract() == 0.0 && *n >= min as f64 && *n <= max as f64)
-            .map(|n| n as u64)
+        Some(value) => crate::json_number::unsigned(value)
+            .filter(|n| *n >= min && *n <= max)
             .ok_or_else(|| invalid(format!("Invalid {key}"))),
     }
 }
@@ -334,13 +321,8 @@ impl Processes {
             "start_process" => self.start(params, request_id, deadline, closing),
             "read_process" => {
                 let job = self.job(params)?;
-                let offset = match params.get("offset") {
-                    None => 0.0,
-                    Some(value) => value
-                        .as_f64()
-                        .filter(|n| n.is_finite() && n.fract() == 0.0 && *n >= 0.0)
-                        .ok_or_else(|| invalid("Invalid offset/limit"))?,
-                };
+                let offset = integer(params, "offset", 0, 0, u64::MAX)
+                    .map_err(|_| invalid("Invalid offset/limit"))?;
                 let limit = integer(params, "limit", 32768, 1, 65536)
                     .map_err(|_| invalid("Invalid offset/limit"))?
                     as usize;
@@ -352,9 +334,7 @@ impl Processes {
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>();
-                Ok(
-                    json!({"jobs":jobs.iter().map(|job| job.read(0.0, 0, false)).collect::<Vec<_>>()}),
-                )
+                Ok(json!({"jobs":jobs.iter().map(|job| job.read(0, 0, false)).collect::<Vec<_>>()}))
             }
             "write_process_stdin" => self.write_stdin(params, deadline, closing),
             "terminate_process" => {
@@ -362,7 +342,7 @@ impl Processes {
                 check(deadline, closing)?;
                 job.terminate();
                 wait_closed(&job, deadline.min(Instant::now() + Duration::from_secs(1)));
-                Ok(job.read(0.0, 32768, true))
+                Ok(job.read(0, 32768, true))
             }
             _ => Err(ProcessFailure::new(
                 "unsupported",
@@ -531,7 +511,7 @@ impl Processes {
                 "Process launch outcome is unknown; inspect this job before retrying",
                 "unknown",
             );
-            failure.summary = job.read(0.0, 0, false);
+            failure.summary = job.read(0, 0, false);
             return Err(failure);
         }
         if state.status == "failed" {
@@ -543,7 +523,7 @@ impl Processes {
             &job,
             deadline.min(Instant::now() + Duration::from_secs_f64(wait)),
         );
-        Ok(job.read(0.0, 32768, true))
+        Ok(job.read(0, 32768, true))
     }
 
     fn write_stdin(
@@ -734,7 +714,7 @@ fn start_failure(job: &Job) -> ProcessFailure {
         },
         if launched { "unknown" } else { "failed" },
     );
-    failure.summary = job.read(0.0, 0, false);
+    failure.summary = job.read(0, 0, false);
     failure
 }
 fn finish_spawn_failure(job: &Job, error: io::Error, hook: Option<&ExitHook>) {
@@ -751,7 +731,7 @@ fn finish(job: &Job, hook: Option<&ExitHook>) {
     // Hooks complete before the resource permit is released. In particular,
     // close cannot report success while a completion audit is still running.
     if let Some(hook) = hook {
-        let mut summary = job.read(0.0, 0, false);
+        let mut summary = job.read(0, 0, false);
         summary["cleanup_pending"] = json!(false);
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             hook(job.request_id.clone(), summary)

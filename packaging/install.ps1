@@ -14,7 +14,8 @@ if ($Help) {
 usage: install.ps1 -Version VERSION [-Base HTTPS_URL|DIRECTORY] [-Service] -NativeArguments @(...)
        install.ps1 -Offline NATIVE_BINARY [-Service] -NativeArguments @(...)
 
-The native binary must have a matching .sha256 file. No Node/npm is used.
+The native binary must have a matching SHA256SUMS entry or per-binary .sha256 file.
+No Node/npm is used.
 NativeArguments go to rdh install-native, or install-service with -Service.
 The Rust command owns all profile, ownership, existing-install and recovery checks.
 It does not pair a device, start a service or overwrite an installation.
@@ -115,19 +116,35 @@ try {
     $rdhBinary = Join-Path $rdhTemporary $rdhName
     $rdhChecksum = Join-Path $rdhTemporary 'checksum'
     if ($Offline) {
-        Copy-Item -LiteralPath ($Offline + '.sha256') -Destination $rdhChecksum
+        $rdhSums = [IO.Path]::Combine([IO.Path]::GetDirectoryName($Offline), 'SHA256SUMS')
+        if ([IO.File]::Exists($rdhSums)) {
+            Copy-Item -LiteralPath $rdhSums -Destination $rdhChecksum
+        } else {
+            Copy-Item -LiteralPath ($Offline + '.sha256') -Destination $rdhChecksum
+        }
         Copy-Item -LiteralPath $Offline -Destination $rdhBinary
     } else {
-        Fetch-Native ($rdhName + '.sha256') $rdhChecksum
+        try {
+            Fetch-Native 'SHA256SUMS' $rdhChecksum
+        } catch {
+            Remove-Item -LiteralPath $rdhChecksum -Force -ErrorAction SilentlyContinue
+            Fetch-Native ($rdhName + '.sha256') $rdhChecksum
+        }
         Fetch-Native $rdhName $rdhBinary
     }
-    if ((Get-Item -LiteralPath $rdhChecksum).Length -gt 1024) { throw 'Checksum record is too large.' }
+    if ((Get-Item -LiteralPath $rdhChecksum).Length -gt 65536) { throw 'Checksum record is too large.' }
     if ((Get-Item -LiteralPath $rdhBinary).Length -gt 268435456) { throw 'Native executable is too large.' }
-    $rdhRecord = [IO.File]::ReadAllText($rdhChecksum)
-    $rdhPattern = '\A([0-9a-f]{64})  ' + [regex]::Escape($rdhName) + '\r?\n\z'
-    $rdhMatch = [regex]::Match($rdhRecord, $rdhPattern)
-    if (!$rdhMatch.Success) { throw 'Invalid checksum record.' }
-    if ((Get-FileHash -LiteralPath $rdhBinary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $rdhMatch.Groups[1].Value) {
+    $rdhExpected = $null
+    foreach ($rdhLine in [IO.File]::ReadAllLines($rdhChecksum)) {
+        $rdhMatch = [regex]::Match($rdhLine, '\A([0-9a-f]{64})  ([^\r\n]+)\z')
+        if (!$rdhMatch.Success) { throw 'Invalid checksum record.' }
+        if ($rdhMatch.Groups[2].Value -ceq $rdhName) {
+            if ($null -ne $rdhExpected) { throw 'Duplicate checksum record.' }
+            $rdhExpected = $rdhMatch.Groups[1].Value
+        }
+    }
+    if ($null -eq $rdhExpected) { throw 'Invalid checksum record.' }
+    if ((Get-FileHash -LiteralPath $rdhBinary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $rdhExpected) {
         throw 'Native executable checksum mismatch.'
     }
     $rdhReported = & $rdhBinary --version

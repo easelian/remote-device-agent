@@ -77,7 +77,7 @@ pub(crate) fn managed_grant(config: &Path, mode: Mode) -> Result<bool> {
     let filename = grant_name(config)?;
     // Absence never authorizes anything. Check it before walking the trust
     // chain so an unprivileged namespace without host root ownership still
-    // falls back to local approval, as the previous Agent did.
+    // falls back to local approval.
     #[cfg(target_os = "macos")]
     let grant_directory = "/private/etc/remote-device-hub/startup-grants";
     #[cfg(not(target_os = "macos"))]

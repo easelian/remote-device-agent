@@ -77,10 +77,8 @@ try {
       const file = path.join(dir, name);
       const expected = `${sha(file)}  ${name}\n`;
       equal(fs.readFileSync(`${file}.sha256`, 'utf8'), expected, `${platform}: invalid checksum for ${name}`);
-      for (const entry of [name, `${name}.sha256`]) {
-        fs.copyFileSync(path.join(dir, entry), path.join(output, entry), fs.constants.COPYFILE_EXCL);
-        assets.push(entry);
-      }
+      fs.copyFileSync(file, path.join(output, name), fs.constants.COPYFILE_EXCL);
+      assets.push(name);
     }
     const dest = path.join(staging, 'native', platform);
     fs.mkdirSync(dest);

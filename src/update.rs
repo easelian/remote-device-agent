@@ -1,5 +1,5 @@
 //! Native release index validation and staged rollout decisions.
-//! Schema 2 intentionally cannot be confused with the older Node archives.
+//! Schema 2 requires native-binary artifacts with platform, size and digest metadata.
 use std::collections::BTreeMap;
 
 use serde_json::Value;

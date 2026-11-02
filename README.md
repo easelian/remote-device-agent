@@ -1,65 +1,84 @@
 # Remote Device Hub Agent
 
-A standalone Rust Agent for Linux, macOS and Windows. It opens an authenticated
-WebSocket connection to Remote Device Hub and executes bounded file, search and
-process operations under the device user's authority. The native Agent runtime,
-business logic, Rust build and Rust tests do not require Node or npm. The npm
-distribution and its packaging tests require Node and npm.
+English | [zhCN](README-zhCN.md)
 
-This repository contains the `0.8.0` Rust Agent.
-The latest validation scope and remaining work are recorded in the
-[rewrite design](docs/rust-rewrite-design.md). See [distribution](docs/distribution.md)
-for release preparation and npm publishing; development artifacts are not a
-published stable channel.
+Connect a Linux, macOS or Windows device to Remote Device Hub for remote file,
+search and process operations under the device user's authority.
 
-## Build and validate
-
-Use Rust 1.93.0, the target's native linker/SDK and the checked-in lockfile:
-
-```sh
-cargo +1.93.0 fmt --all -- --check
-cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
-mkdir -p .build
-cargo +1.93.0 run --locked -p xtask -- native-test-candidate \
-  --target x86_64-unknown-linux-gnu --out "$PWD/.build/native-test-candidate"
-RDH_NATIVE_TEST_CANDIDATE_DIR="$PWD/.build/native-test-candidate" \
-  cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
-cargo +1.93.0 run --locked -p xtask -- native-development \
-  --target x86_64-unknown-linux-gnu --out .build/native-development
-```
-
-Change the target to match the host and use new output directories for each build.
-The builder creates the raw executable,
-checksum, archive, provenance record and a verified extraction. Integration tests
-which need an independent update candidate or a real service manager have
-additional prerequisites: follow [Maintenance](docs/maintenance.md) and
-[Agent CI](.github/workflows/ci.yml). An ordinary local test run does not include
-all privileged and platform-specific cases.
+Install with a [download script](#install-with-a-script) or
+[npm](#install-with-npm). Both methods provide a ready-to-run native Agent;
+no Rust toolchain or source checkout is required.
 
 ## Install and run
 
-Obtain or build the correct native artifact first. The examples below use an
-executable extracted from a development archive; replace absolute paths with
-local paths. For user installation on Linux or macOS:
+### Install with a script
+
+The script selects the binary for your operating system and CPU, verifies its
+checksum and version, and installs it into a new directory. Supported CPUs are
+x86_64 and ARM64. This method does not require Node.js or npm.
+
+**Linux and macOS** — requires `curl` and either `sha256sum` or `shasum`:
 
 ```sh
-/absolute/artifact/rdh install-native --prefix /absolute/new-install
-/absolute/new-install/rdh --root work=/absolute/work --no-browser
+rdh_version=0.8.0
+rdh_release="https://github.com/easelian/remote-device-agent/releases/download/v${rdh_version}"
+curl -fsSL "$rdh_release/install.sh" -o install-rdh.sh
+sh install-rdh.sh --version "$rdh_version" --base "$rdh_release" \
+  -- --prefix "$HOME/.local/lib/rdh"
+export PATH="$HOME/.local/lib/rdh:$PATH"
+rdh --version
 ```
 
-On Windows, the equivalent commands are:
+Linux uses the musl binary by default; add `--libc gnu` before `--` to select
+glibc 2.39 or later. macOS selects its native binary automatically.
+
+**Windows** — run in PowerShell with script execution enabled:
 
 ```powershell
-& 'C:\Artifact\rdh.exe' install-native --prefix 'C:\Path\NewInstall'
-& 'C:\Path\NewInstall\rdh.exe' --root 'work=C:\Work' --no-browser
+$rdhVersion = '0.8.0'
+$rdhRelease = "https://github.com/easelian/remote-device-agent/releases/download/v$rdhVersion"
+$rdhPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
+Invoke-WebRequest "$rdhRelease/install.ps1" -OutFile install-rdh.ps1
+.\install-rdh.ps1 -Version $rdhVersion -Base $rdhRelease `
+  -NativeArguments @('--prefix', $rdhPrefix)
+$env:PATH = "$rdhPrefix;$env:PATH"
+rdh --version
 ```
 
-The destination must be new. Installation creates stable `rdh`,
-`remote-device-agent` and `remote-device-hub` commands (`.exe` on Windows).
-They use the selected native version after an update. Add that program directory
-to your local PATH if desired. The installer does not change shell startup files.
-[Bootstrap scripts](docs/distribution.md#bootstrap-installation) can download and
-verify the raw artifact before invoking the same Rust command.
+Choose a new installation directory; the scripts do not overwrite an existing
+installation. The PATH changes above apply to the current terminal. Add the
+installation directory to your user PATH to use `rdh` in future terminals.
+See [Distribution](docs/distribution.md#bootstrap-installation) for offline
+installation and custom download sources.
+
+### Install with npm
+
+Requires Node.js 22.14 or later and npm. On glibc-based Linux, the `0.8.0` package
+requires glibc 2.39 or later; use the script's default musl binary on systems
+with an earlier glibc version.
+
+Install the npm package attached to the
+[GitHub release](https://github.com/easelian/remote-device-agent/releases/tag/v0.8.0):
+
+```sh
+npm install --global https://github.com/easelian/remote-device-agent/releases/download/v0.8.0/easelian-remote-device-agent-0.8.0.tgz
+rdh --version
+```
+
+The package is named `@easelian/remote-device-agent`. It bundles the native
+binaries and selects the matching platform at launch. The same command works
+on Linux, macOS and Windows; npm's global executable directory must be on PATH.
+
+Both installation methods provide `rdh`, `remote-device-agent` and
+`remote-device-hub`. Installation does not pair the device or start a service.
+
+### Pair and connect
+
+From the directory you want to make available, start the Agent:
+
+```sh
+rdh --no-browser
+```
 
 On first launch, the Agent prints a pairing URL and code. Review the device,
 roots and permissions in the browser before approving. `--no-browser` prints the
@@ -74,20 +93,13 @@ profile. To register an existing stopped profile with an installation, pass
 `--config /absolute/paired.json` to `install-native`; it is validated and retained
 at that path, without copying credentials.
 
-When pairing returns `discovery_url`, the Agent authenticates to that Gate with
-its saved device credential. The Gate returns a short-lived, single-use ticket
-bound to the assigned Core and this Agent instance; only that ticket is sent to
-the Core. The current Gate authority protocol requires this v2-capable Rust
-Agent. Previously published Node artifacts and v1 discovery clients do not
-implement it. See [Network configuration](docs/network.md#cluster-discovery).
-
 ### Background startup
 
 After pairing with an installed command, inspect and enable user startup:
 
 ```sh
-/absolute/new-install/rdh startup status --config /absolute/paired.json
-/absolute/new-install/rdh startup set user --config /absolute/paired.json
+rdh startup status --config /absolute/paired.json
+rdh startup set user --config /absolute/paired.json
 ```
 
 This creates or enables future user startup; it does not start or stop the current
@@ -103,13 +115,17 @@ Windows requires administrator authority and creates a LocalService registration
 Both keep writable device state separate from protected program files, create a
 stopped registration and require a local start. They never elevate automatically.
 
-### Native updates and removal
+### Updates and removal
 
-Native updates validate a schema-2 index and candidate executable. End managed
-work and stop the Agent before `upgrade --no-restart` or `rollback --no-restart`;
+For npm installations, stop the Agent and install the desired release package
+with npm. Use `npm uninstall --global @easelian/remote-device-agent` to remove
+the package after disabling any background startup registration.
+
+For script installations, native updates validate a schema-2 index and candidate
+executable. End managed work and stop the Agent before `upgrade --no-restart` or `rollback --no-restart`;
 restart locally and verify a new Hub connection. Linux's verified systemd user
 service path also supports automatic update and readiness rollback. macOS and
-Windows use stopped updates and manual restart in this phase. See
+Windows use stopped updates and manual restart. See
 [Maintenance](docs/maintenance.md#update-and-recover-an-installation).
 
 To remove an installation, disable startup, stop every Agent using it and remove
@@ -149,7 +165,8 @@ initiates cleanup. Profile ownership is not released while effectful work remain
 Cross-compilation is not native runtime evidence. UNC syntax coverage does not
 establish live SMB compatibility, and process/file tests do not establish
 power-loss durability. See [Hardening](docs/hardening.md) for policy and audit
-contracts and the design's acceptance section for platform evidence.
+contracts and [platform validation](docs/native-lifecycle.md#platforms-and-validation)
+for the scope of native CI.
 
 ## Hub and network settings
 
@@ -160,9 +177,50 @@ origins remain isolated; an explicit configuration for a different Hub is reject
 without forwarding its token. Changing defaults does not rewrite installed
 service commands or existing bindings.
 
+When pairing returns `discovery_url`, the Agent authenticates to that Gate with
+its saved device credential. The Gate returns a short-lived, single-use ticket
+bound to the assigned Core and this Agent instance; only that ticket is sent to
+the Core. The current Gate authority protocol requires this v2-capable Rust
+Agent. Discovery v1 clients cannot authenticate to this Gate/Core boundary. See [Network configuration](docs/network.md#cluster-discovery).
+
 Connections are direct by default. Opt into local proxy variables with
 `RDH_USE_ENV_PROXY=1`; add PEM trust roots with `RDH_CA_BUNDLE`.
 See [Network configuration](docs/network.md).
+
+## Development
+
+### Build and validate
+
+Use Rust 1.93.0, the target's native linker/SDK and the checked-in lockfile:
+
+```sh
+cargo +1.93.0 fmt --all -- --check
+cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+mkdir -p .build
+cargo +1.93.0 run --locked -p xtask -- native-test-candidate \
+  --target x86_64-unknown-linux-gnu --out "$PWD/.build/native-test-candidate"
+RDH_NATIVE_TEST_CANDIDATE_DIR="$PWD/.build/native-test-candidate" \
+  cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
+cargo +1.93.0 run --locked -p xtask -- native-development \
+  --target x86_64-unknown-linux-gnu --out .build/native-development
+```
+
+Change the target to match the host and use new output directories for each build.
+The builder creates the raw executable,
+checksum, archive, provenance record and a verified extraction. Integration tests
+which need an independent update candidate or a real service manager have
+additional prerequisites: follow [Maintenance](docs/maintenance.md) and
+[Agent CI](.github/workflows/ci.yml). An ordinary local test run does not include
+all privileged and platform-specific cases.
+
+To install a locally built artifact into a new directory:
+
+```sh
+/absolute/artifact/rdh install-native --prefix /absolute/new-install
+```
+
+On Windows, use `rdh.exe` and a Windows absolute path. The workspace version is
+specified in [Cargo.toml](Cargo.toml).
 
 ## Documentation
 
@@ -171,7 +229,7 @@ See [Network configuration](docs/network.md).
 - [Hardening](docs/hardening.md): policies, sandbox, environment and audit.
 - [Distribution](docs/distribution.md): artifacts, bootstrap and channel format.
 - [Maintenance](docs/maintenance.md): checks, upgrades and recovery.
-- [Rust replacement design](docs/rust-rewrite-design.md) ([zhCN](docs/rust-rewrite-design-zhCN.md)): decisions and acceptance.
+- [Native lifecycle](docs/native-lifecycle.md) ([zhCN](docs/native-lifecycle-zhCN.md)): installation, updates and platform validation.
 
 ## License
 

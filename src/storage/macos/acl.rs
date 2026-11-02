@@ -1,4 +1,4 @@
-//! Conservative extended-ACL check for program and migration storage.
+//! Extended-ACL checks for private program and configuration storage.
 use crate::error::{Error, Result};
 use std::path::Path;
 

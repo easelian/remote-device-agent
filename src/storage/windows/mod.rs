@@ -1,7 +1,6 @@
-//! Experimental private Windows configuration reads and atomic publication.
+//! Private Windows configuration reads and atomic publication.
 //!
-//! These helpers and experimental profile locking are disabled by default and
-//! require native Windows validation. Replacement requires FileRenameInformationEx;
+//! Replacement requires FileRenameInformationEx;
 //! unsupported systems never fall back to deleting or truncating the target.
 use std::ffi::{OsStr, c_void};
 use std::fs::File;
@@ -194,8 +193,7 @@ impl Drop for LocalMemory {
     }
 }
 
-/// Use the same protected, user-only ACL as the legacy Agent's new objects.
-/// The descriptor is attached at creation, before any secret is written.
+/// Return the current user's SID in its textual SDDL form.
 pub(crate) fn current_sid_text() -> Result<String> {
     let user = Sid::current()?;
     let mut raw = null_mut();
@@ -300,7 +298,7 @@ fn private_descriptor(directory: bool) -> Result<LocalMemory> {
     Ok(LocalMemory(descriptor))
 }
 
-/// Validate the same owner and protected allow-list used by the legacy Agent.
+/// Validate the owner and protected ACL allowlist.
 /// The descriptor, owner and DACL must all belong to one live API result.
 fn validate_acl(
     identity: &Identity,
@@ -952,9 +950,9 @@ fn create_child_with_descriptor(
             FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_WRITE_THROUGH
         };
     // FILE_CREATE is exclusive. OBJ_DONT_REPARSE requests rejection of a
-    // redirected name; its use with a relative root remains a native Windows
-    // acceptance requirement. The verified parent also prevents untrusted
-    // principals from inserting names. All pointers outlive the call.
+    // redirected name relative to the held root. The verified parent also
+    // prevents untrusted principals from inserting names. All pointers
+    // outlive the call.
     // SAFETY: parent is live, text is one bounded component, and all outputs
     // and the creation descriptor are valid for the duration of the call.
     let status = unsafe {
@@ -1304,12 +1302,12 @@ fn write_private(path: &Path, data: &[u8], replace_existing: bool) -> Result<()>
 
 /// Install a new secret without overwriting any existing object. The private
 /// file is flushed before its handle-relative, non-replacing rename. Native
-/// Windows directory-metadata/crash durability still needs acceptance tests.
+/// Windows directory-metadata durability across crashes is not guaranteed.
 pub fn write_private_new(path: &Path, data: &[u8]) -> Result<()> {
     write_private(path, data, false)
 }
 
-/// Replace a private sidecar under the caller's legacy-compatible profile
+/// Replace a private sidecar under the caller's profile
 /// lock. Keep the verified old file open across one FileRenameInformationEx call;
 /// POSIX rename semantics preserve its existing readers. An initially absent
 /// name is published with non-replacing semantics instead. There is no
@@ -1948,7 +1946,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_lock_uses_legacy_names_and_refuses_a_changed_owner() {
+    fn profile_lock_refuses_a_changed_owner() {
         use crate::profile_lock::ProfileLocks;
 
         let fixture = Fixture::new();

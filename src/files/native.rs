@@ -22,7 +22,6 @@ use platform::{Opened, Parent, entries_bounded, make_directories, read_existing,
 const MAX_FILE: usize = 1024 * 1024;
 const MAX_CHUNK_FILE: u64 = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10000;
-const MAX_SAFE: u64 = 9007199254740991;
 
 fn io_error(e: std::io::Error) -> String {
     // OS errors contain no requested paths or user file contents.
@@ -101,12 +100,9 @@ fn number(p: &Value, name: &str, default: u64, min: u64, max: u64) -> Result<u64
     let Some(value) = p.get(name) else {
         return Ok(default);
     };
-    // Protocol v1 accepts integral JSON numbers such as 1.0, but not bools.
-    let n = value.as_f64().ok_or_else(|| format!("Invalid {name}"))?;
-    if !n.is_finite() || n.fract() != 0.0 || n < min as f64 || n > max as f64 {
-        return Err(format!("Invalid {name}"));
-    }
-    Ok(n as u64)
+    crate::json_number::unsigned(value)
+        .filter(|n| *n >= min && *n <= max)
+        .ok_or_else(|| format!("Invalid {name}"))
 }
 fn boolean(p: &Value, name: &str, default: bool) -> Result<bool, String> {
     match p.get(name) {
@@ -154,78 +150,10 @@ fn read_full(file: &mut Opened) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
-// The old Node Agent embeds Number.toString() values in fingerprints.
-// serde_json supplies the shortest rounded decimal digits; arrange those
-// digits using ECMAScript's fixed/scientific notation thresholds. Metadata
-// values are finite, including after converting the integer fields to f64.
-// https://tc39.es/ecma262/2024/#sec-numeric-types-number-tostring
-pub(super) fn js_number(value: f64) -> String {
-    if value == 0.0 {
-        return "0".into();
-    }
-    let serialized = serde_json::to_string(&value).expect("finite metadata number");
-    let (sign, number) = serialized
-        .strip_prefix('-')
-        .map_or(("", serialized.as_str()), |number| ("-", number));
-    let (mantissa, exponent) = number.split_once('e').map_or((number, 0), |(part, exp)| {
-        (part, exp.parse::<i32>().expect("JSON exponent"))
-    });
-    let decimal = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
-    let all_digits = mantissa.replace('.', "");
-    let first = all_digits
-        .find(|digit| digit != '0')
-        .expect("nonzero number");
-    let position = decimal + exponent - first as i32;
-    let digits = all_digits[first..].trim_end_matches('0');
-    let length = digits.len() as i32;
-
-    if length <= position && position <= 21 {
-        format!("{sign}{digits}{}", "0".repeat((position - length) as usize))
-    } else if position > 0 && position <= 21 {
-        format!(
-            "{sign}{}.{}",
-            &digits[..position as usize],
-            &digits[position as usize..]
-        )
-    } else if position > -6 && position <= 0 {
-        format!("{sign}0.{}{digits}", "0".repeat((-position) as usize))
-    } else {
-        let exp = position - 1;
-        let fraction = if digits.len() > 1 {
-            format!(".{}", &digits[1..])
-        } else {
-            String::new()
-        };
-        let plus = if exp >= 0 { "+" } else { "" };
-        format!("{sign}{}{fraction}e{plus}{exp}", &digits[..1])
-    }
+pub(super) fn fingerprint_parts(dev: u64, ino: u64, length: u64, modified_ms: f64) -> String {
+    format!("{dev}:{ino}:{length}:{modified_ms}")
 }
-
-pub(super) fn js_unsigned(value: u64) -> String {
-    if value <= 9_007_199_254_740_992 {
-        value.to_string()
-    } else {
-        js_number(value as f64)
-    }
-}
-
-fn fingerprint_parts(dev: u64, ino: u64, length: u64, modified_ms: f64) -> String {
-    format!(
-        "{}:{}:{}:{}",
-        js_unsigned(dev),
-        js_unsigned(ino),
-        js_unsigned(length),
-        js_number(modified_ms)
-    )
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileIdentity {
-    volume: u64,
-    id: u128,
-}
-
 struct MetadataFacts {
-    identity: FileIdentity,
     dev: u64,
     ino: u64,
     size: u64,
@@ -330,7 +258,7 @@ fn text_value(path: &str, bytes: &[u8], r: &TextRange) -> Value {
 }
 fn read(files: &Files, p: &Value) -> Result<Value, String> {
     let invalid_range = |_| "Invalid byte offset or length (1..65536)".to_string();
-    let offset = number(p, "offset", 0, 0, MAX_SAFE).map_err(invalid_range)?;
+    let offset = number(p, "offset", 0, 0, u64::MAX).map_err(invalid_range)?;
     let length = number(p, "length", 32768, 1, 65536).map_err(invalid_range)?;
     let root = root(files, p)?;
     let path = file_path(p)?;
@@ -368,7 +296,7 @@ fn chunk(files: &Files, p: &Value) -> Result<Value, String> {
         return Err("Invalid chunk encoding".into());
     }
     let invalid_range = |_| "Invalid byte offset or length".to_string();
-    let offset = number(p, "offset", 0, 0, MAX_SAFE).map_err(invalid_range)?;
+    let offset = number(p, "offset", 0, 0, u64::MAX).map_err(invalid_range)?;
     let length = number(p, "length", 32768, 1, 65536).map_err(invalid_range)?;
     let from_end = boolean(p, "from_end", false).map_err(invalid_range)?;
     let root = root(files, p)?;
@@ -376,10 +304,8 @@ fn chunk(files: &Files, p: &Value) -> Result<Value, String> {
     if normalize(path)? == "." {
         return Err("A file name is required".into());
     }
-    let metadata = root.metadata(path)?;
-    if !metadata.is_file {
-        return Err("Only regular files are supported".into());
-    }
+    let mut file = root.open(path, false)?;
+    let metadata = regular(&file, MAX_CHUNK_FILE)?;
     let end = if from_end {
         metadata.size.saturating_sub(offset)
     } else {
@@ -391,25 +317,9 @@ fn chunk(files: &Files, p: &Value) -> Result<Value, String> {
         offset
     };
     let available = end.saturating_sub(start).min(length);
-    if from_end && available == 0 {
-        root.verify()?;
-        let mut result = json!({"path":path,"utf8_valid":true,"content_encoding":"utf-8",
-            "offset":start,"next_offset":start,"size_bytes":metadata.size,"truncated":false,
-            "read_only":true,"fingerprint":metadata.fingerprint()});
-        if encoding != "base64" {
-            result["content"] = json!("");
-        }
-        if encoding != "text" {
-            result["content_base64"] = json!("");
-        }
-        return Ok(result);
+    if available > 0 {
+        file.seek(SeekFrom::Start(start)).map_err(io_error)?;
     }
-    let mut file = root.open(path, false)?;
-    let m = regular(&file, MAX_CHUNK_FILE)?;
-    if metadata.identity != m.identity {
-        return Err("File changed while opening".into());
-    }
-    file.seek(SeekFrom::Start(start)).map_err(io_error)?;
     let mut bytes = Vec::new();
     file.take(available)
         .read_to_end(&mut bytes)
@@ -417,9 +327,9 @@ fn chunk(files: &Files, p: &Value) -> Result<Value, String> {
     root.verify()?;
     let valid = std::str::from_utf8(&bytes).is_ok();
     let mut result = json!({"path":path,"utf8_valid":valid,"content_encoding":if valid {"utf-8"} else {"utf-8-replacement"},
-        "offset":start,"next_offset":start + bytes.len() as u64,"size_bytes":m.size,
-        "truncated": !(from_end && available == 0) && start + (bytes.len() as u64) < m.size,
-        "read_only":true,"fingerprint":m.fingerprint()});
+        "offset":start,"next_offset":start + bytes.len() as u64,"size_bytes":metadata.size,
+        "truncated": !(from_end && available == 0) && start + (bytes.len() as u64) < metadata.size,
+        "read_only":true,"fingerprint":metadata.fingerprint()});
     if encoding != "base64" {
         result["content"] = json!(String::from_utf8_lossy(&bytes));
     }
@@ -479,13 +389,7 @@ pub(super) fn search_read(files: &Files, name: &str, path: &str) -> Result<Vec<u
 }
 fn list(files: &Files, p: &Value) -> Result<Value, String> {
     let invalid_page = || "Invalid offset/limit".to_string();
-    let offset = match p.get("offset") {
-        None => 0.0,
-        Some(value) => value.as_f64().ok_or_else(invalid_page)?,
-    };
-    if !offset.is_finite() || offset.fract() != 0.0 || offset < 0.0 {
-        return Err(invalid_page());
-    }
+    let offset = number(p, "offset", 0, 0, u64::MAX).map_err(|_| invalid_page())?;
     let limit = number(p, "limit", 100, 1, 1000).map_err(|_| invalid_page())? as usize;
     let root = root(files, p)?;
     let path = match p.get("path") {
@@ -499,13 +403,7 @@ fn list(files: &Files, p: &Value) -> Result<Value, String> {
     // UTF-8 lexical order agrees with Unicode scalar-value order.
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let total = entries.len();
-    // The legacy API accepts any nonnegative integral JS number. An
-    // offset beyond this bounded directory is equivalent to its end.
-    let offset = if offset >= total as f64 {
-        total
-    } else {
-        offset as usize
-    };
+    let offset = offset.min(total as u64) as usize;
     let selected: Vec<Value> = entries
         .into_iter()
         .skip(offset)
@@ -518,47 +416,27 @@ fn list(files: &Files, p: &Value) -> Result<Value, String> {
 }
 
 fn multiple(files: &Files, p: &Value) -> Result<Value, String> {
-    let canonical = p.get("paths").and_then(Value::as_array);
-    let requests = if let Some(paths) = canonical {
-        paths
-            .iter()
-            .map(|path| {
-                let mut request = json!({"root":p.get("root"),"path":path});
-                for field in ["offset", "length"] {
-                    if let Some(v) = p.get(field) {
-                        request[field] = v.clone();
-                    }
-                }
-                request
-            })
-            .collect::<Vec<_>>()
-    } else {
-        p.get("files")
-            .and_then(Value::as_array)
-            .ok_or("Invalid files/total_limit")?
-            .clone()
-    };
-    let budget = if p.get("total_limit").is_some_and(Value::is_null) {
-        256 * 1024
-    } else {
-        number(p, "total_limit", 256 * 1024, 1, 256 * 1024)? as usize
-    };
-    if requests.is_empty() || requests.len() > 16 {
-        return Err("Invalid files/total_limit".into());
+    let paths = p
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or("Invalid paths")?;
+    if paths.is_empty() || paths.len() > 16 || p.get("files").is_some() {
+        return Err("Invalid paths".into());
     }
+    let budget = number(p, "total_limit", 256 * 1024, 1, 256 * 1024)? as usize;
+    let requests = paths.iter().map(|path| {
+        let mut request = json!({"root":p.get("root"),"path":path});
+        for field in ["offset", "length"] {
+            if let Some(value) = p.get(field) {
+                request[field] = value.clone();
+            }
+        }
+        request
+    });
     let mut used = 0;
     let mut truncated = false;
     let mut results = Vec::new();
-    for mut request in requests {
-        // The batch API uses nullish defaults, unlike read_file's strict
-        // offset/length validation. Preserve this distinction.
-        for name in ["offset", "length"] {
-            if request.get(name).is_some_and(Value::is_null)
-                && let Some(object) = request.as_object_mut()
-            {
-                object.remove(name);
-            }
-        }
+    for request in requests {
         let outcome = (|| -> Result<Value, String> {
             if !request.is_object() || !request["root"].is_string() || !request["path"].is_string()
             {
@@ -570,15 +448,8 @@ fn multiple(files: &Files, p: &Value) -> Result<Value, String> {
                 return Err("Total response limit exceeded".into());
             }
             let invalid_range = |_| "Invalid byte offset or length".to_string();
-            let length = number(
-                &request,
-                "length",
-                if canonical.is_some() { 16384 } else { 32768 },
-                1,
-                if canonical.is_some() { 16384 } else { 65536 },
-            )
-            .map_err(invalid_range)?;
-            let offset = number(&request, "offset", 0, 0, MAX_SAFE).map_err(invalid_range)?;
+            let length = number(&request, "length", 16384, 1, 16384).map_err(invalid_range)?;
+            let offset = number(&request, "offset", 0, 0, u64::MAX).map_err(invalid_range)?;
             let path = string(&request, "path", None)?;
             let root = root(files, &request)?;
             if normalize(path)? == "." {
@@ -908,38 +779,21 @@ fn mkdir(files: &Files, p: &Value, control: Control<'_>) -> Result<Value, String
 }
 
 fn move_file(files: &Files, p: &Value, control: Control<'_>) -> Result<Value, String> {
-    let modern = p.get("source").is_some() || p.get("destination").is_some();
-    if modern
-        && ["path", "destination_root", "destination_path"]
-            .iter()
-            .any(|key| p.get(key).is_some())
+    if ["path", "destination_root", "destination_path"]
+        .iter()
+        .any(|key| p.get(key).is_some())
     {
-        return Err("Mixed move parameter formats are not allowed".into());
+        return Err("Invalid move parameters".into());
     }
     let move_parameter = |name| {
         p.get(name)
             .and_then(Value::as_str)
             .ok_or("Invalid move parameters")
     };
-    let root_name = move_parameter("root")?;
-    let (source, destination_root, destination) = if modern {
-        (
-            move_parameter("source")?,
-            root_name,
-            move_parameter("destination")?,
-        )
-    } else {
-        (
-            move_parameter("path")?,
-            move_parameter("destination_root")?,
-            move_parameter("destination_path")?,
-        )
-    };
+    let source = move_parameter("source")?;
+    let destination = move_parameter("destination")?;
     if !files.allow_write {
         return Err("File writes are disabled in this device's configuration".into());
-    }
-    if root_name != destination_root {
-        return Err("Moving files across roots is disabled".into());
     }
     let root = root(files, p)?;
     normalize(source)?;
@@ -975,7 +829,7 @@ pub(super) fn dispatch(
     }
 }
 
-// Exact exception mappings from src/casefold.ts (Unicode 13).
+// Unicode 13 case-folding exception mappings.
 pub(super) fn casefold(value: &str) -> String {
     let mut result = String::new();
     for c in value.chars() {

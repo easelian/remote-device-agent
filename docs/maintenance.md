@@ -4,7 +4,7 @@ The repository builds the Rust Agent with Cargo and a Rust `xtask` artifact
 builder. Use Rust `1.93.0` and the checked-in `Cargo.lock`. No Server checkout,
 Node, npm or Python is required by the native Agent build and Rust tests. npm
 distribution checks require Node and npm. OS SDKs,
-linkers and platform service tools are still required for their respective targets.
+linkers and platform service tools are required for their respective targets.
 See [Code navigation](code-structure.md) for module ownership and extension points.
 
 ## Build and validate
@@ -34,7 +34,7 @@ eight native OS/CPU/libc targets on separate runners. Run privileged service tes
 only on disposable hosts: they create real temporary service registrations and
 accounts. Do not run them against an installed production profile.
 
-The retained `experimental-*` Cargo feature names are compatibility switches;
+The `experimental-*` Cargo features select platform backends;
 the normal default enables all applicable platform backends. The CI safety-gate
 checks use `--no-default-features` to verify deliberate reduced builds.
 
@@ -84,7 +84,7 @@ An interrupted switch leaves a pending record and prevents normal startup.
 program directories if recovery detects outside changes. Recovery only completes
 or reverses the recorded native switch; it does not infer missing state.
 
-Linux also supports the existing automatic update path for a verified user
+Linux supports automatic updates for a verified user
 systemd unit: `upgrade --service-unit NAME --service-config ABSOLUTE_PATH`.
 It checks active work, stops the matching instance, switches, restarts and checks
 that instance's new Hub readiness. Failure restores the old version. This path

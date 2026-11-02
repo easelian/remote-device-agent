@@ -15,8 +15,8 @@ usage() {
 usage: install.sh --version VERSION [--base HTTPS_URL|DIRECTORY] [--libc musl|gnu] -- NATIVE_ARGUMENTS...
        install.sh --offline NATIVE_BINARY -- NATIVE_ARGUMENTS...
 
-The native binary must have a matching .sha256 file. Linux defaults to the
-static musl artifact; --libc gnu selects the glibc artifact. No Node/npm is used.
+The native binary must have a matching entry in SHA256SUMS, or a per-binary sibling
+.sha256 file. Linux defaults to musl; --libc gnu selects glibc. No Node/npm is used.
 
 By default arguments after -- are passed to rdh install-native. Use
 --service to call rdh install-service, using its explicit service account options.
@@ -89,17 +89,25 @@ fetch() {
     esac
 }
 if [ -n "$rdh_offline" ]; then
-    cp "$rdh_offline.sha256" "$rdh_temporary/checksum"
+    rdh_checksum_dir=${rdh_offline%/*}
+    if [ -f "$rdh_checksum_dir/SHA256SUMS" ]; then
+        cp "$rdh_checksum_dir/SHA256SUMS" "$rdh_temporary/checksum"
+    else
+        cp "$rdh_offline.sha256" "$rdh_temporary/checksum"
+    fi
     cp "$rdh_offline" "$rdh_temporary/$rdh_name"
 else
-    fetch "$rdh_name.sha256" "$rdh_temporary/checksum"
+    if ! fetch SHA256SUMS "$rdh_temporary/checksum"; then
+        fetch "$rdh_name.sha256" "$rdh_temporary/checksum"
+    fi
     fetch "$rdh_name" "$rdh_temporary/$rdh_name"
 fi
-[ "$(wc -c < "$rdh_temporary/checksum")" -le 1024 ] || die 'checksum record is too large'
+[ "$(wc -c < "$rdh_temporary/checksum")" -le 65536 ] || die 'checksum record is too large'
 [ "$(wc -c < "$rdh_temporary/$rdh_name")" -le 268435456 ] || die 'native executable is too large'
 rdh_expected=$(LC_ALL=C awk -v name="$rdh_name" '
-    NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == name { hash=$1 }
-    END { if (NR != 1 || hash == "") exit 1; print hash }' "$rdh_temporary/checksum") || die 'invalid checksum record'
+    NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { invalid=1 }
+    $2 == name { count++; hash=$1 }
+    END { if (invalid || count != 1) exit 1; print hash }' "$rdh_temporary/checksum") || die 'invalid checksum record'
 if have sha256sum; then
     rdh_actual=$(sha256sum "$rdh_temporary/$rdh_name")
 elif have shasum; then

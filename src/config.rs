@@ -125,7 +125,7 @@ fn default_shell() -> Result<String> {
         .ok_or_else(|| Error::message("A trusted absolute SystemRoot is required on Windows"))
 }
 
-/// Match the legacy Agent's Windows SystemRoot validation and shell path.
+/// Validate Windows SystemRoot syntax and derive the system shell path.
 /// This only validates syntax; it does not verify the executable on disk.
 #[cfg(any(windows, test))]
 fn windows_default_shell(root: &str) -> Option<String> {
@@ -167,7 +167,7 @@ fn valid_root(value: &str) -> bool {
     valid_windows_root(value)
 }
 
-/// Mirror the legacy Agent's drive and UNC root syntax before any platform
+/// Validate drive and UNC root syntax before any platform
 /// file access. This is not a substitute for handle or reparse-point checks.
 #[cfg(any(windows, test))]
 fn valid_windows_root(value: &str) -> bool {
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_root_syntax_matches_legacy_drive_and_unc_contract() {
+    fn windows_root_syntax_validates_drive_and_unc_paths() {
         for root in [
             "C:/work",
             r"C:\work",
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_system_root_syntax_matches_legacy_default_shell_contract() {
+    fn windows_system_root_syntax_validates_default_shell_paths() {
         for (root, shell) in [
             (r"C:\Windows", r"C:\Windows\System32\cmd.exe"),
             ("C:\\", r"C:\System32\cmd.exe"),

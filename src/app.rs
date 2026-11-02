@@ -98,13 +98,6 @@ async fn launch_with_pairing(
         crate::service_install::runtime_guard(&args, state_directory.as_deref())?;
     let mut managed = RunningInstall::acquire_launch_current()?;
     let network = Network::from_env()?;
-    if std::env::var_os("NODE_USE_ENV_PROXY").is_some()
-        || std::env::var_os("NODE_OPTIONS").is_some()
-    {
-        eprintln!(
-            "Node network startup settings are not used by the Rust Agent; configure this device's Rust network settings if needed."
-        );
-    }
     let base = if args.config.is_some() {
         None
     } else {

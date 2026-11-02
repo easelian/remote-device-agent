@@ -164,10 +164,6 @@ fn mtime(m: &Metadata) -> f64 {
 impl MetadataFacts {
     fn from_metadata(m: &Metadata) -> Self {
         Self {
-            identity: FileIdentity {
-                volume: m.dev(),
-                id: u128::from(m.ino()),
-            },
             dev: m.dev(),
             ino: m.ino(),
             size: m.len(),
@@ -181,10 +177,6 @@ impl MetadataFacts {
     fn from_stat(m: &libc::stat) -> Self {
         let mode = u32::from(m.st_mode);
         Self {
-            identity: FileIdentity {
-                volume: m.st_dev as u64,
-                id: u128::from(m.st_ino),
-            },
             dev: m.st_dev as u64,
             ino: m.st_ino,
             size: m.st_size.max(0) as u64,

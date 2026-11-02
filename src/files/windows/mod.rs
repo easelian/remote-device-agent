@@ -127,6 +127,12 @@ fn root_parts(path: &str) -> Result<(Vec<u16>, Vec<String>), String> {
     Ok((base.encode_utf16().chain(Some(0)).collect(), parts))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    volume: u64,
+    id: u128,
+}
+
 #[derive(Clone, Copy)]
 struct Snapshot {
     identity: FileIdentity,
@@ -142,16 +148,9 @@ impl Snapshot {
         self.attributes & FILE_ATTRIBUTE_DIRECTORY != 0
     }
     fn facts(self) -> MetadataFacts {
-        // Node 22/libuv splits FILETIME into seconds and nanoseconds. Its
-        // FillStatsArray then casts Windows seconds to unsigned long (32 bit)
-        // before constructing mtimeMs, including pre-epoch/2106 wraparound.
-        // Preserve that wire/fingerprint contract without changing the raw
-        // timestamps used internally for detecting concurrent file changes.
+        // FILETIME counts 100-nanosecond ticks from 1601-01-01.
         let ticks = i128::from(self.modified) - 116_444_736_000_000_000i128;
-        let seconds = ticks.div_euclid(10_000_000) as u32;
-        let nanoseconds = ticks.rem_euclid(10_000_000) * 100;
         MetadataFacts {
-            identity: self.identity,
             dev: self.dev,
             ino: self.ino,
             size: if self.directory() { 0 } else { self.size },
@@ -160,7 +159,7 @@ impl Snapshot {
             } else {
                 0o666
             },
-            modified_ms: seconds as f64 * 1000.0 + nanoseconds as f64 / 1_000_000.0,
+            modified_ms: ticks as f64 / 10_000.0,
             is_file: !self.directory(),
             is_directory: self.directory(),
         }
@@ -567,13 +566,7 @@ fn reparse_target_size(data: &[u8]) -> Result<Option<u64>, String> {
             target[0] = 92;
         }
     }
-    // libuv reports WTF-8 byte length; an isolated UTF-16 surrogate takes three
-    // bytes, just as the replacement character does for this length calculation.
-    Ok(Some(
-        char::decode_utf16(target)
-            .map(|value| value.map_or(3, char::len_utf8) as u64)
-            .sum(),
-    ))
+    Ok(Some(String::from_utf16_lossy(&target).len() as u64))
 }
 
 fn reparse_entry(directory: &File, name: &str) -> Result<(&'static str, u64), String> {
@@ -1142,6 +1135,27 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
+    #[test]
+    fn filetime_conversion_preserves_pre_epoch_and_post_2106_dates() {
+        for (ticks, milliseconds) in [
+            (-10_000_000_i64, -1000.0),
+            (-1, -0.0001),
+            (0, 0.0),
+            (42_949_672_960_000_000, 4_294_967_296_000.0),
+        ] {
+            let snapshot = Snapshot {
+                identity: FileIdentity { volume: 1, id: 2 },
+                dev: 1,
+                ino: 2,
+                size: 3,
+                attributes: 0,
+                modified: 116_444_736_000_000_000 + ticks,
+                changed: 0,
+            };
+            assert_eq!(snapshot.facts().modified_ms, milliseconds);
+        }
+    }
+
     struct Fixture {
         path: PathBuf,
         files: Files,
@@ -1343,7 +1357,7 @@ mod tests {
         fixture
             .call(
                 "move_file",
-                json!({"path":"nested/moved","destination_root":"work","destination_path":"final"}),
+                json!({"source":"nested/moved","destination":"final"}),
             )
             .unwrap();
         fs::write(fixture.path.join("occupied"), b"keep").unwrap();

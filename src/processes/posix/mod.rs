@@ -557,12 +557,12 @@ mod tests {
     }
 
     #[test]
-    fn process_cursors_accept_large_integral_numbers_without_reading_output() {
+    fn process_cursors_preserve_unsigned_integer_precision() {
         let fixture = Fixture::new();
         let job = fixture.start("printf 'A😀B'", 2.0);
         let id = job["job_id"].as_str().unwrap();
         fixture.done(id);
-        for offset in [9_007_199_254_740_992.0, 1e100, f64::MAX] {
+        for offset in [9_007_199_254_740_993, u64::MAX] {
             let result = fixture
                 .call(
                     "read_process",
@@ -570,11 +570,12 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(result["output"], "");
-            assert_eq!(result["offset"].as_f64(), Some(offset));
-            assert_eq!(result["next_offset"].as_f64(), Some(offset));
+            assert_eq!(result["offset"].as_u64(), Some(offset));
+            assert_eq!(result["next_offset"].as_u64(), Some(offset));
             assert_eq!(result["output_dropped"], false);
         }
         for params in [
+            json!({"job_id":id,"offset":1e100}),
             json!({"job_id":id,"offset":-1}),
             json!({"job_id":id,"offset":0.5}),
             json!({"job_id":id,"offset":null}),

@@ -316,7 +316,7 @@ pub(crate) fn prepare_update_task(
             "Startup task does not execute this installation's current native version",
         ));
     }
-    // A migrated task retains its original working directory. Capture that
+    // An existing task keeps its configured working directory. Capture that
     // directory with the complete task fingerprint instead of rewriting it.
     check_task_directory(&directory)?;
     target.directory = directory;

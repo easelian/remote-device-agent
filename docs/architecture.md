@@ -34,7 +34,7 @@ Startup uses `--server`, then `RDH_SERVER`, then the committed public deployment
 
 The two default origins are aliases for one Hub and can reuse an existing pairing. Custom Hubs retain same-origin pairing validation and credential separation. Profile locks cover the configuration paths used for reuse. Pairing requests browser approval before the Agent saves and uses a new device credential.
 
-After configuration and hardening validation, discovery-enabled Agents authenticate to the Gate with their saved device credential and receive a single-use v2 ticket. They connect to the assigned Core at `/agent/<device_id>` using only that ticket, send `hello` with device information, and complete the `ready`/`ready_ack` handshake before the connection becomes active. The ticket binds the device, assignment, Core node and boot, credential version, and Agent process instance. Configurations without discovery retain the legacy direct bearer path for older servers. Device information includes operations, limits, and effective restrictions. Session heartbeats detect lost connections. See [Hardening configuration](hardening.md) for policy reporting and configuration privacy.
+After configuration and hardening validation, discovery-enabled Agents authenticate to the Gate with their saved device credential and receive a single-use v2 ticket. They connect to the assigned Core at `/agent/<device_id>` using only that ticket, send `hello` with device information, and complete the `ready`/`ready_ack` handshake before the connection becomes active. The ticket binds the device, assignment, Core node and boot, credential version, and Agent process instance. Configurations without discovery send the device credential directly to the configured server; this mode requires a server that accepts direct bearer authentication. Device information includes operations, limits, and effective restrictions. Session heartbeats detect lost connections. See [Hardening configuration](hardening.md) for policy reporting and configuration privacy.
 
 ## Request execution
 
@@ -54,6 +54,14 @@ the bounded recovery sequence and timing records.
 Starting a process returns a job that can continue after the RPC finishes. Its execution timeout is separate from the response deadline. A later `process_exit` audit event records final status and exit code; a successful `start_process` response alone does not establish command success.
 
 Background search uses `start_search`, `get_search_results`, `stop_search`, and `list_searches`. Defaults allow two concurrent tasks, a 30-second active lifetime, traversal depth 30, and 10,000 visited entries. Results stop at 1,000 matches or 256 KiB, with at most 200 results per page. At most 16 task records are retained, and finished tasks expire after up to five minutes. Responses report `status`, `truncated`, `truncated_reason`, and `skipped` so callers can distinguish a complete search from a bounded result.
+
+Search result paths are relative to the named root, including searches started
+with an empty path. `read_multiple_files` takes a `root` and `paths` array;
+`move_file` takes `root`, `source` and `destination` and moves only within that root.
+File, directory, process and search offsets are unsigned 64-bit integers. JSON
+numbers with an integral value, such as `1.0`, are accepted within that range.
+File fingerprints are opaque metadata identifiers, not content hashes. Their
+integer fields retain native precision, and timestamps use Unix milliseconds.
 
 ## State and resource lifetime
 
@@ -81,7 +89,7 @@ search workers and process supervision have their own admission and lifetime
 rules; that worker count is not a bound on all threads. Shared modules own the
 wire contract and policy; OS modules own filesystem handles, process cleanup,
 startup registration and private storage. Platform support is enabled by default
-in a normal build. Historical feature names remain available for reduced builds.
+in a normal build. The `experimental-*` Cargo features select platform backends in reduced builds.
 
 Installed Agents hold a shared installation lease while running. An updater takes
 exclusive ownership and locks registered profiles before switching a verified
@@ -93,4 +101,4 @@ vector and standard streams.
 
 Version changes apply to native installations. They retain the previous native
 executable and validate registered profiles before selecting either version.
-The repository has no installer for migrating an earlier Node installation.
+Installation commands accept native executables.

@@ -20,7 +20,7 @@ pub(crate) use posix::{Lease, check_service_entry, runtime_guard};
 #[cfg(all(windows, feature = "experimental-windows-install"))]
 pub(crate) use windows::update::{Lease, command_target, runtime_guard};
 
-// Builds without native service installation previously skipped this guard.
+// Builds without native service installation do not acquire a service runtime guard.
 #[cfg(not(any(
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-install"),

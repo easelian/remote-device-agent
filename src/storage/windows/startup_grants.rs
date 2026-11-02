@@ -69,8 +69,8 @@ fn validate(trusted: &Trusted, owner: PSID, acl: *mut ACL, boundary: bool) -> Re
         .checked_add(unsafe { (*acl).AclSize } as usize)
         .ok_or_else(untrusted)?;
     // Boundary files/directories may not be writable by an ordinary user.
-    // Earlier ancestors may allow new children but not ownership/DACL changes
-    // or deletion of the retained next component, matching the old grant rule.
+    // Ancestors above the boundary may allow new children but not ownership/DACL changes
+    // or deletion of the retained next component.
     let forbidden = if boundary { 0x000d_0156 } else { 0x000c_0040 };
     for index in 0..info.AceCount {
         let mut raw = null_mut();
@@ -160,8 +160,8 @@ fn config_text(config: &Path) -> Result<String> {
         .to_str()
         .filter(|_| config.is_absolute())
         .ok_or_else(|| Error::message("Invalid startup grant config path"))?;
-    // Rust canonicalization adds the extended drive prefix; the legacy Agent
-    // hashes and stores the ordinary, already-canonical Windows spelling.
+    // Rust canonicalization adds the extended drive prefix; grant records
+    // hash and store the ordinary, already-canonical Windows spelling.
     Ok(text.strip_prefix(r"\\?\").unwrap_or(text).to_owned())
 }
 fn grant_path(config: &Path) -> Result<PathBuf> {
@@ -362,7 +362,7 @@ mod tests {
         assert!(!accepts("O:BAD:NO_ACCESS_CONTROL", true));
     }
     #[test]
-    fn canonical_config_uses_the_legacy_hash_spelling() {
+    fn canonical_config_hash_uses_normalized_drive_paths() {
         assert_eq!(
             config_text(Path::new(r"\\?\C:\Users\fixture\config.json")).unwrap(),
             r"C:\Users\fixture\config.json"

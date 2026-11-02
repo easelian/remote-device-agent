@@ -1,4 +1,4 @@
-Rust dependency license texts are included in each native development archive
+Rust dependency license texts are included in each native archive
 under licenses/<crate>-<version>/. The artifact manifest records the active
 dependency names, versions, SPDX expressions and copied license files for that
 target. Cargo.lock pins the dependency resolution.
@@ -11,6 +11,4 @@ The builder fails when an active dependency lacks packaged license metadata or
 license text. Dependencies differ by target and enabled features; notices from a
 different target must not be substituted.
 
-The old JavaScript ws implementation is no longer included. Its MIT notice did
-not license the Agent project itself. No project license is inferred here; the
-artifact record reports project_license_included and release_ready separately.
+The Agent project's Apache-2.0 license is provided separately in LICENSE.

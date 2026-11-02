@@ -1,4 +1,4 @@
-//! Persistent state and launch rules for a future coordinated service update.
+//! Persistent state and launch rules for coordinated service updates.
 //!
 //! This module does not stop or start a service.  In particular, the presence
 //! of a record does not mean an update has been accepted.  Trial processes may

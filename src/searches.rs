@@ -411,31 +411,18 @@ impl Searches {
 
     pub fn get(&self, params: &Value) -> Result<Value, String> {
         let job = self.job(params)?;
-        fn integer(
-            params: &Value,
-            key: &str,
-            default: f64,
-            min: f64,
-            max: f64,
-        ) -> Result<f64, String> {
-            let value = match params.get(key) {
-                None | Some(Value::Null) => return Ok(default),
-                Some(value) => value,
-            };
-            value
-                .as_f64()
-                .filter(|value| {
-                    value.is_finite() && value.fract() == 0.0 && *value >= min && *value <= max
-                })
-                .ok_or_else(|| "Invalid offset/limit".into())
-        }
-        // JavaScript accepts any finite integral Number here. Test the offset
-        // against the bounded result count before converting it to usize.
-        let offset = integer(params, "offset", 0.0, 0.0, f64::MAX)?;
-        let limit = integer(params, "limit", 100.0, 1.0, 200.0)? as usize;
+        let integer = |key: &str, default: u64, min: u64, max: u64| {
+            params
+                .get(key)
+                .map_or(Some(default), crate::json_number::unsigned)
+                .filter(|n| *n >= min && *n <= max)
+                .ok_or_else(|| "Invalid offset/limit".to_string())
+        };
+        let offset = integer("offset", 0, 0, u64::MAX)?;
+        let limit = integer("limit", 100, 1, 200)? as usize;
         let mut state = job.state.lock().map_err(|_| "Search unavailable")?;
         job.refresh(&mut state);
-        if offset > state.results.len() as f64 {
+        if offset > state.results.len() as u64 {
             return Err("offset is beyond results currently available".into());
         }
         let offset = offset as usize;
@@ -500,11 +487,11 @@ impl Searches {
             }
             return;
         }
-        let lookup_path = if job.path.is_empty() { "." } else { &job.path };
-        self.walk(job, &job.path, lookup_path, 0);
+        let path = if job.path.is_empty() { "." } else { &job.path };
+        self.walk(job, path, 0);
     }
 
-    fn walk(&self, job: &Job, display_path: &str, lookup_path: &str, depth: usize) {
+    fn walk(&self, job: &Job, path: &str, depth: usize) {
         if !job.running() {
             return;
         }
@@ -515,7 +502,7 @@ impl Searches {
         let remaining = MAX_VISITED.saturating_sub(job.state.lock().unwrap().visited);
         let (entries, truncated) = match self.files.search_entries(
             &job.root,
-            lookup_path,
+            path,
             remaining,
             &job.cancelled,
             job.deadline,
@@ -544,18 +531,10 @@ impl Searches {
                 }
                 state.visited += 1;
             }
-            let relative = if display_path == "." {
+            let relative = if path == "." {
                 entry.name.clone()
             } else {
-                format!("{display_path}/{}", entry.name)
-            };
-            // Keep the legacy spelling in results while performing I/O only
-            // with a separately built root-relative path. In particular, an
-            // empty input path has a leading slash in legacy result strings.
-            let child_path = if lookup_path == "." {
-                entry.name.clone()
-            } else {
-                format!("{lookup_path}/{}", entry.name)
+                format!("{path}/{}", entry.name)
             };
             if entry.kind != "symlink"
                 && !job.content
@@ -564,11 +543,11 @@ impl Searches {
                 job.add(json!({"path":relative}));
             }
             if entry.kind == "directory" {
-                self.walk(job, &relative, &child_path, depth + 1);
+                self.walk(job, &relative, depth + 1);
             } else if entry.kind == "file" && job.content {
                 match self
                     .files
-                    .search_read(&job.root, &child_path)
+                    .search_read(&job.root, &relative)
                     .and_then(|bytes| String::from_utf8(bytes).map_err(|_| "Invalid UTF-8".into()))
                 {
                     Ok(text) => {
@@ -733,7 +712,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_admission_and_failed_directory_tasks_keep_legacy_contract() {
+    async fn search_admission_and_failed_directory_tasks_report_errors() {
         let fixture = Fixture::new();
         std::fs::write(fixture.0.join("match"), "needle").unwrap();
         symlink(&fixture.0, fixture.0.join("linked-directory")).unwrap();
@@ -783,7 +762,7 @@ mod tests {
 
         let id = start(&manager, json!({"root":"work","query":"match"}));
         assert_eq!(complete(&manager, &id).await["status"], "completed");
-        for offset in [9_007_199_254_740_992.0, 1e100, f64::MAX] {
+        for offset in [9_007_199_254_740_993, u64::MAX] {
             assert_eq!(
                 manager
                     .get(&json!({"search_id":id,"offset":offset}))
@@ -826,7 +805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_search_path_uses_root_relative_io_and_preserves_legacy_results() {
+    async fn empty_search_path_returns_usable_root_relative_results() {
         let fixture = Fixture::new();
         std::fs::create_dir(fixture.0.join("nested")).unwrap();
         std::fs::write(fixture.0.join("top-target"), "needle top").unwrap();
@@ -840,7 +819,7 @@ mod tests {
         assert_eq!(
             names["results"],
             json!([
-                {"path":"/nested/target"}, {"path":"/top-target"}
+                {"path":"nested/target"}, {"path":"top-target"}
             ])
         );
         let content = start(
@@ -853,8 +832,8 @@ mod tests {
         assert_eq!(
             content["results"],
             json!([
-                {"path":"/nested/target","line":1,"text":"needle nested"},
-                {"path":"/top-target","line":1,"text":"needle top"}
+                {"path":"nested/target","line":1,"text":"needle nested"},
+                {"path":"top-target","line":1,"text":"needle top"}
             ])
         );
         assert!(manager.close(Duration::from_secs(3)).await);
@@ -889,7 +868,7 @@ mod tests {
         })
         .await
         .unwrap();
-        // Distinguish completion times even on the legacy millisecond clock.
+        // Distinguish completion times at millisecond resolution.
         tokio::time::sleep(Duration::from_millis(5)).await;
         gate.release();
         assert_eq!(complete(&manager, &slow).await["status"], "completed");

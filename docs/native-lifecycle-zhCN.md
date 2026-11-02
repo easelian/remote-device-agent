@@ -1,8 +1,8 @@
-# Agent Rust 实现与版本更新设计
+# 原生 Agent 生命周期
 
-本阶段把 Remote Device Hub Agent 的运行、业务、平台适配、构建和测试全部替换为 Rust。交付物是独立的 `rdh` 原生程序，保持现有 Hub 协议与设备操作。当前版本为尚未发布的 `0.8.0`。
+Remote Device Hub Agent 是独立的 Rust 原生程序 `rdh`，负责连接 Hub 并执行设备操作。本文描述模块边界、安装、版本更新与验证范围。
 
-原生运行和安装支持 Rust 版本之间的升级、失败恢复与回滚。旧 Node 安装迁移、还原旧服务及相应测试已删除。发布流程使用 npm 包分发原生程序；平台签名和生产部署仍需单独完成。
+原生安装支持可执行文件版本之间的升级、中断恢复与回滚。发布流程通过 GitHub Releases 和 npm 分发原生程序；平台签名和生产部署是独立操作。
 
 ## 实现结构
 
@@ -26,7 +26,7 @@
 
 ## 协议与生命周期
 
-Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `discovery_url` 时，长期设备凭据仅用于向 Gate 认证；Agent 使用 Gate 签发、绑定本进程及目标 Core 的一次性 v2 票据建立 WSS，完成 `hello`、`ready`、`ready_ack` 后确认连接。没有发现配置时保留旧服务器的直接凭据连接方式；新的 Gate/Core 认证边界不接受旧 v1 发现客户端。用户通过浏览器批准新设备；已有私有配置保存设备身份。Hub 选择顺序为 `--server`、`RDH_SERVER`、源码默认地址，其他 Hub 的凭据不会随意复用。
+Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `discovery_url` 时，长期设备凭据仅用于向 Gate 认证；Agent 使用 Gate 签发、绑定本进程及目标 Core 的一次性 v2 票据建立 WSS，完成 `hello`、`ready`、`ready_ack` 后确认连接。没有发现配置时，Agent 向支持 bearer 认证的服务器直接发送设备凭据。Gate/Core 发现协议要求 v2 票据，不接受 v1 发现客户端。用户通过浏览器批准新设备；已有私有配置保存设备身份。Hub 选择顺序为 `--server`、`RDH_SERVER`、源码默认地址，其他 Hub 的凭据不会随意复用。
 
 普通请求最多同时执行八个。响应期限和实际工作生命周期分开：RPC 超时或断线不代表文件操作已经取消，也不代表没有发生写入；未完成工作继续占用名额。运行时回执、搜索、进程输出及发送队列均有容量和期限约束。旧连接的迟到回复不能进入新连接。
 
@@ -50,9 +50,7 @@ Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `dis
 
 原生更新索引采用 schema `2`、格式 `native-binary`，记录版本、大小、SHA-256、平台和灰度比例，可用 `min_from` 限定最低来源版本。客户端检查目标架构、内容摘要、候选报告的版本及已登记配置。索引中的摘要验证文件一致性；发布渠道的来源信任、签名和不可变托管在发布阶段落实。
 
-本阶段更新不改写设备凭据和配置模式。候选程序先验证现有配置与策略，通过后才允许选中；回滚前同样验证旧程序仍能读取当前数据。这样可以在当前兼容格式内切换 Rust 版本，不能据此承诺未来任意数据格式都能回退。
-
-后续版本如果需要改变持久化格式，应先声明可读取的格式和最低可升级版本。可兼容字段应保留回退能力；不兼容转换必须另行实现备份、转换成功确认和恢复测试，在具备这些机制前拒绝跨越不兼容版本。不得只切回旧二进制却让它读取不可识别的新格式。
+升级和回滚要求选定程序能够读取已登记的配置和策略。更新器在切换前校验这些文件，不执行持久化格式转换。
 
 ### 停机更新
 
@@ -87,20 +85,18 @@ Windows 使用对应的 `rdh.exe`。系统服务更新需保持原服务账户�
 
 受支持的用户 systemd 路径核对单元定义、安装、配置与当前实例，确认工作已空闲后停机、切换并重启。试运行实例只有在持久化提交和明确激活后才执行远程请求。就绪判断核对该实例本次连接收到的 Hub ready；失败会切回保留的版本，控制器中断可从持久化记录恢复。
 
-该入口仅控制可核实的目标单元，不是任意服务的通用控制器。macOS 和 Windows 的自动停机、自动重启与 Hub 就绪回退不在本阶段；它们仍可停机更新和回滚。详细参数见 `upgrade --help` 及 [maintenance.md](maintenance.md#update-and-recover-an-installation)。
+该入口仅控制可核实的目标单元，不是任意服务的通用控制器。macOS 和 Windows 支持停机更新与回滚，需要手动控制服务；不支持自动停机、自动重启与 Hub 就绪回退。详细参数见 `upgrade --help` 及 [maintenance.md](maintenance.md#update-and-recover-an-installation)。
 
 ## 平台与验证
 
-正常构建默认开启已经实现的平台后端；保留的 `experimental-*` 名称用于显式裁剪构建。CI 用 `--no-default-features` 检查主动关闭能力时的错误行为。
+正常构建默认开启已经实现的平台后端；`experimental-*` Cargo 特性用于选择平台后端和裁剪构建。CI 用 `--no-default-features` 检查主动关闭能力时的错误行为。
 
 [Agent CI](../.github/workflows/ci.yml) 在独立构建机上并行验证以下八个原生目标：Linux x86_64/ARM64 的 glibc/musl、macOS x86_64/ARM64、Windows x86_64/ARM64。每个目标构建独立版本候选，执行 Clippy、优化构建测试、产物归档与解包校验，以及适用的真实用户启动项和系统服务测试。服务测试使用临时对象，只应在可丢弃的 CI 主机执行。
 
-最终验收覆盖删除迁移代码、启用默认后端和加入稳定命令入口后的完整版本。历史提交的通过记录不能替代这些变化后的验收；结果以 [草稿 PR #1](https://github.com/easelian/remote-device-agent/pull/1) 当前提交对应的 CI 为准。仅记录范围变更的 CI 作业不算测试通过。
-
-本机 Linux 验证与 Windows 交叉检查、Darwin 模块检查提供不同层次的证据。交叉编译不证明 Windows ACL、Task Scheduler、SCM 或 launchd 的实际行为；模块检查也不代替完整链接。CI 服务验证不证明重登录、生产 Hub、特定企业代理、SMB 或断电持久性。当前阶段没有部署到用户设备。
+交叉编译不验证 Windows ACL、Task Scheduler、SCM 或 launchd 的实际行为；模块检查也不代替完整链接。原生 CI 在对应构建机上验证这些机制。重登录、生产 Hub 连接、企业代理、SMB 和断电持久性需要在目标环境中验证。
 
 ## 构建与发布边界
 
 仓库使用 Rust `1.93.0` 和固定 `Cargo.lock`。`xtask native-development` 生成二进制、校验文件、归档、来源清单和许可证集合；清单记录源码摘要、提交、脏工作树状态、工具链和目标。归档被重新解包，逐文件比较，并在本机目标运行解包后的版本检查。
 
-仓库采用 Apache-2.0 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。当前提交的多平台结果以对应 CI 运行记录为准，GitHub 草稿和 npm 包尚未实际发布。
+仓库采用 Apache-2.0 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。各提交的多平台结果见对应 CI 运行记录。

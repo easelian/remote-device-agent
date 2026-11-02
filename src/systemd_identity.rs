@@ -312,8 +312,8 @@ mod linux {
             return Err(invalid());
         }
         if !parsed.roots.is_empty() {
-            // A legacy installer may repeat its paired roots in the unit. Only
-            // absolute roots which still resolve to the paired values are
+            // A unit may repeat roots from its paired configuration. Only
+            // absolute roots which resolve to the paired values are
             // suitable for a service controller to restart.
             if parsed.roots.iter().any(|root| {
                 root.split_once('=')
@@ -551,7 +551,7 @@ mod linux {
         if get_str(unit_props, "ActiveState")? != "active"
             || get_str(unit_props, "SubState")? != "running"
             || property(service, "MainPID", "u")?.as_u64() != Some(u64::from(snapshot.pid))
-            // A daemon-reload may discard ExecStart's historical PID while
+            // A daemon-reload may discard ExecStart's recorded PID while
             // retaining the live MainPID. In that case /proc argv, cgroup,
             // pidfd and the authenticated Agent peer still have to agree.
             || (definition.start_pid != 0 && definition.start_pid != u64::from(snapshot.pid))

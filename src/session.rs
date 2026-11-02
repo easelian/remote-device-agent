@@ -1,4 +1,4 @@
-//! Protocol v1 connection lifecycle for the development Agent.
+//! Agent connection lifecycle, request admission and control recovery.
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

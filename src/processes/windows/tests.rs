@@ -563,7 +563,7 @@ fn cancellation_and_resume_failure_do_not_run_the_suspended_command() {
         }
         supervise(&job, child, Duration::from_secs(5), None);
         wait_process(&process);
-        let state = job.read(0.0, 10, false);
+        let state = job.read(0, 10, false);
         assert_eq!(state["status"], "failed");
         assert_eq!(state["cleanup_pending"], false);
         assert!(!fixture.path.join("should-not-exist").exists());
@@ -690,7 +690,7 @@ fn parent_crash_closes_the_job_and_kills_its_process_tree() {
 }
 
 #[test]
-fn environment_is_case_insensitive_explicit_and_has_legacy_windows_basics() {
+fn environment_is_case_insensitive_and_requires_opt_in_for_extra_variables() {
     let source = BTreeMap::from([
         ("PATH".into(), OsString::from(r"C:\custom")),
         ("SYSTEMROOT".into(), OsString::from(r"C:\Win")),
@@ -705,7 +705,9 @@ fn environment_is_case_insensitive_explicit_and_has_legacy_windows_basics() {
     let env = environment_from(&source, &["rdh_custom".into(), "RdH_CuStOm".into()]);
     assert_eq!(get_env(&env, "RDH_CUSTOM"), Some(OsStr::new("visible")));
     assert_eq!(get_env(&env, "PATH"), Some(OsStr::new(r"C:\custom")));
-    assert_eq!(get_env(&env, "HOMEDRIVE"), Some(OsStr::new("C:")));
+    assert_eq!(get_env(&env, "HOMEDRIVE"), None);
+    let explicit = environment_from(&source, &["HOMEDRIVE".into()]);
+    assert_eq!(get_env(&explicit, "HOMEDRIVE"), Some(OsStr::new("C:")));
     assert_eq!(
         get_env(&env, "COMSPEC"),
         Some(OsStr::new(r"C:\Win\System32\cmd.exe"))
@@ -747,8 +749,14 @@ fn executable_search_uses_child_cwd_and_path_without_pathext() {
     fs::write(fixture.path.join("cmd.com"), b"fixture").unwrap();
     assert_eq!(
         executable("cmd", &fixture.path, &env).unwrap(),
+        bin.join("cmd.exe")
+    );
+    assert_eq!(
+        executable("cmd.com", &fixture.path, &env).unwrap(),
         fixture.path.join("cmd.com")
     );
+    fs::write(fixture.path.join("missing.exe.com"), b"fixture").unwrap();
+    assert!(executable("missing.exe", &fixture.path, &env).is_err());
     assert_eq!(
         executable(r"bin\cmd.exe", &fixture.path, &env).unwrap(),
         bin.join("cmd.exe")

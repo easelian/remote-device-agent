@@ -1,8 +1,8 @@
-# Agent Rust implementation and update design
+# Native Agent lifecycle
 
-The Remote Device Hub Agent runtime, features, platform integration, build and tests are implemented in Rust. The standalone native executable `rdh` retains the Hub protocol and device operations. The current version is `0.8.0`, which has not been released.
+The Remote Device Hub Agent is a standalone Rust executable, `rdh`. It connects to the Hub and executes device operations. This document describes its module boundaries, installation, updates and validation.
 
-Native installation supports upgrades, failure recovery and rollback between Rust versions. Migration from old Node installations, restoration of old services and their tests have been removed. The release process distributes native programs through npm; platform signing and production deployment require separate work.
+Native installation supports upgrades, interrupted-switch recovery and rollback between native executable versions. The release process distributes binaries through GitHub Releases and npm. Platform signing and production deployment are separate operations.
 
 ## Implementation structure
 
@@ -26,7 +26,7 @@ See [lib.rs](../src/lib.rs), [architecture.md](architecture.md) for modules, pro
 
 ## Protocol and lifetime
 
-The Agent connects to the Hub and does not expose a local HTTP or MCP listener. With `discovery_url` configured, long-term device credentials authenticate only to the Gate; the Agent establishes WSS using a one-time v2 ticket issued by the Gate and bound to the process and target Core. The connection is confirmed after `hello`, `ready` and `ready_ack`. Without discovery configuration, direct credential connections to older servers remain supported; the new Gate/Core authentication boundary does not accept old v1 discovery clients. Users approve new devices in a browser and existing private configuration retains device identity. Hub selection follows `--server`, `RDH_SERVER`, then the source default; credentials for other Hubs are not reused arbitrarily.
+The Agent connects to the Hub and does not expose a local HTTP or MCP listener. With `discovery_url` configured, long-term device credentials authenticate only to the Gate; the Agent establishes WSS using a one-time v2 ticket issued by the Gate and bound to the process and target Core. The connection is confirmed after `hello`, `ready` and `ready_ack`. Without discovery configuration, the Agent sends its credential directly to servers that accept bearer authentication. Gate/Core discovery requires v2 tickets and rejects v1 discovery clients. Users approve new devices in a browser and existing private configuration retains device identity. Hub selection follows `--server`, `RDH_SERVER`, then the source default; credentials for other Hubs are not reused arbitrarily.
 
 At most eight ordinary requests execute concurrently. Response deadlines and actual work lifetimes are separate: RPC timeout or disconnection does not mean a file operation was canceled or that no write occurred. Unfinished work continues to occupy a slot. Runtime receipts, searches, process output and send queues have capacity and deadline limits; late replies from an old connection cannot enter a new one.
 
@@ -50,9 +50,7 @@ Bootstrap scripts obtain the correct platform binary, check its digest and versi
 
 The native update index uses schema `2` and format `native-binary`, recording version, size, SHA-256, platform and rollout percentage; `min_from` can set a minimum source version. The client checks target architecture, digest, the candidate's reported version and registered profiles. The index digest checks file consistency; source trust, signatures and immutable hosting are release-channel responsibilities.
 
-Updates in this phase do not rewrite device credentials or the configuration schema. A candidate must validate existing configuration and policy before selection; rollback likewise checks that the old program can read current data. This permits switching within the current compatible format, not a guarantee of rollback across arbitrary future formats.
-
-A future persistent-format change should declare readable formats and the minimum upgrade version. Compatible fields should preserve rollback; incompatible conversion needs separate backup, conversion confirmation and recovery tests, and must be refused until those mechanisms exist. Switching the binary alone must not leave an old program reading an incompatible format.
+Upgrade and rollback require the selected binary to read the registered configuration and policy. The updater validates these files before switching; it does not perform persistent-format conversion.
 
 ### Offline update
 
@@ -87,17 +85,15 @@ After recovery, check the selected version before starting the Agent. Profile lo
 
 The supported user systemd path checks the unit definition, installation, profile and current instance, then stops, switches and restarts after work is idle. A trial instance executes remote requests only after durable commit and explicit activation. Readiness checks the Hub ready received by that instance on its current connection. Failure switches back to the retained version; an interrupted controller can recover from its persisted record.
 
-This entry controls only a verifiable target unit and is not a general controller for arbitrary services. Automatic stopping, restarting and Hub readiness rollback on macOS and Windows are outside this phase; offline update and rollback remain available. See `upgrade --help` and [maintenance.md](maintenance.md#update-and-recover-an-installation).
+This entry controls only a verifiable target unit and is not a general controller for arbitrary services. macOS and Windows support offline update and rollback with manual service control; automatic stopping, restarting and Hub readiness rollback are unsupported. See `upgrade --help` and [maintenance.md](maintenance.md#update-and-recover-an-installation).
 
 ## Platforms and validation
 
-Normal builds enable implemented platform backends by default; retained `experimental-*` names allow explicit build trimming. CI uses `--no-default-features` to check errors when capabilities are deliberately disabled.
+Normal builds enable implemented platform backends by default; `experimental-*` Cargo features select platform backends for reduced builds. CI uses `--no-default-features` to check errors when capabilities are deliberately disabled.
 
 [Agent CI](../.github/workflows/ci.yml) validates eight native targets in parallel on independent runners: Linux x86_64 and ARM64 with glibc and musl, macOS x86_64 and ARM64, and Windows x86_64 and ARM64. Each target builds a separate candidate and runs Clippy, optimized tests, archive and extraction checks, and applicable real user startup and system service tests. Service tests use temporary objects and should run only on disposable CI hosts.
 
-Final acceptance covers the complete version after migration code removal, default backend enablement and stable entry points. Historical results do not replace validation after those changes; consult the CI run for the relevant commit. A job that only records a scope change is not a passing test.
-
-Local Linux validation, Windows cross-checks and Darwin module checks provide different evidence. Cross-compilation does not prove Windows ACL, Task Scheduler, SCM or launchd behavior; module checks do not replace full linking. CI service validation does not prove behavior across relogin, production Hubs, particular enterprise proxies, SMB or power loss. This phase has not been deployed to user devices.
+Cross-compilation does not verify Windows ACL, Task Scheduler, SCM or launchd behavior; module checks do not replace full linking. Native CI exercises these mechanisms on its runners. Relogin, production Hub connections, enterprise proxies, SMB and power-loss behavior require validation in the target environment.
 
 ## Build and release boundary
 

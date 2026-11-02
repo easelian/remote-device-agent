@@ -368,7 +368,7 @@ pub(super) fn helper(args: &[String]) -> Result<()> {
         roots: paired.roots,
     };
     // After announcing readiness, an unexpected helper exit must retain the
-    // legacy-compatible lock. Only the normal parent pipe close releases it.
+    // profile lock. Only the normal parent pipe close releases it.
     locks.retain_on_drop();
     serde_json::to_writer(std::io::stdout().lock(), &ready)?;
     println!();

@@ -1,5 +1,5 @@
 //! Local approval and native registration for future Agent startup.
-//! State changes are serialized with the legacy Agent's sidecar lock.
+//! State changes are serialized with the profile sidecar lock.
 pub mod cli;
 mod grant;
 mod native;
@@ -714,19 +714,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sidecar_expiry_locks_and_deadlines_are_enforced() {
+    fn sidecar_expiry_locks_and_deadlines_are_enforced() {
         let fixture = Fixture::new();
-        let legacy = json!({"version":1.0,"binding":null,"pending":{
+        let sidecar = json!({"version":1.0,"binding":null,"pending":{
             "request_id":"01234567-89ab-4def-8123-456789abcdef", "mode":"user", "expires_at":(now_ms()+60000) as f64}});
         storage::write_private_replace(
             &fixture.startup.file,
-            &serde_json::to_vec(&legacy).unwrap(),
+            &serde_json::to_vec(&sidecar).unwrap(),
         )
         .unwrap();
         let pending = fixture.startup.status().unwrap();
         assert_eq!(
             pending["pending"]["request_id"],
-            legacy["pending"]["request_id"]
+            sidecar["pending"]["request_id"]
         );
         let mut lock = ProfileLocks::acquire(std::slice::from_ref(&fixture.startup.file)).unwrap();
         assert_eq!(

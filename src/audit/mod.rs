@@ -332,7 +332,7 @@ pub(crate) mod implementation {
         #[cfg(target_os = "macos")]
         loop {
             use std::os::fd::AsRawFd;
-            // Match the legacy Agent's fsync semantics. Rust's sync_all uses
+            // Rust's sync_all uses
             // F_FULLFSYNC on Apple platforms, including directory handles;
             // this backend explicitly checks POSIX fsync for both kinds.
             // SAFETY: file owns a live descriptor and fsync borrows it only.
@@ -685,8 +685,8 @@ pub(crate) mod implementation {
             if let Some(result) = record.result.as_ref().and_then(summarize_result) {
                 entry["result"] = result;
             }
-            // Error text can include command/output/input content. Unlike the
-            // old logger, never copy error strings verbatim, even when short.
+            // Error text can include command/output/input content. Never copy
+            // error strings verbatim, even when short.
             if let Some(error) = record.error.filter(|error| !error.is_empty()) {
                 entry["error"] = digest(&error);
             }
@@ -913,8 +913,8 @@ pub(crate) mod implementation {
             self.needs_prune = true;
             let mut remaining = MAX_ENTRIES - reserve;
             let mut retained = 0;
-            // Historical archives outside the current max_files setting remain
-            // eligible, exactly as in the existing Agent's retention contract.
+            // Rotation archives outside the current max_files setting are also
+            // included in the retention scan.
             for index in 0..ARCHIVES {
                 let name = self.archive(index);
                 let (bytes, count, before) = match self.tail(&name, remaining) {
@@ -1047,7 +1047,7 @@ pub(crate) mod implementation {
         }
 
         #[test]
-        fn redacts_free_form_inputs_results_and_errors_with_compatible_metadata() {
+        fn redacts_free_form_inputs_results_and_errors() {
             let fixture = Fixture::new();
             let log = fixture.log(5 * 1024 * 1024, 3, false);
             let command = "printf 😀 COMMAND_SECRET";
@@ -1117,7 +1117,7 @@ pub(crate) mod implementation {
         }
 
         #[test]
-        fn startup_trims_partial_tail_and_legacy_archives_without_other_devices() {
+        fn startup_trims_partial_tail_and_excess_archives_without_other_devices() {
             let fixture = Fixture::new();
             let lines: Vec<String> = (0..1100)
                 .map(|id| format!("{{\"id\":\"{id}\"}}\n"))

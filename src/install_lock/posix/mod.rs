@@ -753,7 +753,7 @@ impl ManagerLock {
         if profile_from_file(&path)? != config {
             return Err(Error::message("Native profile record changed"));
         }
-        // If the parent still exists, prevent a cooperating legacy Agent
+        // If the parent still exists, prevent a cooperating Agent
         // from using the configuration while the entry is removed.
         let _profile_lock = if config.parent().is_some_and(Path::is_dir) {
             Some(crate::profile_lock::ProfileLocks::acquire(&[

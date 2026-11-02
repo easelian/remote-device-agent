@@ -97,12 +97,22 @@ fn canonical(value: &Value, mac: &mut Hmac<Sha256>) {
         Value::Null => mac.update(b"n"),
         Value::Bool(value) => mac.update(if *value { b"t" } else { b"f" }),
         Value::Number(number) => {
-            // Node parses JSON numbers as binary64. Normalize 1 and 1.0, -0,
-            // and large integer representations before fingerprinting.
-            let number = number.as_f64().unwrap_or(0.0);
-            let bits = if number == 0.0 { 0 } else { number.to_bits() };
-            mac.update(b"d");
-            mac.update(&bits.to_be_bytes());
+            if let Some(value) = crate::json_number::unsigned(value) {
+                mac.update(b"u");
+                mac.update(&value.to_be_bytes());
+            } else if let Some(value) = number.as_i64() {
+                mac.update(b"i");
+                mac.update(&value.to_be_bytes());
+            } else {
+                let number = number.as_f64().expect("JSON number");
+                if number >= i64::MIN as f64 && number < 0.0 && number.fract() == 0.0 {
+                    mac.update(b"i");
+                    mac.update(&(number as i64).to_be_bytes());
+                } else {
+                    mac.update(b"d");
+                    mac.update(&number.to_bits().to_be_bytes());
+                }
+            }
         }
         Value::String(value) => {
             mac.update(b"s");
@@ -120,7 +130,7 @@ fn canonical(value: &Value, mac: &mut Hmac<Sha256>) {
             mac.update(b"o");
             length(mac, values.len());
             let mut keys: Vec<_> = values.keys().collect();
-            keys.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
+            keys.sort_unstable();
             for key in keys {
                 length(mac, key.len());
                 mac.update(key.as_bytes());
@@ -402,6 +412,24 @@ impl Receipts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_fingerprints_distinguish_adjacent_large_integers() {
+        let hash = |value| fingerprint(b"key", "write_file", &value);
+        assert_ne!(
+            hash(json!({"n":9_007_199_254_740_992_u64})),
+            hash(json!({"n":9_007_199_254_740_993_u64}))
+        );
+        assert_ne!(hash(json!(u64::MAX)), hash(json!(u64::MAX as f64)));
+        for (integer, decimal) in [
+            (json!(1), json!(1.0)),
+            (json!(-1), json!(-1.0)),
+            (json!(0), json!(-0.0)),
+        ] {
+            assert_eq!(hash(integer), hash(decimal));
+        }
+        assert_eq!(hash(json!({"b":2,"a":1})), hash(json!({"a":1.0,"b":2.0})));
+    }
 
     #[test]
     fn rejects_conflicts_and_keeps_only_recovery_metadata() {

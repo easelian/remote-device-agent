@@ -1,4 +1,4 @@
-//! Experimental launchd registration. No load, bootstrap, kickstart or bootout.
+//! launchd registration. No load, bootstrap, kickstart or bootout.
 use std::fs::{self, DirBuilder, File};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_overrides_match_legacy_values_and_reject_ambiguous_output() {
+    fn disabled_overrides_parse_values_and_reject_ambiguous_output() {
         for value in ["false", "enabled"] {
             assert!(
                 launchd_enabled(

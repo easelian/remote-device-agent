@@ -1,8 +1,7 @@
 //! Windows audit storage beneath retained, private directory handles.
 //!
-//! Required writes flush the file. Windows directory-entry durability is not
-//! promised: this backend does not pretend that directory handles can provide
-//! the POSIX directory-fsync contract. The feature remains experimental.
+//! Required writes flush the file. Directory entries do not have a POSIX
+//! directory-fsync guarantee; power-loss durability requires separate validation.
 use super::{
     Temporary, check_file_acl, create_child, delete_open_object, failed_publication, file_identity,
     information, named_identity, open_child_request, open_parent, rename_file,

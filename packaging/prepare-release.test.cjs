@@ -63,6 +63,17 @@ test('assembles eight checked inputs and rejects tampering or missing targets', 
     const first = run(inputs, path.join(temp, 'ok'), temp);
     assert.equal(first.status, 0, first.stderr);
     const out = path.join(temp, 'ok');
+    const outputNames = fs.readdirSync(out).sort();
+    assert.equal(outputNames.length, 21);
+    assert.ok(outputNames.includes('SHA256SUMS'));
+    assert.ok(!outputNames.some((name) => name.endsWith('.sha256')));
+    const records = fs.readFileSync(path.join(out, 'SHA256SUMS'), 'utf8').trimEnd().split('\n');
+    assert.equal(records.length, outputNames.length - 1);
+    for (const record of records) {
+      const match = /^([0-9a-f]{64})  ([^/]+)$/.exec(record);
+      assert.ok(match, `Invalid checksum record: ${record}`);
+      assert.equal(digest(fs.readFileSync(path.join(out, match[2]))), match[1]);
+    }
     const tarball = path.join(out, `easelian-remote-device-agent-${version}.tgz`);
     assert.ok(fs.existsSync(tarball));
     const packageJson = spawnSync('tar', ['-xOf', tarball, 'package/package.json'], {encoding: 'utf8'});

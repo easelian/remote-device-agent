@@ -432,51 +432,29 @@ impl Policy {
         }
         let map = params.as_object()?;
         let targets = if operation == "move_file" {
-            let modern = map.contains_key("source") || map.contains_key("destination");
-            if modern
-                && ["path", "destination_root", "destination_path"]
-                    .iter()
-                    .any(|key| map.contains_key(*key))
-            {
-                return Some(Denial {
-                    code: "policy_parameters_invalid",
-                    message: "Policy denied: Mixed move parameter formats are not allowed".into(),
-                });
-            }
             let root = map.get("root").and_then(Value::as_str);
-            let source = map
-                .get(if modern { "source" } else { "path" })
-                .and_then(Value::as_str);
-            let destination_root = if modern {
-                root
-            } else {
-                map.get("destination_root").and_then(Value::as_str)
-            };
-            let destination = map
-                .get(if modern {
-                    "destination"
-                } else {
-                    "destination_path"
-                })
-                .and_then(Value::as_str);
+            let source = map.get("source").and_then(Value::as_str);
+            let destination = map.get("destination").and_then(Value::as_str);
             if root.is_none()
                 || source.is_none()
-                || destination_root.is_none()
                 || destination.is_none()
+                || ["path", "destination_root", "destination_path"]
+                    .iter()
+                    .any(|key| map.contains_key(*key))
             {
                 return Some(Denial {
                     code: "policy_parameters_invalid",
                     message: "Policy denied: Invalid move parameters".into(),
                 });
             }
-            vec![(root, source), (destination_root, destination)]
+            vec![(root, source), (root, destination)]
         } else {
             vec![(
                 map.get("root").and_then(Value::as_str),
                 map.get("path").and_then(Value::as_str),
             )]
         };
-        // Node validates every target path before checking any root or segment.
+        // Validate both paths before evaluating write restrictions.
         let mut checked = Vec::new();
         for (root, path) in targets {
             let path = match path.map(parts).transpose() {

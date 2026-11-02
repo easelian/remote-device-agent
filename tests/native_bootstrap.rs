@@ -193,6 +193,38 @@ fn bootstrap_verifies_native_artifact_and_preserves_existing_installation() {
     );
     assert!(!refused.exists());
 
+    let sidecar_prefix = fixture.0.join("per-binary checksum install");
+    success(bootstrap(&fixture.0, version, &sidecar_prefix, true));
+    assert_eq!(
+        sha256_hex(&fs::read(selected_binary(&sidecar_prefix, version)).unwrap()),
+        sha256_hex(&bytes)
+    );
+
+    let sums = fixture.0.join("SHA256SUMS");
+    let valid_record = format!("{}  {}\n", sha256_hex(&bytes), artifact_name(version));
+    let duplicate = format!("{valid_record}{valid_record}");
+    fs::write(&sums, duplicate).unwrap();
+    failure(
+        bootstrap(&fixture.0, version, &refused, false),
+        "checksum record",
+    );
+    assert!(!refused.exists());
+    fs::write(
+        &sums,
+        format!("{}  {}\n", "0".repeat(64), artifact_name(version)),
+    )
+    .unwrap();
+    failure(
+        bootstrap(&fixture.0, version, &refused, true),
+        "checksum mismatch",
+    );
+    assert!(!refused.exists());
+    fs::write(
+        &sums,
+        format!("{}  other-file\n{valid_record}", "a".repeat(64)),
+    )
+    .unwrap();
+
     for offline in [false, true] {
         let prefix = fixture.0.join(if offline {
             "offline install ' 雪"

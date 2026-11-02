@@ -17,16 +17,16 @@ uses Node to select and start a packaged native executable.
 | `win32-x64` | `x86_64-pc-windows-msvc` | `.zip` |
 | `win32-arm64` | `aarch64-pc-windows-msvc` | `.zip` |
 
-The raw name is `rdh-VERSION-PLATFORM`, with `.exe` on Windows. Each raw executable
-and archive has its own `.sha256` file. Use a target matching both the OS and CPU;
-successful cross-compilation does not establish runtime support. Current native
-runner coverage and outstanding acceptance work are recorded in the
-[rewrite design](rust-rewrite-design.md).
+The raw name is `rdh-VERSION-PLATFORM`, with `.exe` on Windows. Release assets
+share a `SHA256SUMS` file. Use a target matching both the OS and CPU;
+successful cross-compilation does not establish runtime support. See
+[Native lifecycle](native-lifecycle.md#platforms-and-validation) for native
+runner coverage and validation limits.
 
 ## Bootstrap installation
 
-Build or obtain a verified artifact before running these examples. A `latest` URL
-must not be assumed to contain native artifacts until a release is published.
+Build or obtain a verified artifact before running these examples. Check that
+the selected release contains the required platform artifact.
 The scripts accept either a local directory
 or an HTTPS mirror, reject HTTP downloads and verify the exact filename, SHA-256
 and executable version. They delegate installation to Rust.
@@ -38,7 +38,9 @@ sh packaging/install.sh --offline /absolute/artifacts/rdh-0.8.0-linux-x64-musl \
   -- --prefix /absolute/new-install
 ```
 
-The sibling `.sha256` file is required. Linux defaults to musl; use `--libc gnu`
+Put the release `SHA256SUMS` file in the same directory as the offline binary.
+A per-binary sibling `.sha256` file is also supported when `SHA256SUMS` is absent.
+Linux defaults to musl; use `--libc gnu`
 for a glibc executable. On macOS use the matching `darwin` filename. On Windows:
 
 ```powershell
@@ -47,7 +49,9 @@ for a glibc executable. On macOS use the matching `darwin` filename. On Windows:
 ```
 
 For a mirror, use `--version VERSION --base HTTPS_URL` or
-`-Version VERSION -Base HTTPS_URL`. A checksum fetched from the same source proves
+`-Version VERSION -Base HTTPS_URL`. The scripts fetch `SHA256SUMS`, falling back
+to the per-binary `.sha256` file when it is unavailable. A checksum fetched
+from the same source proves
 content consistency, not independent publisher authentication. Protect the mirror
 and retain its immutable artifact records.
 
@@ -76,9 +80,8 @@ After ending managed work and stopping the Agent, use `--no-restart` for an
 offline update. Restart locally and verify a new Hub connection before removing
 rollback material. [Maintenance](maintenance.md) describes rollback and recovery.
 
-Updates and rollback operate between Rust native versions. Installation creates
-a new directory; migration of an earlier Node installation is outside this
-unpublished replacement. Native indexes always use schema 2.
+Updates and rollback operate between native executable versions. Installation
+creates a new directory. Native indexes use schema 2.
 
 ## Prepare and publish a release
 
@@ -90,8 +93,8 @@ GitHub artifact attestation, and uploads the files to a **draft** release. Each
 candidate manifest retains `release_ready: false`: the workflow validates and
 attests the release set; that field alone does not represent publication.
 
-The draft contains each raw binary and archive, their `.sha256` files, bootstrap
-scripts, a schema-2 canary index, one npm tarball, and `SHA256SUMS`. The npm
+The draft contains each raw binary and archive, bootstrap scripts, a schema-2
+canary index, one npm tarball, and `SHA256SUMS`. The npm
 tarball `@easelian/remote-device-agent` contains all eight binaries and their
 license texts. Its `rdh`, `remote-device-agent` and `remote-device-hub` launchers
 select the native binary; running those npm commands requires Node 22.14 or later.

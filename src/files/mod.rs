@@ -1,10 +1,10 @@
 //! Bounded Protocol v1 file operations.
 //!
-//! Linux requires openat2 (Linux 5.6+). Experimental macOS uses directory-relative
+//! Linux requires openat2 (Linux 5.6+). macOS uses directory-relative
 //! opens with kernel NOFOLLOW_ANY plus descriptor path checks. Both retain
 //! configured root identities and reject symbolic links in request paths.
-//! Experimental Windows retains ancestor handles and uses handle-relative NT
-//! filesystem operations. Both experimental backends remain disabled by default.
+//! Windows retains ancestor handles and uses handle-relative NT
+//! filesystem operations. Platform backends are enabled in the default build.
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -461,26 +461,14 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn fingerprints_use_the_legacy_number_format() {
-        for (value, expected) in [
-            (0.0, "0"),
-            (-0.0, "0"),
-            (0.000001, "0.000001"),
-            (0.0000001, "1e-7"),
-            (-0.0000009999999974752427, "-9.999999974752427e-7"),
-            (1e20, "100000000000000000000"),
-            (1e21, "1e+21"),
-            (u64::MAX as f64, "18446744073709552000"),
-            (
-                1_737_982_632.0 * 1_000.0 + 508_156_297.0 / 1_000_000.0,
-                "1737982632508.1562",
-            ),
-        ] {
-            assert_eq!(native::js_number(value), expected);
-        }
+    fn fingerprints_preserve_native_integer_precision_and_file_timestamps() {
         assert_eq!(
-            native::js_unsigned(9_007_199_254_740_993),
-            "9007199254740992"
+            native::fingerprint_parts(u64::MAX, 9_007_199_254_740_993, 4, -1.25),
+            "18446744073709551615:9007199254740993:4:-1.25"
+        );
+        assert_ne!(
+            native::fingerprint_parts(1, 9_007_199_254_740_992, 4, 0.0),
+            native::fingerprint_parts(1, 9_007_199_254_740_993, 4, 0.0)
         );
 
         use std::os::fd::AsRawFd;
@@ -516,7 +504,13 @@ mod tests {
             .call("read_file_chunk", json!({"path":"timestamped"}))
             .unwrap();
         let fingerprint = info["fingerprint"].as_str().unwrap();
-        assert!(fingerprint.ends_with(":1737982632508.1562"));
+        let timestamp = fingerprint
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap();
+        assert_eq!(timestamp, 1_737_982_632_508.156_2);
         assert_eq!(chunk["fingerprint"], info["fingerprint"]);
     }
 
@@ -695,17 +689,15 @@ mod tests {
             .unwrap();
         assert_eq!(chunk["size_bytes"], 1024 * 1024 + 1);
         large.set_len(64 * 1024 * 1024 + 1).unwrap();
-        // The legacy API returns an empty result without reading the file when
-        // the tail-relative position is before its beginning, even above 64 MiB.
-        let empty = fixture
-            .call(
-                "read_file_chunk",
-                json!({"path":"large","from_end":true,"offset":999999999}),
-            )
-            .unwrap();
-        assert_eq!(empty["next_offset"], 0);
-        assert_eq!(empty["size_bytes"], 64 * 1024 * 1024 + 1);
-        assert_eq!(empty["truncated"], false);
+        assert!(
+            fixture
+                .call(
+                    "read_file_chunk",
+                    json!({"path":"large","from_end":true,"offset":999999999}),
+                )
+                .unwrap_err()
+                .contains("64 MiB")
+        );
         assert!(
             fixture
                 .call("read_file_chunk", json!({"path":"large","length":1}))
@@ -799,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn read_operations_preserve_legacy_validation_results() {
+    fn read_operations_reject_invalid_parameters() {
         let fixture = Fixture::new();
         fs::write(fixture.path.join("file"), "content").unwrap();
         assert_eq!(
@@ -824,6 +816,27 @@ mod tests {
             .call("read_multiple_files", json!({"paths":["file"],"length":0}))
             .unwrap();
         assert_eq!(batch["files"][0]["error"], "Invalid byte offset or length");
+        assert!(
+            fixture
+                .call(
+                    "read_multiple_files",
+                    json!({"files":[{"root":"work","path":"file"}]})
+                )
+                .is_err()
+        );
+        assert!(
+            fixture
+                .call("read_multiple_files", json!({"paths":["file"],"files":[]}))
+                .is_err()
+        );
+        assert!(
+            fixture
+                .call(
+                    "read_multiple_files",
+                    json!({"paths":["file"],"total_limit":null})
+                )
+                .is_err()
+        );
         assert_eq!(
             fixture
                 .files
@@ -834,10 +847,15 @@ mod tests {
     }
 
     #[test]
-    fn directory_pagination_accepts_large_integral_offsets() {
+    fn directory_pagination_uses_unsigned_integer_offsets() {
         let fixture = Fixture::new();
         fs::write(fixture.path.join("file"), "content").unwrap();
-        for offset in [9_007_199_254_740_992.0, 1e100] {
+        let empty = fixture
+            .call("read_file_chunk", json!({"path":"file","offset":u64::MAX}))
+            .unwrap();
+        assert_eq!(empty["content"], "");
+        assert_eq!(empty["next_offset"], u64::MAX);
+        for offset in [9_007_199_254_740_993, u64::MAX] {
             let page = fixture
                 .call("list_directory", json!({"offset":offset}))
                 .unwrap();
@@ -845,6 +863,11 @@ mod tests {
             assert_eq!(page["total"], 1);
             assert_eq!(page["next_offset"], Value::Null);
         }
+        assert!(
+            fixture
+                .call("list_directory", json!({"offset":1e100}))
+                .is_err()
+        );
         assert_eq!(
             fixture
                 .call("list_directory", json!({"offset":-1}))
@@ -1176,7 +1199,7 @@ mod mutation_tests {
 
     #[test]
     #[cfg(unix)]
-    fn move_accepts_both_formats_and_refuses_overwrite_symlinks_and_cross_root() {
+    fn move_requires_source_destination_and_refuses_overwrite_and_symlinks() {
         let fixture = Fixture::new(true);
         fs::write(fixture.path.join("source"), b"move me").unwrap();
         fs::write(fixture.path.join("existing"), b"keep").unwrap();
@@ -1220,7 +1243,7 @@ mod mutation_tests {
                     json!({"path":"moved","destination_root":"other","destination_path":"moved"})
                 )
                 .unwrap_err()
-                .contains("across roots")
+                .contains("Invalid move parameters")
         );
         assert!(
             fixture
@@ -1229,7 +1252,7 @@ mod mutation_tests {
                     json!({"source":"moved","destination":"next","path":"moved"})
                 )
                 .unwrap_err()
-                .contains("Mixed")
+                .contains("Invalid move parameters")
         );
         assert!(
             fixture
@@ -1253,7 +1276,7 @@ mod mutation_tests {
         fixture
             .call(
                 "move_file",
-                json!({"path":"moved","destination_root":"work","destination_path":"dir/final"}),
+                json!({"source":"moved","destination":"dir/final"}),
             )
             .unwrap();
         assert_eq!(

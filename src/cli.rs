@@ -104,7 +104,7 @@ pub fn parse(argv: &[String], environment_server: Option<&str>) -> Result<Action
 
 pub fn help() -> String {
     format!(
-        "Remote Device Hub Agent {} (Rust development build)\n\n\
+        "Remote Device Hub Agent {}\n\n\
         --server URL       Use a specific Hub (otherwise RDH_SERVER or {})\n\
         --root NAME=PATH   Expose a file root; repeat as needed\n\
         --name NAME        Device display name\n\
@@ -114,7 +114,7 @@ pub fn help() -> String {
         --recover-lock     Recover a stale lock after its process has exited\n\
         --pair-only        Exit after pairing without starting the Agent\n\n\
         Commands:\n  rdh startup --help         Manage future startup and local approvals\n\
-          rdh install-native --help  Install a standalone development binary\n\
+          rdh install-native --help  Install a standalone native binary\n\
           rdh install-service --help Install a native system service\n\
           rdh upgrade --help         Check or switch native versions offline\n\
           rdh rollback --help        Restore the previous native version offline\n\
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_legacy_flags_and_preserves_multiple_roots() {
+    fn parses_launch_flags_and_preserves_multiple_roots() {
         let Action::Launch(args) = parse(
             &args(&[
                 "--server=http://localhost:8111",

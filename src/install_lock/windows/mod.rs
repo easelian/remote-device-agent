@@ -374,8 +374,8 @@ fn read_marker(path: &Path) -> Result<(RunningRecord, FileIdentity)> {
     Ok((
         RunningRecord {
             pid,
-            // Earlier markers could store a Task's ordinary Win32 spelling,
-            // while profile registration has always stored the canonical path.
+            // Task markers may use ordinary Win32 paths while profile
+            // registration uses extended canonical paths.
             // Resolve the same file before comparing; never infer equivalence
             // by removing a prefix or changing case in a string.
             config: Path::new(config).canonicalize()?,

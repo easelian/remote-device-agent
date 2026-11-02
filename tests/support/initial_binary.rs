@@ -1,4 +1,4 @@
-//! Use the extracted native artifact for installation acceptance in CI.
+//! Use the extracted native artifact for installation tests in CI.
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 

@@ -125,7 +125,7 @@ mod windows {
             return None;
         }
         // GetHostNameW documents 256 UTF-16 code units as sufficient for all
-        // namespace providers. Like the legacy Node API, this honors provider
+        // namespace providers. This honors provider
         // and cluster names instead of trusting the COMPUTERNAME variable.
         let mut buffer = [0u16; 256];
         // SAFETY: the buffer has the supplied length and Winsock is initialized.
@@ -145,8 +145,8 @@ mod windows {
             ..OSVERSIONINFOW::default()
         };
         // SAFETY: version has the requested structure size and writable storage.
-        // The legacy Node implementation also uses ntdll's RtlGetVersion rather
-        // than the manifest-sensitive GetVersionEx compatibility view.
+        // RtlGetVersion reports the OS version without GetVersionEx's
+        // manifest-dependent compatibility view.
         if unsafe { RtlGetVersion(&mut version) } != 0 {
             return None;
         }

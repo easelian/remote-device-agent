@@ -8,6 +8,7 @@ pub mod deployment_defaults;
 pub mod error;
 pub mod files;
 pub mod install_lock;
+mod json_number;
 pub mod native_install;
 pub mod native_launcher;
 pub mod network;
@@ -27,7 +28,7 @@ pub mod service_install;
 pub mod service_update;
 pub mod session;
 pub mod startup;
-// Keep the original public command path as an alias of the canonical module.
+// Export the startup CLI through the public startup_cli alias.
 pub use startup::cli as startup_cli;
 pub mod storage;
 pub mod system;

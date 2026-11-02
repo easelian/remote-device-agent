@@ -94,7 +94,7 @@ fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
 }
 
 // Windows CRT argument quoting, used by PowerShell's normal argv parser.
-// CMD's /c payload is instead passed verbatim, matching the legacy launcher.
+// CMD's /c payload is passed verbatim.
 pub(crate) fn quote(argument: &str) -> String {
     let mut result = String::from("\"");
     let mut slashes = 0;
@@ -262,15 +262,6 @@ fn environment_from(source: &BTreeMap<String, OsString>, inherit: &[String]) -> 
         "PATHEXT".into(),
         ("PATHEXT".into(), extensions.join(";").into()),
     );
-    // libuv supplies these additional OS basics even with an explicit env.
-    // Preserve that observable legacy behavior without inheriting arbitrary
-    // Agent credentials, proxies, NODE_OPTIONS or desktop session variables.
-    for name in ["HOMEDRIVE", "HOMEPATH", "LOGONSERVER", "SYSTEMDRIVE"] {
-        if let Some(value) = source.get(name) {
-            env.entry(name.into())
-                .or_insert_with(|| (name.into(), value.clone()));
-        }
-    }
     env
 }
 
@@ -299,19 +290,12 @@ fn environment_block(env: &Environment) -> io::Result<Vec<u16>> {
 
 /// Resolve the configured shell using the explicit child environment.
 fn executable(shell: &str, cwd: &Path, env: &Environment) -> io::Result<PathBuf> {
-    // libuv searches the child's cwd, then its explicit PATH. It tries the
-    // supplied extension, .com and .exe, and does not use PATHEXT here.
-    let candidate = |base: PathBuf| {
-        let mut variants = Vec::with_capacity(3);
-        if base.extension().is_some() {
-            variants.push(base.clone());
+    // Use an explicit extension as supplied; otherwise select a native .exe.
+    let candidate = |mut path: PathBuf| {
+        if path.extension().is_none() {
+            path.set_extension("exe");
         }
-        for suffix in [".com", ".exe"] {
-            let mut path = base.as_os_str().to_os_string();
-            path.push(suffix);
-            variants.push(PathBuf::from(path));
-        }
-        variants.into_iter().find(|path| path.is_file())
+        path.is_file().then_some(path)
     };
     if shell.contains(['\\', '/', ':']) {
         return candidate(cwd.join(shell))
@@ -395,7 +379,7 @@ pub(super) fn spawn(plan: Plan, job: &Arc<Job>) -> io::Result<Child> {
 }
 
 fn launch_error(stage: &'static str, error: io::Error) -> io::Error {
-    // Keep the original OS code for the legacy-compatible RPC error, but make
+    // Keep the OS code in the RPC error and make
     // native setup failures distinguishable in local diagnostics. Never log
     // the command, environment, credentials or working-directory path.
     eprintln!(
