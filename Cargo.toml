@@ -14,7 +14,7 @@ resolver = "3"
 version = "0.7.2-rust.1"
 edition = "2024"
 rust-version = "1.93"
-license = "MIT"
+license = "Apache-2.0"
 
 [profile.release]
 lto = "thin"

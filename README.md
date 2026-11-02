@@ -172,3 +172,9 @@ See [Network configuration](docs/network.md).
 - [Distribution](docs/distribution.md): artifacts, bootstrap and channel format.
 - [Maintenance](docs/maintenance.md): checks, upgrades and recovery.
 - [Rust replacement design](docs/rust-rewrite-design.md): decisions and acceptance.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
+full text. Bundled and linked dependencies keep their own licenses, as recorded
+in each native artifact's manifest and license directory.

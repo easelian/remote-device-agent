@@ -65,6 +65,12 @@ test('assembles eight checked inputs and rejects tampering or missing targets', 
     const out = path.join(temp, 'ok');
     const tarball = path.join(out, `easelian-remote-device-agent-${version}.tgz`);
     assert.ok(fs.existsSync(tarball));
+    const packageJson = spawnSync('tar', ['-xOf', tarball, 'package/package.json'], {encoding: 'utf8'});
+    assert.equal(packageJson.status, 0, packageJson.stderr);
+    assert.equal(JSON.parse(packageJson.stdout).license, 'Apache-2.0');
+    const packageLicense = spawnSync('tar', ['-xOf', tarball, 'package/LICENSE']);
+    assert.equal(packageLicense.status, 0, packageLicense.stderr.toString());
+    assert.deepEqual(packageLicense.stdout, fs.readFileSync(path.join(root, 'LICENSE')));
     const install = path.join(temp, 'install');
     fs.mkdirSync(install);
     fs.writeFileSync(path.join(install, 'package.json'), '{"private":true}\n');

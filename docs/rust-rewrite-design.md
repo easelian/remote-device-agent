@@ -103,4 +103,4 @@ Windows 使用对应的 `rdh.exe`。系统服务更新需保持原服务账户�
 
 仓库使用 Rust `1.93.0` 和固定 `Cargo.lock`。`xtask native-development` 生成二进制、校验文件、归档、来源清单和许可证集合；清单记录源码摘要、提交、脏工作树状态、工具链和目标。归档被重新解包，逐文件比较，并在本机目标运行解包后的版本检查。
 
-仓库采用 MIT 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。当前提交的多平台结果以对应 CI 运行记录为准，GitHub 草稿和 npm 包尚未实际发布。
+仓库采用 Apache-2.0 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。当前提交的多平台结果以对应 CI 运行记录为准，GitHub 草稿和 npm 包尚未实际发布。
