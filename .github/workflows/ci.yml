@@ -276,3 +276,10 @@ jobs:
           printf '{"private":true}\n' > "$RUNNER_TEMP/npm-smoke/package.json"
           npm install --prefix "$RUNNER_TEMP/npm-smoke" --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP/rdh-assembled/easelian-remote-device-agent-$version.tgz"
           "$RUNNER_TEMP/npm-smoke/node_modules/.bin/rdh" --version | grep -Fx "$version"
+      - name: Retain checked release candidates
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/rdh-assembled/
+          if-no-files-found: error
+          retention-days: 7
