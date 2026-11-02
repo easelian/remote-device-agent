@@ -753,7 +753,7 @@ impl<'a> Parent<'a> {
         let named = self
             .root
             .open_access(&self.relative, DIRECTORY_ACCESS, true)?;
-        if metadata(&named)?.identity != metadata(&self.directory)?.identity {
+        if snapshot(&named.file)?.identity != snapshot(&self.directory.file)?.identity {
             return Err("Directory path changed while performing file operation".into());
         }
         Ok(())
