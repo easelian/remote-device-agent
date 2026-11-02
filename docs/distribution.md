@@ -3,7 +3,8 @@
 The Agent is a standalone Rust executable. The development builder produces a
 raw executable for installation and updates, plus an archive containing that
 same executable, provenance metadata and dependency license texts. Building,
-testing and running it require no Node or npm. npm distribution is a later task.
+testing and running the native Agent require no Node or npm. The npm distribution
+uses Node to select and start a packaged native executable.
 
 | Platform suffix | Rust target | Archive |
 | --- | --- | --- |
@@ -24,9 +25,9 @@ runner coverage and outstanding acceptance work are recorded in the
 
 ## Bootstrap installation
 
-Build or obtain a verified development artifact before running these examples.
-The current branch has no public release workflow, and a `latest` URL must not be
-assumed to contain native artifacts. The scripts accept either a local directory
+Build or obtain a verified artifact before running these examples. A `latest` URL
+must not be assumed to contain native artifacts until a release is published.
+The scripts accept either a local directory
 or an HTTPS mirror, reject HTTP downloads and verify the exact filename, SHA-256
 and executable version. They delegate installation to Rust.
 
@@ -79,6 +80,44 @@ Updates and rollback operate between Rust native versions. Installation creates
 a new directory; migration of an earlier Node installation is outside this
 unpublished replacement. Native indexes always use schema 2.
 
-Publication, signing, stable-channel promotion and npm platform packages are
-outside this development stage. `release_ready: false` in an artifact record is
-intentional until those release prerequisites are resolved.
+## Prepare and publish a release
+
+The [release workflow](../.github/workflows/release.yml) starts for a `v*` tag.
+The tag must match the workspace version in `Cargo.toml` and point to a commit
+reachable from `main`. It runs all eight native CI targets, assembles only the
+successful candidates with matching source, version and checksums, creates a
+GitHub artifact attestation, and uploads the files to a **draft** release. Each
+candidate manifest retains `release_ready: false`: the workflow validates and
+attests the release set; that field alone does not represent publication.
+
+The draft contains each raw binary and archive, their `.sha256` files, bootstrap
+scripts, a schema-2 canary index, one npm tarball, and `SHA256SUMS`. The npm
+tarball `@easelian/remote-device-agent` contains all eight binaries and their
+license texts. Its `rdh`, `remote-device-agent` and `remote-device-hub` launchers
+select the native binary; running those npm commands requires Node 22.14 or later.
+The native binaries and bootstrap installation do not require Node.
+
+Review the eight CI jobs, checksums, attestations, installation and upgrade
+evidence, release notes and exact version before publishing the GitHub draft.
+Prerelease versions are marked as prereleases. The generated canary index is a
+release asset for inspection; neither `channels/canary.json` nor the stable
+channel is updated automatically. Publish and validate those indexes separately
+after verifying that their artifact URLs are reachable to devices.
+
+The [npm workflow](../.github/workflows/npm-publish.yml) is started manually
+with a **published** GitHub Release tag: select that tag as the workflow ref and
+enter the same tag in its input. It downloads the exact release tarball,
+checks `SHA256SUMS` and verifies its attestation against the release workflow,
+tag and commit before publishing using npm Trusted Publishing. Prereleases use
+the npm `next` tag; versions without a prerelease suffix use `latest`. The npm
+organization must authorize publishing `@easelian/remote-device-agent` and
+configure `easelian/remote-device-agent` with workflow filename
+`npm-publish.yml`, including permission for `npm publish`. The npm CLI must be
+at least 11.5.1. If the package does not exist yet, arrange its initial creation
+with an authorized npm maintainer before configuring the package's trusted
+publisher. Do not create a placeholder or publish a first version automatically.
+
+After an uncertain publish result, inspect the registry's exact version and
+integrity before retrying: npm versions are immutable. GitHub attestations
+require the appropriate repository plan and permissions. Neither checksums nor
+attestations substitute for platform signing, notarization or runtime testing.

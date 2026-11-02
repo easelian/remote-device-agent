@@ -3,6 +3,7 @@ name = "rdh-agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [workspace]
@@ -13,6 +14,7 @@ resolver = "3"
 version = "0.7.2-rust.1"
 edition = "2024"
 rust-version = "1.93"
+license = "MIT"
 
 [profile.release]
 lto = "thin"

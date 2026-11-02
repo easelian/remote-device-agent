@@ -1,0 +1,79 @@
+name: Prepare native release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify tag and source
+        id: version
+        run: |
+          [[ "$GITHUB_REF_TYPE" == tag ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          version=$(cargo metadata --locked --no-deps --format-version 1 | node -p "JSON.parse(require('fs').readFileSync(0)).packages.find(p => p.name === 'rdh-agent').version")
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+          [[ -f LICENSE && -z "$(git status --porcelain --untracked-files=all)" ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+  native:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      release_candidate: true
+    permissions:
+      contents: read
+  draft:
+    needs: [preflight, native]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-development-*
+          path: ${{ runner.temp }}/native-inputs
+      - name: Assemble verified release assets
+        env:
+          RDH_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          node packaging/prepare-release.cjs "$RUNNER_TEMP/native-inputs" "$RUNNER_TEMP/rdh-release" "$RDH_VERSION" "$GITHUB_SHA" "$GITHUB_REPOSITORY"
+          cd "$RUNNER_TEMP/rdh-release"
+          sha256sum --check SHA256SUMS
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/rdh-release/*
+      - name: Create a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RDH_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$RDH_VERSION" --jq .sha)
+          [[ "$current" == "$GITHUB_SHA" ]]
+          args=(--draft --verify-tag --title "v$RDH_VERSION" --notes "Native artifacts and the npm tarball were built from $GITHUB_SHA after all native checks passed. Review before publishing.")
+          if [[ "$RDH_VERSION" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "v$RDH_VERSION" "${args[@]}" "$RUNNER_TEMP"/rdh-release/*

@@ -2,7 +2,7 @@
 
 本阶段把 Remote Device Hub Agent 的运行、业务、平台适配、构建和测试全部替换为 Rust。交付物是独立的 `rdh` 原生程序，保持现有 Hub 协议与设备操作。当前版本为尚未发布的 `0.7.2-rust.1`。
 
-2026-10-29 确认的范围是：原生运行和安装，以及今后 Rust 版本之间的升级、失败恢复与回滚。旧 Node 安装迁移、还原旧服务及相应测试已删除。npm 平台包、签名、正式发布和生产部署属于后续发布阶段。
+原生运行和安装支持 Rust 版本之间的升级、失败恢复与回滚。旧 Node 安装迁移、还原旧服务及相应测试已删除。发布流程使用 npm 包分发原生程序；平台签名和生产部署仍需单独完成。
 
 ## 实现结构
 
@@ -42,7 +42,7 @@ Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `dis
 
 用户后台启动使用 systemd、LaunchAgent 或 Task Scheduler。`startup set` 管理未来启动状态，不负责停止当前连接。系统服务通过 `install-service` 创建：POSIX 要求 root、已有非 root 服务账户及其私有配置和状态目录；Windows 使用管理员所有的程序目录及 LocalService 数据目录。新服务以禁用或手动启动状态注册，操作者在本机启动后核对 Hub 连接。
 
-引导脚本只负责取得正确平台的原生文件、校验摘要与版本，再调用 Rust 安装入口。构建、安装、运行及测试链不调用 Node/npm。具体命令见 [README](../README.md#install-and-run) 和 [distribution.md](distribution.md)。
+引导脚本只负责取得正确平台的原生文件、校验摘要与版本，再调用 Rust 安装入口。原生构建、安装、运行及 Rust 测试不调用 Node/npm；npm 分发及其测试需要 Node/npm。具体命令见 [README](../README.md#install-and-run) 和 [distribution.md](distribution.md)。
 
 ## Rust 版本之间的更新与回滚
 
@@ -103,4 +103,4 @@ Windows 使用对应的 `rdh.exe`。系统服务更新需保持原服务账户�
 
 仓库使用 Rust `1.93.0` 和固定 `Cargo.lock`。`xtask native-development` 生成二进制、校验文件、归档、来源清单和许可证集合；清单记录源码摘要、提交、脏工作树状态、工具链和目标。归档被重新解包，逐文件比较，并在本机目标运行解包后的版本检查。
 
-当前源码没有项目自身的 `LICENSE`，产物明确保留 `release_ready: false`。这不妨碍重构验收，但正式发布前必须落实项目许可证、支持的最低系统版本、签名和托管。npm 包以后仅承担平台选择与原生程序分发；Agent 业务执行、服务启动和运行时更新继续由原生程序完成。
+仓库采用 MIT 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。当前提交的多平台结果以对应 CI 运行记录为准，GitHub 草稿和 npm 包尚未实际发布。

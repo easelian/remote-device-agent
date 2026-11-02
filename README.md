@@ -2,13 +2,15 @@
 
 A standalone Rust Agent for Linux, macOS and Windows. It opens an authenticated
 WebSocket connection to Remote Device Hub and executes bounded file, search and
-process operations under the device user's authority. Agent runtime, business
-logic, build and tests do not require Node or npm.
+process operations under the device user's authority. The native Agent runtime,
+business logic, Rust build and Rust tests do not require Node or npm. The npm
+distribution and its packaging tests require Node and npm.
 
-This branch is the unpublished `0.7.2-rust.1` replacement under native acceptance.
+This branch contains the `0.7.2-rust.1` Rust replacement.
 The latest validation scope and remaining work are recorded in the
-[rewrite design](docs/rust-rewrite-design.md). Public release and npm packaging
-are later phases; the development artifacts are not a published stable channel.
+[rewrite design](docs/rust-rewrite-design.md). See [distribution](docs/distribution.md)
+for release preparation and npm publishing; development artifacts are not a
+published stable channel.
 
 ## Build and validate
 

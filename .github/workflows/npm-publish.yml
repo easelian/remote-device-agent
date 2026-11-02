@@ -1,0 +1,44 @@
+name: Publish Agent npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published GitHub Release tag, for example v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Download and verify the published release tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RDH_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RDH_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" == "$RDH_TAG" ]]
+          version="${RDH_TAG#v}"
+          state=$(gh release view "$RDH_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName)
+          node -e 'const x=JSON.parse(process.argv[1]); const tag=process.argv[2]; if(x.isDraft || x.tagName!==tag || x.isPrerelease!==tag.includes("-")) process.exit(1)' "$state" "$RDH_TAG"
+          mkdir "$RUNNER_TEMP/rdh-npm"
+          gh release download "$RDH_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/rdh-npm" --pattern SHA256SUMS --pattern "easelian-remote-device-agent-$version.tgz"
+          cd "$RUNNER_TEMP/rdh-npm"
+          grep -F "  easelian-remote-device-agent-$version.tgz" SHA256SUMS | sha256sum --check --strict
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RDH_TAG" --jq .sha)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          gh attestation verify "easelian-remote-device-agent-$version.tgz" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref "refs/tags/$RDH_TAG" --source-digest "$commit" --deny-self-hosted-runners
+          printf 'RDH_PACKAGE=%s\n' "$RUNNER_TEMP/rdh-npm/easelian-remote-device-agent-$version.tgz" >> "$GITHUB_ENV"
+          if [[ "$version" == *-* ]]; then printf 'RDH_DIST_TAG=next\n' >> "$GITHUB_ENV"; else printf 'RDH_DIST_TAG=latest\n' >> "$GITHUB_ENV"; fi
+      - name: Publish the verified npm tarball using trusted publishing
+        run: npm publish "$RDH_PACKAGE" --access public --tag "$RDH_DIST_TAG" --ignore-scripts

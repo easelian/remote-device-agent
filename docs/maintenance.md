@@ -2,7 +2,8 @@
 
 The repository builds the Rust Agent with Cargo and a Rust `xtask` artifact
 builder. Use Rust `1.93.0` and the checked-in `Cargo.lock`. No Server checkout,
-Node, npm or Python is required by the Agent build and test chain. OS SDKs,
+Node, npm or Python is required by the native Agent build and Rust tests. npm
+distribution checks require Node and npm. OS SDKs,
 linkers and platform service tools are still required for their respective targets.
 See [Code navigation](code-structure.md) for module ownership and extension points.
 
@@ -100,12 +101,9 @@ that profile-recovery override.
 ## Release boundary
 
 The workspace version is in `Cargo.toml`. Generated artifacts, records and logs
-belong in ignored `.build/` directories or external artifact storage. The old
-Node release and promotion workflows are removed. The current builder never
-publishes, installs on a device or changes a channel in GitHub.
-
-Public release work still needs a project license decision, supported OS baseline
-validation, signing/provenance, immutable hosting and channel promotion. The
-builder explicitly records whether a project license is present and leaves
-`release_ready` false. Do not substitute dependency licenses for a project license.
-npm packaging and publication are a separate later phase.
+belong in ignored `.build/` directories or external artifact storage. The builder
+never publishes, installs on a device or changes a channel in GitHub. Release
+candidates retain `release_ready: false`; publication follows the separate
+checks and draft workflow described in [distribution](distribution.md).
+Platform signing, notarization and update-channel promotion remain separate
+decisions; GitHub artifact attestations establish provenance, not platform trust.

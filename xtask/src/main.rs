@@ -1,4 +1,4 @@
-//! Development-only native artifact builder. It never publishes or installs.
+//! Native development and release-candidate builder. It never publishes or installs.
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -212,7 +212,33 @@ fn copy_licenses(
     Ok(result)
 }
 
-fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
+fn check_candidate_source(root: &Path, all_features: bool) -> Result<()> {
+    if !all_features {
+        return Err("Release candidates require --all-features".into());
+    }
+    if !root.join("LICENSE").is_file() {
+        return Err("Release candidates require a project LICENSE".into());
+    }
+    if !command(
+        "git",
+        &["status", "--porcelain", "--untracked-files=all"],
+        root,
+    )?
+    .stdout
+    .is_empty()
+    {
+        return Err("Release candidates require a clean source tree".into());
+    }
+    let tag = format!("refs/tags/v{}^{{commit}}", env!("CARGO_PKG_VERSION"));
+    let head = stdout(command("git", &["rev-parse", "HEAD"], root)?)?;
+    let tagged = stdout(command("git", &["rev-parse", "--verify", &tag], root)?)?;
+    if head != tagged {
+        return Err("Release candidate tag does not identify HEAD".into());
+    }
+    Ok(())
+}
+
+fn build(target: &str, output_dir: &Path, all_features: bool, candidate: bool) -> Result<()> {
     let platform = TARGETS
         .iter()
         .find(|(candidate, _)| *candidate == target)
@@ -221,6 +247,9 @@ fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("Workspace root missing")?;
+    if candidate {
+        check_candidate_source(root, all_features)?;
+    }
     let rustc = stdout(command("rustc", &["--version"], root)?)?;
     if rustc.split_whitespace().nth(1) != Some(RUSTC_VERSION) {
         return Err(
@@ -232,6 +261,13 @@ fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .ok_or("rustc host is missing")?;
+    let same_architecture = target.split('-').next() == host.split('-').next();
+    let same_os = ["-linux-", "-apple-darwin", "-windows-"]
+        .iter()
+        .any(|part| target.contains(*part) && host.contains(*part));
+    if candidate && !(same_architecture && same_os) {
+        return Err("Release candidates require a matching native runner".into());
+    }
     let mut metadata_args = vec!["metadata", "--locked", "--format-version", "1"];
     if all_features {
         metadata_args.push("--all-features");
@@ -269,10 +305,6 @@ fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
     let binary = target_dir.join(target).join("release").join(binary_name);
     validate_binary(&binary, target)?;
     let mut runtime_check = false;
-    let same_architecture = target.split('-').next() == host.split('-').next();
-    let same_os = ["-linux-", "-apple-darwin", "-windows-"]
-        .iter()
-        .any(|part| target.contains(*part) && host.contains(*part));
     if same_architecture && same_os {
         let output = Command::new(&binary)
             .arg("--version")
@@ -325,7 +357,7 @@ fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
     if let Some(license) = &project_license {
         fs::copy(license, tree.join("PROJECT_LICENSE"))?;
     }
-    let manifest = json!({"schema":1,"kind":"native-agent-development", "version":env!("CARGO_PKG_VERSION"),
+    let manifest = json!({"schema":1,"kind":if candidate {"native-agent-release-candidate"} else {"native-agent-development"}, "version":env!("CARGO_PKG_VERSION"),
         "target":target,"platform":platform,"rustc":rustc,"source_commit":source_commit,"source_dirty":source_dirty,
         "features":if all_features { "all" } else { "default" },
         "runtime_self_check":runtime_check,"release_ready":false,
@@ -418,6 +450,9 @@ fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
     let mut created: Vec<PathBuf> = Vec::new();
     let mut created_verified = false;
     let commit = (|| -> Result<()> {
+        if candidate {
+            check_candidate_source(root, all_features)?;
+        }
         for (path, text) in outputs {
             let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
             created.push(path.to_path_buf());
@@ -445,7 +480,7 @@ fn build(target: &str, output_dir: &Path, all_features: bool) -> Result<()> {
         return Err(error);
     }
     println!(
-        "Development archive: {}\nArchive SHA-256: {}\nNative binary: {}\nBinary SHA-256: {}\nDevelopment index: {}\nNative self-check: {}\nVerified extraction: {}\nRelease ready: false",
+        "Native archive: {}\nArchive SHA-256: {}\nNative binary: {}\nBinary SHA-256: {}\nDevelopment index: {}\nNative self-check: {}\nVerified extraction: {}\nRelease ready: false",
         archive.display(),
         archive_hash,
         raw.display(),
@@ -463,7 +498,8 @@ fn main() {
     let result = if (args.len() == 5 || all_features) && args[1] == "--target" && args[3] == "--out"
     {
         match args[0].as_str() {
-            "native-development" => build(&args[2], Path::new(&args[4]), all_features),
+            "native-development" => build(&args[2], Path::new(&args[4]), all_features, false),
+            "native-release-candidate" => build(&args[2], Path::new(&args[4]), all_features, true),
             "native-test-candidate" if !all_features => {
                 test_candidate::build(&args[2], Path::new(&args[4]))
             }
@@ -471,12 +507,71 @@ fn main() {
         }
     } else {
         Err(
-            "usage: cargo run -p xtask -- native-development --target TARGET --out DIRECTORY [--all-features]\n       cargo run -p xtask -- native-test-candidate --target TARGET --out DIRECTORY"
+            "usage: cargo run -p xtask -- native-development --target TARGET --out DIRECTORY [--all-features]\n       cargo run -p xtask -- native-release-candidate --target TARGET --out DIRECTORY --all-features\n       cargo run -p xtask -- native-test-candidate --target TARGET --out DIRECTORY"
                 .into(),
         )
     };
     if let Err(error) = result {
         eprintln!("xtask: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_requires_license_clean_tree_exact_tag_and_features() {
+        let root = Staging(std::env::temp_dir().join(format!(
+            "rdh-release-preflight-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        fs::create_dir(&root.0).unwrap();
+        command("git", &["init", "-q"], &root.0).unwrap();
+        assert!(check_candidate_source(&root.0, false).is_err());
+        assert!(check_candidate_source(&root.0, true).is_err());
+        fs::write(root.0.join("LICENSE"), "fixture license\n").unwrap();
+        command("git", &["add", "LICENSE"], &root.0).unwrap();
+        command(
+            "git",
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            &root.0,
+        )
+        .unwrap();
+        assert!(check_candidate_source(&root.0, true).is_err());
+        let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+        command("git", &["tag", &tag], &root.0).unwrap();
+        assert!(check_candidate_source(&root.0, true).is_ok());
+        fs::write(root.0.join("untracked"), "dirty").unwrap();
+        assert!(check_candidate_source(&root.0, true).is_err());
+        fs::remove_file(root.0.join("untracked")).unwrap();
+        fs::write(root.0.join("LICENSE"), "changed").unwrap();
+        assert!(check_candidate_source(&root.0, true).is_err());
+        command("git", &["add", "LICENSE"], &root.0).unwrap();
+        command(
+            "git",
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "second",
+            ],
+            &root.0,
+        )
+        .unwrap();
+        assert!(check_candidate_source(&root.0, true).is_err());
     }
 }
