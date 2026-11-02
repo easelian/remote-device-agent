@@ -135,11 +135,32 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
     command.current_dir(directory).output().unwrap()
 }
 
-fn bootstrap_defaults(directory: &Path, prefix: &Path) -> Output {
+fn bootstrap_defaults(directory: &Path, prefix: &Path, release_version: &str) -> Output {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     #[cfg(unix)]
     let mut command = {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = directory.join("mock-release-api");
+        fs::create_dir_all(&bin).unwrap();
+        let curl = bin.join("curl");
+        fs::write(
+            &curl,
+            r#"#!/bin/sh
+for argument do
+    if [ "$argument" = 'https://api.github.com/repos/easelian/remote-device-agent/releases?per_page=1' ]; then
+        printf '[{"tag_name":"v%s","draft":false}]\n' "$RDH_TEST_RELEASE_VERSION"
+        exit 0
+    fi
+done
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut paths = vec![bin];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let mut command = Command::new("/bin/sh");
+        command.env("PATH", std::env::join_paths(paths).unwrap());
         command.stdin(fs::File::open(repository.join("packaging/install.sh")).unwrap());
         #[cfg(target_os = "linux")]
         command.env(
@@ -162,7 +183,12 @@ fn bootstrap_defaults(directory: &Path, prefix: &Path) -> Output {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)",
+            r#"function Invoke-RestMethod {
+                param($Uri, $Headers, $TimeoutSec)
+                if ($Uri -ne 'https://api.github.com/repos/easelian/remote-device-agent/releases?per_page=1') { throw 'Unexpected release API request' }
+                [pscustomobject]@{ tag_name = ('v' + $env:RDH_TEST_RELEASE_VERSION); draft = $false }
+            }
+            Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)"#,
         ]);
         command.env(
             "RDH_TEST_INSTALLER",
@@ -173,6 +199,7 @@ fn bootstrap_defaults(directory: &Path, prefix: &Path) -> Output {
     command
         .env("RDH_BASE", directory)
         .env("RDH_INSTALL_DIR", prefix)
+        .env("RDH_TEST_RELEASE_VERSION", release_version)
         .env_remove("RDH_VERSION")
         .current_dir(directory)
         .output()
@@ -212,13 +239,20 @@ fn bootstrap_accepts_script_input_without_arguments() {
     let bytes = fs::read(initial_binary::path()).unwrap();
     artifact(&fixture.0, version, &bytes);
     let prefix = fixture.0.join("default install ' 雪");
-    success(bootstrap_defaults(&fixture.0, &prefix));
+    let different_release = "9999.0.0-release-fixture";
+    artifact(&fixture.0, different_release, &bytes);
+    failure(
+        bootstrap_defaults(&fixture.0, &prefix, different_release),
+        "version mismatch",
+    );
+    assert!(!prefix.exists());
+    success(bootstrap_defaults(&fixture.0, &prefix, version));
     assert_eq!(
         sha256_hex(&fs::read(selected_binary(&prefix, version)).unwrap()),
         sha256_hex(&bytes)
     );
     failure(
-        bootstrap_defaults(&fixture.0, &prefix),
+        bootstrap_defaults(&fixture.0, &prefix, version),
         "prefix already exists",
     );
 }

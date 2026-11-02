@@ -102,11 +102,7 @@ try {
   if (packed.length !== 1 || !/^easelian-remote-device-agent-.*\.tgz$/.test(packed[0].filename)) fail('Unexpected npm pack output');
   assets.push(packed[0].filename);
   for (const name of ['install.sh', 'install.ps1']) {
-    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    const marker = name === 'install.sh' ? /^rdh_default_version=.+$/m : /^\$rdhDefaultVersion = '.+'$/m;
-    if (!marker.test(source)) fail(`${name}: missing default release version`);
-    const replacement = name === 'install.sh' ? `rdh_default_version=${version}` : `$rdhDefaultVersion = '${version}'`;
-    fs.writeFileSync(path.join(output, name), source.replace(marker, () => replacement), {flag: 'wx'});
+    fs.copyFileSync(path.join(__dirname, name), path.join(output, name), fs.constants.COPYFILE_EXCL);
     assets.push(name);
   }
   const indexName = `rdh-${version}.canary.json`;

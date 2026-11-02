@@ -67,8 +67,9 @@ test('assembles eight checked inputs and rejects tampering or missing targets', 
     assert.equal(outputNames.length, 21);
     assert.ok(outputNames.includes('SHA256SUMS'));
     assert.ok(!outputNames.some((name) => name.endsWith('.sha256')));
-    assert.ok(fs.readFileSync(path.join(out, 'install.sh'), 'utf8').includes(`\nrdh_default_version=${version}\n`));
-    assert.ok(fs.readFileSync(path.join(out, 'install.ps1'), 'utf8').includes(`\n$rdhDefaultVersion = '${version}'\n`));
+    for (const name of ['install.sh', 'install.ps1']) {
+      assert.deepEqual(fs.readFileSync(path.join(out, name)), fs.readFileSync(path.join(__dirname, name)));
+    }
     const records = fs.readFileSync(path.join(out, 'SHA256SUMS'), 'utf8').trimEnd().split('\n');
     assert.equal(records.length, outputNames.length - 1);
     for (const record of records) {

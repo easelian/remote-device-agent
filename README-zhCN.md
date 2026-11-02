@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/easelian/remote-device-agent/main/p
 irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1 | iex
 ```
 
-脚本默认安装 `0.8.0`：Linux/macOS 安装到 `~/.local/lib/rdh`，Windows 安装到 `%LOCALAPPDATA%\RemoteDeviceAgent`。将该目录加入用户 PATH 后即可运行 `rdh`。Linux 默认选择 musl，macOS 和 Windows 选择对应的原生二进制文件，无需填写版本或安装目录。
+脚本默认获取 GitHub 上最新发布的 Release（包括预发布版）：Linux/macOS 安装到 `~/.local/lib/rdh`，Windows 安装到 `%LOCALAPPDATA%\RemoteDeviceAgent`。将该目录加入用户 PATH 后即可运行 `rdh`。Linux 默认选择 musl，macOS 和 Windows 选择对应的原生二进制文件，无需填写版本或安装目录。
 
 脚本不会覆盖已有安装。自定义目录、版本、GNU libc 构建及离线安装见[分发说明](docs/distribution.md#bootstrap-installation)。
 

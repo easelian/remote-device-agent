@@ -26,14 +26,15 @@ runner coverage and validation limits.
 ## Bootstrap installation
 
 The [README](../README.md#install-with-a-script) provides one-line installation
-commands. Without arguments, the scripts install their default release into
+commands. Without arguments, the scripts query the public GitHub Releases API
+for the newest published release, including prereleases, and install it into
 `$HOME/.local/lib/rdh` on POSIX or `%LOCALAPPDATA%\RemoteDeviceAgent` on Windows.
-Add the printed installation directory to your user PATH. The release assembler
-sets each attached script's default version to that release's version.
-The scripts on `main` select `0.8.0`.
+Add the printed installation directory to your user PATH. Downloaded binaries
+are checked against the selected release's version and checksums.
 
 Use `RDH_INSTALL_DIR` for a different destination, `RDH_VERSION` for another
-release, and `RDH_BASE` for a mirror. `RDH_LIBC=gnu` selects the GNU build on Linux;
+release, and `RDH_BASE` for a mirror. Without an explicit version or offline
+binary, version selection still uses GitHub when a mirror is set. `RDH_LIBC=gnu` selects the GNU build on Linux;
 the `0.8.0` GNU binaries require glibc 2.39 or later. Explicit script options
 override the corresponding environment variables. Service installation requires
 explicit native arguments.

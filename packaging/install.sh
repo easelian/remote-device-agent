@@ -3,7 +3,6 @@
 set -eu
 umask 077
 
-rdh_default_version=0.8.0
 rdh_base=${RDH_BASE:-}
 rdh_version=${RDH_VERSION:-}
 rdh_offline=
@@ -19,7 +18,8 @@ usage: install.sh [--version VERSION] [--base HTTPS_URL|DIRECTORY] [--libc musl|
 The native binary must have a matching entry in SHA256SUMS, or a per-binary sibling
 .sha256 file. Linux defaults to musl; --libc gnu selects glibc. No Node/npm is used.
 
-With no arguments, install the bundled default release into $HOME/.local/lib/rdh.
+With no arguments, install the newest published GitHub release (including
+prereleases) into $HOME/.local/lib/rdh.
 RDH_VERSION, RDH_BASE, RDH_LIBC and RDH_INSTALL_DIR override these defaults.
 The installer prints the command directory to add to PATH.
 
@@ -78,7 +78,20 @@ if [ -n "$rdh_offline" ]; then
     [ -z "$rdh_version" ] || [ "$rdh_version" = "$rdh_detected" ] || die 'offline binary version differs from --version'
     rdh_version=$rdh_detected
 fi
-rdh_version=${rdh_version:-$rdh_default_version}
+if [ -z "$rdh_version" ]; then
+    have curl || die 'curl is required to find the latest release'
+    rdh_release=$(curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 15 --max-time 30 --max-filesize 1048576 \
+        -H 'Accept: application/vnd.github+json' \
+        'https://api.github.com/repos/easelian/remote-device-agent/releases?per_page=1') \
+        || die 'could not find the latest release; retry or specify --version'
+    rdh_tag=$(printf '%s\n' "$rdh_release" | tr '\n' ' ' | \
+        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    case $rdh_tag in
+        v*) rdh_version=${rdh_tag#v} ;;
+        *) die 'the latest release has no supported version tag' ;;
+    esac
+fi
 printf '%s\n' "$rdh_version" | LC_ALL=C awk '
     /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$/ { valid=1 }
     END { exit !valid }' || die 'invalid version'

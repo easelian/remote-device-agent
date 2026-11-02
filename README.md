@@ -29,7 +29,8 @@ curl -fsSL https://raw.githubusercontent.com/easelian/remote-device-agent/main/p
 irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1 | iex
 ```
 
-The scripts install release `0.8.0` into `~/.local/lib/rdh` on Linux/macOS or
+The scripts fetch the newest published GitHub release, including prereleases,
+and install into `~/.local/lib/rdh` on Linux/macOS or
 `%LOCALAPPDATA%\RemoteDeviceAgent` on Windows. Add that directory to your user
 PATH to run `rdh`. Linux selects musl; macOS and Windows select their native
 binaries. No version or destination arguments are required.

@@ -9,7 +9,6 @@ param(
     [string[]]$NativeArguments = @()
 )
 $ErrorActionPreference = 'Stop'
-$rdhDefaultVersion = '0.8.0'
 if ($Help) {
     Write-Output @'
 usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Service] [-NativeArguments @(...)]
@@ -17,7 +16,7 @@ usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Service] [-N
 
 The native binary must have a matching SHA256SUMS entry or per-binary .sha256 file.
 No Node/npm is used.
-With no arguments, install the bundled default release into
+With no arguments, install the newest published GitHub release (including prereleases) into
 %LOCALAPPDATA%\RemoteDeviceAgent. RDH_VERSION, RDH_BASE and RDH_INSTALL_DIR
 override these defaults. Add the printed command directory to PATH.
 NativeArguments go to rdh install-native, or install-service with -Service.
@@ -62,7 +61,15 @@ if ($Offline) {
     if ($Version -and $Version -ne $rdhDetected) { throw 'Offline version differs from -Version.' }
     $Version = $rdhDetected
 }
-if (!$Version) { $Version = $rdhDefaultVersion }
+if (!$Version) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $rdhReleases = @(Invoke-RestMethod -Uri 'https://api.github.com/repos/easelian/remote-device-agent/releases?per_page=1' `
+        -Headers @{Accept = 'application/vnd.github+json'} -TimeoutSec 30)
+    if ($rdhReleases.Count -ne 1 -or $rdhReleases[0].draft -ne $false -or $rdhReleases[0].tag_name -notmatch '^v(.+)$') {
+        throw 'The latest release has no supported version tag. Retry or specify -Version.'
+    }
+    $Version = $Matches[1]
+}
 if ($Version -notmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?\z') {
     throw 'Supply a valid -Version when downloading.'
 }
