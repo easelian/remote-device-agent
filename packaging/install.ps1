@@ -262,7 +262,7 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr window, uint
         Write-Output 'Starting Remote Device Hub. Press Ctrl+C to stop.'
         $rdhLaunchArguments = @()
         if ($rdhConfig) { $rdhLaunchArguments = @('--config', $rdhConfig) }
-        & (Join-Path $rdhInstallPrefix 'rdh.exe') @rdhLaunchArguments
+        & ([IO.Path]::Combine($rdhInstallPrefix, 'rdh.exe')) @rdhLaunchArguments
         if ($LASTEXITCODE -ne 0) { throw "The Agent exited with code $LASTEXITCODE." }
     }
 }
