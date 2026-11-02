@@ -114,6 +114,11 @@ jobs:
       - name: Check formatting
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo +1.93.0 fmt --all -- --check
+      - name: Install shell startup test tools
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
       - name: Check npm platform selection and release assembly
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: node --test packaging/npm/launcher.test.cjs packaging/prepare-release.test.cjs
@@ -245,6 +250,12 @@ jobs:
           binary="target/$RDH_TARGET/release/rdh"
           if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
           "$binary" --version
+      - name: Check native Windows installer PATH persistence
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test native_bootstrap native_windows_bootstrap_ -- --ignored --test-threads=1
       - name: Retain native development artifacts
         if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' }}
         uses: actions/upload-artifact@v7

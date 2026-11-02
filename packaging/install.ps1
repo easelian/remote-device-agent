@@ -5,6 +5,8 @@ param(
     [string]$Version = '',
     [string]$Offline = '',
     [switch]$Service,
+    [switch]$NoStart,
+    [switch]$NoModifyPath,
     [switch]$Help,
     [string[]]$NativeArguments = @()
 )
@@ -12,16 +14,21 @@ $ErrorActionPreference = 'Stop'
 if ($Help) {
     Write-Output @'
 usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Service] [-NativeArguments @(...)]
+                  [-NoStart] [-NoModifyPath]
        install.ps1 -Offline NATIVE_BINARY [-Service] -NativeArguments @(...)
 
 The native binary must have a matching SHA256SUMS entry or per-binary .sha256 file.
 No Node/npm is used.
 With no arguments, install the newest published GitHub release (including prereleases) into
 %LOCALAPPDATA%\RemoteDeviceAgent. RDH_VERSION, RDH_BASE and RDH_INSTALL_DIR
-override these defaults. Add the printed command directory to PATH.
+override these defaults. Installation saves the directory in the user PATH,
+updates this PowerShell process's PATH and starts the Agent in the foreground.
+-NoStart or RDH_NO_START=1 disables automatic launch.
+-NoModifyPath or RDH_NO_MODIFY_PATH=1 leaves PATH unchanged.
 NativeArguments go to rdh install-native, or install-service with -Service.
 The Rust command owns all profile, ownership, existing-install and recovery checks.
-It does not pair a device, start a service or overwrite an installation.
+Service installation does not change PATH or start the service. Existing
+installations are not overwritten. Device pairing requires browser approval.
 
 Examples (replace the version and absolute paths):
   .\install.ps1 -Version VERSION -NativeArguments @('--prefix', 'C:\Path\NewInstall')
@@ -31,6 +38,12 @@ Examples (replace the version and absolute paths):
     exit 0
 }
 if ($env:OS -ne 'Windows_NT') { throw 'Use install.sh on Linux and macOS.' }
+foreach ($rdhOption in @('RDH_NO_START', 'RDH_NO_MODIFY_PATH')) {
+    $rdhValue = [Environment]::GetEnvironmentVariable($rdhOption)
+    if ($rdhValue -and $rdhValue -notin @('0', '1')) { throw "$rdhOption must be 0 or 1." }
+}
+$NoStart = $NoStart -or $env:RDH_NO_START -eq '1'
+$NoModifyPath = $NoModifyPath -or $env:RDH_NO_MODIFY_PATH -eq '1'
 $rdhDefaultPrefix = ''
 if (!$NativeArguments -or $NativeArguments.Count -eq 0) {
     if ($Service) { throw 'Supply service installation arguments in -NativeArguments.' }
@@ -40,6 +53,12 @@ if (!$NativeArguments -or $NativeArguments.Count -eq 0) {
         $rdhDefaultPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
     }
     $NativeArguments = @('--prefix', $rdhDefaultPrefix)
+}
+$rdhInstallPrefix = ''
+$rdhConfig = ''
+for ($rdhIndex = 0; $rdhIndex -lt $NativeArguments.Count - 1; $rdhIndex++) {
+    if ($NativeArguments[$rdhIndex] -eq '--prefix') { $rdhInstallPrefix = $NativeArguments[$rdhIndex + 1] }
+    if ($NativeArguments[$rdhIndex] -eq '--config') { $rdhConfig = $NativeArguments[$rdhIndex + 1] }
 }
 if (!$Base) { $Base = $env:RDH_BASE }
 if (!$Version) { $Version = $env:RDH_VERSION }
@@ -110,6 +129,10 @@ function Fetch-Native([string]$Name, [string]$Destination) {
                 if ($rdhStatus -ne 200) { throw "Download returned HTTP $rdhStatus." }
                 $rdhInput = $rdhResponse.GetResponseStream()
                 $rdhOutput = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+                $rdhShowProgress = $Name -eq $rdhName
+                $rdhProgressClock = [Diagnostics.Stopwatch]::StartNew()
+                $rdhProgressAt = -200L
+                if ($rdhShowProgress) { Write-Host "Downloading Remote Device Hub $Version ($rdhPlatform)..." }
                 try {
                     $rdhBuffer = [byte[]]::new(65536)
                     $rdhTotal = 0L
@@ -117,10 +140,21 @@ function Fetch-Native([string]$Name, [string]$Destination) {
                         $rdhTotal += $rdhCount
                         if ($rdhTotal -gt 268435456) { throw 'Download is too large.' }
                         $rdhOutput.Write($rdhBuffer, 0, $rdhCount)
+                        if ($rdhShowProgress -and $rdhProgressClock.ElapsedMilliseconds - $rdhProgressAt -ge 200) {
+                            $rdhProgressAt = $rdhProgressClock.ElapsedMilliseconds
+                            $rdhStatusText = ('{0:N1} MiB downloaded' -f ($rdhTotal / 1MB))
+                            $rdhPercent = -1
+                            if ($rdhResponse.ContentLength -gt 0) {
+                                $rdhStatusText += (' of {0:N1} MiB' -f ($rdhResponse.ContentLength / 1MB))
+                                $rdhPercent = [Math]::Min(100, [int](100.0 * $rdhTotal / $rdhResponse.ContentLength))
+                            }
+                            Write-Progress -Id 1 -Activity "Downloading $Name" -Status $rdhStatusText -PercentComplete $rdhPercent
+                        }
                     }
                 } finally {
                     $rdhOutput.Dispose()
                     $rdhInput.Dispose()
+                    if ($rdhShowProgress) { Write-Progress -Id 1 -Activity "Downloading $Name" -Completed }
                 }
                 return
             } finally {
@@ -178,10 +212,57 @@ try {
     & $rdhBinary $rdhCommand @NativeArguments
     $rdhExit = $LASTEXITCODE
     if ($rdhExit -ne 0) { throw "Native installation failed with exit code $rdhExit. Inspect its diagnostic before retrying." }
-    if ($rdhDefaultPrefix) {
-        Write-Output "Installed commands in $rdhDefaultPrefix"
-        Write-Output 'Add this directory to PATH to run rdh.'
-    }
 } finally {
     Remove-Item -LiteralPath $rdhTemporary -Recurse -Force
+}
+if (!$Service -and $rdhInstallPrefix) {
+    $rdhInstallPrefix = [IO.Path]::GetFullPath($rdhInstallPrefix).TrimEnd('\', '/')
+    if (!$NoModifyPath) {
+        if ($rdhInstallPrefix.Contains(';')) { throw 'The installation path cannot contain a semicolon when updating PATH.' }
+        $rdhEnvironment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        try {
+            $rdhUserPath = $rdhEnvironment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $rdhPathKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            if ($null -ne $rdhUserPath) {
+                $rdhPathKind = $rdhEnvironment.GetValueKind('Path')
+                if ($rdhPathKind -notin @([Microsoft.Win32.RegistryValueKind]::String, [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
+                    throw 'The user PATH registry value is not a string.'
+                }
+            }
+            $rdhPresent = @($rdhUserPath -split ';' | Where-Object {
+                [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\', '/') -ieq $rdhInstallPrefix
+            }).Count -gt 0
+            if (!$rdhPresent) {
+                $rdhNewPath = if ($rdhUserPath) { "$rdhInstallPrefix;$rdhUserPath" } else { $rdhInstallPrefix }
+                $rdhEnvironment.SetValue('Path', $rdhNewPath, $rdhPathKind)
+            }
+        } finally {
+            $rdhEnvironment.Dispose()
+        }
+        if (!(@($env:PATH -split ';' | Where-Object { $_.TrimEnd('\', '/') -ieq $rdhInstallPrefix }).Count)) {
+            $env:PATH = "$rdhInstallPrefix;$env:PATH"
+        }
+        if (!$rdhPresent) {
+            try {
+                if (!('RdhInstaller.EnvironmentNotification' -as [type])) {
+                    Add-Type -Namespace RdhInstaller -Name EnvironmentNotification -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr window, uint message, System.UIntPtr parameter, string area, uint flags, uint timeout, out System.UIntPtr result);
+'@
+                }
+                $rdhNotificationResult = [UIntPtr]::Zero
+                [void][RdhInstaller.EnvironmentNotification]::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 1000, [ref]$rdhNotificationResult)
+            } catch {
+                Write-Verbose 'PATH is saved; desktop environment notification was unavailable.'
+            }
+        }
+        Write-Output 'User PATH updated. This PowerShell session can run rdh immediately.'
+    }
+    if (!$NoStart) {
+        Write-Output 'Starting Remote Device Hub. Press Ctrl+C to stop.'
+        $rdhLaunchArguments = @()
+        if ($rdhConfig) { $rdhLaunchArguments = @('--config', $rdhConfig) }
+        & (Join-Path $rdhInstallPrefix 'rdh.exe') @rdhLaunchArguments
+        if ($LASTEXITCODE -ne 0) { throw "The Agent exited with code $LASTEXITCODE." }
+    }
 }

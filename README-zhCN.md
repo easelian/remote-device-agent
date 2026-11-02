@@ -10,7 +10,7 @@
 
 ### 脚本直装
 
-脚本根据操作系统和 CPU 选择二进制文件，校验摘要与版本后安装到新目录。支持 x86_64 和 ARM64，不需要 Node.js 或 npm。
+脚本根据操作系统和 CPU 选择二进制文件，校验摘要与版本后安装、保存用户 PATH 并启动 Agent。请在希望开放访问的目录中运行安装命令。支持 x86_64 和 ARM64，不需要 Node.js 或 npm。
 
 **Linux 和 macOS**：需要 `curl`，以及 `sha256sum` 或 `shasum`。
 
@@ -24,7 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/easelian/remote-device-agent/main/p
 irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1 | iex
 ```
 
-脚本默认获取 GitHub 上最新发布的 Release（包括预发布版）：Linux/macOS 安装到 `~/.local/lib/rdh`，Windows 安装到 `%LOCALAPPDATA%\RemoteDeviceAgent`。将该目录加入用户 PATH 后即可运行 `rdh`。Linux 默认选择 musl，macOS 和 Windows 选择对应的原生二进制文件，无需填写版本或安装目录。
+脚本默认获取 GitHub 上最新发布的 Release（包括预发布版）：Linux/macOS 安装到 `~/.local/lib/rdh`，Windows 安装到 `%LOCALAPPDATA%\RemoteDeviceAgent`。下载时显示进度。Linux/macOS 自动写入 shell 启动配置，新终端会加载 PATH；Windows 同时更新用户 PATH 和当前 PowerShell 会话。Linux 默认选择 musl，macOS 和 Windows 选择对应的原生二进制文件，无需填写参数。
+
+安装完成后，Agent 直接在前台运行，打开或输出配对页面。在页面中批准设备和权限，按 Ctrl+C 可停止 Agent。只安装不启动时使用 `--no-start` / `-NoStart`；不修改 PATH 时使用 `--no-modify-path` / `-NoModifyPath`。
 
 脚本不会覆盖已有安装。自定义目录、版本、GNU libc 构建及离线安装见[分发说明](docs/distribution.md#bootstrap-installation)。
 
@@ -40,11 +42,11 @@ npm install --global https://github.com/easelian/remote-device-agent/releases/do
 
 包名为 `@easelian/remote-device-agent`，内含各平台的原生二进制文件，启动时选择匹配的平台。同一条命令适用于 Linux、macOS 和 Windows；npm 的全局可执行文件目录需要位于 PATH 中。
 
-两种安装方式都提供 `rdh`、`remote-device-agent` 和 `remote-device-hub` 命令。安装不会自动配对设备或启动服务。
+两种安装方式都提供 `rdh`、`remote-device-agent` 和 `remote-device-hub` 命令。npm 命令只安装包，安装后运行 `rdh`。后台服务需要单独配置。
 
 ### 配对与连接
 
-进入希望开放访问的目录，启动 Agent：
+脚本安装完成后会自动启动 Agent。使用 npm 安装或以后再次运行时，进入希望开放访问的目录并启动：
 
 ```sh
 rdh --no-browser
@@ -77,7 +79,7 @@ npm 安装的 Agent 应先停止，再通过 npm 安装所需版本的发布包�
 
 脚本安装使用原生更新机制，校验 schema `2` 的索引和候选可执行文件。执行 `upgrade --no-restart` 或 `rollback --no-restart` 前，先结束受管工作并停止 Agent；之后在本机重启，确认重新连接到 Hub。Linux 上经过验证的 systemd 用户服务路径还支持自动更新，以及就绪检查失败时回滚。macOS 和 Windows 采用停机更新、手动重启。详见[维护说明](docs/maintenance.md#update-and-recover-an-installation)。
 
-卸载时，先禁用后台启动，停止使用该安装的所有 Agent，并通过 systemd、launchd、任务计划程序或 SCM 删除相应注册。随后只删除程序目录，保留配置、策略、审计和数据目录，包括服务账户独立使用的状态目录。删除前核对路径。删除程序文件不会撤销 Hub 上的设备身份。
+卸载时，先禁用后台启动，停止使用该安装的所有 Agent，并通过 systemd、launchd、任务计划程序或 SCM 删除相应注册。从 shell 配置或 Windows 用户环境变量中移除对应的 PATH 条目，再只删除程序目录，保留配置、策略、审计和数据目录，包括服务账户独立使用的状态目录。删除前核对路径。删除程序文件不会撤销 Hub 上的设备身份。
 
 ## 平台行为与限制
 

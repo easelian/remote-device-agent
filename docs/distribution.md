@@ -29,15 +29,32 @@ The [README](../README.md#install-with-a-script) provides one-line installation
 commands. Without arguments, the scripts query the public GitHub Releases API
 for the newest published release, including prereleases, and install it into
 `$HOME/.local/lib/rdh` on POSIX or `%LOCALAPPDATA%\RemoteDeviceAgent` on Windows.
-Add the printed installation directory to your user PATH. Downloaded binaries
-are checked against the selected release's version and checksums.
+Downloads display progress. The installer checks the selected version and
+checksums, saves PATH, and starts the installed Agent in the current working
+directory. The Agent runs in the foreground and requests browser approval for
+pairing; Ctrl+C stops it. With `--config` in the native installation arguments,
+startup reuses that profile. For a custom Hub, set `RDH_SERVER` to the profile's
+Hub URL. A service installation remains stopped.
 
 Use `RDH_INSTALL_DIR` for a different destination, `RDH_VERSION` for another
 release, and `RDH_BASE` for a mirror. Without an explicit version or offline
-binary, version selection still uses GitHub when a mirror is set. `RDH_LIBC=gnu` selects the GNU build on Linux;
+binary, version selection still uses GitHub when a mirror is set. `RDH_LIBC=gnu`
+selects the GNU build on Linux;
 the `0.8.0` GNU binaries require glibc 2.39 or later. Explicit script options
 override the corresponding environment variables. Service installation requires
 explicit native arguments.
+
+On POSIX, PATH is saved in the startup files for Bash, Zsh, Fish, or a POSIX login
+shell, without replacing existing content. Bash login-file precedence and
+`ZDOTDIR` / `XDG_CONFIG_HOME` are respected. `RDH_SHELL_RC` selects a custom startup
+file. New terminals load the saved PATH; the running installer cannot change its
+parent shell's environment. On Windows, the user PATH and current PowerShell
+process are both updated. Existing PATH entries are preserved.
+
+Use `--no-start` / `-NoStart` or `RDH_NO_START=1` to skip launch. Use
+`--no-modify-path` / `-NoModifyPath` or `RDH_NO_MODIFY_PATH=1` to skip PATH changes.
+Set both when installing from unattended automation. Service installation
+automatically skips these user-session actions.
 
 Build or obtain a verified artifact before running these examples. Check that
 the selected release contains the required platform artifact.
@@ -71,8 +88,9 @@ and retain its immutable artifact records.
 
 Installation creates a new program directory and the `rdh`, `remote-device-agent`
 and `remote-device-hub` commands (`.exe` on Windows). It does not replace an
-existing directory, pair a device or start a background service. Run the installed
-command to pair; use `startup` or `install-service` for background registration.
+existing directory. Automatic foreground startup initiates pairing; permissions
+still require browser approval. Use `startup` or `install-service` for background
+registration.
 See the [README](../README.md#install-and-run) for that sequence. `--service` or
 `-Service` forwards arguments to `install-service`.
 

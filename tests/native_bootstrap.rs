@@ -132,10 +132,15 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
             .env("RDH_TEST_BASE", directory);
         command
     };
-    command.current_dir(directory).output().unwrap()
+    command
+        .env("RDH_NO_START", "1")
+        .env("RDH_NO_MODIFY_PATH", "1")
+        .current_dir(directory)
+        .output()
+        .unwrap()
 }
 
-fn bootstrap_defaults(directory: &Path, prefix: &Path, release_version: &str) -> Output {
+fn bootstrap_defaults_command(directory: &Path, prefix: &Path, release_version: &str) -> Command {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     #[cfg(unix)]
     let mut command = {
@@ -188,7 +193,39 @@ exit 1
                 if ($Uri -ne 'https://api.github.com/repos/easelian/remote-device-agent/releases?per_page=1') { throw 'Unexpected release API request' }
                 [pscustomobject]@{ tag_name = ('v' + $env:RDH_TEST_RELEASE_VERSION); draft = $false }
             }
-            Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)"#,
+            $rdhTestRegistry = $null
+            if ($env:RDH_TEST_USER_PATH) {
+                $rdhTestRegistry = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+                $rdhTestSavedPath = $rdhTestRegistry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                if ($null -ne $rdhTestSavedPath) { $rdhTestSavedKind = $rdhTestRegistry.GetValueKind('Path') }
+            }
+            try {
+                if ($rdhTestRegistry) {
+                    $rdhTestTail = '%SystemRoot%\rdh-fixture;' + $rdhTestSavedPath
+                    $rdhTestInitial = $rdhTestTail
+                    if ($env:RDH_TEST_USER_PATH -eq 'existing') { $rdhTestInitial = $env:RDH_INSTALL_DIR + ';' + $rdhTestTail }
+                    $rdhTestRegistry.SetValue('Path', $rdhTestInitial, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                }
+                Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)
+                if ($rdhTestRegistry) {
+                    $rdhTestStoredPath = $rdhTestRegistry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    if (@($rdhTestStoredPath -split ';' | Where-Object { $_ -ieq $env:RDH_INSTALL_DIR }).Count -ne 1) { throw 'User PATH must contain the installation exactly once' }
+                    if (!$rdhTestStoredPath.EndsWith(';' + $rdhTestTail)) { throw 'Existing user PATH was changed' }
+                    if ($rdhTestRegistry.GetValueKind('Path') -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw 'The expandable PATH type was changed' }
+                    if (($env:PATH -split ';')[0] -ine $env:RDH_INSTALL_DIR) { throw 'Current process PATH was not updated' }
+                    if ((rdh --version) -ne $env:RDH_TEST_RELEASE_VERSION) { throw 'The installed command was not found through PATH' }
+                }
+            } finally {
+                if ($rdhTestRegistry) {
+                    if ($null -eq $rdhTestSavedPath) { $rdhTestRegistry.DeleteValue('Path', $false) }
+                    else { $rdhTestRegistry.SetValue('Path', $rdhTestSavedPath, $rdhTestSavedKind) }
+                    $rdhTestRegistry.Dispose()
+                    if ('RdhInstaller.EnvironmentNotification' -as [type]) {
+                        $rdhTestNotification = [UIntPtr]::Zero
+                        [void][RdhInstaller.EnvironmentNotification]::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 2, 1000, [ref]$rdhTestNotification)
+                    }
+                }
+            }"#,
         ]);
         command.env(
             "RDH_TEST_INSTALLER",
@@ -200,8 +237,16 @@ exit 1
         .env("RDH_BASE", directory)
         .env("RDH_INSTALL_DIR", prefix)
         .env("RDH_TEST_RELEASE_VERSION", release_version)
+        .env("RDH_NO_START", "1")
+        .env("RDH_NO_MODIFY_PATH", "1")
+        .env_remove("RDH_TEST_USER_PATH")
         .env_remove("RDH_VERSION")
-        .current_dir(directory)
+        .current_dir(directory);
+    command
+}
+
+fn bootstrap_defaults(directory: &Path, prefix: &Path, release_version: &str) -> Output {
+    bootstrap_defaults_command(directory, prefix, release_version)
         .output()
         .unwrap()
 }
@@ -254,6 +299,179 @@ fn bootstrap_accepts_script_input_without_arguments() {
     failure(
         bootstrap_defaults(&fixture.0, &prefix, version),
         "prefix already exists",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    artifact(
+        &fixture.0,
+        version,
+        &fs::read(initial_binary::path()).unwrap(),
+    );
+    for shell in ["sh", "bash", "zsh", "fish"] {
+        if Command::new(shell).arg("--version").output().is_err() {
+            assert!(
+                !(cfg!(all(
+                    target_os = "linux",
+                    target_env = "gnu",
+                    target_arch = "x86_64"
+                )) && std::env::var_os("CI").is_some()),
+                "CI must install the {shell} startup test tool"
+            );
+            eprintln!("Skipping unavailable shell: {shell}");
+            continue;
+        }
+        let prefix = fixture.0.join(format!(
+            "{shell} ' $(touch INJECTED) `touch ALSO_INJECTED` 雪"
+        ));
+        let rc = fixture.0.join(format!("{shell}.rc"));
+        fs::write(&rc, "# Preserve this existing configuration").unwrap();
+        success(
+            bootstrap_defaults_command(&fixture.0, &prefix, version)
+                .env("RDH_NO_MODIFY_PATH", "0")
+                .env("RDH_SHELL_RC", &rc)
+                .env("SHELL", shell)
+                .output()
+                .unwrap(),
+        );
+        let saved = fs::read(&rc).unwrap();
+        assert!(saved.starts_with(b"# Preserve this existing configuration\n"));
+        let script = if shell == "fish" {
+            "source $argv[1]; source $argv[1]; command -s rdh; rdh --version; string join : $PATH"
+        } else {
+            ". \"$1\"; . \"$1\"; command -v rdh; rdh --version; printf '%s\\n' \"$PATH\""
+        };
+        let mut fresh_shell = Command::new(shell);
+        match shell {
+            "fish" => {
+                fresh_shell.arg("--no-config");
+            }
+            "zsh" => {
+                fresh_shell.arg("-f");
+            }
+            "bash" => {
+                fresh_shell.args(["--noprofile", "--norc"]);
+            }
+            _ => {}
+        }
+        fresh_shell.env_remove("BASH_ENV").env_remove("ENV");
+        fresh_shell.arg("-c").arg(script);
+        if shell != "fish" {
+            fresh_shell.arg("bootstrap-path-test");
+        }
+        let output = fresh_shell
+            .arg(&rc)
+            .current_dir(&fixture.0)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        success(output);
+        let lines: Vec<_> = stdout.lines().collect();
+        assert_eq!(lines[0], prefix.join("rdh").to_str().unwrap());
+        assert_eq!(lines[1], version);
+        assert_eq!(
+            lines[2]
+                .split(':')
+                .filter(|entry| *entry == prefix.to_str().unwrap())
+                .count(),
+            1
+        );
+        assert!(!fixture.0.join("INJECTED").exists());
+        assert!(!fixture.0.join("ALSO_INJECTED").exists());
+        failure(
+            bootstrap_defaults_command(&fixture.0, &prefix, version)
+                .env("RDH_NO_MODIFY_PATH", "0")
+                .env("RDH_SHELL_RC", &rc)
+                .env("SHELL", shell)
+                .output()
+                .unwrap(),
+            "prefix already exists",
+        );
+        assert_eq!(fs::read(&rc).unwrap(), saved);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "temporarily changes the user PATH; run only on a disposable Windows host"]
+fn native_windows_bootstrap_persists_path_and_updates_the_current_shell() {
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    artifact(
+        &fixture.0,
+        version,
+        &fs::read(initial_binary::path()).unwrap(),
+    );
+    for state in ["absent", "existing"] {
+        let prefix = fixture.0.join(format!("user PATH {state} ' 雪"));
+        success(
+            bootstrap_defaults_command(&fixture.0, &prefix, version)
+                .env("RDH_NO_MODIFY_PATH", "0")
+                .env("RDH_TEST_USER_PATH", state)
+                .output()
+                .unwrap(),
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bootstrap_starts_the_installed_agent_from_the_requested_directory() {
+    use axum::{Json, Router, http::StatusCode, routing::post};
+    use std::{sync::Arc, time::Duration};
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    artifact(
+        &fixture.0,
+        version,
+        &fs::read(initial_binary::path()).unwrap(),
+    );
+    let prefix = fixture.0.join("automatic launch");
+    let request = Arc::new(tokio::sync::Mutex::new(None));
+    let captured = request.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new().route(
+        "/api/pair/start",
+        post(move |Json(value): Json<serde_json::Value>| async move {
+            *captured.lock().await = Some(value);
+            StatusCode::SERVICE_UNAVAILABLE
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut command = bootstrap_defaults_command(&fixture.0, &prefix, version);
+    command
+        .env("RDH_NO_START", "0")
+        .env("RDH_SERVER", origin)
+        .env("XDG_CONFIG_HOME", fixture.0.join("config"))
+        .env("SSH_CONNECTION", "bootstrap-test");
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        tokio::process::Command::from(command)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    server.abort();
+    let _ = server.await;
+    let output = result.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Starting Remote Device Hub"));
+    failure(output, "http 503");
+    let request = request
+        .lock()
+        .await
+        .clone()
+        .expect("The installed Agent must initiate pairing");
+    let roots = request["roots"].as_object().unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(
+        Path::new(roots.values().next().unwrap().as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        fixture.0
     );
 }
 

@@ -9,10 +9,13 @@ rdh_offline=
 rdh_libc=${RDH_LIBC:-musl}
 rdh_command=install-native
 rdh_temporary=
+rdh_no_start=${RDH_NO_START:-0}
+rdh_no_modify_path=${RDH_NO_MODIFY_PATH:-0}
 
 usage() {
     cat <<'USAGE'
-usage: install.sh [--version VERSION] [--base HTTPS_URL|DIRECTORY] [--libc musl|gnu] [-- NATIVE_ARGUMENTS...]
+usage: install.sh [--version VERSION] [--base HTTPS_URL|DIRECTORY] [--libc musl|gnu]
+                  [--no-start] [--no-modify-path] [-- NATIVE_ARGUMENTS...]
        install.sh --offline NATIVE_BINARY -- NATIVE_ARGUMENTS...
 
 The native binary must have a matching entry in SHA256SUMS, or a per-binary sibling
@@ -21,12 +24,17 @@ The native binary must have a matching entry in SHA256SUMS, or a per-binary sibl
 With no arguments, install the newest published GitHub release (including
 prereleases) into $HOME/.local/lib/rdh.
 RDH_VERSION, RDH_BASE, RDH_LIBC and RDH_INSTALL_DIR override these defaults.
-The installer prints the command directory to add to PATH.
+Installation adds the command directory to the user's shell configuration and
+starts the Agent in the foreground. New terminals load the saved PATH.
+Use --no-start or RDH_NO_START=1 to install without launching the Agent.
+Use --no-modify-path or RDH_NO_MODIFY_PATH=1 to leave PATH and shell files alone.
+RDH_SHELL_RC selects a custom shell startup file instead of the default files.
 
 By default arguments after -- are passed to rdh install-native. Use
 --service to call rdh install-service, using its explicit service account options.
 These commands retain the native CLI's ownership, stopped-profile and recovery
-checks. They do not pair a device, start a service or overwrite an installation.
+checks. Service installation does not change PATH or start the service. Existing
+installations are not overwritten. Device pairing requires browser approval.
 
 Examples (replace the version and absolute paths):
   sh install.sh --version VERSION -- --prefix /absolute/new-install
@@ -44,11 +52,14 @@ while [ "$#" -gt 0 ]; do
         --offline) value "$@"; rdh_offline=$2; shift 2 ;;
         --libc) value "$@"; rdh_libc=$2; shift 2 ;;
         --service) rdh_command=install-service; shift ;;
+        --no-start) rdh_no_start=1; shift ;;
+        --no-modify-path) rdh_no_modify_path=1; shift ;;
         --) shift; break ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown bootstrap option: $1; native options follow --" ;;
     esac
 done
+case $rdh_no_start:$rdh_no_modify_path in 0:0|0:1|1:0|1:1) ;; *) die 'RDH_NO_START and RDH_NO_MODIFY_PATH must be 0 or 1' ;; esac
 rdh_default_prefix=
 if [ "$#" -eq 0 ]; then
     [ "$rdh_command" = install-native ] || die 'supply service installation arguments after --'
@@ -60,6 +71,16 @@ if [ "$#" -eq 0 ]; then
     fi
     set -- --prefix "$rdh_default_prefix"
 fi
+rdh_install_prefix=
+rdh_config=
+rdh_previous=
+for rdh_argument do
+    case $rdh_previous in
+        --prefix) rdh_install_prefix=$rdh_argument ;;
+        --config) rdh_config=$rdh_argument ;;
+    esac
+    rdh_previous=$rdh_argument
+done
 case $rdh_libc in musl|gnu) ;; *) die '--libc must be musl or gnu' ;; esac
 rdh_system=$(uname -s)
 rdh_arch=$(uname -m)
@@ -109,7 +130,13 @@ fetch() {
     case $rdh_base in
         https://*)
             have curl || die 'curl is required for HTTPS downloads'
-            curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+            if [ "$rdh_fetch_name" = "$rdh_name" ]; then
+                printf 'Downloading Remote Device Hub %s (%s)...\n' "$rdh_version" "$rdh_platform" >&2
+                rdh_progress=--progress-bar
+            else
+                rdh_progress=--silent
+            fi
+            curl --fail --show-error "$rdh_progress" --location --proto '=https' --proto-redir '=https' \
                 --connect-timeout 15 --max-time 300 --max-filesize 268435456 \
                 --output "$rdh_fetch_destination" "${rdh_base%/}/$rdh_fetch_name"
             ;;
@@ -150,6 +177,67 @@ chmod 700 "$rdh_temporary/$rdh_name"
 rdh_reported=$("$rdh_temporary/$rdh_name" --version) || die 'native executable self-check failed'
 [ "$rdh_reported" = "$rdh_version" ] || die 'native executable version mismatch'
 "$rdh_temporary/$rdh_name" "$rdh_command" "$@"
-if [ -n "$rdh_default_prefix" ]; then
-    printf '\nInstalled commands in %s\nAdd this directory to PATH to run rdh.\n' "$rdh_default_prefix"
+rm -rf "$rdh_temporary"
+rdh_temporary=
+
+append_path() {
+    rdh_rc=$1
+    if [ -e "$rdh_rc" ] || [ -L "$rdh_rc" ]; then
+        [ -f "$rdh_rc" ] || die "shell startup path is not a regular file: $rdh_rc"
+    else
+        mkdir -p "$(dirname "$rdh_rc")"
+    fi
+    if [ ! -f "$rdh_rc" ] || ! grep -Fqx "$rdh_path_line" "$rdh_rc"; then
+        printf '\n%s\n' "$rdh_path_line" >> "$rdh_rc"
+    fi
+    printf 'PATH configured in %s\n' "$rdh_rc"
+}
+
+if [ "$rdh_command" = install-native ] && [ -n "$rdh_install_prefix" ]; then
+    rdh_install_prefix=$(cd "$rdh_install_prefix" && pwd -P)
+    if [ "$rdh_no_modify_path" = 0 ]; then
+        case $rdh_install_prefix in *:*|*'
+'*) die 'the installation path cannot contain a colon or newline when updating PATH' ;; esac
+        rdh_escaped=$(printf '%s' "$rdh_install_prefix" | sed "s/'/'\\\\''/g")
+        rdh_path_line="case \":\${PATH-}:\" in *:'$rdh_escaped':*) ;; *) export PATH='$rdh_escaped':\"\${PATH-}\" ;; esac # Remote Device Hub"
+        rdh_shell=${SHELL:-sh}
+        rdh_shell=${rdh_shell##*/}
+        if [ "$rdh_shell" = fish ]; then
+            rdh_escaped=$(printf '%s' "$rdh_install_prefix" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+            rdh_path_line="if not contains -- '$rdh_escaped' \$PATH; set -gx PATH '$rdh_escaped' \$PATH; end # Remote Device Hub"
+        fi
+        if [ -n "${RDH_SHELL_RC:-}" ]; then
+            append_path "$RDH_SHELL_RC"
+        else
+            [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_SHELL_RC or use --no-modify-path'
+            case $rdh_shell in
+                zsh)
+                    append_path "${ZDOTDIR:-$HOME}/.zprofile"
+                    append_path "${ZDOTDIR:-$HOME}/.zshrc"
+                    ;;
+                fish)
+                    append_path "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+                    ;;
+                *)
+                    if [ "$rdh_shell" = bash ]; then append_path "$HOME/.bashrc"; fi
+                    if [ -f "$HOME/.bash_profile" ] && [ "$rdh_shell" = bash ]; then
+                        append_path "$HOME/.bash_profile"
+                    elif [ -f "$HOME/.bash_login" ] && [ "$rdh_shell" = bash ]; then
+                        append_path "$HOME/.bash_login"
+                    else
+                        append_path "$HOME/.profile"
+                    fi
+                    ;;
+            esac
+        fi
+        case ":${PATH-}:" in *:"$rdh_install_prefix":*) ;; *) PATH=$rdh_install_prefix:${PATH-}; export PATH ;; esac
+        printf 'PATH saved for new terminals.\n'
+    fi
+    if [ "$rdh_no_start" = 0 ]; then
+        printf 'Starting Remote Device Hub. Press Ctrl+C to stop.\n'
+        if [ -n "$rdh_config" ]; then
+            exec "$rdh_install_prefix/rdh" --config "$rdh_config"
+        fi
+        exec "$rdh_install_prefix/rdh"
+    fi
 fi
