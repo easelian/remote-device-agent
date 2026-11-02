@@ -26,9 +26,16 @@ child.on('error', (error) => {
   console.error(`Unable to start the native Agent: ${error.message}`);
   process.exitCode = 1;
 });
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+if (process.platform === 'win32') signals.push('SIGBREAK');
+for (const signal of signals) {
   try {
-    process.on(signal, () => { if (!child.killed) child.kill(signal); });
+    process.on(signal, () => {
+      // Console Ctrl+C/Break reaches the shared Windows process group. Node's
+      // child.kill would forcibly terminate the Agent before graceful cleanup.
+      if (process.platform === 'win32' && (signal === 'SIGINT' || signal === 'SIGBREAK')) return;
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    });
   } catch (_) {
     // Some signals are not available on Windows.
   }

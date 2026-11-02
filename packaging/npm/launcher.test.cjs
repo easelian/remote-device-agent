@@ -17,6 +17,8 @@ function launch(platform, arch, glibc, withReport = true) {
     kill: () => {}, pid: 123,
   });
   const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
   child.kill = (signal) => { child.lastSignal = signal; };
   let launched;
   const logs = [];
@@ -62,4 +64,13 @@ test('forwards signals and exit failures', () => {
   failure.child.emit('error', new Error('missing binary'));
   assert.equal(failure.proc.exitCode, 1);
   assert.match(failure.logs[0], /missing binary/);
+});
+
+test('does not forcibly terminate a Windows child on console interrupt', () => {
+  const { proc, child } = launch('win32', 'x64', false);
+  proc.emit('SIGINT');
+  proc.emit('SIGBREAK');
+  assert.equal(child.lastSignal, undefined);
+  proc.emit('SIGTERM');
+  assert.equal(child.lastSignal, 'SIGTERM');
 });
