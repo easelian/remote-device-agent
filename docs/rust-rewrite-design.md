@@ -93,7 +93,7 @@ Windows 使用对应的 `rdh.exe`。系统服务更新需保持原服务账户�
 
 正常构建默认开启已经实现的平台后端；保留的 `experimental-*` 名称用于显式裁剪构建。CI 用 `--no-default-features` 检查主动关闭能力时的错误行为。
 
-[Agent CI](../.github/workflows/ci.yml) 针对以下八个目标逐个执行原生验证：Linux x86_64/ARM64 的 glibc/musl、macOS x86_64/ARM64、Windows x86_64/ARM64。每个目标构建独立版本候选，执行 Clippy、优化构建测试、产物归档与解包校验，以及适用的真实用户启动项和系统服务测试。服务测试使用临时对象，只应在可丢弃的 CI 主机执行。
+[Agent CI](../.github/workflows/ci.yml) 在独立构建机上并行验证以下八个原生目标：Linux x86_64/ARM64 的 glibc/musl、macOS x86_64/ARM64、Windows x86_64/ARM64。每个目标构建独立版本候选，执行 Clippy、优化构建测试、产物归档与解包校验，以及适用的真实用户启动项和系统服务测试。服务测试使用临时对象，只应在可丢弃的 CI 主机执行。
 
 最终验收覆盖删除迁移代码、启用默认后端和加入稳定命令入口后的完整版本。历史提交的通过记录不能替代这些变化后的验收；结果以 [草稿 PR #1](https://github.com/easelian/remote-device-agent/pull/1) 当前提交对应的 CI 为准。仅记录范围变更的 CI 作业不算测试通过。
 

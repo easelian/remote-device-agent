@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 90 || 60 }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 8
       matrix:
         include:
           - runner: windows-2022

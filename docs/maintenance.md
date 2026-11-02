@@ -30,7 +30,7 @@ the Linux isolation test creates namespaces.
 Tests requiring real service registrations are explicitly ignored in an ordinary
 local run. Ignored tests are not passing evidence. [Agent CI](../.github/workflows/ci.yml) records
 the exact platform commands, creates the candidates and runs those fixtures on
-eight native OS/CPU/libc targets, one job at a time. Run privileged service tests
+eight native OS/CPU/libc targets on separate runners. Run privileged service tests
 only on disposable hosts: they create real temporary service registrations and
 accounts. Do not run them against an installed production profile.
 
