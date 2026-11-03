@@ -47,7 +47,7 @@ async fn start(State(state): State<Arc<Fixture>>, Json(value): Json<Value>) -> R
     (
         StatusCode::CREATED,
         Json(json!({
-            "verification_uri_complete": format!("{}/admin/pair?code=TEST-CODE", state.origin),
+            "verification_uri_complete": format!("{}/auth/pair?code=TEST-CODE", state.origin),
             "user_code":"TEST-CODE", "device_code":"fixture-code", "expires_in":600, "interval":3,
         })),
     )

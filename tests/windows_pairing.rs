@@ -37,7 +37,7 @@ async fn start(State(hub): State<Arc<Hub>>, Json(value): Json<Value>) -> (Status
     (
         StatusCode::CREATED,
         Json(
-            json!({"verification_uri_complete":format!("{}/admin/pair?code=NATIVE",hub.origin),"user_code":"NATIVE","device_code":"windows-native","expires_in":600,"interval":3}),
+            json!({"verification_uri_complete":format!("{}/auth/pair?code=NATIVE",hub.origin),"user_code":"NATIVE","device_code":"windows-native","expires_in":600,"interval":3}),
         ),
     )
 }

@@ -26,6 +26,19 @@ The Agent uses the platform's trusted root certificates. Set `RDH_CA_BUNDLE` to 
 local PEM file to add private trust roots. The file supplements the normal roots;
 it does not disable certificate or hostname validation.
 
+## Pairing
+
+Pairing starts at the selected Gate's `/api/pair/start` endpoint. The browser link
+must use `/auth/pair` on that same Hub origin and contain only the returned pairing
+code. The Agent rejects the old `/admin/pair` path. After browser approval,
+`/api/pair/poll` supplies the configuration, including the Gate's `discovery_url`;
+the Agent saves it with the locally generated device credential.
+
+Gate does not accept WebSocket connections at `/agent/{device_id}`. Old saved
+profiles without `discovery_url` cannot connect directly to Gate. If Gate also
+rejects the saved credential, back up that profile and pair again; adding a
+discovery address alone does not renew the credential.
+
 ## Cluster discovery
 
 A paired `discovery_url` identifies the Gate. The saved device credential is sent

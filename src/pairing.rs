@@ -34,7 +34,7 @@ fn pending(value: &Value, origin: &str) -> Result<Pending> {
         || !verification.username().is_empty()
         || verification.password().is_some()
         || verification.fragment().is_some()
-        || verification.path() != "/admin/pair"
+        || verification.path() != "/auth/pair"
         || query.len() != 1
         || query[0].0 != "code"
         || query[0].1 != user_code
@@ -178,19 +178,21 @@ mod tests {
 
     #[test]
     fn pairing_link_is_bound_to_the_selected_origin_and_code() {
-        assert!(
-            pending(
-                &response("https://example.com/admin/pair?code=ABCD"),
-                "https://example.com"
-            )
-            .is_ok()
-        );
+        let uri = "https://example.com/auth/pair?code=ABCD";
+        let accepted = pending(&response(uri), "https://example.com").unwrap();
+        assert_eq!(accepted.verification_url, uri);
         for uri in [
-            "https://evil.example/admin/pair?code=ABCD",
-            "https://example.com/admin/pair?code=OTHER",
-            "https://example.com/admin/pair?code=ABCD&x=1",
-            "https://example.com/admin/pair?code=ABCD#section",
-            "https://user@example.com/admin/pair?code=ABCD",
+            "https://evil.example/auth/pair?code=ABCD",
+            "https://example.com/auth/pair?code=OTHER",
+            "https://example.com/auth/pair?code=ABCD&x=1",
+            "https://example.com/auth/pair?code=ABCD&code=ABCD",
+            "https://example.com/auth/pair?code=ABCD#section",
+            "https://user@example.com/auth/pair?code=ABCD",
+            "https://user:secret@example.com/auth/pair?code=ABCD",
+            "https://example.com/auth/pair/?code=ABCD",
+            "https://example.com/admin/pair?code=ABCD",
+            "https://example.com/auth/login?code=ABCD",
+            "https://example.com/other/pair?code=ABCD",
         ] {
             assert!(
                 pending(&response(uri), "https://example.com").is_err(),
