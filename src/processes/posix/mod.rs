@@ -628,9 +628,15 @@ mod tests {
         );
         assert_eq!(decoder.decode(&[], true), "�");
         let fixture = Fixture::new();
-        let job = fixture.start("i=0; while [ $i -lt 262150 ]; do printf '😀'; i=$((i+1)); done; printf '\\342'; sleep 0.02; printf '\\202\\254'", 5.0);
+        fs::write(fixture.path.join("large-output"), "😀".repeat(262150)).unwrap();
+        let job = fixture.start(
+            "cat ./large-output && printf '\\342' && sleep 0.02 && printf '\\202\\254'",
+            5.0,
+        );
         let id = job["job_id"].as_str().unwrap();
-        fixture.done(id);
+        let completed = fixture.done(id);
+        assert_eq!(completed["status"], "exited");
+        assert_eq!(completed["exit_code"], 0);
         let result = fixture
             .call("read_process", json!({"job_id":id,"offset":0,"limit":1}))
             .unwrap();
