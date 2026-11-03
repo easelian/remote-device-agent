@@ -36,7 +36,14 @@ pairing; Ctrl+C stops it. With `--config` in the native installation arguments,
 startup reuses that profile. For a custom Hub, set `RDH_SERVER` to the profile's
 Hub URL. A service installation remains stopped.
 
-Use `RDH_INSTALL_DIR` for a different destination, `RDH_VERSION` for another
+On POSIX, `rdh`, `remote-device-agent` and `remote-device-hub` are symbolic links
+in `$HOME/.local/bin`, all pointing to `current/rdh` inside the installation.
+Changing the selected version does not require replacing these command links.
+`RDH_BIN_DIR` selects a different absolute command directory. Existing links to
+the same target are reused; other files, directories or link targets cause the
+script to stop before native installation.
+
+Use `RDH_INSTALL_DIR` for a different program destination, `RDH_VERSION` for another
 release, and `RDH_BASE` for a mirror. Without an explicit version or offline
 binary, version selection still uses GitHub when a mirror is set. `RDH_LIBC=gnu`
 selects the GNU build on Linux;
@@ -44,7 +51,8 @@ the `0.8.0` GNU binaries require glibc 2.39 or later. Explicit script options
 override the corresponding environment variables. Service installation requires
 explicit native arguments.
 
-On POSIX, PATH is saved in the startup files for Bash, Zsh, Fish, or a POSIX login
+On POSIX, the command directory is added to PATH in the startup files for Bash,
+Zsh, Fish, or a POSIX login
 shell, without replacing existing content. Bash login-file precedence and
 `ZDOTDIR` / `XDG_CONFIG_HOME` are respected. `RDH_SHELL_RC` selects a custom startup
 file. New terminals load the saved PATH; the running installer cannot change its
@@ -53,8 +61,10 @@ process are both updated. Existing PATH entries are preserved.
 
 Use `--no-start` / `-NoStart` or `RDH_NO_START=1` to skip launch. Use
 `--no-modify-path` / `-NoModifyPath` or `RDH_NO_MODIFY_PATH=1` to skip PATH changes.
-Set both when installing from unattended automation. Service installation
-automatically skips these user-session actions.
+POSIX command links are still created with PATH changes disabled. Set both
+options when installing from unattended automation, and use `RDH_BIN_DIR` to
+select its POSIX command directory. Service installation skips command links,
+PATH changes and foreground launch.
 
 Build or obtain a verified artifact before running these examples. Check that
 the selected release contains the required platform artifact.
@@ -65,7 +75,7 @@ and executable version. They delegate installation to Rust.
 For a local Linux x64 musl artifact, replace the absolute paths:
 
 ```sh
-sh packaging/install.sh --offline /absolute/artifacts/rdh-0.8.0-linux-x64-musl \
+RDH_BIN_DIR=/absolute/test-bin sh packaging/install.sh --offline /absolute/artifacts/rdh-0.8.0-linux-x64-musl \
   -- --prefix /absolute/new-install
 ```
 

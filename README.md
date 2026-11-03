@@ -33,14 +33,19 @@ irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packagin
 The scripts fetch the newest published GitHub release, including prereleases,
 and install into `~/.local/lib/rdh` on Linux/macOS or
 `%LOCALAPPDATA%\RemoteDeviceAgent` on Windows, with download progress displayed.
-Linux/macOS save PATH in your shell startup files for new terminals; Windows
-updates both the user PATH and the current PowerShell session. Linux selects
-musl; macOS and Windows select their native binaries. No arguments are required.
+Linux/macOS create command links in `~/.local/bin` and save that directory in
+your shell startup files for new terminals. Version files and installation
+records stay in `~/.local/lib/rdh`. Set `RDH_BIN_DIR` to use a different absolute
+command directory. Existing command files or links to other targets are not
+overwritten. Windows updates both the user PATH and the current PowerShell
+session. Linux selects musl; macOS and Windows select their native binaries.
+No arguments are required.
 
 After installation, the Agent starts in the foreground and opens or prints the
 pairing page. Approve the device and permissions there; press Ctrl+C to stop the
 Agent. Use `--no-start` / `-NoStart` for installation only, and
-`--no-modify-path` / `-NoModifyPath` to leave PATH unchanged.
+`--no-modify-path` / `-NoModifyPath` to leave PATH unchanged. On Linux/macOS,
+command links are still created when PATH changes are disabled.
 
 An existing installation is not overwritten. For custom directories, versions,
 GNU libc builds and offline installation, see
@@ -126,9 +131,11 @@ Windows use stopped updates and manual restart. See
 
 To remove an installation, disable startup, stop every Agent using it and remove
 its registration with the local service manager: systemd, launchd, Task Scheduler
-or SCM. Remove its PATH entry from your shell configuration or Windows user
-environment, then remove only the program directory. Keep the configuration, policies
-and audit/data directory, including the separate service-account state directory.
+or SCM. On Linux/macOS, remove the three command links only if they still point
+to this installation; retain the shared command directory and its PATH entry.
+On Windows, remove the installation's PATH entry from the user environment.
+Then remove only the program directory. Keep the configuration, policies and
+audit/data directory, including the separate service-account state directory.
 Inspect the paths before deleting files. Deleting program files does not revoke
 the device identity on the Hub.
 

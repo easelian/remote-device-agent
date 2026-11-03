@@ -24,10 +24,14 @@ The native binary must have a matching entry in SHA256SUMS, or a per-binary sibl
 With no arguments, install the newest published GitHub release (including
 prereleases) into $HOME/.local/lib/rdh.
 RDH_VERSION, RDH_BASE, RDH_LIBC and RDH_INSTALL_DIR override these defaults.
-Installation adds the command directory to the user's shell configuration and
-starts the Agent in the foreground. New terminals load the saved PATH.
+Installation links rdh, remote-device-agent and remote-device-hub in
+$HOME/.local/bin. RDH_BIN_DIR selects a different absolute command directory.
+Existing command paths must be links to this installation's current/rdh.
+The command directory is added to the user's shell configuration, then the Agent
+starts in the foreground. New terminals load the saved PATH.
 Use --no-start or RDH_NO_START=1 to install without launching the Agent.
-Use --no-modify-path or RDH_NO_MODIFY_PATH=1 to leave PATH and shell files alone.
+Use --no-modify-path or RDH_NO_MODIFY_PATH=1 to leave PATH and shell files alone;
+command links are still created.
 RDH_SHELL_RC selects a custom shell startup file instead of the default files.
 
 By default arguments after -- are passed to rdh install-native. Use
@@ -176,6 +180,41 @@ rdh_actual=${rdh_actual%% *}
 chmod 700 "$rdh_temporary/$rdh_name"
 rdh_reported=$("$rdh_temporary/$rdh_name" --version) || die 'native executable self-check failed'
 [ "$rdh_reported" = "$rdh_version" ] || die 'native executable version mismatch'
+
+check_command_links() {
+    for rdh_entry_name in rdh remote-device-agent remote-device-hub; do
+        rdh_entry=$rdh_bin_dir/$rdh_entry_name
+        if [ -L "$rdh_entry" ]; then
+            [ "$(readlink "$rdh_entry")" = "$rdh_command_target" ] \
+                || die "command path points to another target: $rdh_entry"
+        elif [ -e "$rdh_entry" ]; then
+            die "command path already exists: $rdh_entry"
+        fi
+    done
+}
+
+if [ "$rdh_command" = install-native ] && [ -n "$rdh_install_prefix" ]; then
+    case $rdh_install_prefix in /*) ;; *) die 'native installation prefix must be absolute' ;; esac
+    if [ -n "${RDH_BIN_DIR:-}" ]; then
+        rdh_bin_dir=$RDH_BIN_DIR
+    else
+        [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_BIN_DIR'
+        rdh_bin_dir=$HOME/.local/bin
+    fi
+    case $rdh_bin_dir in /*) ;; *) die 'RDH_BIN_DIR must be absolute' ;; esac
+    rdh_install_parent=$(dirname "$rdh_install_prefix")
+    mkdir -p "$rdh_install_parent"
+    rdh_install_prefix=$(cd "$rdh_install_parent" && pwd -P)/$(basename "$rdh_install_prefix")
+    rdh_command_target=$rdh_install_prefix/current/rdh
+    mkdir -p "$rdh_bin_dir"
+    rdh_bin_dir=$(cd "$rdh_bin_dir" && pwd -P)
+    if [ "$rdh_no_modify_path" = 0 ]; then
+        case $rdh_bin_dir in *:*|*'
+'*) die 'the command directory cannot contain a colon or newline when updating PATH' ;; esac
+    fi
+    check_command_links
+fi
+
 "$rdh_temporary/$rdh_name" "$rdh_command" "$@"
 rm -rf "$rdh_temporary"
 rdh_temporary=
@@ -194,16 +233,21 @@ append_path() {
 }
 
 if [ "$rdh_command" = install-native ] && [ -n "$rdh_install_prefix" ]; then
-    rdh_install_prefix=$(cd "$rdh_install_prefix" && pwd -P)
+    check_command_links
+    for rdh_entry_name in rdh remote-device-agent remote-device-hub; do
+        rdh_entry=$rdh_bin_dir/$rdh_entry_name
+        if [ ! -L "$rdh_entry" ]; then
+            ln -s "$rdh_command_target" "$rdh_entry"
+        fi
+    done
+    printf 'Commands linked in %s\n' "$rdh_bin_dir"
     if [ "$rdh_no_modify_path" = 0 ]; then
-        case $rdh_install_prefix in *:*|*'
-'*) die 'the installation path cannot contain a colon or newline when updating PATH' ;; esac
-        rdh_escaped=$(printf '%s' "$rdh_install_prefix" | sed "s/'/'\\\\''/g")
+        rdh_escaped=$(printf '%s' "$rdh_bin_dir" | sed "s/'/'\\\\''/g")
         rdh_path_line="case \":\${PATH-}:\" in *:'$rdh_escaped':*) ;; *) export PATH='$rdh_escaped':\"\${PATH-}\" ;; esac # Remote Device Hub"
         rdh_shell=${SHELL:-sh}
         rdh_shell=${rdh_shell##*/}
         if [ "$rdh_shell" = fish ]; then
-            rdh_escaped=$(printf '%s' "$rdh_install_prefix" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+            rdh_escaped=$(printf '%s' "$rdh_bin_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
             rdh_path_line="if not contains -- '$rdh_escaped' \$PATH; set -gx PATH '$rdh_escaped' \$PATH; end # Remote Device Hub"
         fi
         if [ -n "${RDH_SHELL_RC:-}" ]; then
@@ -230,14 +274,14 @@ if [ "$rdh_command" = install-native ] && [ -n "$rdh_install_prefix" ]; then
                     ;;
             esac
         fi
-        case ":${PATH-}:" in *:"$rdh_install_prefix":*) ;; *) PATH=$rdh_install_prefix:${PATH-}; export PATH ;; esac
+        case ":${PATH-}:" in *:"$rdh_bin_dir":*) ;; *) PATH=$rdh_bin_dir:${PATH-}; export PATH ;; esac
         printf 'PATH saved for new terminals.\n'
     fi
     if [ "$rdh_no_start" = 0 ]; then
         printf 'Starting Remote Device Hub. Press Ctrl+C to stop.\n'
         if [ -n "$rdh_config" ]; then
-            exec "$rdh_install_prefix/rdh" --config "$rdh_config"
+            exec "$rdh_bin_dir/rdh" --config "$rdh_config"
         fi
-        exec "$rdh_install_prefix/rdh"
+        exec "$rdh_bin_dir/rdh"
     fi
 fi

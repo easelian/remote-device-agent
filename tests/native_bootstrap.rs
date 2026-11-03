@@ -76,6 +76,13 @@ fn artifact(directory: &Path, version: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
+fn command_directory(prefix: &Path) -> PathBuf {
+    prefix.with_file_name(format!(
+        "{} commands",
+        prefix.file_name().unwrap().to_str().unwrap()
+    ))
+}
+
 fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> Output {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     let binary = directory.join(artifact_name(version));
@@ -133,6 +140,7 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
         command
     };
     command
+        .env("RDH_BIN_DIR", command_directory(prefix))
         .env("RDH_NO_START", "1")
         .env("RDH_NO_MODIFY_PATH", "1")
         .current_dir(directory)
@@ -236,6 +244,7 @@ exit 1
     command
         .env("RDH_BASE", directory)
         .env("RDH_INSTALL_DIR", prefix)
+        .env("RDH_BIN_DIR", command_directory(prefix))
         .env("RDH_TEST_RELEASE_VERSION", release_version)
         .env("RDH_NO_START", "1")
         .env("RDH_NO_MODIFY_PATH", "1")
@@ -291,11 +300,34 @@ fn bootstrap_accepts_script_input_without_arguments() {
         "version mismatch",
     );
     assert!(!prefix.exists());
+    #[cfg(unix)]
+    {
+        let bin = command_directory(&prefix);
+        fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink(prefix.join("current/rdh"), bin.join("rdh")).unwrap();
+    }
     success(bootstrap_defaults(&fixture.0, &prefix, version));
     assert_eq!(
         sha256_hex(&fs::read(selected_binary(&prefix, version)).unwrap()),
         sha256_hex(&bytes)
     );
+    #[cfg(unix)]
+    {
+        let bin = command_directory(&prefix);
+        for name in ["rdh", "remote-device-agent", "remote-device-hub"] {
+            let entry = bin.join(name);
+            assert_eq!(fs::read_link(&entry).unwrap(), prefix.join("current/rdh"));
+            let output = Command::new(&entry).arg("--version").output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), version);
+            success(output);
+        }
+        success(
+            Command::new(bin.join("rdh"))
+                .args(["upgrade", "--list-profiles"])
+                .output()
+                .unwrap(),
+        );
+    }
     failure(
         bootstrap_defaults(&fixture.0, &prefix, version),
         "prefix already exists",
@@ -325,6 +357,7 @@ fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
         let prefix = fixture.0.join(format!(
             "{shell} ' $(touch INJECTED) `touch ALSO_INJECTED` 雪"
         ));
+        let bin = command_directory(&prefix);
         let rc = fixture.0.join(format!("{shell}.rc"));
         fs::write(&rc, "# Preserve this existing configuration").unwrap();
         success(
@@ -368,14 +401,19 @@ fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         success(output);
         let lines: Vec<_> = stdout.lines().collect();
-        assert_eq!(lines[0], prefix.join("rdh").to_str().unwrap());
+        assert_eq!(lines[0], bin.join("rdh").to_str().unwrap());
         assert_eq!(lines[1], version);
         assert_eq!(
             lines[2]
                 .split(':')
-                .filter(|entry| *entry == prefix.to_str().unwrap())
+                .filter(|entry| *entry == bin.to_str().unwrap())
                 .count(),
             1
+        );
+        assert!(
+            !lines[2]
+                .split(':')
+                .any(|entry| entry == prefix.to_str().unwrap())
         );
         assert!(!fixture.0.join("INJECTED").exists());
         assert!(!fixture.0.join("ALSO_INJECTED").exists());
@@ -390,6 +428,59 @@ fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
         );
         assert_eq!(fs::read(&rc).unwrap(), saved);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_preserves_unrelated_command_paths_before_installation() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    artifact(
+        &fixture.0,
+        version,
+        &fs::read(initial_binary::path()).unwrap(),
+    );
+    let unrelated = fixture.0.join("unrelated program");
+    fs::write(&unrelated, "keep this program").unwrap();
+    for kind in ["file", "directory", "symlink", "dangling symlink"] {
+        let prefix = fixture.0.join(format!("conflicting {kind}"));
+        let bin = command_directory(&prefix);
+        fs::create_dir(&bin).unwrap();
+        let entry = bin.join("remote-device-agent");
+        match kind {
+            "file" => fs::write(&entry, "keep this entry").unwrap(),
+            "directory" => {
+                fs::create_dir(&entry).unwrap();
+                fs::write(entry.join("keep"), "keep this entry").unwrap();
+            }
+            "symlink" => symlink(&unrelated, &entry).unwrap(),
+            _ => symlink(fixture.0.join("missing program"), &entry).unwrap(),
+        }
+        let before = fs::symlink_metadata(&entry).unwrap();
+        failure(
+            bootstrap_defaults(&fixture.0, &prefix, version),
+            "command path",
+        );
+        let after = fs::symlink_metadata(&entry).unwrap();
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert!(!prefix.exists());
+        assert!(fs::symlink_metadata(bin.join("rdh")).is_err());
+        assert!(fs::symlink_metadata(bin.join("remote-device-hub")).is_err());
+        match kind {
+            "file" => assert_eq!(fs::read_to_string(&entry).unwrap(), "keep this entry"),
+            "directory" => assert_eq!(
+                fs::read_to_string(entry.join("keep")).unwrap(),
+                "keep this entry"
+            ),
+            "symlink" => assert_eq!(fs::read_link(&entry).unwrap(), unrelated),
+            _ => assert_eq!(
+                fs::read_link(&entry).unwrap(),
+                fixture.0.join("missing program")
+            ),
+        }
+    }
+    assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep this program");
 }
 
 #[cfg(windows)]
