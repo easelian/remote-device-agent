@@ -1,39 +1,25 @@
-# Download and verify one native executable; Rust owns installation.
+# Install one verified standalone executable for the current user.
 [CmdletBinding()]
 param(
     [string]$Base = '',
     [string]$Version = '',
     [string]$Offline = '',
-    [switch]$Service,
     [switch]$NoStart,
     [switch]$NoModifyPath,
-    [switch]$Help,
-    [string[]]$NativeArguments = @()
+    [switch]$Help
 )
 $ErrorActionPreference = 'Stop'
 if ($Help) {
     Write-Output @'
-usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Service] [-NativeArguments @(...)]
+usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Offline BINARY]
                   [-NoStart] [-NoModifyPath]
-       install.ps1 -Offline NATIVE_BINARY [-Service] -NativeArguments @(...)
 
-The native binary must have a matching SHA256SUMS entry or per-binary .sha256 file.
-No Node/npm is used.
-With no arguments, install the newest published GitHub release (including prereleases) into
-%LOCALAPPDATA%\RemoteDeviceAgent. RDH_VERSION, RDH_BASE and RDH_INSTALL_DIR
-override these defaults. Installation saves the directory in the user PATH,
-updates this PowerShell process's PATH and starts the Agent in the foreground.
--NoStart or RDH_NO_START=1 disables automatic launch.
--NoModifyPath or RDH_NO_MODIFY_PATH=1 leaves PATH unchanged.
-NativeArguments go to rdh install-native, or install-service with -Service.
-The Rust command owns all profile, ownership, existing-install and recovery checks.
-Service installation does not change PATH or start the service. Existing
-installations are not overwritten. Device pairing requires browser approval.
-
-Examples (replace the version and absolute paths):
-  .\install.ps1 -Version VERSION -NativeArguments @('--prefix', 'C:\Path\NewInstall')
-  .\install.ps1 -Offline 'C:\Downloads\rdh-VERSION-win32-x64.exe' -NativeArguments @('--prefix', 'C:\Path\NewInstall', '--config', 'C:\Path\paired.json')
-  .\install.ps1 -Version VERSION -Service -NativeArguments @('--prefix', 'C:\Program Files\RDH-new', '--data', 'C:\ProgramData\RDH-new', '--config', 'C:\Path\paired.json', '--name', 'RemoteDeviceHub')
+Install the newest published GitHub release (including prereleases) as
+%LOCALAPPDATA%\RemoteDeviceAgent\rdh.exe, verify its SHA256SUMS entry and version,
+and launch rdh. RDH_INSTALL_DIR overrides the absolute installation directory.
+RDH_VERSION and RDH_BASE override release defaults. RDH_NO_START=1 disables launch;
+RDH_NO_MODIFY_PATH=1 leaves PATH unchanged. Existing rdh.exe files are preserved;
+use rdh update to update an installed executable.
 '@
     exit 0
 }
@@ -44,22 +30,16 @@ foreach ($rdhOption in @('RDH_NO_START', 'RDH_NO_MODIFY_PATH')) {
 }
 $NoStart = $NoStart -or $env:RDH_NO_START -eq '1'
 $NoModifyPath = $NoModifyPath -or $env:RDH_NO_MODIFY_PATH -eq '1'
-$rdhDefaultPrefix = ''
-if (!$NativeArguments -or $NativeArguments.Count -eq 0) {
-    if ($Service) { throw 'Supply service installation arguments in -NativeArguments.' }
-    $rdhDefaultPrefix = $env:RDH_INSTALL_DIR
-    if (!$rdhDefaultPrefix) {
-        if (!$env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unset; set RDH_INSTALL_DIR or pass --prefix in -NativeArguments.' }
-        $rdhDefaultPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
-    }
-    $NativeArguments = @('--prefix', $rdhDefaultPrefix)
+$rdhInstallPrefix = $env:RDH_INSTALL_DIR
+if (!$rdhInstallPrefix) {
+    if (!$env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unset; set RDH_INSTALL_DIR.' }
+    $rdhInstallPrefix = Join-Path $env:LOCALAPPDATA 'RemoteDeviceAgent'
 }
-$rdhInstallPrefix = ''
-$rdhConfig = ''
-for ($rdhIndex = 0; $rdhIndex -lt $NativeArguments.Count - 1; $rdhIndex++) {
-    if ($NativeArguments[$rdhIndex] -eq '--prefix') { $rdhInstallPrefix = $NativeArguments[$rdhIndex + 1] }
-    if ($NativeArguments[$rdhIndex] -eq '--config') { $rdhConfig = $NativeArguments[$rdhIndex + 1] }
-}
+if (![IO.Path]::IsPathRooted($rdhInstallPrefix)) { throw 'RDH_INSTALL_DIR must be absolute.' }
+$rdhInstallPrefix = [IO.Path]::GetFullPath($rdhInstallPrefix).TrimEnd('\', '/')
+if (!$NoModifyPath -and $rdhInstallPrefix.Contains(';')) { throw 'The installation path cannot contain a semicolon when updating PATH.' }
+$rdhTarget = [IO.Path]::Combine($rdhInstallPrefix, 'rdh.exe')
+if (Test-Path -LiteralPath $rdhTarget) { throw 'Command path already exists; use rdh update.' }
 if (!$Base) { $Base = $env:RDH_BASE }
 if (!$Version) { $Version = $env:RDH_VERSION }
 $rdhCpu = $env:PROCESSOR_ARCHITEW6432
@@ -138,7 +118,7 @@ function Fetch-Native([string]$Name, [string]$Destination) {
                     $rdhTotal = 0L
                     while (($rdhCount = $rdhInput.Read($rdhBuffer, 0, $rdhBuffer.Length)) -gt 0) {
                         $rdhTotal += $rdhCount
-                        if ($rdhTotal -gt 268435456) { throw 'Download is too large.' }
+                        if ($rdhTotal -gt 134217728) { throw 'Download is too large.' }
                         $rdhOutput.Write($rdhBuffer, 0, $rdhCount)
                         if ($rdhShowProgress -and $rdhProgressClock.ElapsedMilliseconds - $rdhProgressAt -ge 200) {
                             $rdhProgressAt = $rdhProgressClock.ElapsedMilliseconds
@@ -192,7 +172,7 @@ try {
         Fetch-Native $rdhName $rdhBinary
     }
     if ((Get-Item -LiteralPath $rdhChecksum).Length -gt 65536) { throw 'Checksum record is too large.' }
-    if ((Get-Item -LiteralPath $rdhBinary).Length -gt 268435456) { throw 'Native executable is too large.' }
+    if ((Get-Item -LiteralPath $rdhBinary).Length -gt 134217728) { throw 'Native executable is too large.' }
     $rdhExpected = $null
     foreach ($rdhLine in [IO.File]::ReadAllLines($rdhChecksum)) {
         $rdhMatch = [regex]::Match($rdhLine, '\A([0-9a-f]{64})  ([^\r\n]+)\z')
@@ -208,14 +188,21 @@ try {
     }
     $rdhReported = & $rdhBinary --version
     if ($LASTEXITCODE -ne 0 -or $rdhReported -cne $Version) { throw 'Native executable version mismatch or self-check failed.' }
-    $rdhCommand = if ($Service) { 'install-service' } else { 'install-native' }
-    & $rdhBinary $rdhCommand @NativeArguments
-    $rdhExit = $LASTEXITCODE
-    if ($rdhExit -ne 0) { throw "Native installation failed with exit code $rdhExit. Inspect its diagnostic before retrying." }
+    [IO.Directory]::CreateDirectory($rdhInstallPrefix) | Out-Null
+    $rdhStage = [IO.Path]::Combine($rdhInstallPrefix, ('.rdh-install-' + [Guid]::NewGuid().ToString('N') + '.exe'))
+    try {
+        [IO.File]::Copy($rdhBinary, $rdhStage, $false)
+        # Same-directory move is atomic and refuses to replace existing files.
+        [IO.File]::Move($rdhStage, $rdhTarget)
+    } finally {
+        if ([IO.File]::Exists($rdhStage)) { [IO.File]::Delete($rdhStage) }
+    }
+    Write-Output "Installed $rdhTarget"
+
 } finally {
     Remove-Item -LiteralPath $rdhTemporary -Recurse -Force
 }
-if (!$Service -and $rdhInstallPrefix) {
+if ($rdhInstallPrefix) {
     $rdhInstallPrefix = [IO.Path]::GetFullPath($rdhInstallPrefix).TrimEnd('\', '/')
     if (!$NoModifyPath) {
         if ($rdhInstallPrefix.Contains(';')) { throw 'The installation path cannot contain a semicolon when updating PATH.' }
@@ -260,9 +247,7 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr window, uint
     }
     if (!$NoStart) {
         Write-Output 'Starting Remote Device Hub. Press Ctrl+C to stop.'
-        $rdhLaunchArguments = @()
-        if ($rdhConfig) { $rdhLaunchArguments = @('--config', $rdhConfig) }
-        & ([IO.Path]::Combine($rdhInstallPrefix, 'rdh.exe')) @rdhLaunchArguments
+        & $rdhTarget
         if ($LASTEXITCODE -ne 0) { throw "The Agent exited with code $LASTEXITCODE." }
     }
 }

@@ -1,10 +1,9 @@
 # Agent distribution
 
-The Agent is a standalone Rust executable. The development builder produces a
-raw executable for installation and updates, plus an archive containing that
-same executable, provenance metadata and dependency license texts. Building,
-testing and running the native Agent require no Node or npm. The npm distribution
-uses Node to select and start a packaged native executable.
+The Agent is a standalone Rust executable. Native archives contain the executable,
+provenance metadata and dependency licenses. Bootstrap scripts install one binary;
+`rdh update` replaces the executable in place while retaining local binding and
+startup settings.
 
 | Platform suffix | Rust target | Archive |
 | --- | --- | --- |
@@ -17,152 +16,105 @@ uses Node to select and start a packaged native executable.
 | `win32-x64` | `x86_64-pc-windows-msvc` | `.zip` |
 | `win32-arm64` | `aarch64-pc-windows-msvc` | `.zip` |
 
-The raw name is `rdh-VERSION-PLATFORM`, with `.exe` on Windows. Release assets
-share a `SHA256SUMS` file. Use a target matching both the OS and CPU;
-successful cross-compilation does not establish runtime support. See
-[Native lifecycle](native-lifecycle.md#platforms-and-validation) for native
-runner coverage and validation limits.
+Raw assets are named `rdh-VERSION-PLATFORM`, followed by `.exe` on Windows. The
+release includes `SHA256SUMS`. A matching OS, CPU and libc are required; the
+existence of a cross-compiled artifact does not establish native runtime support.
 
 ## Bootstrap installation
 
-The [README](../README.md#install-with-a-script) provides one-line installation
-commands. Without arguments, the scripts query the public GitHub Releases API
-for the newest published release, including prereleases, and install it into
-`$HOME/.local/lib/rdh` on POSIX or `%LOCALAPPDATA%\RemoteDeviceAgent` on Windows.
-Downloads display progress. The installer checks the selected version and
-checksums, saves PATH, and starts the installed Agent in the current working
-directory. The Agent runs in the foreground and requests browser approval for
-pairing; Ctrl+C stops it. With `--config` in the native installation arguments,
-startup reuses that profile. For a custom Hub, set `RDH_SERVER` to the profile's
-Hub URL. A service installation remains stopped.
+The [README](../README.md#install-with-a-script) contains the download commands.
+The scripts select the newest published GitHub release, including prereleases,
+verify the checksum and executable version, and install:
 
-On POSIX, `rdh`, `remote-device-agent` and `remote-device-hub` are symbolic links
-in `$HOME/.local/bin`, all pointing to `current/rdh` inside the installation.
-Changing the selected version does not require replacing these command links.
-`RDH_BIN_DIR` selects a different absolute command directory. Existing links to
-the same target are reused; other files, directories or link targets cause the
-script to stop before native installation.
+- Linux/macOS: `$HOME/.local/bin/rdh`.
+- Windows: `%LOCALAPPDATA%\RemoteDeviceAgent\rdh.exe`.
 
-Use `RDH_INSTALL_DIR` for a different program destination, `RDH_VERSION` for another
-release, and `RDH_BASE` for a mirror. Without an explicit version or offline
-binary, version selection still uses GitHub when a mirror is set. `RDH_LIBC=gnu`
-selects the GNU build on Linux;
-the `0.8.0` GNU binaries require glibc 2.39 or later. Explicit script options
-override the corresponding environment variables. Service installation requires
-explicit native arguments.
+Set `RDH_INSTALL_DIR` to an absolute directory to change the destination. Existing
+command files are preserved; update an installed executable with `rdh update`.
+The installer can use an existing destination directory containing unrelated
+files. It does not create version directories or command aliases.
 
-On POSIX, the command directory is added to PATH in the startup files for Bash,
-Zsh, Fish, or a POSIX login
-shell, without replacing existing content. Bash login-file precedence and
-`ZDOTDIR` / `XDG_CONFIG_HOME` are respected. `RDH_SHELL_RC` selects a custom startup
-file. New terminals load the saved PATH; the running installer cannot change its
-parent shell's environment. On Windows, the user PATH and current PowerShell
-process are both updated. Existing PATH entries are preserved.
+Use `RDH_VERSION` to select a release, `RDH_BASE` for an HTTPS mirror or local
+artifact directory, and `RDH_LIBC=gnu` for the GNU build on Linux. Linux otherwise
+uses musl. Explicit installer options override their corresponding environment
+variables. Without an explicit version or offline binary, version selection still
+uses GitHub even when `RDH_BASE` is set.
 
-Use `--no-start` / `-NoStart` or `RDH_NO_START=1` to skip launch. Use
-`--no-modify-path` / `-NoModifyPath` or `RDH_NO_MODIFY_PATH=1` to skip PATH changes.
-POSIX command links are still created with PATH changes disabled. Set both
-options when installing from unattended automation, and use `RDH_BIN_DIR` to
-select its POSIX command directory. Service installation skips command links,
-PATH changes and foreground launch.
+On POSIX, the command directory is saved in the user's shell startup files;
+`RDH_SHELL_RC` selects a custom file. New terminals load that PATH. The installer
+cannot change its parent shell's environment. Windows updates the user PATH and
+current PowerShell process. Existing PATH entries are retained.
 
-Build or obtain a verified artifact before running these examples. Check that
-the selected release contains the required platform artifact.
-The scripts accept either a local directory
-or an HTTPS mirror, reject HTTP downloads and verify the exact filename, SHA-256
-and executable version. They delegate installation to Rust.
+`--no-start` / `-NoStart`, or `RDH_NO_START=1`, disables automatic launch.
+`--no-modify-path` / `-NoModifyPath`, or `RDH_NO_MODIFY_PATH=1`, disables PATH changes.
+Use both for unattended installation. When the POSIX script is piped to `sh`, it
+reopens the controlling terminal for the first-run directory prompt. Without a
+terminal it completes installation and asks the user to run `rdh` interactively.
+The Agent chooses its shared directory and pairs when run; the installer does not
+select roots or approve permissions.
 
-For a local Linux x64 musl artifact, replace the absolute paths:
+### Offline artifacts and mirrors
+
+Obtain the binary for the intended platform together with its `SHA256SUMS` file.
+A per-binary sibling `.sha256` is accepted when `SHA256SUMS` is absent. Replace the
+version and absolute paths below with the actual artifact and destination.
+
+For Linux x64 musl:
 
 ```sh
-RDH_BIN_DIR=/absolute/test-bin sh packaging/install.sh --offline /absolute/artifacts/rdh-0.8.0-linux-x64-musl \
-  -- --prefix /absolute/new-install
+RDH_INSTALL_DIR=/absolute/new-bin sh packaging/install.sh \
+  --offline /absolute/artifacts/rdh-VERSION-linux-x64-musl --no-start
 ```
 
-Put the release `SHA256SUMS` file in the same directory as the offline binary.
-A per-binary sibling `.sha256` file is also supported when `SHA256SUMS` is absent.
-Linux defaults to musl; use `--libc gnu`
-for a glibc executable. On macOS use the matching `darwin` filename. On Windows:
+For a GNU Linux binary, add `--libc gnu`. On macOS use the matching `darwin`
+filename. For Windows x64:
 
 ```powershell
-.\packaging\install.ps1 -Offline 'C:\Artifacts\rdh-0.8.0-win32-x64.exe' `
-  -NativeArguments @('--prefix', 'C:\Path\NewInstall')
+$env:RDH_INSTALL_DIR = 'C:\Path\NewInstall'
+.\packaging\install.ps1 -Offline 'C:\Artifacts\rdh-VERSION-win32-x64.exe' -NoStart
 ```
 
-For a mirror, use `--version VERSION --base HTTPS_URL` or
-`-Version VERSION -Base HTTPS_URL`. The scripts fetch `SHA256SUMS`, falling back
-to the per-binary `.sha256` file when it is unavailable. A checksum fetched
-from the same source proves
-content consistency, not independent publisher authentication. Protect the mirror
-and retain its immutable artifact records.
+For an HTTPS mirror, use `--version VERSION --base HTTPS_URL` or
+`-Version VERSION -Base HTTPS_URL`. The scripts require HTTPS for network downloads
+and redirects. They verify the selected filename, size, SHA-256 and reported
+version before publishing the command. Checksums from the same source establish
+content consistency; access to the artifact source remains part of the trust
+boundary.
 
-Installation creates a new program directory and the `rdh`, `remote-device-agent`
-and `remote-device-hub` commands (`.exe` on Windows). It does not replace an
-existing directory. Automatic foreground startup initiates pairing; permissions
-still require browser approval. Use `startup` or `install-service` for background
-registration.
-See the [README](../README.md#install-and-run) for that sequence. `--service` or
-`-Service` forwards arguments to `install-service`.
+## Executable updates
 
-## Native version updates
+`rdh update` uses the GitHub Releases API and raw binary assets from
+`easelian/remote-device-agent`. It downloads `SHA256SUMS` and the matching platform
+binary from the selected release. Its release location is compiled into
+[self_update.rs](../src/self_update.rs). Installer mirror variables do not change
+that update source.
 
-Native update indexes use schema `2` and artifact format `native-binary`.
-`xtask native-development` emits a local canary index for its target. The index
-records version, byte length and SHA-256; it can also constrain `min_from` and
-`rollout.percent`. An installation ID determines a stable rollout bucket.
+The Agent must be stopped, and a pending unbind must finish first. Replacement
+retains the executable path so recorded startup entries continue to refer to it.
+After success, start `rdh` manually. See [Maintenance](maintenance.md#update-the-agent)
+for failure handling and platform limits.
 
-Use the explicit index when testing a development build:
+## Prepare a release
 
-```sh
-/absolute/install/rdh upgrade --index /absolute/artifacts/rdh-0.8.0-linux-x64-musl.channel.json --channel canary --check
-```
+[prepare-release.cjs](../packaging/prepare-release.cjs) assembles the eight native
+platform artifacts after checking their versions, source commits, inventories,
+checksums and licenses. It includes raw binaries, archives, bootstrap scripts,
+an npm tarball and `SHA256SUMS`. Additional generated metadata is not the source
+used by `rdh update`.
 
-Use the generated index's actual filename. A check does not switch versions.
-After ending managed work and stopping the Agent, use `--no-restart` for an
-offline update. Restart locally and verify a new Hub connection before removing
-rollback material. [Maintenance](maintenance.md) describes rollback and recovery.
+The npm package contains native binaries and a Node launcher that selects the
+matching platform and forwards the public `rdh` commands. Running that package
+requires Node 22.14 or later. Native binaries and bootstrap installations do not
+require Node or npm. Installing an npm package does not perform device pairing;
+run `rdh` afterward in an interactive terminal.
 
-Updates and rollback operate between native executable versions. Installation
-creates a new directory. Native indexes use schema 2.
+The [release workflow](../.github/workflows/release.yml) checks the tag against the
+workspace version, invokes native CI, assembles and attests artifacts, then creates
+a draft release. Review the actual native test results, artifacts and version
+before publication. The manifest's `release_ready: false` field does not indicate
+publication status.
 
-## Prepare and publish a release
-
-The [release workflow](../.github/workflows/release.yml) starts for a `v*` tag.
-The tag must match the workspace version in `Cargo.toml` and point to a commit
-reachable from `main`. It runs all eight native CI targets, assembles only the
-successful candidates with matching source, version and checksums, creates a
-GitHub artifact attestation, and uploads the files to a **draft** release. Each
-candidate manifest retains `release_ready: false`: the workflow validates and
-attests the release set; that field alone does not represent publication.
-
-The draft contains each raw binary and archive, bootstrap scripts, a schema-2
-canary index, one npm tarball, and `SHA256SUMS`. The npm
-tarball `@easelian/remote-device-agent` contains all eight binaries and their
-license texts. Its `rdh`, `remote-device-agent` and `remote-device-hub` launchers
-select the native binary; running those npm commands requires Node 22.14 or later.
-The native binaries and bootstrap installation do not require Node.
-
-Review the eight CI jobs, checksums, attestations, installation and upgrade
-evidence, release notes and exact version before publishing the GitHub draft.
-Prerelease versions are marked as prereleases. The generated canary index is a
-release asset for inspection; neither `channels/canary.json` nor the stable
-channel is updated automatically. Publish and validate those indexes separately
-after verifying that their artifact URLs are reachable to devices.
-
-The [npm workflow](../.github/workflows/npm-publish.yml) is started manually
-with a **published** GitHub Release tag: select that tag as the workflow ref and
-enter the same tag in its input. It downloads the exact release tarball,
-checks `SHA256SUMS` and verifies its attestation against the release workflow,
-tag and commit before publishing using npm Trusted Publishing. Prereleases use
-the npm `next` tag; versions without a prerelease suffix use `latest`. The npm
-organization must authorize publishing `@easelian/remote-device-agent` and
-configure `easelian/remote-device-agent` with workflow filename
-`npm-publish.yml`, including permission for `npm publish`. The npm CLI must be
-at least 11.5.1. If the package does not exist yet, arrange its initial creation
-with an authorized npm maintainer before configuring the package's trusted
-publisher. Do not create a placeholder or publish a first version automatically.
-
-After an uncertain publish result, inspect the registry's exact version and
-integrity before retrying: npm versions are immutable. GitHub attestations
-require the appropriate repository plan and permissions. Neither checksums nor
-attestations substitute for platform signing, notarization or runtime testing.
+The separate [npm workflow](../.github/workflows/npm-publish.yml) consumes a
+published release tag and verifies the selected tarball before registry
+publication. Artifact generation, attestation and draft creation do not establish
+that a release was published, deployed, platform-signed or notarized.

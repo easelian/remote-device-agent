@@ -274,9 +274,7 @@ async fn process_rpc_receipts_reconnect_stdin_termination_and_shutdown() {
     let (stop, shutdown) = watch::channel(false);
     let running = Arc::clone(&runtime);
     let mut agent =
-        tokio::spawn(
-            async move { session::run(&network, &config, &running, shutdown, None).await },
-        );
+        tokio::spawn(async move { session::run(&network, &config, &running, shutdown).await });
     let mut hub = tokio::spawn(exercise(listener));
     let result = tokio::time::timeout(
         Duration::from_secs(if cfg!(windows) { 90 } else { 40 }),

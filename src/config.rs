@@ -29,9 +29,8 @@ pub struct DeviceConfig {
 }
 
 pub fn validate_gateway(value: &str) -> Result<String> {
-    let invalid = || {
-        Error::message("--server must be an HTTPS Hub URL (HTTP is allowed for local debugging)")
-    };
+    let invalid =
+        || Error::message("The Hub must be an HTTPS URL (HTTP is allowed for local debugging)");
     if value != value.trim()
         || value.chars().any(|c| c <= '\u{20}' || c == '\\')
         || value.contains('?')
@@ -437,7 +436,7 @@ pub fn local_roots(items: &[String]) -> Result<BTreeMap<String, String>> {
         let (name, path) = item
             .split_once('=')
             .filter(|(name, _)| !name.is_empty())
-            .ok_or_else(|| Error::message("Each --root must use NAME=PATH"))?;
+            .ok_or_else(|| Error::message("Each local root must use NAME=PATH"))?;
         if !valid_name(name) {
             return Err(Error::message("Invalid file root name"));
         }

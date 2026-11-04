@@ -11,7 +11,6 @@ use sha2::{Digest, Sha256};
 
 const RUSTC_VERSION: &str = "1.93.0";
 mod archive;
-mod test_candidate;
 const TARGETS: &[(&str, &str)] = &[
     ("x86_64-unknown-linux-gnu", "linux-x64-gnu"),
     ("aarch64-unknown-linux-gnu", "linux-arm64-gnu"),
@@ -500,14 +499,11 @@ fn main() {
         match args[0].as_str() {
             "native-development" => build(&args[2], Path::new(&args[4]), all_features, false),
             "native-release-candidate" => build(&args[2], Path::new(&args[4]), all_features, true),
-            "native-test-candidate" if !all_features => {
-                test_candidate::build(&args[2], Path::new(&args[4]))
-            }
             _ => Err("Unknown native build command".into()),
         }
     } else {
         Err(
-            "usage: cargo run -p xtask -- native-development --target TARGET --out DIRECTORY [--all-features]\n       cargo run -p xtask -- native-release-candidate --target TARGET --out DIRECTORY --all-features\n       cargo run -p xtask -- native-test-candidate --target TARGET --out DIRECTORY"
+            "usage: cargo run -p xtask -- native-development --target TARGET --out DIRECTORY [--all-features]\n       cargo run -p xtask -- native-release-candidate --target TARGET --out DIRECTORY --all-features"
                 .into(),
         )
     };

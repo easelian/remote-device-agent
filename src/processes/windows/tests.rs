@@ -288,7 +288,7 @@ fn child_helper() {
     std::process::exit(0);
 }
 
-#[cfg(feature = "experimental-windows-install")]
+#[cfg(feature = "experimental-windows-processes")]
 #[test]
 fn native_candidate_checks_use_an_owned_job_and_bound_output() {
     // The candidate checker passes native argv. cmd.exe has a distinct /C

@@ -534,10 +534,10 @@ fn active_processes(job: &OwnedHandle) -> io::Result<u32> {
     }
 }
 
-/// Execute a native install candidate with the same creation-time Job and
+/// Check an update candidate with the same creation-time Job and
 /// restricted handle list as remote jobs. The caller pins the candidate and
 /// its ancestors until this function confirms all descendants have exited.
-#[cfg(feature = "experimental-windows-install")]
+#[cfg(feature = "experimental-windows-processes")]
 pub(crate) fn check_program(
     path: &Path,
     arguments: &[&str],
@@ -696,7 +696,7 @@ pub(crate) fn check_program(
             }
             last_terminate = Instant::now();
         }
-        // A failed cleanup query is not permission to release the install and
+        // A failed cleanup query is not permission to release the executable and
         // profile locks. Retain the owner until the same Job is confirmed empty.
         thread::sleep(TICK);
     }

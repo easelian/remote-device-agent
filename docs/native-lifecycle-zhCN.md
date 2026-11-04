@@ -1,102 +1,43 @@
-# 原生 Agent 生命周期
+# Agent 生命周期
 
-Remote Device Hub Agent 是独立的 Rust 原生程序 `rdh`，负责连接 Hub 并执行设备操作。本文描述模块边界、安装、版本更新与验证范围。
+[English](native-lifecycle.md) | 简体中文
 
-原生安装支持可执行文件版本之间的升级、中断恢复与回滚。发布流程通过 GitHub Releases 和 npm 分发原生程序；平台签名和生产部署是独立操作。
+Agent 使用一份本地绑定，提供三个操作：`rdh` 启动，`rdh unbind` 解除绑定，`rdh update` 替换可执行文件。程序文件与私有设备状态各自独立保存。
 
-## 实现结构
+## 启动与绑定
 
-共享模块负责协议、策略和工作生命周期；平台模块负责文件句柄、进程、私有存储与服务注册。管理命令直接执行；配对、连接和更新下载按需建立 Tokio 运行时，调度线程为一至四个。该数量不包含阻塞任务、搜索及进程监督线程。
+`binding::prepare_options` 解析本地设置和选定的配置。首次交互式启动时，用户选择共享目录，程序将选择保存到 `settings.json`。新配对使用编译时确定的 Hub 默认地址；已有绑定提供其保存的 Hub、根目录和设备身份。
 
-| 模块 | 职责 |
+`app::launch` 检查未完成的生命周期操作，并在接收工作前获取绑定的实例锁。未绑定时，Agent 输出验证链接和配对码，尝试打开浏览器并等待批准。已有绑定时，Agent 使用保存的身份连接，不打开浏览器。实例锁保持到退出清理完成。
+
+文件根目录约束文件工具，shell 命令使用 Agent 所属操作系统账户的权限。响应期限与工作生命周期相互独立：超时不能证明写入或受管进程已经停止。停止或解绑设备时，需要分别处理这些状态。
+
+## 解绑
+
+`rdh unbind` 持久保存解绑意图，停止 Agent 和受管工作，在 Hub 撤销设备访问，并取消已记录的自动启动。完成撤销所需的信息不会提前丢弃。共享目录设置会保留，供以后配对使用。
+
+| 状态 | 后续行为 |
 | --- | --- |
-| `cli`、`app`、`config`、`pairing` | 参数、私有配置、浏览器配对、已有设备身份及启动顺序。 |
-| `transport`、`session`、`rpc`、`receipts` | 认证 WebSocket、ready 状态、心跳、请求准入、期限和结果回执。 |
-| `files`、`searches` | 根目录相对操作、编码、摘要、分页、搜索及取消。 |
-| `processes` | 有界输出、stdin、进程状态和进程树清理。 |
-| `policy`、`sandbox`、`audit` | 本地权限、Linux 隔离与资源限制、脱敏审计。 |
-| `storage`、`profile_lock` | 私有文件权限、对象身份与单配置实例互斥。 |
-| `startup` | 用户启动项、服务启动类型、审批及管理员授权；命令入口为 `startup::cli`。 |
-| `native_install`、`install_lock`、`native_launcher` | 原生版本目录、安装互斥、稳定命令入口与切换恢复。 |
-| `service_install`、`service_host` | 服务账户安装、原生 SCM 入口及服务关闭。 |
-| `upgrade_cli`、`update`、`service_controller`、`service_update` | 更新索引、候选验证、停机切换和 Linux systemd 自动更新。 |
-| `xtask` | 原生产物、来源清单、依赖许可证及归档往返校验。 |
+| 已绑定且正在运行 | `rdh unbind` 请求停止，完成工作清理与访问撤销。 |
+| 撤销中断或 Hub 不可达 | 保留解绑意图和绑定数据，阻止旧身份被正常启动流程复用。 |
+| 有未完成解绑，运行 `rdh unbind` | 继续撤销和清理。 |
+| 有未完成解绑，运行 `rdh` | 完成撤销后退出，提示用户再次运行。 |
+| 未绑定且没有待完成的清理 | 下一次 `rdh` 开始浏览器配对。 |
 
-代码入口见 [lib.rs](../src/lib.rs)。模块、协议及资源生命周期详见 [architecture.md](architecture.md)，配置约束见 [hardening.md](hardening.md)。
+运行中的实例通过绑定所属的私有本地控制机制接收生命周期请求。无法确认工作已停止时，程序会拒绝继续执行不安全的清理。手动删除状态或锁文件不能代替完成生命周期操作。
 
-## 协议与生命周期
+启动管理 RPC 保留本地授权检查。本文不约定其批准交互方式。解绑使用已记录的注册信息取消自动启动。
 
-Agent 主动连接 Hub，不提供本机 HTTP 或 MCP 监听服务。配置 `discovery_url` 时，长期设备凭据仅用于向 Gate 认证；Agent 使用 Gate 签发、绑定本进程及目标 Core 的一次性 v2 票据建立 WSS，完成 `hello`、`ready`、`ready_ack` 后确认连接。没有发现配置时，Agent 向支持 bearer 认证的服务器直接发送设备凭据。Gate/Core 发现协议要求 v2 票据，不接受 v1 发现客户端。用户通过浏览器批准新设备；已有私有配置保存设备身份。Hub 选择顺序为 `--server`、`RDH_SERVER`、源码默认地址，其他 Hub 的凭据不会随意复用。
+## 更新程序
 
-普通请求最多同时执行八个。响应期限和实际工作生命周期分开：RPC 超时或断线不代表文件操作已经取消，也不代表没有发生写入；未完成工作继续占用名额。运行时回执、搜索、进程输出及发送队列均有容量和期限约束。旧连接的迟到回复不能进入新连接。
+`binding::update` 拒绝在 Agent 运行或解绑尚未完成时更新，并在 `self_update::run` 执行期间持有实例锁。更新器选择 GitHub 上版本较新的已发布 Release，包括预发布版，校验当前平台候选程序的大小、SHA-256 和报告版本后再替换。绑定、共享根目录和启动设置不会被改写。
 
-短时断线保留受管进程，持续离线、认证被拒绝或正常关闭会进入清理。配置锁在受管工作尚未完成时保持。POSIX 使用进程组，Windows 使用 Job Object；主动脱离 POSIX 进程组的程序不在同一清理保证内。文件根目录约束文件工具，不能代替 shell 的操作系统权限边界。
+Unix 使用原子重命名替换程序，并在目录变更完成同步前保留原文件。Windows 使用单次原子重命名完成替换，不会先移走目标程序；系统不支持或拒绝替换时，已安装的目标文件保持不变。自动恢复无法完成时，错误信息会指出保留的原文件位置。
 
-连接默认直连。`RDH_USE_ENV_PROXY=1` 显式启用代理变量，`RDH_CA_BUNDLE` 增加 PEM 信任根。配对、更新与 WebSocket 共用网络策略；TLS 证书和主机名校验保持开启。详见 [network.md](network.md)。
+更新成功后不会自动启动 Agent，需要运行 `rdh` 重新连接。操作步骤见[维护说明](maintenance.md#update-the-agent)，产物名称和安装路径见[分发说明](distribution.md)。
 
-## 原生安装
+## 源码与验证
 
-`install-native` 在新的私有目录安装程序。Linux/macOS 使用版本目录及 `current` 链接，Windows 使用受校验的版本记录和原生命令转发。三个稳定命令名为 `rdh`、`remote-device-agent`、`remote-device-hub`，Windows 带 `.exe` 后缀。版本选择发生变化后，从这些入口运行会选择当前版本。
+生命周期实现位于 [binding/mod.rs](../src/binding/mod.rs)、[binding/unbind.rs](../src/binding/unbind.rs)、[app.rs](../src/app.rs) 和 [self_update.rs](../src/self_update.rs)。相关模块见[代码导览](code-structure-zhCN.md)。
 
-安装可登记一个已停机、已配对的私有配置。配置保留在原路径。正常 Agent 持有共享安装锁，更新管理器取得排他锁，并锁定已登记配置；有 Agent 或受管工作仍在运行时拒绝切换。
-
-用户后台启动使用 systemd、LaunchAgent 或 Task Scheduler。`startup set` 管理未来启动状态，不负责停止当前连接。系统服务通过 `install-service` 创建：POSIX 要求 root、已有非 root 服务账户及其私有配置和状态目录；Windows 使用管理员所有的程序目录及 LocalService 数据目录。新服务以禁用或手动启动状态注册，操作者在本机启动后核对 Hub 连接。
-
-引导脚本只负责取得正确平台的原生文件、校验摘要与版本，再调用 Rust 安装入口。原生构建、安装、运行及 Rust 测试不调用 Node/npm；npm 分发及其测试需要 Node/npm。具体命令见 [README](../README.md#install-and-run) 和 [distribution.md](distribution.md)。
-
-## Rust 版本之间的更新与回滚
-
-### 版本与数据兼容规则
-
-原生更新索引采用 schema `2`、格式 `native-binary`，记录版本、大小、SHA-256、平台和灰度比例，可用 `min_from` 限定最低来源版本。客户端检查目标架构、内容摘要、候选报告的版本及已登记配置。索引中的摘要验证文件一致性；发布渠道的来源信任、签名和不可变托管在发布阶段落实。
-
-升级和回滚要求选定程序能够读取已登记的配置和策略。更新器在切换前校验这些文件，不执行持久化格式转换。
-
-### 停机更新
-
-所有平台均支持停止 Agent 后更新。macOS、Windows 和系统服务使用停机切换与手动重启；Linux 用户 systemd 另有下述自动更新路径。
-
-1. 结束进程、搜索等受管工作，停止使用该安装的 Agent 和服务。
-2. 执行 `upgrade --no-restart`，校验候选及注册配置，保存切换意图，更新版本选择并保留前一版本。
-3. 从稳定入口或本机服务管理器启动，核对新版本、原设备身份和 Hub 连接。
-4. 需要返回前一版本时，再次停机，执行 `rollback --no-restart`，然后启动并验证。
-
-以下绝对路径均为占位值。命令使用同一安装的稳定入口，索引必须来自所需平台的可信来源：
-
-```sh
-/absolute/install/rdh upgrade --index /absolute/native-index.json --channel canary --check
-/absolute/install/rdh upgrade --index /absolute/native-index.json --channel canary --no-restart
-/absolute/install/rdh rollback --no-restart
-```
-
-Windows 使用对应的 `rdh.exe`。系统服务更新需保持原服务账户、配置和服务定义一致；管理员先停止服务，再执行更新。更新不会取得用户凭据的所有权，也不会以管理员身份运行服务的候选配置验证。
-
-### 中断恢复
-
-更新先持久化 pending 记录，再修改当前版本选择和安装记录。存在未完成切换时禁止正常启动。`upgrade --recover` 只接受记录中的旧、新版本及预期文件状态，继续或恢复该次切换；记录缺失、文件摘要变化或额外外部修改会导致拒绝，并保留现场。
-
-```sh
-/absolute/install/rdh upgrade --recover
-```
-
-恢复完成后重新检查所选版本，再启动 Agent。配置锁恢复是另一项操作：只有确认原进程及其工作已结束，才使用显式 `--recover-lock`；活进程或无法核实的所有者会使恢复拒绝。不能通过删除锁绕过正在执行的工作。
-
-### Linux systemd 自动更新
-
-受支持的用户 systemd 路径核对单元定义、安装、配置与当前实例，确认工作已空闲后停机、切换并重启。试运行实例只有在持久化提交和明确激活后才执行远程请求。就绪判断核对该实例本次连接收到的 Hub ready；失败会切回保留的版本，控制器中断可从持久化记录恢复。
-
-该入口仅控制可核实的目标单元，不是任意服务的通用控制器。macOS 和 Windows 支持停机更新与回滚，需要手动控制服务；不支持自动停机、自动重启与 Hub 就绪回退。详细参数见 `upgrade --help` 及 [maintenance.md](maintenance.md#update-and-recover-an-installation)。
-
-## 平台与验证
-
-正常构建默认开启已经实现的平台后端；`experimental-*` Cargo 特性用于选择平台后端和裁剪构建。CI 用 `--no-default-features` 检查主动关闭能力时的错误行为。
-
-[Agent CI](../.github/workflows/ci.yml) 在独立构建机上并行验证以下八个原生目标：Linux x86_64/ARM64 的 glibc/musl、macOS x86_64/ARM64、Windows x86_64/ARM64。每个目标构建独立版本候选，执行 Clippy、优化构建测试、产物归档与解包校验，以及适用的真实用户启动项和系统服务测试。服务测试使用临时对象，只应在可丢弃的 CI 主机执行。
-
-交叉编译不验证 Windows ACL、Task Scheduler、SCM 或 launchd 的实际行为；模块检查也不代替完整链接。原生 CI 在对应构建机上验证这些机制。重登录、生产 Hub 连接、企业代理、SMB 和断电持久性需要在目标环境中验证。
-
-## 构建与发布边界
-
-仓库使用 Rust `1.93.0` 和固定 `Cargo.lock`。`xtask native-development` 生成二进制、校验文件、归档、来源清单和许可证集合；清单记录源码摘要、提交、脏工作树状态、工具链和目标。归档被重新解包，逐文件比较，并在本机目标运行解包后的版本检查。
-
-仓库采用 Apache-2.0 许可证。`xtask native-release-candidate` 要求源码工作树干净、`v` 加工作区版本号的标签指向当前提交、启用全部功能，并在匹配操作系统和 CPU 的构建机上执行原生自检。候选产物仍标记 `release_ready: false`。[发布流程](distribution.md#prepare-and-publish-a-release)在八个原生目标通过后汇总产物、生成来源证明并创建 GitHub 发布草稿；npm 包只承担平台选择与原生程序分发。各提交的多平台结果见对应 CI 运行记录。
+生命周期验证需要检查设置保存、未完成撤销和身份复用。更新器测试覆盖候选验证和失败时的状态保留。平台启动项、进程行为及运行中程序替换需要在对应操作系统执行原生测试。存在测试代码、交叉编译通过或源码检查均不代表已经完成运行时验证或断电持久性验证。

@@ -10,6 +10,8 @@
     )
 ))]
 
+#[path = "support/binding.rs"]
+mod binding;
 #[path = "support/initial_binary.rs"]
 mod initial_binary;
 
@@ -48,7 +50,7 @@ async fn start(State(state): State<Arc<Fixture>>, Json(value): Json<Value>) -> R
         StatusCode::CREATED,
         Json(json!({
             "verification_uri_complete": format!("{}/auth/pair?code=TEST-CODE", state.origin),
-            "user_code":"TEST-CODE", "device_code":"fixture-code", "expires_in":600, "interval":3,
+            "device_id":"fixture-device", "user_code":"TEST-CODE", "device_code":"fixture-code", "expires_in":600, "interval":3,
         })),
     )
         .into_response()
@@ -291,6 +293,17 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     )));
     std::fs::create_dir(&temp.0).unwrap();
     std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let browser_log = temp.0.join("browser.log");
+    let browser = temp.0.join("xdg-open");
+    std::fs::write(
+        &browser,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n",
+            browser_log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o700)).unwrap();
     let root = temp.0.join("work");
     std::fs::create_dir(&root).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -311,8 +324,24 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    let config = temp.0.join("device.json");
-    let policy = temp.0.join("device.policy.json");
+    let token = "fixture-device-token-01234567890123456789";
+    let response = reqwest::Client::new()
+        .post(format!("{origin}/api/pair/start"))
+        .json(&json!({"roots":{"work":root},"token_hash":sha256_hex(token.as_bytes())}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let config = binding::seed(
+        &temp.0.join("xdg-config"),
+        &origin,
+        json!({"work":root}),
+        token,
+        response,
+    );
+    let policy = config.with_extension("policy.json");
     std::fs::write(
         &policy,
         serde_json::to_vec(
@@ -327,18 +356,10 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     let mut child = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)
+        .env("DISPLAY", ":fixture")
         .env("HOME", &temp.0)
         .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
         .env("XDG_STATE_HOME", temp.0.join("agent-state"))
-        .args([
-            "--server",
-            &origin,
-            "--config",
-            config.to_str().unwrap(),
-            "--root",
-            &format!("work={}", root.display()),
-            "--no-browser",
-        ])
         .stdout(log.try_clone().unwrap())
         .stderr(log)
         .kill_on_drop(true)
@@ -461,46 +482,19 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
     let request_id = results["startup-request"]["result"]["request_id"]
         .as_str()
         .unwrap();
-    let approval = tokio::process::Command::new(initial_binary::path())
-        .env_clear()
-        .env("PATH", &temp.0)
-        .env("HOME", &temp.0)
-        .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
-        .args([
-            "startup",
-            "approve",
+    rdh_agent::startup::Startup::new(&config)
+        .unwrap()
+        .approve(
             request_id,
-            "--config",
-            config.to_str().unwrap(),
-        ])
-        .output()
-        .await
+            false,
+            std::time::Instant::now() + Duration::from_secs(5),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
         .unwrap();
-    assert!(!approval.status.success());
-    assert!(String::from_utf8_lossy(&approval.stderr).contains("interactive terminal"));
-    let denial = tokio::process::Command::new(initial_binary::path())
-        .env_clear()
-        .env("PATH", &temp.0)
-        .env("HOME", &temp.0)
-        .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
-        .args([
-            "startup",
-            "deny",
-            request_id,
-            "--config",
-            config.to_str().unwrap(),
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        denial.status.success(),
-        "{}",
-        String::from_utf8_lossy(&denial.stderr)
-    );
-    let state: Value =
-        serde_json::from_slice(&std::fs::read(temp.0.join("device.json.startup.json")).unwrap())
-            .unwrap();
+    let state: Value = serde_json::from_slice(
+        &std::fs::read(format!("{}.startup.json", config.display())).unwrap(),
+    )
+    .unwrap();
     assert_eq!(state["pending"], Value::Null);
     let pid = child.id().unwrap();
     // SAFETY: this PID is the live child created by this test; SIGTERM requests graceful shutdown.
@@ -523,30 +517,58 @@ async fn native_binary_pairs_connects_reuses_identity_and_stops_cleanly_without_
             |line| line.contains("\"op\":\"process_exit\"") && line.contains("\"exit_code\":7")
         )
     );
-    assert!(!temp.0.join("device.json.rdh-lock").exists());
-    let output = tokio::process::Command::new(initial_binary::path())
+    assert!(!std::path::PathBuf::from(format!("{}.rdh-lock", config.display())).exists());
+    let log = std::fs::File::create(temp.0.join("reused.log")).unwrap();
+    let mut reused = tokio::process::Command::new(initial_binary::path())
         .env_clear()
         .env("PATH", &temp.0)
+        .env("DISPLAY", ":fixture")
         .env("HOME", &temp.0)
-        .args([
-            "--server",
-            &origin,
-            "--config",
-            config.to_str().unwrap(),
-            "--pair-only",
-            "--no-browser",
-        ])
-        .output()
-        .await
+        .env("XDG_CONFIG_HOME", temp.0.join("xdg-config"))
+        .env("XDG_STATE_HOME", temp.0.join("agent-state"))
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .kill_on_drop(true)
+        .spawn()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if std::fs::read_to_string(temp.0.join("reused.log"))
+                .unwrap()
+                .contains("Using saved binding: fixture-device")
+            {
+                break;
+            }
+            assert!(reused.try_wait().unwrap().is_none());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(reused.id().unwrap() as i32, libc::SIGTERM) },
+        0
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Using saved pairing: fixture-device")
+        tokio::time::timeout(Duration::from_secs(5), reused.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        !std::fs::read_to_string(temp.0.join("reused.log"))
+            .unwrap()
+            .contains("Pairing code:")
     );
     assert_eq!(fixture.starts.load(Ordering::SeqCst), 1);
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        std::fs::read_to_string(browser_log)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        [format!("{origin}/auth/pair?code=TEST-CODE")]
+    );
     server.abort();
 }

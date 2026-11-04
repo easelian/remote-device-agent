@@ -26,9 +26,9 @@ path = "src/main.rs"
 
 [features]
 default = ["experimental-windows-install", "experimental-macos-install"]
-# Windows native installation, version switching and recovery.
+# Windows platform backends.
 experimental-windows-install = ["experimental-windows-processes", "experimental-windows-startup", "experimental-windows-audit"]
-# macOS native installation, version switching and recovery.
+# macOS platform backends.
 experimental-macos-install = ["experimental-macos-files", "experimental-macos-processes", "experimental-macos-startup", "experimental-macos-audit"]
 # Windows task/service registration and administrator grants.
 experimental-windows-startup = ["experimental-windows-processes", "experimental-windows-private-storage", "dep:windows"]

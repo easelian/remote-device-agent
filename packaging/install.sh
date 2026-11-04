@@ -1,5 +1,5 @@
 #!/bin/sh
-# Download and verify one native executable; Rust owns installation.
+# Install one verified standalone executable for the current user.
 set -eu
 umask 077
 
@@ -7,43 +7,22 @@ rdh_base=${RDH_BASE:-}
 rdh_version=${RDH_VERSION:-}
 rdh_offline=
 rdh_libc=${RDH_LIBC:-musl}
-rdh_command=install-native
 rdh_temporary=
 rdh_no_start=${RDH_NO_START:-0}
 rdh_no_modify_path=${RDH_NO_MODIFY_PATH:-0}
 
 usage() {
     cat <<'USAGE'
-usage: install.sh [--version VERSION] [--base HTTPS_URL|DIRECTORY] [--libc musl|gnu]
-                  [--no-start] [--no-modify-path] [-- NATIVE_ARGUMENTS...]
-       install.sh --offline NATIVE_BINARY -- NATIVE_ARGUMENTS...
+usage: install.sh [--version VERSION] [--base HTTPS_URL|DIRECTORY]
+                  [--offline BINARY] [--libc musl|gnu] [--no-start] [--no-modify-path]
 
-The native binary must have a matching entry in SHA256SUMS, or a per-binary sibling
-.sha256 file. Linux defaults to musl; --libc gnu selects glibc. No Node/npm is used.
-
-With no arguments, install the newest published GitHub release (including
-prereleases) into $HOME/.local/lib/rdh.
-RDH_VERSION, RDH_BASE, RDH_LIBC and RDH_INSTALL_DIR override these defaults.
-Installation links rdh, remote-device-agent and remote-device-hub in
-$HOME/.local/bin. RDH_BIN_DIR selects a different absolute command directory.
-Existing command paths must be links to this installation's current/rdh.
-The command directory is added to the user's shell configuration, then the Agent
-starts in the foreground. New terminals load the saved PATH.
-Use --no-start or RDH_NO_START=1 to install without launching the Agent.
-Use --no-modify-path or RDH_NO_MODIFY_PATH=1 to leave PATH and shell files alone;
-command links are still created.
-RDH_SHELL_RC selects a custom shell startup file instead of the default files.
-
-By default arguments after -- are passed to rdh install-native. Use
---service to call rdh install-service, using its explicit service account options.
-These commands retain the native CLI's ownership, stopped-profile and recovery
-checks. Service installation does not change PATH or start the service. Existing
-installations are not overwritten. Device pairing requires browser approval.
-
-Examples (replace the version and absolute paths):
-  sh install.sh --version VERSION -- --prefix /absolute/new-install
-  sh install.sh --offline /absolute/rdh-VERSION-linux-x64-musl -- --prefix /absolute/new-install --config /absolute/paired.json
-  sudo sh install.sh --version VERSION --service -- --prefix /absolute/new-program --config /absolute/paired.json --state-directory /absolute/state --service-user USER --name rdh.service
+Install the newest published GitHub release (including prereleases) as
+$HOME/.local/bin/rdh, verify its SHA256SUMS entry and version, and launch rdh.
+RDH_INSTALL_DIR overrides the absolute installation directory.
+RDH_VERSION, RDH_BASE and RDH_LIBC override release defaults (Linux: musl).
+RDH_NO_START=1 disables launch; RDH_NO_MODIFY_PATH=1 leaves shell files unchanged.
+RDH_SHELL_RC selects a custom shell startup file. Existing rdh files are preserved;
+use rdh update to update an installed executable.
 USAGE
 }
 die() { printf '%s\n' "Remote Device Hub installer: $*" >&2; exit 1; }
@@ -55,36 +34,20 @@ while [ "$#" -gt 0 ]; do
         --version) value "$@"; rdh_version=${2#v}; shift 2 ;;
         --offline) value "$@"; rdh_offline=$2; shift 2 ;;
         --libc) value "$@"; rdh_libc=$2; shift 2 ;;
-        --service) rdh_command=install-service; shift ;;
         --no-start) rdh_no_start=1; shift ;;
         --no-modify-path) rdh_no_modify_path=1; shift ;;
-        --) shift; break ;;
         -h|--help) usage; exit 0 ;;
-        *) die "unknown bootstrap option: $1; native options follow --" ;;
+        *) die "unknown installer option: $1" ;;
     esac
 done
 case $rdh_no_start:$rdh_no_modify_path in 0:0|0:1|1:0|1:1) ;; *) die 'RDH_NO_START and RDH_NO_MODIFY_PATH must be 0 or 1' ;; esac
-rdh_default_prefix=
-if [ "$#" -eq 0 ]; then
-    [ "$rdh_command" = install-native ] || die 'supply service installation arguments after --'
-    if [ -n "${RDH_INSTALL_DIR:-}" ]; then
-        rdh_default_prefix=$RDH_INSTALL_DIR
-    else
-        [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_INSTALL_DIR or pass -- --prefix PATH'
-        rdh_default_prefix=$HOME/.local/lib/rdh
-    fi
-    set -- --prefix "$rdh_default_prefix"
+rdh_bin_dir=${RDH_INSTALL_DIR:-${HOME:?HOME is unset; set RDH_INSTALL_DIR}/.local/bin}
+case $rdh_bin_dir in /*) ;; *) die 'RDH_INSTALL_DIR must be absolute' ;; esac
+if [ "$rdh_no_modify_path" = 0 ]; then
+    case $rdh_bin_dir in *:*|*'
+'*) die 'the command directory cannot contain a colon or newline when updating PATH' ;; esac
 fi
-rdh_install_prefix=
-rdh_config=
-rdh_previous=
-for rdh_argument do
-    case $rdh_previous in
-        --prefix) rdh_install_prefix=$rdh_argument ;;
-        --config) rdh_config=$rdh_argument ;;
-    esac
-    rdh_previous=$rdh_argument
-done
+[ ! -e "$rdh_bin_dir/rdh" ] && [ ! -L "$rdh_bin_dir/rdh" ] || die 'command path already exists; use rdh update'
 case $rdh_libc in musl|gnu) ;; *) die '--libc must be musl or gnu' ;; esac
 rdh_system=$(uname -s)
 rdh_arch=$(uname -m)
@@ -141,7 +104,7 @@ fetch() {
                 rdh_progress=--silent
             fi
             curl --fail --show-error "$rdh_progress" --location --proto '=https' --proto-redir '=https' \
-                --connect-timeout 15 --max-time 300 --max-filesize 268435456 \
+                --connect-timeout 15 --max-time 300 --max-filesize 134217728 \
                 --output "$rdh_fetch_destination" "${rdh_base%/}/$rdh_fetch_name"
             ;;
         *://*) die '--base must use HTTPS or a local directory' ;;
@@ -163,7 +126,7 @@ else
     fetch "$rdh_name" "$rdh_temporary/$rdh_name"
 fi
 [ "$(wc -c < "$rdh_temporary/checksum")" -le 65536 ] || die 'checksum record is too large'
-[ "$(wc -c < "$rdh_temporary/$rdh_name")" -le 268435456 ] || die 'native executable is too large'
+[ "$(wc -c < "$rdh_temporary/$rdh_name")" -le 134217728 ] || die 'native executable is too large'
 rdh_expected=$(LC_ALL=C awk -v name="$rdh_name" '
     NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ { invalid=1 }
     $2 == name { count++; hash=$1 }
@@ -181,43 +144,18 @@ chmod 700 "$rdh_temporary/$rdh_name"
 rdh_reported=$("$rdh_temporary/$rdh_name" --version) || die 'native executable self-check failed'
 [ "$rdh_reported" = "$rdh_version" ] || die 'native executable version mismatch'
 
-check_command_links() {
-    for rdh_entry_name in rdh remote-device-agent remote-device-hub; do
-        rdh_entry=$rdh_bin_dir/$rdh_entry_name
-        if [ -L "$rdh_entry" ]; then
-            [ "$(readlink "$rdh_entry")" = "$rdh_command_target" ] \
-                || die "command path points to another target: $rdh_entry"
-        elif [ -e "$rdh_entry" ]; then
-            die "command path already exists: $rdh_entry"
-        fi
-    done
-}
-
-if [ "$rdh_command" = install-native ] && [ -n "$rdh_install_prefix" ]; then
-    case $rdh_install_prefix in /*) ;; *) die 'native installation prefix must be absolute' ;; esac
-    if [ -n "${RDH_BIN_DIR:-}" ]; then
-        rdh_bin_dir=$RDH_BIN_DIR
-    else
-        [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_BIN_DIR'
-        rdh_bin_dir=$HOME/.local/bin
-    fi
-    case $rdh_bin_dir in /*) ;; *) die 'RDH_BIN_DIR must be absolute' ;; esac
-    rdh_install_parent=$(dirname "$rdh_install_prefix")
-    mkdir -p "$rdh_install_parent"
-    rdh_install_prefix=$(cd "$rdh_install_parent" && pwd -P)/$(basename "$rdh_install_prefix")
-    rdh_command_target=$rdh_install_prefix/current/rdh
-    mkdir -p "$rdh_bin_dir"
-    rdh_bin_dir=$(cd "$rdh_bin_dir" && pwd -P)
-    if [ "$rdh_no_modify_path" = 0 ]; then
-        case $rdh_bin_dir in *:*|*'
-'*) die 'the command directory cannot contain a colon or newline when updating PATH' ;; esac
-    fi
-    check_command_links
-fi
-
-"$rdh_temporary/$rdh_name" "$rdh_command" "$@"
-rm -rf "$rdh_temporary"
+# Stage beside the destination so publication cannot expose a partial copy.
+mkdir -p "$rdh_bin_dir"
+rdh_stage=$(mktemp -d "$rdh_bin_dir/.rdh-install.XXXXXXXX") || die 'cannot stage executable'
+trap '[ -z "$rdh_temporary" ] || rm -rf "$rdh_temporary"; [ -z "$rdh_stage" ] || rm -rf "$rdh_stage"' 0
+cp "$rdh_temporary/$rdh_name" "$rdh_stage/rdh"
+chmod 700 "$rdh_stage/rdh"
+# A hard link publishes atomically and refuses to overwrite an existing entry.
+ln "$rdh_stage/rdh" "$rdh_bin_dir/rdh" || die 'command path already exists or cannot be installed'
+rm -rf "$rdh_stage" "$rdh_temporary"
+rdh_stage=
 rdh_temporary=
+printf 'Installed %s/rdh\n' "$rdh_bin_dir"
 
 append_path() {
     rdh_rc=$1
@@ -232,56 +170,51 @@ append_path() {
     printf 'PATH configured in %s\n' "$rdh_rc"
 }
 
-if [ "$rdh_command" = install-native ] && [ -n "$rdh_install_prefix" ]; then
-    check_command_links
-    for rdh_entry_name in rdh remote-device-agent remote-device-hub; do
-        rdh_entry=$rdh_bin_dir/$rdh_entry_name
-        if [ ! -L "$rdh_entry" ]; then
-            ln -s "$rdh_command_target" "$rdh_entry"
-        fi
-    done
-    printf 'Commands linked in %s\n' "$rdh_bin_dir"
-    if [ "$rdh_no_modify_path" = 0 ]; then
-        rdh_escaped=$(printf '%s' "$rdh_bin_dir" | sed "s/'/'\\\\''/g")
-        rdh_path_line="case \":\${PATH-}:\" in *:'$rdh_escaped':*) ;; *) export PATH='$rdh_escaped':\"\${PATH-}\" ;; esac # Remote Device Hub"
-        rdh_shell=${SHELL:-sh}
-        rdh_shell=${rdh_shell##*/}
-        if [ "$rdh_shell" = fish ]; then
-            rdh_escaped=$(printf '%s' "$rdh_bin_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-            rdh_path_line="if not contains -- '$rdh_escaped' \$PATH; set -gx PATH '$rdh_escaped' \$PATH; end # Remote Device Hub"
-        fi
-        if [ -n "${RDH_SHELL_RC:-}" ]; then
-            append_path "$RDH_SHELL_RC"
-        else
-            [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_SHELL_RC or use --no-modify-path'
-            case $rdh_shell in
-                zsh)
-                    append_path "${ZDOTDIR:-$HOME}/.zprofile"
-                    append_path "${ZDOTDIR:-$HOME}/.zshrc"
-                    ;;
-                fish)
-                    append_path "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
-                    ;;
-                *)
-                    if [ "$rdh_shell" = bash ]; then append_path "$HOME/.bashrc"; fi
-                    if [ -f "$HOME/.bash_profile" ] && [ "$rdh_shell" = bash ]; then
-                        append_path "$HOME/.bash_profile"
-                    elif [ -f "$HOME/.bash_login" ] && [ "$rdh_shell" = bash ]; then
-                        append_path "$HOME/.bash_login"
-                    else
-                        append_path "$HOME/.profile"
-                    fi
-                    ;;
-            esac
-        fi
-        case ":${PATH-}:" in *:"$rdh_bin_dir":*) ;; *) PATH=$rdh_bin_dir:${PATH-}; export PATH ;; esac
-        printf 'PATH saved for new terminals.\n'
+if [ "$rdh_no_modify_path" = 0 ]; then
+    rdh_escaped=$(printf '%s' "$rdh_bin_dir" | sed "s/'/'\\\\''/g")
+    rdh_path_line="case \":\${PATH-}:\" in *:'$rdh_escaped':*) ;; *) export PATH='$rdh_escaped':\"\${PATH-}\" ;; esac # Remote Device Hub"
+    rdh_shell=${SHELL:-sh}
+    rdh_shell=${rdh_shell##*/}
+    if [ "$rdh_shell" = fish ]; then
+        rdh_escaped=$(printf '%s' "$rdh_bin_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
+        rdh_path_line="if not contains -- '$rdh_escaped' \$PATH; set -gx PATH '$rdh_escaped' \$PATH; end # Remote Device Hub"
     fi
-    if [ "$rdh_no_start" = 0 ]; then
+    if [ -n "${RDH_SHELL_RC:-}" ]; then
+        append_path "$RDH_SHELL_RC"
+    else
+        [ -n "${HOME:-}" ] || die 'HOME is unset; set RDH_SHELL_RC or use --no-modify-path'
+        case $rdh_shell in
+            zsh)
+                append_path "${ZDOTDIR:-$HOME}/.zprofile"
+                append_path "${ZDOTDIR:-$HOME}/.zshrc"
+                ;;
+            fish)
+                append_path "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+                ;;
+            *)
+                if [ "$rdh_shell" = bash ]; then append_path "$HOME/.bashrc"; fi
+                if [ -f "$HOME/.bash_profile" ] && [ "$rdh_shell" = bash ]; then
+                    append_path "$HOME/.bash_profile"
+                elif [ -f "$HOME/.bash_login" ] && [ "$rdh_shell" = bash ]; then
+                    append_path "$HOME/.bash_login"
+                else
+                    append_path "$HOME/.profile"
+                fi
+                ;;
+        esac
+    fi
+    case ":${PATH-}:" in *:"$rdh_bin_dir":*) ;; *) PATH=$rdh_bin_dir:${PATH-}; export PATH ;; esac
+    printf 'PATH saved for new terminals.\n'
+fi
+if [ "$rdh_no_start" = 0 ]; then
+    if [ -t 0 ]; then
         printf 'Starting Remote Device Hub. Press Ctrl+C to stop.\n'
-        if [ -n "$rdh_config" ]; then
-            exec "$rdh_bin_dir/rdh" --config "$rdh_config"
-        fi
         exec "$rdh_bin_dir/rdh"
+    elif ( : < /dev/tty ) >/dev/null 2>&1; then
+        # A piped installer must give the directory prompt the user's terminal.
+        printf 'Starting Remote Device Hub. Press Ctrl+C to stop.\n'
+        exec "$rdh_bin_dir/rdh" < /dev/tty
+    else
+        printf 'Installation complete. Run rdh in an interactive terminal to choose the shared directory and connect.\n'
     fi
 fi

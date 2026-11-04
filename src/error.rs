@@ -8,10 +8,8 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("Invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("Agent has active or undelivered work; retry after it completes")]
-    IdleBusy,
-    #[error("Agent cgroup is not isolated or cannot be inspected")]
-    IdleIsolation,
+    #[error("{0}")]
+    AuthorizationRejected(String),
 }
 
 impl Error {

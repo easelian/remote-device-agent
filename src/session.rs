@@ -11,7 +11,6 @@ use tokio_tungstenite::tungstenite::{Message, protocol::frame::coding::CloseCode
 use crate::config::DeviceConfig;
 use crate::error::{Error, Result};
 use crate::network::{Network, WebSocketError};
-use crate::readiness::Reporter;
 use crate::rpc::Runtime;
 use crate::{random, transport};
 
@@ -30,6 +29,7 @@ enum End {
     Stop,
     Retry { was_ready: bool, reason: String },
     Fatal(String),
+    Authorization(String),
 }
 
 const RECOVERY_BUDGET: Duration = Duration::from_secs(10);
@@ -74,24 +74,13 @@ impl SessionState {
     }
 }
 
-struct ReadySession<'a>(Option<&'a Reporter>);
-impl Drop for ReadySession<'_> {
-    fn drop(&mut self) {
-        if let Some(reporter) = self.0 {
-            reporter.offline();
-        }
-    }
-}
-
 async fn session(
     network: &Network,
     config: &DeviceConfig,
     runtime: &Arc<Runtime>,
     shutdown: &mut watch::Receiver<bool>,
-    readiness: Option<&Reporter>,
     state: &mut SessionState,
 ) -> End {
-    let _ready_session = ReadySession(readiness);
     state.core_attempted = false;
     let assignment = if let Some(discovery) = &config.discovery_url {
         if state.discovery_attempt.is_none() {
@@ -123,7 +112,7 @@ async fn session(
                 Some(assignment)
             }
             Err(WebSocketError::Unauthorized(status)) => {
-                return End::Fatal(format!(
+                return End::Authorization(format!(
                     "Cluster discovery authorization rejected (HTTP {status})"
                 ));
             }
@@ -177,7 +166,7 @@ async fn session(
     let socket = tokio::select! {
         value = connect => match value {
             Ok(socket) => socket,
-            Err(WebSocketError::Unauthorized(status)) => return End::Fatal(format!("Gateway authorization rejected (HTTP {status})")),
+            Err(WebSocketError::Unauthorized(status)) => return End::Authorization(format!("Gateway authorization rejected (HTTP {status})")),
             Err(WebSocketError::Network(reason)) => return End::Retry { was_ready: false, reason },
         },
         _ = interrupted(shutdown) => return End::Stop,
@@ -257,7 +246,7 @@ async fn session(
                     Some(Ok(Message::Pong(_))) => { alive = true; continue; }
                     Some(Ok(Message::Close(frame))) => {
                         if frame.as_ref().is_some_and(|frame| frame.code == CloseCode::Policy) {
-                            break End::Fatal("Gateway authorization was revoked or the connection was rejected".into());
+                            break End::Authorization("Gateway authorization was revoked or the connection was rejected".into());
                         }
                         if !ready && frame.as_ref().is_some_and(|frame| {
                             frame.code == CloseCode::Again
@@ -306,7 +295,6 @@ async fn session(
                     state.previous_connection=runtime.last_cluster_identity();
                     state.report("ready", json!({"recovery_elapsed_ms":state.recovery_started.map(|started|started.elapsed().as_millis())}));
                     state.recovery_started=None;
-                    if let Some(reporter) = readiness { reporter.ready(generation); }
                     println!("Device {} connected", config.device_id);
                     heartbeat.reset();
                     continue;
@@ -334,9 +322,6 @@ async fn session(
         state.fast_core_attempts = 0;
         state.report("disconnected", json!({}));
     }
-    if let Some(reporter) = readiness {
-        reporter.offline();
-    }
     runtime.unbind(generation);
     drop(sender);
     if !writer_finished {
@@ -351,23 +336,17 @@ pub async fn run(
     config: &DeviceConfig,
     runtime: &Arc<Runtime>,
     mut shutdown: watch::Receiver<bool>,
-    readiness: Option<&Reporter>,
 ) -> Result<()> {
     let mut delay = 1_000_u64;
     let mut state = SessionState::new();
     loop {
-        let outcome = session(
-            network,
-            config,
-            runtime,
-            &mut shutdown,
-            readiness,
-            &mut state,
-        )
-        .await;
+        let outcome = session(network, config, runtime, &mut shutdown, &mut state).await;
         match outcome {
             End::Stop => return Ok(()),
             End::Fatal(message) => return Err(Error::message(message)),
+            End::Authorization(message) => {
+                return Err(Error::AuthorizationRejected(message));
+            }
             End::Retry { was_ready, reason } => {
                 if was_ready {
                     delay = 1_000;
@@ -486,13 +465,12 @@ mod admission_tests {
                 &config,
                 &runtime,
                 &mut shutdown,
-                None,
                 &mut SessionState::new(),
             ),
         )
         .await
         .unwrap();
-        assert!(matches!(outcome, End::Fatal(_)));
+        assert!(matches!(outcome, End::Fatal(_) | End::Authorization(_)));
         let (headers, body) = observations.recv().await.unwrap();
         assert_eq!(headers["authorization"], format!("Bearer {LONG_TOKEN}"));
         assert_eq!(headers["x-rdh-agent-transport"], "direct-ip-v2");
@@ -517,8 +495,8 @@ mod admission_tests {
             let mut state = SessionState::new();
             tokio::select! {
                 _ = forbidden_core.accept() => panic!("invalid ticket reached Core"),
-                result = tokio::time::timeout(Duration::from_secs(5), session(&network, &config, &runtime, &mut shutdown, None, &mut state)) => {
-                    assert!(matches!(result.unwrap(), End::Fatal(_) | End::Retry { .. }));
+                result = tokio::time::timeout(Duration::from_secs(5), session(&network, &config, &runtime, &mut shutdown, &mut state)) => {
+                    assert!(matches!(result.unwrap(), End::Fatal(_) | End::Authorization(_) | End::Retry { .. }));
                 }
             }
         }

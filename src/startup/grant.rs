@@ -54,7 +54,7 @@ mod posix;
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-startup")
 ))]
-pub(crate) use posix::{managed_grant, set_grant};
+pub(crate) use posix::managed_grant;
 #[cfg(not(any(
     target_os = "linux",
     all(target_os = "macos", feature = "experimental-macos-startup"),
@@ -65,19 +65,8 @@ pub(crate) fn managed_grant(_: &Path, _: Mode) -> Result<bool> {
         "Managed startup grants are unsupported on this platform",
     ))
 }
-#[cfg(not(any(
-    target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-startup"),
-    all(windows, feature = "experimental-windows-startup")
-)))]
-pub(crate) fn set_grant(_: &Path, _: Mode) -> Result<()> {
-    Err(Error::message(
-        "Managed startup grants are unsupported on this platform",
-    ))
-}
-
 #[cfg(all(windows, feature = "experimental-windows-startup"))]
-pub(crate) use crate::storage::windows::startup_grants::{managed_grant, set_grant};
+pub(crate) use crate::storage::windows::startup_grants::managed_grant;
 
 #[cfg(test)]
 mod tests {

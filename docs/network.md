@@ -19,7 +19,7 @@ For a foreground process, replace the proxy URL below with the local endpoint:
 
 ```sh
 RDH_USE_ENV_PROXY=1 HTTPS_PROXY=http://proxy.example.invalid:3128 \
-  NO_PROXY=localhost,127.0.0.1,::1 /absolute/install/rdh --config /absolute/agent.json
+  NO_PROXY=localhost,127.0.0.1,::1 rdh
 ```
 
 The Agent uses the platform's trusted root certificates. Set `RDH_CA_BUNDLE` to a
@@ -41,8 +41,8 @@ discovery address alone does not renew the credential.
 
 ## Cluster discovery
 
-A paired `discovery_url` identifies the Gate. The saved device credential is sent
-only to its `/agent/assign` endpoint. The request declares `direct-ip-v2` and binds
+A paired `discovery_url` identifies the Gate. The saved device credential authenticates `/agent/assign`, `/api/agent/status`
+and `/api/agent/unbind` at this Gate. The request declares `direct-ip-v2` and binds
 the Agent process instance; the version 2 reply supplies a short-lived admission
 ticket, assignment identity and Core address. Reconnects request a new ticket.
 Invalid or missing tickets fail discovery; the Agent does not fall back to sending
@@ -100,9 +100,7 @@ Use mode `0600`, with ownership suitable for the service manager. Reload the
 actual unit and restart it locally; user units use `systemctl --user`. macOS and
 Windows require equivalent environment configuration in their local launch
 mechanism. Protect any credential-bearing files. Recheck the Hub connection after
-changes. Service update inspection rejects definitions it cannot
-validate, including unsupported overrides; do not remove an override solely to
-make a validation pass without preserving its required network settings.
+changes. `rdh update` preserves the executable path and startup registration.
 
 ## Boundaries and evidence
 

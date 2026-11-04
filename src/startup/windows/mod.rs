@@ -2,7 +2,6 @@
 use crate::{
     config::DeviceConfig,
     error::{Error, Result},
-    processes::windows_argument,
     startup::{Binding, Mode, StartupBackend, valid_name},
 };
 use std::{
@@ -164,26 +163,25 @@ impl NativeStartup {
         }
         Ok(Self { config, executable })
     }
-    fn action_arguments(&self, server: &str) -> Result<String> {
-        let config = startup_path(&self.config)?;
-        Ok([
-            "--config",
-            &config,
-            "--server",
-            server,
-            "--no-browser",
-            "--recover-lock",
-        ]
-        .into_iter()
-        .map(windows_argument)
-        .collect::<Vec<_>>()
-        .join(" "))
-    }
     fn create_named_user(&self, requested_name: Option<&str>) -> Result<Binding> {
+        // Task Scheduler starts with the account's persistent environment.
+        // A process-local XDG override cannot be carried by a native Exec action.
+        if let Some(base) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            let standard = std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    Error::message("LOCALAPPDATA is required for Windows automatic startup")
+                })?;
+            if PathBuf::from(base) != standard {
+                return Err(Error::message(
+                    "Windows automatic startup requires the standard LOCALAPPDATA configuration directory",
+                ));
+            }
+        }
         if requested_name.is_some_and(|name| !valid_name(name)) {
             return Err(Error::message("Invalid startup task name"));
         }
-        let config = DeviceConfig::read(&self.config)?;
+        DeviceConfig::read(&self.config)?;
         if !self.executable.is_file() {
             return Err(Error::message("A persistent Agent executable is required"));
         }
@@ -191,7 +189,7 @@ impl NativeStartup {
         let name = requested_name
             .map(str::to_owned)
             .unwrap_or_else(|| format!("RemoteDeviceHub-{sid}"));
-        let arguments = self.action_arguments(&config.gateway_url)?;
+        let arguments = String::new();
         let directory = startup_path(
             self.config
                 .parent()
@@ -253,142 +251,6 @@ impl StartupBackend for NativeStartup {
     fn service_authority(&self) -> bool {
         administrator()
     }
-}
-
-#[cfg(feature = "experimental-windows-install")]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct UpdateTask {
-    pub config: PathBuf,
-    pub name: String,
-    pub sid: String,
-    pub arguments: String,
-    pub directory: String,
-    pub old_executable: String,
-    pub new_executable: String,
-    pub fingerprint: String,
-}
-
-#[cfg(feature = "experimental-windows-install")]
-fn expected_task(config: &Path, name: &str, old: &Path, new: &Path) -> Result<UpdateTask> {
-    if !valid_name(name) || !config.is_absolute() {
-        return Err(Error::message("Invalid managed task binding"));
-    }
-    let backend = NativeStartup {
-        config: config.into(),
-        executable: old.into(),
-    };
-    let paired = DeviceConfig::read(config)?;
-    Ok(UpdateTask {
-        config: config.into(),
-        name: name.into(),
-        sid: crate::storage::windows::current_sid_text()?,
-        arguments: backend.action_arguments(&paired.gateway_url)?,
-        directory: startup_path(
-            config
-                .parent()
-                .ok_or_else(|| Error::message("Invalid task config directory"))?,
-        )?,
-        old_executable: startup_path(old)?,
-        new_executable: startup_path(new)?,
-        fingerprint: String::new(),
-    })
-}
-
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) fn prepare_update_task(
-    config: &Path,
-    binding: &Binding,
-    old: &Path,
-    new: &Path,
-) -> Result<UpdateTask> {
-    if binding.mode != Mode::User {
-        return Err(Error::message(
-            "This installation has a service binding; coordinated Windows service target updates are not yet available",
-        ));
-    }
-    let mut target = expected_task(config, &binding.name, old, new)?;
-    let (executable, directory, fingerprint) =
-        tasks::target_snapshot(&target.name, &target.sid, &target.arguments, None)
-            .map_err(task_error)?;
-    if executable != target.old_executable {
-        return Err(Error::message(
-            "Startup task does not execute this installation's current native version",
-        ));
-    }
-    // An existing task keeps its configured working directory. Capture that
-    // directory with the complete task fingerprint instead of rewriting it.
-    check_task_directory(&directory)?;
-    target.directory = directory;
-    target.fingerprint = fingerprint;
-    Ok(target)
-}
-
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) fn verify_update_task(target: &UpdateTask, old: &Path, new: &Path) -> Result<()> {
-    let expected = expected_task(&target.config, &target.name, old, new)?;
-    let (binding, _) = crate::startup::inspect_sidecar(&target.config)?;
-    if binding
-        != Some(Binding {
-            mode: Mode::User,
-            name: target.name.clone(),
-        })
-        || target.sid != expected.sid
-        || target.arguments != expected.arguments
-        || target.old_executable != expected.old_executable
-        || target.new_executable != expected.new_executable
-        || target.fingerprint.len() != 64
-        || !target
-            .fingerprint
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-    {
-        return Err(Error::message(
-            "Interrupted startup target no longer matches the registered profile",
-        ));
-    }
-    check_task_directory(&target.directory)?;
-    let (executable, _, fingerprint) = tasks::target_snapshot(
-        &target.name,
-        &target.sid,
-        &target.arguments,
-        Some(&target.directory),
-    )
-    .map_err(task_error)?;
-    if fingerprint != target.fingerprint
-        || (executable != target.old_executable && executable != target.new_executable)
-    {
-        return Err(Error::message(
-            "Startup task changed during the interrupted native update",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "experimental-windows-install")]
-fn check_task_directory(directory: &str) -> Result<()> {
-    if !Path::new(directory).is_absolute()
-        || directory.len() > 32768
-        || directory.chars().any(char::is_control)
-    {
-        return Err(Error::message(
-            "Managed task needs an absolute Unicode working directory",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) fn switch_update_task(target: &UpdateTask, restore: bool) -> Result<()> {
-    tasks::replace_target(
-        target,
-        if restore {
-            &target.old_executable
-        } else {
-            &target.new_executable
-        },
-    )
-    .map_err(task_error)
 }
 
 #[cfg(test)]
@@ -473,10 +335,7 @@ mod tests {
             before.executable,
             startup_path(&backend.executable).unwrap()
         );
-        assert_eq!(
-            before.arguments,
-            backend.action_arguments("http://localhost:8111").unwrap()
-        );
+        assert_eq!(before.arguments, String::new());
         assert_eq!(
             before.directory,
             startup_path(backend.config.parent().unwrap()).unwrap()
@@ -518,10 +377,11 @@ mod tests {
             crate::random::hex_token::<12>().unwrap()
         );
         let wide: Vec<u16> = service_name.encode_utf16().chain(Some(0)).collect();
-        let binary: Vec<u16> = windows_argument(&startup_path(&backend.executable).unwrap())
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+        let binary: Vec<u16> =
+            crate::processes::windows_argument(&startup_path(&backend.executable).unwrap())
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
         let raw = unsafe {
             CreateServiceW(
                 manager.0,

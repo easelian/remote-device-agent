@@ -1,242 +1,133 @@
 # Remote Device Hub Agent
 
-English | [zhCN](README-zhCN.md)
+English | [简体中文](README-zhCN.md)
 
 Connect a Linux, macOS or Windows device to Remote Device Hub for remote file,
-search and process operations under the device user's authority.
-
-Install with a [download script](#install-with-a-script) or
-[npm](#install-with-npm). Both methods provide a ready-to-run native Agent;
-no Rust toolchain or source checkout is required.
+search and process operations under the device user's authority. The Agent is a
+standalone native executable named `rdh`.
 
 ## Install and run
 
 ### Install with a script
 
-The script selects the binary for your operating system and CPU, verifies its
-checksum and version, saves the command directory in your user PATH, and starts
-the Agent. Run the installer from the directory you want to make available.
-Supported CPUs are x86_64 and ARM64. This method does not require Node.js or npm.
-
-**Linux and macOS** — requires `curl` and either `sha256sum` or `shasum`:
+**Linux and macOS** require `curl` and either `sha256sum` or `shasum`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.sh | sh
 ```
 
-**Windows** — run in PowerShell:
+**Windows** uses PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1 | iex
 ```
 
-The scripts fetch the newest published GitHub release, including prereleases,
-and install into `~/.local/lib/rdh` on Linux/macOS or
-`%LOCALAPPDATA%\RemoteDeviceAgent` on Windows, with download progress displayed.
-Linux/macOS create command links in `~/.local/bin` and save that directory in
-your shell startup files for new terminals. Version files and installation
-records stay in `~/.local/lib/rdh`. Set `RDH_BIN_DIR` to use a different absolute
-command directory. Existing command files or links to other targets are not
-overwritten. Windows updates both the user PATH and the current PowerShell
-session. Linux selects musl; macOS and Windows select their native binaries.
-No arguments are required.
+The scripts select the newest published GitHub release, including prereleases,
+verify the platform binary's SHA-256 and reported version, and install one file:
+`~/.local/bin/rdh` on Linux/macOS or
+`%LOCALAPPDATA%\RemoteDeviceAgent\rdh.exe` on Windows. Linux defaults to the musl
+build. x86_64 and ARM64 artifacts are supported.
 
-After installation, the Agent starts in the foreground and opens or prints the
-pairing page. Approve the device and permissions there; press Ctrl+C to stop the
-Agent. Use `--no-start` / `-NoStart` for installation only, and
-`--no-modify-path` / `-NoModifyPath` to leave PATH unchanged. On Linux/macOS,
-command links are still created when PATH changes are disabled.
-
-An existing installation is not overwritten. For custom directories, versions,
-GNU libc builds and offline installation, see
-[Distribution](docs/distribution.md#bootstrap-installation).
-
-### Install with npm
-
-Requires Node.js 22.14 or later and npm. On glibc-based Linux, the `0.8.0` package
-requires glibc 2.39 or later; use the script's default musl binary on systems
-with an earlier glibc version.
-
-Install the npm package attached to the
-[GitHub release](https://github.com/easelian/remote-device-agent/releases/tag/v0.8.0):
-
-```sh
-npm install --global https://github.com/easelian/remote-device-agent/releases/download/v0.8.0/easelian-remote-device-agent-0.8.0.tgz
-```
-
-The package is named `@easelian/remote-device-agent`. It bundles the native
-binaries and selects the matching platform at launch. The same command works
-on Linux, macOS and Windows; npm's global executable directory must be on PATH.
-
-Both installation methods provide `rdh`, `remote-device-agent` and
-`remote-device-hub`. The npm command installs the package; run `rdh` afterward.
-Background services require separate configuration.
+The installer saves the command directory in your user PATH and launches `rdh`.
+Without a terminal, the POSIX installer finishes installation and asks you to run
+`rdh` interactively.
+New POSIX terminals load the saved PATH; Windows also updates the current
+PowerShell session. Existing command files are preserved. Use `RDH_NO_START=1`
+for installation only or `RDH_NO_MODIFY_PATH=1` to leave PATH unchanged.
+`RDH_INSTALL_DIR` selects another absolute installation directory.
+See [Distribution](docs/distribution.md#bootstrap-installation) for offline
+artifacts, mirrors and installer options.
 
 ### Pair and connect
 
-The script installer starts the Agent automatically. For an npm installation or
-a later session, start it from the directory you want to make available:
+Run the Agent in an interactive terminal:
 
 ```sh
-rdh --no-browser
+rdh
 ```
 
-On first launch, the Agent prints a pairing URL and code. Review the device,
-roots and permissions in the browser before approving. `--no-browser` prints the
-URL without opening it. With no explicit root, the current directory is used.
-`--root NAME=PATH` is repeatable; quote the whole argument when it contains spaces.
-`--profile NAME` chooses a separate profile, and `--config PATH` selects a private
-configuration file. `--pair-only` saves or validates pairing and exits.
+On first run, choose the directory to share. Press Enter to accept the displayed
+current directory. The Agent saves this selection in local `settings.json`,
+prints a pairing code and verification link, and attempts to open the browser.
+Review the device, shared directory and permissions there before approving.
+If the browser does not open, use the printed link.
 
-A paired foreground Agent stays connected until Ctrl+C or termination. Reusing
-the same command reuses its device identity. Never run two copies of the same
-profile. To register an existing stopped profile with an installation, pass
-`--config /absolute/paired.json` to `install-native`; it is validated and retained
-at that path, without copying credentials.
+A bound Agent reuses its saved identity and roots without opening the browser.
+It stays connected in the foreground until Ctrl+C or termination. Running `rdh`
+from a different directory does not change the saved shared directory.
 
-### Background startup
+The public commands are:
 
-After pairing with an installed command, inspect and enable user startup:
+| Command | Behavior |
+| --- | --- |
+| `rdh` | Start the Agent; request browser approval when unbound. |
+| `rdh unbind` | Stop the Agent and managed work, revoke the binding, and cancel recorded automatic startup. |
+| `rdh update` | Update the executable after the Agent has stopped. |
+| `rdh --help` | Show command help. |
+| `rdh --version` | Show the executable version. |
+
+### Unbind or remove the Agent
+
+Run `rdh unbind` before removing the executable. If the Hub cannot be reached,
+the Agent retains a durable unbind request and blocks reuse of the old binding.
+Restore connectivity and run `rdh unbind` again. A manual `rdh` also completes
+pending revocation, then exits; run it once more to pair again.
+
+Once unbinding completes, remove only the installed executable. Keep shared
+command directories and unrelated PATH entries. Removing a program file alone
+does not revoke its device identity. Local shared-directory settings are retained
+for a later pairing.
+
+### Update
+
+Finish managed work and stop the Agent, then run:
 
 ```sh
-rdh startup status --config /absolute/paired.json
-rdh startup set user --config /absolute/paired.json
+rdh update
 ```
 
-This creates or enables future user startup; it does not start or stop the current
-connection. Start the registered unit, LaunchAgent or task locally after ending
-the foreground instance. Linux uses systemd user units, macOS uses LaunchAgents,
-and Windows uses Task Scheduler. Use `startup set none` to disable future startup.
-Remote requests require local approval or an administrator grant. See
-`startup --help` for `approve`, `deny`, `grant`, `revoke` and explicit `bind`.
+The updater selects the newest published GitHub release, including prereleases,
+and verifies the candidate before replacing the executable. Binding and startup
+settings are preserved. Run `rdh` after a successful update to reconnect.
+See [Maintenance](docs/maintenance.md#update-the-agent) for failure handling.
 
-For a system service, run `install-service --help`. POSIX installation requires
-root, an existing non-root service account and its paired, stopped configuration.
-Windows requires administrator authority and creates a LocalService registration.
-Both keep writable device state separate from protected program files, create a
-stopped registration and require a local start. They never elevate automatically.
+## Permissions, startup and network
 
-### Updates and removal
+File roots and path policies constrain file tools. Shell commands run with the
+Agent OS user's permissions; sharing a directory does not confine shell access
+to that directory. Review shell permission separately when approving a device.
+A timeout does not prove an operation had no effect; inspect uncertain write or
+process outcomes before retrying.
 
-For npm installations, stop the Agent and install the desired release package
-with npm. Use `npm uninstall --global @easelian/remote-device-agent` to remove
-the package after disabling any background startup registration.
+Automatic startup requests use the startup RPCs. Run `rdh` again in a local interactive terminal to approve or deny a pending request. Windows automatic startup uses the standard `LOCALAPPDATA` configuration directory.
+Unbinding cancels startup registrations recorded for the binding. The public CLI
+contains only the commands listed above.
 
-For script installations, native updates validate a schema-2 index and candidate
-executable. End managed work and stop the Agent before `upgrade --no-restart` or `rollback --no-restart`;
-restart locally and verify a new Hub connection. Linux's verified systemd user
-service path also supports automatic update and readiness rollback. macOS and
-Windows use stopped updates and manual restart. See
-[Maintenance](docs/maintenance.md#update-and-recover-an-installation).
+The configuration directory is normally `~/.config/remote-device-hub` on POSIX
+and `%LOCALAPPDATA%\remote-device-hub` on Windows. POSIX honors `XDG_CONFIG_HOME`.
+It contains private binding state and `settings.json`; permissions are checked
+before use. Keep credentials and pending lifecycle records private.
 
-To remove an installation, disable startup, stop every Agent using it and remove
-its registration with the local service manager: systemd, launchd, Task Scheduler
-or SCM. On Linux/macOS, remove the three command links only if they still point
-to this installation; retain the shared command directory and its PATH entry.
-On Windows, remove the installation's PATH entry from the user environment.
-Then remove only the program directory. Keep the configuration, policies and
-audit/data directory, including the separate service-account state directory.
-Inspect the paths before deleting files. Deleting program files does not revoke
-the device identity on the Hub.
+New pairings use the Hub address compiled into
+[deployment_defaults.rs](src/deployment_defaults.rs). An existing binding keeps
+its saved Hub. Connections are direct by default; `RDH_USE_ENV_PROXY=1` enables
+local proxy variables and `RDH_CA_BUNDLE` adds PEM trust roots.
+See [Network configuration](docs/network.md) and [Hardening](docs/hardening.md).
 
-## Platform behavior and limits
+## Development and documentation
 
-| Behavior | Linux / macOS | Windows |
-| --- | --- | --- |
-| Shell | `/bin/sh` | System `cmd.exe` |
-| Private configuration | Owner-only files and directories | Native SID and protected ACL checks |
-| File access | Root-relative paths, held directory descriptors | Held handles, reparse-point and reserved-name checks |
-| Process supervision | POSIX process groups | Job Objects and bounded pipe handling |
-| Startup | systemd / launchd | Task Scheduler / native SCM service entry |
-| bubblewrap | Linux only, separately installed | Unsupported; configured use fails |
-| POSIX resource limits | Applied where supported; failure blocks launch | Unsupported; configured use fails |
+Use Rust 1.93.0 and the checked-in lockfile. Build and test instructions are in
+[Maintenance](docs/maintenance.md#build-and-validate); platform execution requires
+the corresponding OS, linker and SDK. Source inspection and cross-compilation do
+not establish native runtime behavior or power-loss durability.
 
-The default configuration directory is `~/.config/remote-device-hub` on POSIX and
-`%LOCALAPPDATA%\remote-device-hub` on Windows. `XDG_CONFIG_HOME` or `--config` can
-select another location. Existing permissive configuration is rejected rather
-than silently repaired. Audit is enabled by default and retains up to 1,000
-redacted records per device, subject to byte and rotation limits. Audit normally
-lives below `~/.local/state/remote-device-hub` or `%LOCALAPPDATA%\remote-device-hub`;
-system services use their explicitly configured state directory.
-
-File roots and path policies constrain file tools. Shell commands run as the
-Agent OS user and need an explicit sandbox for stronger isolation. A response
-timeout does not prove an operation had no effect. Inspect uncertain write or
-process outcomes before retrying. Brief disconnects retain managed jobs for up to
-five minutes; authorization rejection, prolonged disconnection or shutdown
-initiates cleanup. Profile ownership is not released while effectful work remains.
-
-Cross-compilation is not native runtime evidence. UNC syntax coverage does not
-establish live SMB compatibility, and process/file tests do not establish
-power-loss durability. See [Hardening](docs/hardening.md) for policy and audit
-contracts and [platform validation](docs/native-lifecycle.md#platforms-and-validation)
-for the scope of native CI.
-
-## Hub and network settings
-
-Hub selection is `--server`, then `RDH_SERVER`, then the committed default in
-[deployment_defaults.rs](src/deployment_defaults.rs). The exact
-public and MCP origins listed there share profile aliases and locks. Custom
-origins remain isolated; an explicit configuration for a different Hub is rejected
-without forwarding its token. Changing defaults does not rewrite installed
-service commands or existing bindings.
-
-When pairing returns `discovery_url`, the Agent authenticates to that Gate with
-its saved device credential. The Gate returns a short-lived, single-use ticket
-bound to the assigned Core and this Agent instance; only that ticket is sent to
-the Core. The current Gate authority protocol requires this v2-capable Rust
-Agent. Discovery v1 clients cannot authenticate to this Gate/Core boundary. See [Network configuration](docs/network.md#cluster-discovery).
-
-Connections are direct by default. Opt into local proxy variables with
-`RDH_USE_ENV_PROXY=1`; add PEM trust roots with `RDH_CA_BUNDLE`.
-See [Network configuration](docs/network.md).
-
-## Development
-
-### Build and validate
-
-Use Rust 1.93.0, the target's native linker/SDK and the checked-in lockfile:
-
-```sh
-cargo +1.93.0 fmt --all -- --check
-cargo +1.93.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
-mkdir -p .build
-cargo +1.93.0 run --locked -p xtask -- native-test-candidate \
-  --target x86_64-unknown-linux-gnu --out "$PWD/.build/native-test-candidate"
-RDH_NATIVE_TEST_CANDIDATE_DIR="$PWD/.build/native-test-candidate" \
-  cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast
-cargo +1.93.0 run --locked -p xtask -- native-development \
-  --target x86_64-unknown-linux-gnu --out .build/native-development
-```
-
-Change the target to match the host and use new output directories for each build.
-The builder creates the raw executable,
-checksum, archive, provenance record and a verified extraction. Integration tests
-which need an independent update candidate or a real service manager have
-additional prerequisites: follow [Maintenance](docs/maintenance.md) and
-[Agent CI](.github/workflows/ci.yml). An ordinary local test run does not include
-all privileged and platform-specific cases.
-
-To install a locally built artifact into a new directory:
-
-```sh
-/absolute/artifact/rdh install-native --prefix /absolute/new-install
-```
-
-On Windows, use `rdh.exe` and a Windows absolute path. The workspace version is
-specified in [Cargo.toml](Cargo.toml).
-
-## Documentation
-
-- [Architecture](docs/architecture.md): components, protocol and work lifetimes.
-- [Code navigation](docs/code-structure.md) ([zhCN](docs/code-structure-zhCN.md)): reading order, directory ownership and extension points.
-- [Hardening](docs/hardening.md): policies, sandbox, environment and audit.
-- [Distribution](docs/distribution.md): artifacts, bootstrap and channel format.
-- [Maintenance](docs/maintenance.md): checks, upgrades and recovery.
-- [Native lifecycle](docs/native-lifecycle.md) ([zhCN](docs/native-lifecycle-zhCN.md)): installation, updates and platform validation.
+- [Code navigation](docs/code-structure.md) ([简体中文](docs/code-structure-zhCN.md)): source ownership and reading order.
+- [Lifecycle](docs/native-lifecycle.md) ([简体中文](docs/native-lifecycle-zhCN.md)): startup, unbinding and executable replacement.
+- [Architecture](docs/architecture.md): connections, requests and work lifetimes.
+- [Distribution](docs/distribution.md): artifacts, installers and release preparation.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
-full text. Bundled and linked dependencies keep their own licenses, as recorded
-in each native artifact's manifest and license directory.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+Bundled dependencies retain their own licenses in each native artifact's
+manifest and license directory.

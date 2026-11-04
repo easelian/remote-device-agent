@@ -253,6 +253,62 @@ impl Network {
             .map_err(|_| WebSocketError::Network("Invalid cluster assignment".into()))
     }
 
+    pub(crate) async fn agent_request(
+        &self,
+        origin: &str,
+        path: &str,
+        token: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = Url::parse(origin)
+            .and_then(|url| url.join(path))
+            .map_err(|_| Error::message("Invalid Hub endpoint"))?;
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| {
+                Error::message(format!("Hub request failed: {}", error.without_url()))
+            })?;
+        if !response.status().is_success() {
+            return Err(Error::message(format!(
+                "Hub lifecycle request failed (HTTP {})",
+                response.status().as_u16()
+            )));
+        }
+        Self::response_json(response).await
+    }
+
+    pub(crate) async fn binding_missing(
+        &self,
+        config: &crate::config::DeviceConfig,
+    ) -> Result<bool> {
+        let value = self
+            .agent_request(
+                config
+                    .discovery_url
+                    .as_deref()
+                    .unwrap_or(&config.gateway_url),
+                "/api/agent/status",
+                &config.token,
+                &serde_json::json!({"device_id":config.device_id}),
+            )
+            .await?;
+        if value["device_id"] != config.device_id {
+            return Err(Error::message(
+                "Hub returned another device's binding status",
+            ));
+        }
+        match value["state"].as_str() {
+            Some("bound") => Ok(false),
+            Some("unbound") => Ok(true),
+            _ => Err(Error::message("Invalid Hub binding status")),
+        }
+    }
+
     /// Download update metadata or a binary without device credentials. Each
     /// redirect is checked independently; HTTPS cannot downgrade to HTTP.
     pub async fn get_update(&self, initial: &Url, limit: usize) -> Result<Vec<u8>> {
@@ -263,6 +319,10 @@ impl Network {
             let mut response = self
                 .client
                 .get(url.clone())
+                .header(
+                    header::USER_AGENT,
+                    concat!("rdh/", env!("CARGO_PKG_VERSION")),
+                )
                 .timeout(Duration::from_secs(300))
                 .send()
                 .await

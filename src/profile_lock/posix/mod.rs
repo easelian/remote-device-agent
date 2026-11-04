@@ -45,7 +45,7 @@ fn lock_path(config: &Path) -> PathBuf {
 
 fn owner_error() -> Error {
     Error::message(
-        "The device configuration is locked or is being recovered. Confirm the previous Agent has stopped before using --recover-lock.",
+        "The device configuration is locked or is being recovered. Confirm the previous Agent and its tasks have stopped before retrying.",
     )
 }
 

@@ -1,6 +1,6 @@
 use std::ffi::{CString, OsStr};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -110,74 +110,4 @@ pub(crate) fn managed_grant(config: &Path, mode: Mode) -> Result<bool> {
     let mut bytes = Vec::new();
     file.take(4097).read_to_end(&mut bytes)?;
     permits(&bytes, config, mode)
-}
-pub(crate) fn set_grant(config: &Path, mode: Mode) -> Result<()> {
-    if unsafe { libc::getuid() } != 0 {
-        return Err(Error::message(
-            "Administrator privileges are required to grant managed startup",
-        ));
-    }
-    let directory = directory(true)?;
-    let filename = grant_name(config)?;
-    match open_at(
-        &directory,
-        OsStr::new(&filename),
-        libc::O_RDONLY | libc::O_NONBLOCK,
-        0,
-    ) {
-        Ok(file) => trusted(&file, false)?,
-        Err(error) if absent(&error) => {}
-        Err(error) => return Err(error),
-    }
-    let filename_c = CString::new(filename).unwrap();
-    if mode == Mode::None {
-        if unsafe { libc::unlinkat(directory.as_raw_fd(), filename_c.as_ptr(), 0) } < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(error.into());
-            }
-        }
-        crate::storage::sync_directory(&directory)?;
-        return Ok(());
-    }
-    let temp = format!("{}.tmp", crate::random::hex_token::<16>()?);
-    let temp_c = CString::new(temp.clone()).unwrap();
-    let mut created = false;
-    let result = (|| -> Result<()> {
-        let mut file = open_at(
-            &directory,
-            OsStr::new(&temp),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-            0o644,
-        )?;
-        created = true;
-        if unsafe { libc::fchmod(file.as_raw_fd(), 0o644) } < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        trusted(&file, false)?;
-        let value = serde_json::json!({"version":1,"config":config.to_str(),"modes":[mode]});
-        serde_json::to_writer(&mut file, &value)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        if unsafe {
-            libc::renameat(
-                directory.as_raw_fd(),
-                temp_c.as_ptr(),
-                directory.as_raw_fd(),
-                filename_c.as_ptr(),
-            )
-        } < 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        created = false;
-        crate::storage::sync_directory(&directory)?;
-        Ok(())
-    })();
-    if created {
-        unsafe {
-            libc::unlinkat(directory.as_raw_fd(), temp_c.as_ptr(), 0);
-        }
-    }
-    result
 }

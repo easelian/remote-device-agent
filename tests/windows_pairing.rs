@@ -1,5 +1,7 @@
 #![cfg(all(windows, feature = "experimental-windows-private-storage"))]
 
+#[path = "support/binding.rs"]
+mod binding;
 #[path = "support/initial_binary.rs"]
 mod initial_binary;
 #[path = "support/windows.rs"]
@@ -8,7 +10,6 @@ mod support;
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use rdh_agent::{
     config::{DeviceConfig, local_roots, sha256_hex},
-    profile_lock::ProfileLocks,
     random,
 };
 use serde_json::{Value, json};
@@ -37,7 +38,7 @@ async fn start(State(hub): State<Arc<Hub>>, Json(value): Json<Value>) -> (Status
     (
         StatusCode::CREATED,
         Json(
-            json!({"verification_uri_complete":format!("{}/auth/pair?code=NATIVE",hub.origin),"user_code":"NATIVE","device_code":"windows-native","expires_in":600,"interval":3}),
+            json!({"verification_uri_complete":format!("{}/auth/pair?code=NATIVE",hub.origin),"device_id":"native-windows-pairing","user_code":"NATIVE","device_code":"windows-native","expires_in":600,"interval":3}),
         ),
     )
 }
@@ -64,7 +65,6 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
     let fixture = Directory(directory);
     let root = fixture.0.join("work");
     fs::create_dir(&root).unwrap();
-    let config = fixture.0.join("device '😀.json");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let hub = Arc::new(Hub {
@@ -76,34 +76,51 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
     let router = Router::new()
         .route("/api/pair/start", post(start))
         .route("/api/pair/poll", post(poll))
+        .route(
+            "/api/agent/unbind",
+            post(|Json(value): Json<Value>| async move {
+                Json(json!({"state":"unbound","device_id":value["device_id"]}))
+            }),
+        )
         .with_state(hub.clone());
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let args = vec![
-        "--server".to_owned(),
-        origin,
-        "--config".into(),
-        config.to_str().unwrap().to_owned(),
-        "--root".into(),
-        format!("work={}", root.display()),
-        "--pair-only".into(),
-        "--no-browser".into(),
-    ];
-    let run = || {
-        let mut command = support::command(initial_binary::path(), &fixture.0);
-        command.args(&args);
-        command
-    };
-    let paired = tokio::time::timeout(Duration::from_secs(30), run().output())
+    let token = random::url_token::<32>().unwrap();
+    let pending = reqwest::Client::new()
+        .post(format!("{origin}/api/pair/start"))
+        .json(&json!({"roots":hub.roots,"token_hash":sha256_hex(token.as_bytes())}))
+        .send()
         .await
         .unwrap()
+        .json::<Value>()
+        .await
         .unwrap();
-    assert!(
-        paired.status.success(),
-        "{}",
-        String::from_utf8_lossy(&paired.stderr)
-    );
+    let config = binding::seed(&fixture.0, &origin, hub.roots.clone(), &token, pending);
+    let run = || {
+        let mut command = support::command(initial_binary::path(), &fixture.0);
+        command.env("SSH_CONNECTION", "fixture");
+        command
+    };
+    let log_path = fixture.0.join("agent.log");
+    let log = fs::File::create(&log_path).unwrap();
+    let mut child = run()
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !config.exists() {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "{}",
+                fs::read_to_string(&log_path).unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let first = fs::read(&config).unwrap();
     let native = DeviceConfig::read(&config).unwrap();
     assert_eq!(native.device_id, "native-windows-pairing");
@@ -115,7 +132,11 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
         native.roots,
         local_roots(&[format!("work={}", root.display())]).unwrap()
     );
-    assert!(!String::from_utf8_lossy(&paired.stdout).contains(&native.token));
+    assert!(
+        !fs::read_to_string(&log_path)
+            .unwrap()
+            .contains(&native.token)
+    );
     assert!(
         native
             .shell
@@ -133,24 +154,26 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
     );
     assert_eq!(fs::read(&config).unwrap(), first);
     assert_eq!(hub.starts.load(Ordering::SeqCst), 1);
-    let canonical = config.canonicalize().unwrap();
-    let mut held = ProfileLocks::acquire(std::slice::from_ref(&canonical)).unwrap();
-    let locked = tokio::time::timeout(Duration::from_secs(15), run().output())
+    assert!(String::from_utf8_lossy(&reused.stdout).contains("Agent is already running"));
+    assert!(!String::from_utf8_lossy(&reused.stdout).contains("Pairing code:"));
+    let unbound = tokio::time::timeout(Duration::from_secs(30), run().arg("unbind").output())
         .await
         .unwrap()
         .unwrap();
-    assert!(!locked.status.success());
-    assert_eq!(fs::read(&config).unwrap(), first);
-    held.release().unwrap();
-    assert_eq!(hub.starts.load(Ordering::SeqCst), 1);
     assert!(
-        !config
-            .with_file_name(format!(
-                "{}.rdh-lock",
-                config.file_name().unwrap().to_string_lossy()
-            ))
-            .exists()
+        unbound.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unbound.stderr)
     );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(!config.exists());
+    assert!(!PathBuf::from(format!("{}.rdh-lock", config.display())).exists());
     server.abort();
     let _ = server.await;
 }

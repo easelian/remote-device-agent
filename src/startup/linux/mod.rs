@@ -43,6 +43,18 @@ impl NativeStartup {
             timeout: Duration::from_secs(12),
         })
     }
+    pub(super) fn stop_for_unbind(&self, binding: &Binding) -> Result<()> {
+        // Disabling a unit does not suppress its active Restart= policy.
+        // Queue an explicit stop. A revoked Agent can invoke this while it is
+        // still the unit's main PID, so waiting here would wait for itself.
+        let mut args = vec!["--no-ask-password", "--no-block"];
+        if binding.mode == Mode::User {
+            args.push("--user");
+        }
+        args.extend(["stop", binding.name.as_str()]);
+        self.checked(&args)
+    }
+
     fn run(&self, args: &[&str]) -> Result<(ExitStatus, String)> {
         super::posix::run(&self.systemctl, args, self.timeout)
     }
@@ -102,7 +114,7 @@ impl StartupBackend for NativeStartup {
         Ok(())
     }
     fn create_user(&self) -> Result<Binding> {
-        let config = DeviceConfig::read(&self.config)?;
+        DeviceConfig::read(&self.config)?;
         if !self.executable.is_file() {
             return Err(Error::message("A persistent Agent executable is required"));
         }
@@ -121,10 +133,6 @@ impl StartupBackend for NativeStartup {
                 "User startup directory must be owned by the current user and not writable by others",
             ));
         }
-        let path = self
-            .config
-            .to_str()
-            .ok_or_else(|| Error::message("Startup config path is not Unicode"))?;
         let executable = self
             .executable
             .to_str()
@@ -140,23 +148,15 @@ impl StartupBackend for NativeStartup {
         let wrapper = wrapper_path
             .to_str()
             .ok_or_else(|| Error::message("Startup wrapper path is not Unicode"))?;
-        let arguments = [
-            executable,
-            "--config",
-            path,
-            "--server",
-            &config.gateway_url,
-            "--no-browser",
-            "--recover-lock",
-        ];
         let script = format!(
-            "#!/bin/sh\ncd {} || exit 1\nexec {}\n",
+            "#!/bin/sh\ncd {} || exit 1\nexport XDG_CONFIG_HOME={}\nexec {}\n",
             shell_quote(parent),
-            arguments
-                .iter()
-                .map(|argument| shell_quote(argument))
-                .collect::<Vec<_>>()
-                .join(" ")
+            shell_quote(
+                self.config_base
+                    .to_str()
+                    .ok_or_else(|| Error::message("Invalid configuration directory"))?
+            ),
+            shell_quote(executable)
         );
         let mut wrapper_created = Created::write(&wrapper_path, script.as_bytes(), 0o700)?;
         let unit_path = directory.join("rdh.service");
@@ -187,7 +187,7 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn native_backend_uses_explicit_unit_without_start_or_stop() {
+    fn ordinary_startup_changes_do_not_stop_but_unbind_stops_the_exact_unit() {
         let root = std::env::temp_dir().join(format!(
             "rdh-native-startup-{}",
             crate::random::hex_token::<8>().unwrap()
@@ -214,6 +214,14 @@ mod tests {
             "--no-ask-password --user enable rdh.service\n--user is-enabled rdh.service\n"
         );
         assert!(!calls.contains("--now") && !calls.contains("restart") && !calls.contains("stop"));
+        backend.stop_for_unbind(&binding).unwrap();
+        assert!(
+            fs::read_to_string(root.join("systemctl.calls"))
+                .unwrap()
+                .ends_with("--no-ask-password --no-block --user stop rdh.service\n")
+        );
+        fs::write(&backend.systemctl, "#!/bin/sh\nexit 23\n").unwrap();
+        assert!(backend.stop_for_unbind(&binding).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -255,13 +263,7 @@ mod tests {
         );
         let output = Command::new(&wrapper).env_clear().output().unwrap();
         assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!(
-                "--config\n{}\n--server\nhttp://localhost:8111\n--no-browser\n--recover-lock\n",
-                config.display()
-            )
-        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "\n");
         let unit = fs::read_to_string(root.join("xdg/systemd/user/rdh.service")).unwrap();
         assert!(unit.contains("ExecStart=") && unit.contains("%%") && unit.contains("$$"));
         let before = fs::read(&wrapper).unwrap();

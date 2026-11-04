@@ -234,6 +234,7 @@ pub(crate) fn managed_grant(config: &Path, mode: Mode) -> Result<bool> {
     read_at(&grant_path(config)?, config, mode)
 }
 
+#[cfg(test)]
 fn set_at(path: &Path, config: &Path, mode: Mode) -> Result<()> {
     let (chain, name) = match parent(path, mode != Mode::None) {
         Ok(value) => value,
@@ -303,15 +304,6 @@ fn set_at(path: &Path, config: &Path, mode: Mode) -> Result<()> {
         Err(error) => failed_publication(temporary, parent, &temp_name, true, error),
     }
 }
-pub(crate) fn set_grant(config: &Path, mode: Mode) -> Result<()> {
-    if !crate::startup::administrator() {
-        return Err(Error::message(
-            "Administrator privileges are required to grant managed startup",
-        ));
-    }
-    set_at(&grant_path(config)?, config, mode)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

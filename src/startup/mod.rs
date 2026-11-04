@@ -1,6 +1,5 @@
 //! Local approval and native registration for future Agent startup.
 //! State changes are serialized with the profile sidecar lock.
-pub mod cli;
 mod grant;
 mod native;
 
@@ -21,18 +20,6 @@ mod windows;
 
 #[cfg(all(windows, feature = "experimental-windows-startup"))]
 pub(crate) use grant::permits as grant_permits;
-#[cfg(any(
-    target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install")
-))]
-pub(crate) use posix::run_command;
-#[cfg(all(windows, feature = "experimental-windows-startup"))]
-pub(crate) use windows::administrator;
-#[cfg(all(windows, feature = "experimental-windows-install"))]
-pub(crate) use windows::{
-    UpdateTask, prepare_update_task, startup_path, switch_update_task, verify_update_task,
-};
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +44,71 @@ pub const STARTUP_OPERATIONS: &[&str] = &["get_startup", "set_startup"];
     all(windows, feature = "experimental-windows-startup")
 )))]
 pub const STARTUP_OPERATIONS: &[&str] = &[];
+
+/// Cancel future startup for this exact registration. Never stop an arbitrary
+/// service by name or infer success from an unavailable service manager.
+pub(crate) fn disable_for_unbind(config: &Path) -> Result<()> {
+    if crate::binding::read_optional(&state_path(config))?.is_none() {
+        return Ok(());
+    }
+    let path = config
+        .parent()
+        .ok_or_else(|| Error::message("Invalid configuration path"))?
+        .canonicalize()?
+        .join(
+            config
+                .file_name()
+                .ok_or_else(|| Error::message("Invalid configuration name"))?,
+        );
+    let backend = Arc::new(native::NativeStartup::new(path.clone())?);
+    let startup = Startup::with_backend(path, backend.clone(), Arc::new(grant::managed_grant));
+    startup.set(Mode::None, true, Instant::now() + Duration::from_secs(30), &AtomicBool::new(false))
+        .map_err(|error| Error::message(format!("{} ({}); disable this registration with the required OS permissions and retry rdh unbind", error.message, error.code)))?;
+    #[cfg(target_os = "linux")]
+    if let Some(binding) = startup
+        .read()
+        .map_err(|error| Error::message(error.message))?
+        .binding
+    {
+        backend.stop_for_unbind(&binding)?;
+    }
+    Ok(())
+}
+
+/// The ordinary local entrypoint is also the local approval surface.
+pub(crate) fn confirm_pending(config: &Path) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !config.exists() {
+        return Ok(());
+    }
+    let state = Startup::read_file(&state_path(config)).map_err(|e| Error::message(e.message))?;
+    let Some(pending) = state.pending else {
+        return Ok(());
+    };
+    let device = crate::config::DeviceConfig::read(config)?;
+    println!(
+        "Device {} at {} requested {:?} automatic startup.",
+        device.device_id, device.gateway_url, pending.mode
+    );
+    print!("Allow this device to start automatically? [y/N]: ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let accept = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+    Startup::new(config)?
+        .approve(
+            &pending.request_id,
+            accept,
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        )
+        .map_err(|e| Error::message(e.message))?;
+    println!(
+        "Automatic startup request {}.",
+        if accept { "approved" } else { "denied" }
+    );
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -417,6 +469,9 @@ impl Startup {
         self.locked(|| {
             let mut state = self.read()?;
             Self::check(deadline, closing)?;
+            if mode != Mode::None && crate::binding::pending_unbind(&self.config).map_err(StartupFailure::io)? {
+                return Err(StartupFailure::new("operation_busy", "Device is being unbound", "not_sent"));
+            }
             if mode == Mode::None {
                 state.pending = None;
                 self.write(&state)?; // Revocation survives a native disable failure.
@@ -424,7 +479,7 @@ impl Startup {
             }
             if mode == Mode::Service && state.binding.as_ref().is_some_and(|binding| binding.mode == Mode::Service)
                 && !self.backend.service_authority() {
-                return Err(StartupFailure::new("startup_permission_required", "Use the local administrator command rdh startup system set service; this service account cannot change system startup", "not_sent"));
+                return Err(StartupFailure::new("startup_permission_required", "This OS account cannot change system startup; use the operating system service manager with administrator permissions", "not_sent"));
             }
             if local || (self.granted)(&self.config, mode).map_err(StartupFailure::io)? {
                 return self.apply(state, mode, deadline, closing, false);
@@ -440,7 +495,7 @@ impl Startup {
             self.write(&state)?;
             let pending = state.pending.unwrap();
             Ok(json!({"status":"pending_local_approval", "request_id":pending.request_id,
-                "mode":pending.mode,"expires_at":pending.expires_at,"current_connection":"unchanged"}))
+                "mode":pending.mode,"expires_at":pending.expires_at,"current_connection":"unchanged","local_action":"Run rdh in a local interactive terminal to review this request"}))
         })
     }
     pub fn approve(
@@ -453,6 +508,13 @@ impl Startup {
         self.locked(|| {
             let mut state = self.read()?;
             Self::check(deadline, closing)?;
+            if crate::binding::pending_unbind(&self.config).map_err(StartupFailure::io)? {
+                return Err(StartupFailure::new(
+                    "operation_busy",
+                    "Device is being unbound",
+                    "not_sent",
+                ));
+            }
             let mode = state
                 .pending
                 .as_ref()
@@ -507,48 +569,6 @@ impl Startup {
             self.status()
         })
     }
-}
-
-/// Read only the existing sidecar. This does not query or change a native
-/// registration, and does not expose the approval request identifier.
-#[cfg(any(
-    target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install"),
-    all(windows, feature = "experimental-windows-install")
-))]
-pub(crate) fn inspect_sidecar(config: &Path) -> Result<(Option<Binding>, Option<Mode>)> {
-    let state = Startup::read_file(&state_path(config))
-        .map_err(|_| Error::message("Startup state cannot be safely read"))?;
-    Ok((state.binding, state.pending.map(|pending| pending.mode)))
-}
-
-#[cfg(all(windows, feature = "experimental-windows-install"))]
-pub(crate) fn new_service_state(config: &Path, name: &str) -> Result<Vec<u8>> {
-    let mut state = Startup::read_file(&state_path(config))
-        .map_err(|_| Error::message("Startup state cannot be safely read"))?;
-    if state.binding.is_some() {
-        return Err(Error::message(
-            "Service installation requires an unbound source profile",
-        ));
-    }
-    let binding = Binding {
-        mode: Mode::Service,
-        name: name.into(),
-    };
-    validate_binding(&binding).map_err(|_| Error::message("Invalid service registration name"))?;
-    state.binding = Some(binding);
-    // Preserve any approval request. Registering a stopped service does not
-    // approve or enable a pending remote startup request.
-    Ok(serde_json::to_vec(&state)?)
-}
-
-#[cfg(any(
-    target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install"),
-    all(windows, feature = "experimental-windows-install")
-))]
-pub(crate) fn sidecar_path(config: &Path) -> PathBuf {
-    state_path(config)
 }
 
 #[cfg(all(
@@ -684,6 +704,28 @@ mod tests {
             *fixture.backend.calls.lock().unwrap(),
             ["create", "User:true", "User:false"]
         );
+    }
+
+    #[test]
+    fn unbind_intent_blocks_new_startup_approval_but_still_disables_existing_startup() {
+        let fixture = Fixture::new();
+        assert_eq!(fixture.set(Mode::User, true).unwrap()["mode"], "user");
+        let pending = fixture.set(Mode::User, false).unwrap();
+        crate::binding::request_unbind(&fixture.startup.config).unwrap();
+        assert_eq!(
+            fixture
+                .approve(pending["request_id"].as_str().unwrap(), true)
+                .unwrap_err()
+                .code,
+            "operation_busy"
+        );
+        assert_eq!(
+            fixture.set(Mode::User, true).unwrap_err().code,
+            "operation_busy"
+        );
+        assert_eq!(fixture.set(Mode::None, true).unwrap()["mode"], "none");
+        assert!(!fixture.backend.enabled.load(Ordering::Acquire));
+        assert!(fixture.startup.read().unwrap().pending.is_none());
     }
 
     #[test]

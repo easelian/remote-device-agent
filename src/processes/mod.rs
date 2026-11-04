@@ -176,5 +176,5 @@ mod native;
 #[cfg(all(windows, feature = "experimental-windows-startup"))]
 pub(crate) use native::platform::quote as windows_argument;
 
-#[cfg(all(windows, feature = "experimental-windows-install"))]
-pub(crate) use native::platform::check_program as check_native_program;
+#[cfg(all(windows, feature = "experimental-windows-processes"))]
+pub(crate) use native::platform::check_program as check_update_program;

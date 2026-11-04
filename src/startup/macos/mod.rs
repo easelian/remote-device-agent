@@ -106,7 +106,7 @@ fn xml_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn definition(executable: &Path, config: &Path, gateway: &str) -> Result<String> {
+fn definition(executable: &Path, config: &Path) -> Result<String> {
     validate_paths(&[executable, config])?;
     let working_directory = config
         .parent()
@@ -114,18 +114,15 @@ fn definition(executable: &Path, config: &Path, gateway: &str) -> Result<String>
     let mut xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{USER_LABEL}</string>\n<key>ProgramArguments</key><array>\n"
     );
-    for argument in [
-        executable.to_str().unwrap(),
-        "--config",
-        config.to_str().unwrap(),
-        "--server",
-        gateway,
-        "--no-browser",
-        "--recover-lock",
-    ] {
-        xml.push_str(&format!("<string>{}</string>\n", xml_text(argument)));
-    }
-    xml.push_str(&format!("</array>\n<key>WorkingDirectory</key><string>{}</string>\n<key>RunAtLoad</key><true/>\n<key>Disabled</key><true/>\n</dict></plist>\n", xml_text(working_directory.to_str().unwrap())));
+    xml.push_str(&format!(
+        "<string>{}</string>\n",
+        xml_text(executable.to_str().unwrap())
+    ));
+    let base = crate::config::config_base()?;
+    let base = base
+        .to_str()
+        .ok_or_else(|| Error::message("Invalid configuration directory"))?;
+    xml.push_str(&format!("</array>\n<key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string></dict>\n<key>WorkingDirectory</key><string>{}</string>\n<key>RunAtLoad</key><true/>\n<key>Disabled</key><true/>\n</dict></plist>\n", xml_text(base), xml_text(working_directory.to_str().unwrap())));
     Ok(xml)
 }
 
@@ -224,11 +221,11 @@ impl StartupBackend for NativeStartup {
         Ok(())
     }
     fn create_user(&self) -> Result<Binding> {
-        let config = DeviceConfig::read(&self.config)?;
+        DeviceConfig::read(&self.config)?;
         if !self.executable.is_file() {
             return Err(Error::message("A persistent Agent executable is required"));
         }
-        let contents = definition(&self.executable, &self.config, &config.gateway_url)?;
+        let contents = definition(&self.executable, &self.config)?;
         let directory = self.user_directory()?;
         let path = directory.join(format!("{USER_LABEL}.plist"));
         match fs::symlink_metadata(&path) {
@@ -508,23 +505,10 @@ mod tests {
             .unwrap()
             .lines()
             .collect();
+        assert_eq!(json!(lines), json!([fixture.0, ""]));
         assert_eq!(
-            json!(lines),
-            json!([
-                fixture.0,
-                "--config",
-                backend.config,
-                "--server",
-                "http://127.0.0.1:9",
-                "--no-browser",
-                "--recover-lock"
-            ])
-        );
-        assert!(
-            !value
-                .as_object()
-                .unwrap()
-                .contains_key("EnvironmentVariables")
+            value["EnvironmentVariables"]["XDG_CONFIG_HOME"],
+            crate::config::config_base().unwrap().to_str().unwrap()
         );
     }
 }

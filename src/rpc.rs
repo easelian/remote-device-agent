@@ -90,14 +90,6 @@ impl Drop for ResponseFlight {
     }
 }
 
-/// Holds every admission permit until the session has stopped accepting work.
-#[cfg(target_os = "linux")]
-pub(crate) struct IdleGuard {
-    _ordinary: OwnedSemaphorePermit,
-    _status: OwnedSemaphorePermit,
-    _diagnostic: OwnedSemaphorePermit,
-}
-
 #[cfg(test)]
 #[derive(Default)]
 struct CompletionGate {
@@ -167,7 +159,6 @@ pub struct Runtime {
     status: Arc<Semaphore>,
     diagnostic_audit: Arc<Semaphore>,
     closing: AtomicBool,
-    quarantined: AtomicBool,
     active: AtomicUsize,
     responses: AtomicUsize,
     finished: Notify,
@@ -274,7 +265,6 @@ impl Runtime {
             status: Arc::new(Semaphore::new(1)),
             diagnostic_audit: Arc::new(Semaphore::new(1)),
             closing: AtomicBool::new(false),
-            quarantined: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             responses: AtomicUsize::new(0),
             finished: Notify::new(),
@@ -289,82 +279,6 @@ impl Runtime {
 
     pub fn next_generation(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Called before connecting a service-update trial to the Hub. Activation
-    /// is one-way: once requests can run, a controller must roll forward.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn quarantine_before_connect(&self) {
-        self.quarantined.store(true, Ordering::Release);
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn is_quarantined(&self) -> bool {
-        self.quarantined.load(Ordering::Acquire)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn activate_trial(&self) {
-        self.quarantined.store(false, Ordering::Release);
-    }
-
-    /// Freeze admission before examining all remaining owners. If any owner
-    /// cannot prove itself idle, dropping the permits restores normal service.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn try_freeze_idle(&self) -> Option<IdleGuard> {
-        self.try_freeze(false)
-    }
-
-    /// A trial that has never admitted work can also stop while offline. The
-    /// reporter checks trial identity and serializes this with activation.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn try_freeze_trial(&self) -> Option<IdleGuard> {
-        if !self.is_quarantined() {
-            return None;
-        }
-        self.try_freeze(true)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn try_freeze(&self, offline_trial: bool) -> Option<IdleGuard> {
-        if self.closing.load(Ordering::Acquire) {
-            return None;
-        }
-        let ordinary = Arc::clone(&self.ordinary)
-            .try_acquire_many_owned(ORDINARY_LIMIT as u32)
-            .ok()?;
-        let status = Arc::clone(&self.status).try_acquire_owned().ok()?;
-        let diagnostic = Arc::clone(&self.diagnostic_audit)
-            .try_acquire_owned()
-            .ok()?;
-        if self.closing.load(Ordering::Acquire)
-            || self.active.load(Ordering::Acquire) != 0
-            || self.responses.load(Ordering::Acquire) != 0
-            || !self.processes.quiescent()
-            || !self.searches.quiescent()
-            || !self.receipts.quiescent()
-        {
-            return None;
-        }
-        let connection = self.connection.try_lock().ok()?;
-        let transport_idle = match connection.as_ref() {
-            Some((_, sender)) => sender.idle(),
-            None => offline_trial && self.is_quarantined(),
-        };
-        if !transport_idle {
-            return None;
-        }
-        drop(connection);
-        Some(IdleGuard {
-            _ordinary: ordinary,
-            _status: status,
-            _diagnostic: diagnostic,
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn begin_shutdown(&self) {
-        self.closing.store(true, Ordering::Release);
     }
 
     pub fn bind(&self, generation: u64, sender: Sender) -> bool {
@@ -870,19 +784,6 @@ impl Runtime {
         if !params.is_object() {
             return Err(InvalidRequest);
         }
-        if self.quarantined.load(Ordering::Acquire) {
-            send_failure(
-                sender,
-                id,
-                &Failure::new(
-                    "operation_busy",
-                    "Device is awaiting service update acceptance",
-                    "not_sent",
-                ),
-                None,
-            );
-            return Ok(());
-        }
         let budget = match message.get("execution_budget_ms") {
             None => RESPONSE_DEADLINE,
             Some(Value::Number(value)) => match value.as_f64().filter(|value| {
@@ -1382,136 +1283,6 @@ mod tests {
         assert!(!runtime.bind_cluster(3, first, old_sender));
         runtime.unbind(1);
         assert_eq!(runtime.last_cluster_identity(), Some(second));
-        assert!(runtime.shutdown().await);
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn wait_responses(runtime: &Runtime) {
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while runtime.active.load(Ordering::Acquire) != 0
-                || runtime.responses.load(Ordering::Acquire) != 0
-            {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        })
-        .await
-        .expect("responses did not settle");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn idle_freeze_waits_for_result_delivery_and_receipt_acknowledgement() {
-        let fixture = Fixture::new();
-        let runtime = fixture.runtime(None);
-        let gate = Arc::new(CompletionGate::default());
-        let _release_on_failure = GateGuard(gate.clone());
-        *runtime.completion_gate.lock().unwrap() = Some(gate.clone());
-        let (sender, mut rx, _) = channel();
-        let active = ids();
-        assert!(runtime.bind(1, sender.clone()));
-        let operation_id = "b".repeat(32);
-        runtime
-            .receive(
-                &write(
-                    "write",
-                    5000,
-                    Some((&operation_id, &runtime.receipts.instance_id)),
-                ),
-                &sender,
-                &active,
-            )
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), gate.entered.notified())
-            .await
-            .unwrap();
-        assert!(runtime.try_freeze_idle().is_none());
-        gate.release();
-        wait_responses(&runtime).await;
-        // Completed work still has outbound frames and an unacknowledged receipt.
-        assert!(runtime.try_freeze_idle().is_none());
-        let first = next_frame(&mut rx).await;
-        let second = next_frame(&mut rx).await;
-        assert!(
-            [first["type"].as_str(), second["type"].as_str()].contains(&Some("operation_result"))
-        );
-        assert!(runtime.try_freeze_idle().is_none());
-        runtime.acknowledge(
-            &json!({"operation_id":operation_id,"instance_id":runtime.receipts.instance_id}),
-        );
-        let frozen = runtime
-            .try_freeze_idle()
-            .expect("completed work should be idle");
-        let blocked = json!({"type":"request","id":"blocked","operation":"write_file",
-            "params":{"root":"work","path":"after-freeze","content":"must not execute"}});
-        runtime.receive(&blocked, &sender, &active).unwrap();
-        assert_eq!(
-            result(&mut rx, "blocked").await["error_code"],
-            "operation_busy"
-        );
-        assert!(!fixture.0.join("after-freeze").exists());
-        drop(frozen);
-        runtime.receive(&blocked, &sender, &active).unwrap();
-        assert!(result(&mut rx, "blocked").await["result"]["sha256"].is_string());
-        assert!(fixture.0.join("after-freeze").exists());
-        assert!(runtime.shutdown().await);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn idle_freeze_refuses_to_abandon_a_queued_response_or_live_process() {
-        let fixture = Fixture::new();
-        let runtime = fixture.runtime(None);
-        let (sender, mut rx, _) = channel();
-        let active = ids();
-        assert!(runtime.bind(1, sender.clone()));
-        runtime
-            .receive(
-                &json!({"type":"request","id":"info","operation":"device_info","params":{}}),
-                &sender,
-                &active,
-            )
-            .unwrap();
-        wait_responses(&runtime).await;
-        assert!(runtime.try_freeze_idle().is_none());
-        let in_send = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        // Dequeued is not sent: the writer still owns the frame's byte budget.
-        assert!(runtime.try_freeze_idle().is_none());
-        let response: Value = serde_json::from_str(in_send.message.to_text().unwrap()).unwrap();
-        assert!(response["result"]["capabilities"].is_object());
-        drop(in_send);
-        assert!(runtime.try_freeze_idle().is_some());
-
-        runtime
-            .receive(
-                &json!({"type":"request","id":"start","operation":"start_process",
-            "params":{"root":"work","command":"/bin/sleep 30","wait_seconds":0}}),
-                &sender,
-                &active,
-            )
-            .unwrap();
-        let job = result(&mut rx, "start").await["result"]["job_id"].clone();
-        wait_responses(&runtime).await;
-        assert!(runtime.try_freeze_idle().is_none());
-        runtime
-            .receive(
-                &json!({"type":"request","id":"stop","operation":"terminate_process",
-            "params":{"job_id":job}}),
-                &sender,
-                &active,
-            )
-            .unwrap();
-        assert_eq!(
-            result(&mut rx, "stop").await["result"]["status"],
-            "terminated"
-        );
-        wait_responses(&runtime).await;
-        let frozen = runtime
-            .try_freeze_idle()
-            .expect("terminated process should be idle");
-        drop(frozen);
         assert!(runtime.shutdown().await);
     }
 

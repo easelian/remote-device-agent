@@ -1,8 +1,4 @@
-#![cfg(any(
-    target_os = "linux",
-    all(target_os = "macos", feature = "experimental-macos-install"),
-    all(windows, feature = "experimental-windows-install")
-))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 #[path = "support/initial_binary.rs"]
 mod initial_binary;
@@ -77,10 +73,7 @@ fn artifact(directory: &Path, version: &str, bytes: &[u8]) -> PathBuf {
 }
 
 fn command_directory(prefix: &Path) -> PathBuf {
-    prefix.with_file_name(format!(
-        "{} commands",
-        prefix.file_name().unwrap().to_str().unwrap()
-    ))
+    prefix.to_owned()
 }
 
 fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> Output {
@@ -107,7 +100,6 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
                 .arg("--base")
                 .arg(directory);
         }
-        command.args(["--", "--prefix"]).arg(prefix);
         command
     };
     #[cfg(windows)]
@@ -124,9 +116,9 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
             "-Command",
         ]);
         command.arg(if offline {
-            "& $env:RDH_TEST_INSTALLER -Offline $env:RDH_TEST_BINARY -NativeArguments @('--prefix', $env:RDH_TEST_PREFIX)"
+            "& $env:RDH_TEST_INSTALLER -Offline $env:RDH_TEST_BINARY"
         } else {
-            "& $env:RDH_TEST_INSTALLER -Version $env:RDH_TEST_VERSION -Base $env:RDH_TEST_BASE -NativeArguments @('--prefix', $env:RDH_TEST_PREFIX)"
+            "& $env:RDH_TEST_INSTALLER -Version $env:RDH_TEST_VERSION -Base $env:RDH_TEST_BASE"
         });
         command
             .env(
@@ -140,7 +132,7 @@ fn bootstrap(directory: &Path, version: &str, prefix: &Path, offline: bool) -> O
         command
     };
     command
-        .env("RDH_BIN_DIR", command_directory(prefix))
+        .env("RDH_INSTALL_DIR", prefix)
         .env("RDH_NO_START", "1")
         .env("RDH_NO_MODIFY_PATH", "1")
         .current_dir(directory)
@@ -244,7 +236,6 @@ exit 1
     command
         .env("RDH_BASE", directory)
         .env("RDH_INSTALL_DIR", prefix)
-        .env("RDH_BIN_DIR", command_directory(prefix))
         .env("RDH_TEST_RELEASE_VERSION", release_version)
         .env("RDH_NO_START", "1")
         .env("RDH_NO_MODIFY_PATH", "1")
@@ -279,11 +270,8 @@ fn failure(output: Output, message: &str) {
     );
 }
 
-fn selected_binary(prefix: &Path, version: &str) -> PathBuf {
-    prefix
-        .join("versions")
-        .join(version)
-        .join(if cfg!(windows) { "rdh.exe" } else { "rdh" })
+fn selected_binary(prefix: &Path, _version: &str) -> PathBuf {
+    prefix.join(if cfg!(windows) { "rdh.exe" } else { "rdh" })
 }
 
 #[test]
@@ -300,37 +288,18 @@ fn bootstrap_accepts_script_input_without_arguments() {
         "version mismatch",
     );
     assert!(!prefix.exists());
-    #[cfg(unix)]
-    {
-        let bin = command_directory(&prefix);
-        fs::create_dir(&bin).unwrap();
-        std::os::unix::fs::symlink(prefix.join("current/rdh"), bin.join("rdh")).unwrap();
-    }
     success(bootstrap_defaults(&fixture.0, &prefix, version));
-    assert_eq!(
-        sha256_hex(&fs::read(selected_binary(&prefix, version)).unwrap()),
-        sha256_hex(&bytes)
-    );
-    #[cfg(unix)]
-    {
-        let bin = command_directory(&prefix);
-        for name in ["rdh", "remote-device-agent", "remote-device-hub"] {
-            let entry = bin.join(name);
-            assert_eq!(fs::read_link(&entry).unwrap(), prefix.join("current/rdh"));
-            let output = Command::new(&entry).arg("--version").output().unwrap();
-            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), version);
-            success(output);
-        }
-        success(
-            Command::new(bin.join("rdh"))
-                .args(["upgrade", "--list-profiles"])
-                .output()
-                .unwrap(),
-        );
-    }
+    assert_eq!(fs::read(selected_binary(&prefix, version)).unwrap(), bytes);
+    assert_eq!(fs::read_dir(&prefix).unwrap().count(), 1);
+    let output = Command::new(selected_binary(&prefix, version))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), version);
+    success(output);
     failure(
         bootstrap_defaults(&fixture.0, &prefix, version),
-        "prefix already exists",
+        "command path already exists",
     );
 }
 
@@ -410,11 +379,6 @@ fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
                 .count(),
             1
         );
-        assert!(
-            !lines[2]
-                .split(':')
-                .any(|entry| entry == prefix.to_str().unwrap())
-        );
         assert!(!fixture.0.join("INJECTED").exists());
         assert!(!fixture.0.join("ALSO_INJECTED").exists());
         failure(
@@ -424,7 +388,7 @@ fn bootstrap_persists_a_quoted_nonduplicating_shell_path() {
                 .env("SHELL", shell)
                 .output()
                 .unwrap(),
-            "prefix already exists",
+            "command path already exists",
         );
         assert_eq!(fs::read(&rc).unwrap(), saved);
     }
@@ -447,7 +411,7 @@ fn bootstrap_preserves_unrelated_command_paths_before_installation() {
         let prefix = fixture.0.join(format!("conflicting {kind}"));
         let bin = command_directory(&prefix);
         fs::create_dir(&bin).unwrap();
-        let entry = bin.join("remote-device-agent");
+        let entry = bin.join("rdh");
         match kind {
             "file" => fs::write(&entry, "keep this entry").unwrap(),
             "directory" => {
@@ -464,8 +428,8 @@ fn bootstrap_preserves_unrelated_command_paths_before_installation() {
         );
         let after = fs::symlink_metadata(&entry).unwrap();
         assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
-        assert!(!prefix.exists());
-        assert!(fs::symlink_metadata(bin.join("rdh")).is_err());
+        assert!(prefix.exists());
+        assert!(fs::symlink_metadata(bin.join("remote-device-agent")).is_err());
         assert!(fs::symlink_metadata(bin.join("remote-device-hub")).is_err());
         match kind {
             "file" => assert_eq!(fs::read_to_string(&entry).unwrap(), "keep this entry"),
@@ -504,63 +468,6 @@ fn native_windows_bootstrap_persists_path_and_updates_the_current_shell() {
                 .unwrap(),
         );
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bootstrap_starts_the_installed_agent_from_the_requested_directory() {
-    use axum::{Json, Router, http::StatusCode, routing::post};
-    use std::{sync::Arc, time::Duration};
-    let fixture = Fixture::new();
-    let version = env!("CARGO_PKG_VERSION");
-    artifact(
-        &fixture.0,
-        version,
-        &fs::read(initial_binary::path()).unwrap(),
-    );
-    let prefix = fixture.0.join("automatic launch");
-    let request = Arc::new(tokio::sync::Mutex::new(None));
-    let captured = request.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
-    let router = Router::new().route(
-        "/api/pair/start",
-        post(move |Json(value): Json<serde_json::Value>| async move {
-            *captured.lock().await = Some(value);
-            StatusCode::SERVICE_UNAVAILABLE
-        }),
-    );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let mut command = bootstrap_defaults_command(&fixture.0, &prefix, version);
-    command
-        .env("RDH_NO_START", "0")
-        .env("RDH_SERVER", origin)
-        .env("XDG_CONFIG_HOME", fixture.0.join("config"))
-        .env("SSH_CONNECTION", "bootstrap-test");
-    let result = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::from(command)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    server.abort();
-    let _ = server.await;
-    let output = result.unwrap().unwrap();
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Starting Remote Device Hub"));
-    failure(output, "http 503");
-    let request = request
-        .lock()
-        .await
-        .clone()
-        .expect("The installed Agent must initiate pairing");
-    let roots = request["roots"].as_object().unwrap();
-    assert_eq!(roots.len(), 1);
-    assert_eq!(
-        Path::new(roots.values().next().unwrap().as_str().unwrap())
-            .canonicalize()
-            .unwrap(),
-        fixture.0
-    );
 }
 
 #[test]
@@ -642,18 +549,45 @@ fn bootstrap_verifies_native_artifact_and_preserves_existing_installation() {
         let output = Command::new(&selected).arg("--version").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), version);
         success(output);
-        let marker = fs::read(prefix.join(".native-install.json")).unwrap();
         failure(
             bootstrap(&fixture.0, version, &prefix, offline),
-            "prefix already exists",
+            "command path already exists",
         );
-        assert_eq!(
-            fs::read(prefix.join(".native-install.json")).unwrap(),
-            marker
-        );
+        assert_eq!(fs::read_dir(&prefix).unwrap().count(), 1);
         assert_eq!(
             sha256_hex(&fs::read(&selected).unwrap()),
             sha256_hex(&bytes)
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_without_a_terminal_installs_and_defers_directory_selection() {
+    use std::os::unix::process::CommandExt;
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    let script = format!(
+        "#!/bin/sh\nif [ \"${{1-}}\" = --version ]; then printf '%s\\n' '{version}'; exit 0; fi\npwd > launched-from\nexit 42\n"
+    );
+    artifact(&fixture.0, version, script.as_bytes());
+    let prefix = fixture.0.join("launch");
+    let mut command = bootstrap_defaults_command(&fixture.0, &prefix, version);
+    command.env("RDH_NO_START", "0");
+    // SAFETY: setsid is async-signal-safe; the child detaches solely so the
+    // installer cannot obtain the test runner's controlling terminal.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let output = command.output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Run rdh in an interactive terminal"));
+    success(output);
+    assert!(selected_binary(&prefix, version).is_file());
+    assert!(!fixture.0.join("launched-from").exists());
 }

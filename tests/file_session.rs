@@ -310,9 +310,7 @@ async fn files_and_searches_survive_reconnection_and_release_their_owners() {
     let (stop, shutdown) = watch::channel(false);
     let running = std::sync::Arc::clone(&runtime);
     let mut agent =
-        tokio::spawn(
-            async move { session::run(&network, &config, &running, shutdown, None).await },
-        );
+        tokio::spawn(async move { session::run(&network, &config, &running, shutdown).await });
     let mut hub = tokio::spawn(exercise(listener));
     let result = tokio::time::timeout(Duration::from_secs(30), &mut hub).await;
     if result.is_err() {

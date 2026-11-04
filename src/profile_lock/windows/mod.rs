@@ -42,7 +42,7 @@ struct Owner {
 
 fn owner_error() -> Error {
     Error::message(
-        "The device configuration is locked or is being recovered. Confirm the previous Agent has stopped before using --recover-lock.",
+        "The device configuration is locked or is being recovered. Confirm the previous Agent and its tasks have stopped before retrying.",
     )
 }
 
@@ -184,11 +184,6 @@ fn require_absent(processes: &[u32], current: u32, owners: &[u32]) -> Result<()>
         return Err(owner_error());
     }
     Ok(())
-}
-
-#[cfg(feature = "experimental-windows-install")]
-pub(crate) fn require_dead_owners(owners: &[u32]) -> Result<()> {
-    require_absent(&process_snapshot()?, std::process::id(), owners)
 }
 
 pub struct ProfileLocks {

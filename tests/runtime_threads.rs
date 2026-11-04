@@ -1,5 +1,7 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/binding.rs"]
+mod binding;
 #[path = "support/initial_binary.rs"]
 mod initial_binary;
 
@@ -41,7 +43,13 @@ fn waiting_for_pairing_does_not_create_one_scheduler_thread_per_cpu() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let server = format!("http://{}", listener.local_addr().unwrap());
-    let root = format!("work={}", fixture.0.join("work").display());
+    binding::seed(
+        &fixture.0.join("config"),
+        &server,
+        serde_json::json!({"work":fixture.0.join("work")}),
+        "fixture-token-012345678901234567890123456789",
+        serde_json::json!({"device_id":"fixture-device","device_code":"fixture-code","user_code":"TEST","verification_uri_complete":format!("{server}/auth/pair?code=TEST"),"interval":3,"expires_in":600}),
+    );
     let mut child = ChildGuard(
         Command::new(initial_binary::path())
             .env_clear()
@@ -49,14 +57,6 @@ fn waiting_for_pairing_does_not_create_one_scheduler_thread_per_cpu() {
             .env("HOME", fixture.0.join("home"))
             .env("XDG_CONFIG_HOME", fixture.0.join("config"))
             .env("XDG_STATE_HOME", fixture.0.join("state"))
-            .args([
-                "--server",
-                &server,
-                "--root",
-                &root,
-                "--no-browser",
-                "--pair-only",
-            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

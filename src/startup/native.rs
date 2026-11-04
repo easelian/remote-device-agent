@@ -3,13 +3,6 @@
 #[cfg(all(target_os = "macos", feature = "experimental-macos-startup"))]
 pub(crate) use super::macos::NativeStartup;
 
-#[cfg(target_os = "macos")]
-pub(crate) const DEFAULT_SERVICE_NAME: &str = "com.be-one-click.rdh";
-#[cfg(windows)]
-pub(crate) const DEFAULT_SERVICE_NAME: &str = "RemoteDeviceHub";
-#[cfg(not(any(target_os = "macos", windows)))]
-pub(crate) const DEFAULT_SERVICE_NAME: &str = "rdh.service";
-
 #[cfg(target_os = "linux")]
 pub(crate) use super::linux::NativeStartup;
 
@@ -68,7 +61,6 @@ mod macos_default_tests {
         assert!(super::NativeStartup::new(path.clone()).is_err());
         assert!(crate::startup::STARTUP_OPERATIONS.is_empty());
         assert!(!path.exists());
-        assert_eq!(super::DEFAULT_SERVICE_NAME, "com.be-one-click.rdh");
     }
 }
 
@@ -86,6 +78,5 @@ mod windows_default_tests {
         assert!(super::NativeStartup::new(path.clone()).is_err());
         assert!(crate::startup::STARTUP_OPERATIONS.is_empty());
         assert!(!path.exists());
-        assert_eq!(super::DEFAULT_SERVICE_NAME, "RemoteDeviceHub");
     }
 }
