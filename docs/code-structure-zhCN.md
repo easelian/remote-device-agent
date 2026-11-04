@@ -25,13 +25,17 @@ CLI 接受启动、解绑、更新、帮助和版本查询。运行参数由本�
 | `files/`、`searches.rs` | 根目录相对文件操作和有界搜索。 |
 | `processes/` | 受管进程、输出、stdin 和进程树清理。 |
 | `policy.rs`、`sandbox.rs`、`audit/` | 本地权限、操作系统隔离和脱敏审计。 |
-| `storage/`、`profile_lock/` | 私有存储、权限检查和实例所有权。 |
+| `storage/`、`profile_lock/`、`process_identity.rs` | 私有存储、权限检查，以及由 PID 和进程启动时间共同识别的实例所有权。 |
 | `startup/` | 启动管理 RPC、本地授权和平台注册；解绑时禁用已记录的启动项。 |
 | `update.rs` | 版本比较与发布元数据辅助函数。 |
 
 功能目录包含共享接口和平台实现。`posix/` 放 Linux/macOS 共用代码，`linux/`、`macos/` 和 `windows/` 放各操作系统专用实现。较小功能保留为 `src/` 下的单文件。
 
-`processes/native.rs` 管理共享进程状态和缓冲区。POSIX 使用进程组，Windows 使用 Job Object 和有界管道。所选后端导出 `Processes::TREE_TERMINATION`，该能力与 shell 权限分别报告。工作仍可能产生效果时，运行时必须保持实例所有权。
+`processes/native.rs` 管理共享进程状态和缓冲区。POSIX 使用进程组，Windows 使用 Job Object 和有界管道。所选后端导出 `Processes::TREE_TERMINATION`，该能力与 shell 权限分别报告。Agent 仍在运行且工作可能产生效果时，运行时必须保持实例所有权。
+
+Agent 崩溃后，启动流程核对原 PID 和进程启动时间；确认原实例已退出后，可以回收实例锁并启动。旧操作不会自动重跑，内存中的任务和输出也不会恢复。崩溃前启动的外部命令可能继续运行，尤其在 POSIX 系统上；重新启动成功不代表这些命令已经停止。
+
+回执补发在连接激活后等待现有发送队列腾出空间，等待期间仍处理收包和关闭。Agent 最多保留 1,024 条回执，满额时只回收已结束且经 Hub 确认的最旧记录。运行中及尚未确认的回执继续保留；Hub 自身的结果保留和请求准入限制仍然适用。
 
 Windows 私有存储和启动授权操作复用 `storage/windows/` 中的 ACL 与句柄基础操作。启动注册通过模块接口和 RPC 分派访问，公开 CLI 不提供启动管理命令。本文不约定本地批准的交互方式。
 

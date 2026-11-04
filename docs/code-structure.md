@@ -29,7 +29,7 @@ pairing prints the verification link even when a browser cannot be opened.
 | `files/`, `searches.rs` | Root-relative file operations and bounded searches. |
 | `processes/` | Managed processes, output, stdin and process-tree cleanup. |
 | `policy.rs`, `sandbox.rs`, `audit/` | Local permissions, OS isolation and redacted audit records. |
-| `storage/`, `profile_lock/` | Private storage, permission checks and instance ownership. |
+| `storage/`, `profile_lock/`, `process_identity.rs` | Private storage, permission checks and instance ownership identified by PID and process start time. |
 | `startup/` | Startup RPCs, local authorization and platform registration; unbind disables recorded startup. |
 | `update.rs` | Version comparison and release metadata helpers. |
 
@@ -40,7 +40,18 @@ OS-specific behavior. Small features remain single files under `src/`.
 `processes/native.rs` owns shared process state and buffers. POSIX uses process
 groups; Windows uses Job Objects and bounded pipes. The selected backend exports
 `Processes::TREE_TERMINATION`, which is reported separately from shell permission.
-The runtime must retain instance ownership while work can still have effects.
+While the Agent is alive, work that can still have effects retains instance ownership.
+
+After a crash, startup checks the recorded PID and process start identity before
+reclaiming the lock. Old operations are not replayed, and in-memory tasks and
+output are not recovered. External commands may survive, especially on POSIX;
+successful restart does not establish that those commands stopped.
+
+Receipt replay waits for space in the existing writer after connection activation
+while incoming frames and shutdown continue to be handled. At its 1,024-record
+limit, the Agent evicts only the oldest settled receipt acknowledged by the Hub.
+Running and unacknowledged work stays protected; the Hub's own result-retention
+and admission limits still apply.
 
 Windows private storage and startup grant operations reuse ACL and handle
 primitives in `storage/windows/`. Startup registration is reached through its

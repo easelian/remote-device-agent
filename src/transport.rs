@@ -76,11 +76,63 @@ impl Sender {
     pub fn json(&self, value: &Value) -> Result<()> {
         self.send(Message::Text(serde_json::to_string(value)?.into()))
     }
+
+    /// Replay already completed work through the same bounded writer. Waiting
+    /// for capacity is cancellation safe: no frame is accepted until send wins.
+    pub(crate) async fn json_wait(&self, value: &Value) -> Result<()> {
+        let encoded = serde_json::to_string(value)?;
+        if encoded.len() > MAX_FRAME {
+            return Err(Error::message("Result exceeds the transport limit"));
+        }
+        let permit = self
+            .bytes
+            .clone()
+            .acquire_many_owned(encoded.len() as u32)
+            .await
+            .map_err(|_| Error::message("Connection writer closed"))?;
+        self.tx
+            .send(Frame {
+                message: Message::Text(encoded.into()),
+                _bytes: permit,
+            })
+            .await
+            .map_err(|_| Error::message("Connection writer closed"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn replay_waits_for_capacity_without_failing_the_connection() {
+        let (sender, mut rx, failure) = channel();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            sender.json(&serde_json::json!({"queued":true})).unwrap();
+        }
+        let replay = serde_json::json!({"replay":true});
+        let waiting = sender.json_wait(&replay);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        assert!(!*failure.borrow());
+        drop(rx.recv().await.unwrap());
+        waiting.await.unwrap();
+        assert!(!*failure.borrow());
+        for _ in 0..MAX_QUEUED_MESSAGES - 1 {
+            drop(rx.recv().await.unwrap());
+        }
+        let frame = rx.recv().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(frame.message.to_text().unwrap()).unwrap(),
+            replay
+        );
+        drop(frame);
+        assert!(sender.idle());
+    }
 
     #[test]
     fn a_slow_peer_cannot_grow_the_message_or_byte_queue() {

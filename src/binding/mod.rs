@@ -151,30 +151,16 @@ pub(crate) fn save_roots(roots: &BTreeMap<String, String>) -> Result<()> {
     )
 }
 
-pub(crate) fn acquire(config: &Path, paths: &[PathBuf]) -> Result<ProfileLocks> {
+pub(crate) fn acquire(paths: &[PathBuf]) -> Result<ProfileLocks> {
     match ProfileLocks::acquire(paths) {
         Ok(locks) => Ok(locks),
-        Err(error) => {
-            // A crashed runtime may have left children or an unfinished write.
-            // Dead process identity alone cannot prove those effects stopped.
-            if read_optional(&sidecar(config, ".runtime-active"))?.is_some() {
-                return Err(error);
-            }
+        Err(_) => {
+            // Recovery proves the original Agent process has exited. It does
+            // not replay its operations or claim that external effects stopped.
             ProfileLocks::recover(paths)?;
             ProfileLocks::acquire(paths)
         }
     }
-}
-
-pub(crate) fn runtime_started(config: &Path) -> Result<()> {
-    storage::write_private_replace(
-        &sidecar(config, ".runtime-active"),
-        b"Runtime cleanup has not yet been confirmed\n",
-    )
-}
-
-pub(crate) fn runtime_stopped(config: &Path) -> Result<()> {
-    remove_private(&sidecar(config, ".runtime-active"))
 }
 
 pub(crate) fn report_existing(config: &Path) -> Result<bool> {
@@ -197,6 +183,6 @@ pub async fn update() -> Result<()> {
             "Finish the pending unbind with rdh unbind before updating",
         ));
     }
-    let _locks = acquire(&options.config, std::slice::from_ref(&options.config))?;
+    let _locks = acquire(std::slice::from_ref(&options.config))?;
     crate::self_update::run().await
 }

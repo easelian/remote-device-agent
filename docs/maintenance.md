@@ -26,6 +26,7 @@ Focused lifecycle and bootstrap checks are:
 ```sh
 cargo +1.93.0 test --locked --lib cli::tests
 cargo +1.93.0 test --locked --test pairing_session
+cargo +1.93.0 test --locked --test lifecycle_recovery
 cargo +1.93.0 test --locked --lib self_update::tests
 cargo +1.93.0 test --locked --test native_bootstrap
 ```
@@ -90,9 +91,16 @@ pending revocation and exits with instructions to run again. It does not pair a
 new device in that cleanup invocation. After successful unbinding, the next
 ordinary `rdh` begins pairing using the saved shared-directory settings.
 
-If the Agent cannot prove that previous work stopped, it refuses lifecycle
-changes. Inspect the reported process and local state; deleting lock or pending
-files does not prove cleanup and can discard the evidence needed to recover.
+An ordinary restart checks both the previous Agent's PID and its process start
+identity. It can reclaim ownership after that process exits, including after a
+forced termination, while a live matching instance still prevents a second
+runtime. An unreadable or invalid identity prevents automatic recovery.
+
+Recovery does not rerun old operations or restore their in-memory results.
+Commands started before a crash can still be running, especially on POSIX.
+Inspect those commands and their effects before retrying an uncertain operation;
+successful restart or unbinding does not establish that such commands stopped.
+Keep pending unbind records so revocation can finish.
 
 Once unbinding succeeds, removing the installed executable removes the program.
 It does not require deleting shared directories, unrelated PATH entries, audit

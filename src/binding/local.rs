@@ -7,73 +7,19 @@ use tokio::sync::watch;
 #[serde(deny_unknown_fields)]
 struct Instance {
     pid: u32,
+    started: String,
     nonce: String,
     status: Value,
 }
 
-pub(crate) fn alive(pid: u32) -> Result<bool> {
-    if pid == 0 {
-        return Err(Error::message("Invalid Agent process identity"));
-    }
-    #[cfg(unix)]
-    {
-        if pid > i32::MAX as u32 {
-            return Err(Error::message("Invalid Agent process identity"));
-        }
-        // Signal zero checks existence only; it never signals a reused PID.
-        if unsafe { libc::kill(pid as i32, 0) } == 0 {
-            #[cfg(target_os = "linux")]
-            if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                && stat
-                    .rsplit_once(") ")
-                    .is_some_and(|(_, tail)| tail.starts_with('Z'))
-            {
-                return Ok(false);
-            }
-            return Ok(true);
-        }
-        let error = std::io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(false),
-            Some(libc::EPERM) => Ok(true),
-            _ => Err(error.into()),
-        }
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::{
-            Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0},
-            System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
-        };
-        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-        if process.is_null() {
-            let error = std::io::Error::last_os_error();
-            return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-                Ok(false)
-            } else {
-                Err(error.into())
-            };
-        }
-        let exited = unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0;
-        unsafe {
-            CloseHandle(process);
-        }
-        Ok(!exited)
-    }
-    #[cfg(not(any(unix, windows)))]
-    Err(Error::message(
-        "Process inspection is unavailable on this platform",
-    ))
-}
-
-pub(super) fn instance_pid(config: &Path) -> Result<Option<u32>> {
+pub(super) fn instance_process(config: &Path) -> Result<Option<(u32, String)>> {
     read_optional(&sidecar(config, ".instance.json"))?
         .map(|raw| {
             let value: Instance = serde_json::from_slice(&raw)?;
             if value.nonce.len() != 32 {
                 return Err(Error::message("Invalid Agent instance record"));
             }
-            Ok(value.pid)
+            Ok((value.pid, value.started))
         })
         .transpose()
 }
@@ -83,7 +29,7 @@ pub(super) fn report_existing(config: &Path) -> Result<bool> {
         return Ok(false);
     };
     let value: Instance = serde_json::from_slice(&raw)?;
-    if !alive(value.pid)? {
+    if !crate::process_identity::running(value.pid, &value.started)? {
         return Ok(false);
     }
     println!(
@@ -97,6 +43,7 @@ pub(super) fn report_existing(config: &Path) -> Result<bool> {
 pub(crate) struct Running {
     path: PathBuf,
     nonce: String,
+    started: String,
     watcher: tokio::task::JoinHandle<()>,
 }
 
@@ -104,10 +51,12 @@ impl Running {
     pub fn start(config: &Path, stop: watch::Sender<bool>) -> Result<Self> {
         let path = sidecar(config, ".instance.json");
         let nonce = crate::random::hex_token::<16>()?;
+        let started = crate::process_identity::current()?;
         storage::write_private_replace(
             &path,
             &serde_json::to_vec(&Instance {
                 pid: std::process::id(),
+                started: started.clone(),
                 nonce: nonce.clone(),
                 status: json!({"state":"starting"}),
             })?,
@@ -134,6 +83,7 @@ impl Running {
         Ok(Self {
             path,
             nonce,
+            started,
             watcher,
         })
     }
@@ -143,6 +93,7 @@ impl Running {
             &self.path,
             &serde_json::to_vec(&Instance {
                 pid: std::process::id(),
+                started: self.started.clone(),
                 nonce: self.nonce.clone(),
                 status,
             })?,

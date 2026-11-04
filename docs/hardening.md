@@ -100,6 +100,11 @@ Local auditing is enabled even when the sidecar file or `audit.enabled` field is
 
 The active JSONL file and its numbered rotation files retain at most 1,000 records **in total per device**. Startup and subsequent writes remove the oldest records as needed, so restarting the Agent does not reset the retention limit. Each line is one JSON object. The `max_bytes` and `max_files` limits also apply and may retain fewer records. Retention rewrites use a private temporary file and rename; an interrupted final append is removed on startup before new records are added.
 
+At the record limit, a write removes the oldest 100 entries in one compaction,
+then appends normally until the next compaction. When byte and rotation limits
+do not intervene, the retained tail ranges from 901 to 1,000 records. This avoids
+rewriting the full retained history on every operation.
+
 - Each completed operation produces a JSON line with its timestamp, request ID, operation, outcome (`ok`, `error`, or `denied`), duration, argument summary, and result summary. A `process_exit` record includes the job ID, final status and exit code, correlated with the initiating request ID. A fast process may finish before its initial RPC response is recorded.
 - **Allowlist-based redaction:** `content`, `old_text`, `new_text`, `text` (stdin), and `query` retain only byte counts and SHA-256 digests. Commands retain only byte counts, character counts, and SHA-256 digests, never command text. Unknown string fields retain only their lengths. File contents and process output are never logged.
 - Each record is limited by its UTF-8 byte length. Argument or result summaries are omitted when necessary to stay within `max_bytes`.

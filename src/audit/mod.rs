@@ -297,6 +297,7 @@ pub(crate) mod implementation {
 
     const MAX_RECORD: usize = 16 * 1024;
     const MAX_ENTRIES: usize = 1000;
+    const PRUNE_RESERVE: usize = 100;
     const ARCHIVES: usize = 20;
 
     #[derive(Debug)]
@@ -772,7 +773,9 @@ pub(crate) mod implementation {
             }
             let pruned = self.retained >= MAX_ENTRIES;
             if pruned {
-                self.prune(1)?;
+                // Amortize atomic history replacement across the next hundred
+                // appends. Startup and rotation still retain up to MAX_ENTRIES.
+                self.prune(PRUNE_RESERVE)?;
             }
             let file = self
                 .active
@@ -1083,15 +1086,15 @@ pub(crate) mod implementation {
         }
 
         #[test]
-        fn retains_latest_thousand_across_restart_and_preserves_hash_links() {
+        fn retains_bounded_tail_across_restart_and_preserves_hash_links() {
             let fixture = Fixture::new();
             let log = fixture.log(5 * 1024 * 1024, 3, false);
             for id in 0..1003 {
                 log.record(entry(id)).unwrap();
             }
             let values = fixture.all();
-            assert_eq!(values.len(), 1000);
-            assert_eq!(values[0]["id"], "3");
+            assert_eq!(values.len(), 903);
+            assert_eq!(values[0]["id"], "100");
             assert_eq!(values.last().unwrap()["id"], "1002");
             let raw = fixture.raw();
             let lines: Vec<&[u8]> = raw.split_inclusive(|b| *b == b'\n').collect();
@@ -1108,12 +1111,49 @@ pub(crate) mod implementation {
             let reopened = fixture.log(5 * 1024 * 1024, 3, false);
             reopened.record(entry(1003)).unwrap();
             let values = fixture.all();
-            assert_eq!(values.len(), 1000);
-            assert_eq!(values[0]["id"], "4");
+            assert_eq!(values.len(), 904);
+            assert_eq!(values[0]["id"], "100");
             let last = values.last().unwrap();
             assert_ne!(last["boot"], boot);
             assert_eq!(last["seq"], 1);
             assert_eq!(last["prev"], "0".repeat(16));
+        }
+
+        #[test]
+        fn full_log_compacts_once_per_hundred_appends() {
+            let fixture = Fixture::new();
+            let log = fixture.log(5 * 1024 * 1024, 3, false);
+            for id in 0..MAX_ENTRIES {
+                log.record(entry(id)).unwrap();
+            }
+            for cycle in 0..2 {
+                let start = MAX_ENTRIES + cycle * PRUNE_RESERVE;
+                log.record(entry(start)).unwrap();
+                assert_eq!(fixture.all().len(), MAX_ENTRIES - PRUNE_RESERVE + 1);
+                // Any additional replacement in this batch would fail and
+                // increment dropped, even though optional audit returns Ok.
+                log.state.lock().unwrap().faults.replace = true;
+                for id in start + 1..start + PRUNE_RESERVE {
+                    log.record(entry(id)).unwrap();
+                }
+                log.state.lock().unwrap().faults.replace = false;
+                let values = fixture.all();
+                assert_eq!(values.len(), MAX_ENTRIES);
+                for (offset, value) in values.iter().enumerate() {
+                    assert_eq!(
+                        value["id"],
+                        ((cycle + 1) * PRUNE_RESERVE + offset).to_string()
+                    );
+                }
+                assert_eq!(log.stats()["written"], start + PRUNE_RESERVE);
+                assert_eq!(log.stats()["dropped"], 0);
+                let raw = fixture.raw();
+                let lines: Vec<&[u8]> = raw.split_inclusive(|b| *b == b'\n').collect();
+                for pair in lines.windows(2) {
+                    let next: Value = serde_json::from_slice(pair[1]).unwrap();
+                    assert_eq!(next["prev"], sha256(pair[0])[..16]);
+                }
+            }
         }
 
         #[test]
@@ -1146,7 +1186,8 @@ pub(crate) mod implementation {
                     .contains("incomplete")
             );
             log.record(entry("next")).unwrap();
-            assert_eq!(fixture.all().len(), 1000);
+            assert_eq!(fixture.all().len(), 901);
+            assert_eq!(fixture.all()[0]["id"], "200");
             assert_eq!(fixture.all().last().unwrap()["id"], "next");
         }
 
@@ -1204,8 +1245,8 @@ pub(crate) mod implementation {
                 log.record(entry(id)).unwrap();
             }
             let values = capped.all();
-            assert_eq!(values.len(), 1000);
-            assert_eq!(values[0]["id"], "3");
+            assert_eq!(values.len(), 903);
+            assert_eq!(values[0]["id"], "100");
         }
 
         #[test]
@@ -1243,8 +1284,8 @@ pub(crate) mod implementation {
             log.state.lock().unwrap().faults.replace = false;
             log.record(entry("recovered")).unwrap();
             let values = fixture.all();
-            assert_eq!(values.len(), 1000);
-            assert_eq!(values[0]["id"], "1");
+            assert_eq!(values.len(), 901);
+            assert_eq!(values[0]["id"], "100");
             assert_eq!(values.last().unwrap()["id"], "recovered");
             assert_eq!(
                 log.stats(),

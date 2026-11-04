@@ -292,7 +292,6 @@ impl Runtime {
             return false;
         }
         drop(fence);
-        self.notify_pending_receipts();
         true
     }
 
@@ -306,12 +305,6 @@ impl Runtime {
             *connection = Some((generation, sender));
         }
         true
-    }
-
-    fn notify_pending_receipts(&self) {
-        for id in self.receipts.pending() {
-            self.notify_receipt(&id);
-        }
     }
 
     pub fn last_cluster_identity(&self) -> Option<crate::cluster::Identity> {
@@ -338,8 +331,8 @@ impl Runtime {
         }
         fence.highest = Some(identity.clone());
         fence.current = Some((generation, identity.clone()));
-        // Switch the control fence before acknowledging. Receipt replay is
-        // queued afterwards so Core sees ready_ack as the first handshake frame.
+        // Switch the control fence before acknowledging. The session replays
+        // receipts only after Core confirms activation.
         if sender
             .json(&json!({"type":"ready_ack","cluster":identity}))
             .is_err()
@@ -347,7 +340,6 @@ impl Runtime {
             return false;
         }
         drop(fence);
-        self.notify_pending_receipts();
         true
     }
 
@@ -418,13 +410,26 @@ impl Runtime {
         let Some(sender) = sender else {
             return;
         };
-        if let Ok(mut status) = self
-            .receipts
-            .status(&json!(id), &json!(self.receipts.instance_id))
-        {
-            status["type"] = json!("operation_result");
+        if let Some(status) = self.receipt_message(id) {
             let _ = sender.json(&status);
         }
+    }
+
+    fn receipt_message(&self, id: &str) -> Option<Value> {
+        self.receipts
+            .status(&json!(id), &json!(self.receipts.instance_id))
+            .ok()
+            .map(|mut status| {
+                status["type"] = json!("operation_result");
+                status
+            })
+    }
+
+    pub(crate) async fn resend_receipt(&self, sender: &Sender, id: &str) -> Result<()> {
+        if let Some(status) = self.receipt_message(id) {
+            sender.json_wait(&status).await?;
+        }
+        Ok(())
     }
 
     pub fn info(&self) -> Value {
@@ -1380,6 +1385,10 @@ mod tests {
         wait_finished(&runtime).await;
         let (new_sender, mut new_rx, _) = channel();
         runtime.bind(2, new_sender.clone());
+        runtime
+            .resend_receipt(&new_sender, &operation_id)
+            .await
+            .unwrap();
         let replay = next_frame(&mut new_rx).await;
         assert_eq!(replay["type"], "operation_result");
         assert_eq!(replay["operation_id"], operation_id);
