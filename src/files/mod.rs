@@ -568,6 +568,95 @@ mod tests {
     }
 
     #[test]
+    fn text_reads_validate_malformed_bytes_outside_the_requested_range() {
+        let fixture = Fixture::new();
+        for suffix in [&[0xff][..], &[0xe2, 0x82], &[0xed, 0xa0, 0x80]] {
+            let mut bytes = b"valid prefix".to_vec();
+            bytes.extend_from_slice(suffix);
+            fs::write(fixture.path.join("invalid"), bytes).unwrap();
+            assert!(
+                fixture
+                    .call("read_file", json!({"path":"invalid","length":1}))
+                    .unwrap_err()
+                    .contains("File is not valid UTF-8")
+            );
+        }
+        for little in [true, false] {
+            for suffix in [vec![0xd800], vec![0xdc00], vec![0xd800, 0x0041]] {
+                let words = [0xfeff, 0x0041].into_iter().chain(suffix);
+                let bytes: Vec<u8> = words
+                    .flat_map(|word: u16| {
+                        if little {
+                            word.to_le_bytes()
+                        } else {
+                            word.to_be_bytes()
+                        }
+                    })
+                    .collect();
+                fs::write(fixture.path.join("invalid"), bytes).unwrap();
+                assert!(
+                    fixture
+                        .call("read_file", json!({"path":"invalid","offset":2,"length":2}))
+                        .unwrap_err()
+                        .contains("File is not valid UTF-16")
+                );
+            }
+            let odd = if little {
+                [0xff, 0xfe, 0x41]
+            } else {
+                [0xfe, 0xff, 0x41]
+            };
+            fs::write(fixture.path.join("invalid"), odd).unwrap();
+            let batch = fixture
+                .call(
+                    "read_multiple_files",
+                    json!({"paths":["invalid"],"length":2}),
+                )
+                .unwrap();
+            assert!(
+                batch["files"][0]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("File is not valid UTF-16")
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_defaults_to_text_and_preserves_explicit_representations() {
+        let fixture = Fixture::new();
+        let bytes = b"text\xff\0";
+        fs::write(fixture.path.join("bytes"), bytes).unwrap();
+        for encoding in [None, Some(Value::Null), Some(json!("text"))] {
+            let mut params = json!({"path":"bytes"});
+            if let Some(encoding) = encoding {
+                params["encoding"] = encoding;
+            }
+            let chunk = fixture.call("read_file_chunk", params).unwrap();
+            assert_eq!(chunk["content"], "text\u{fffd}\0");
+            assert_eq!(chunk["utf8_valid"], false);
+            assert_eq!(chunk["next_offset"], bytes.len());
+            assert!(chunk.get("content_base64").is_none());
+            assert!(chunk.get("sha256").is_none());
+        }
+        for encoding in ["base64", "both"] {
+            let chunk = fixture
+                .call(
+                    "read_file_chunk",
+                    json!({"path":"bytes","encoding":encoding}),
+                )
+                .unwrap();
+            assert_eq!(
+                STANDARD
+                    .decode(chunk["content_base64"].as_str().unwrap())
+                    .unwrap(),
+                bytes
+            );
+            assert_eq!(chunk.get("content").is_some(), encoding == "both");
+        }
+    }
+
+    #[test]
     fn chunks_are_exact_bytes_and_tail_relative() {
         let fixture = Fixture::new();
         let bytes = "😀😀😀".as_bytes();
@@ -575,7 +664,7 @@ mod tests {
         let chunk = fixture
             .call(
                 "read_file_chunk",
-                json!({"path":"bytes","offset":1,"length":5}),
+                json!({"path":"bytes","offset":1,"length":5,"encoding":"both"}),
             )
             .unwrap();
         assert_eq!(chunk["offset"], 1);
