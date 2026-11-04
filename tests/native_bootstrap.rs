@@ -72,6 +72,7 @@ fn artifact(directory: &Path, version: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
+#[cfg(unix)]
 fn command_directory(prefix: &Path) -> PathBuf {
     prefix.to_owned()
 }
