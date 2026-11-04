@@ -57,10 +57,15 @@ size, SHA-256 and reported version before replacement. The binding, shared roots
 and startup settings are not rewritten.
 
 On Unix, an atomic rename replaces the executable; the original remains reachable
-until the directory change is synchronized. On Windows, a single atomic rename
-operation replaces the target without first moving it away. Unsupported or denied
-Windows replacement leaves the installed target intact. Failure diagnostics
-identify a retained original if automatic restoration cannot finish.
+until the directory change is synchronized. Windows uses `ReplaceFileW` with a
+backup in a newly reserved `.rdh-previous-*` directory. If publication fails after
+moving the original, the updater attempts to restore it without overwriting a
+new file at the target name. Failure diagnostics identify any retained original.
+A backup still mapped by the running command can be removed after it exits.
+
+The Windows replacement is not a power-loss transaction. If an interrupted update
+leaves the command path absent, restore the executable from its `.rdh-previous-*`
+directory or reinstall the binary before starting the Agent again.
 
 A successful update does not start the Agent. Run `rdh` to reconnect. See
 [Maintenance](maintenance.md#update-the-agent) for operator steps and

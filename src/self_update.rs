@@ -227,54 +227,90 @@ fn replace_unix(
 }
 
 #[cfg(windows)]
-fn replace_windows(candidate: &Path, target: &Path) -> Result<()> {
-    use std::{
-        mem::{offset_of, size_of},
-        os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
-    };
-    use windows_sys::{
-        Wdk::Storage::FileSystem::{FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS},
-        Win32::Storage::FileSystem::{
-            DELETE, FILE_RENAME_INFO, FileRenameInfoEx, SetFileInformationByHandle,
-        },
-    };
-    // One kernel rename replaces the directory entry while the running image
-    // remains mapped. Never move the old executable out of the startup path.
-    // An unsupported filesystem/OS fails safely; there is no two-rename fallback.
-    let file = fs::OpenOptions::new().access_mode(DELETE).open(candidate)?;
-    let name: Vec<u16> = target.as_os_str().encode_wide().collect();
+fn windows_path(path: &Path) -> Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
     if name.len() > 32767 || name.contains(&0) {
         return Err(Error::message("Invalid executable replacement path"));
     }
-    let length = size_of::<FILE_RENAME_INFO>() + name.len() * size_of::<u16>();
-    let mut buffer = vec![0usize; length.div_ceil(size_of::<usize>())];
-    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    // SAFETY: usize aligns FILE_RENAME_INFO on supported Windows targets; the
-    // zeroed allocation includes its complete header and the UTF-16 name. The
-    // owned handle, allocation and name remain valid throughout the OS call.
-    let renamed = unsafe {
-        (*info).Anonymous.Flags = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
-        (*info).FileNameLength = (name.len() * size_of::<u16>()) as u32;
-        std::ptr::copy_nonoverlapping(
-            name.as_ptr(),
-            info.cast::<u8>()
-                .add(offset_of!(FILE_RENAME_INFO, FileName))
-                .cast::<u16>(),
-            name.len(),
-        );
-        SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FileRenameInfoEx,
-            info.cast(),
-            length as u32,
+    name.push(0);
+    Ok(name)
+}
+
+#[cfg(windows)]
+fn restore_windows_backup(backup: &Path, target: &Path) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+    let source = windows_path(backup)?;
+    let destination = windows_path(target)?;
+    // SAFETY: both path buffers are terminated and live for the call. Omitting
+    // REPLACE_EXISTING protects a new file that appeared at the original name.
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_windows(candidate: &Path, target: &Path) -> Result<()> {
+    use windows_sys::Win32::{
+        Foundation::ERROR_UNABLE_TO_MOVE_REPLACEMENT_2, Storage::FileSystem::ReplaceFileW,
+    };
+    // An image section prevents deleting the running executable. Ask Windows
+    // to retain the old file under a backup name while publishing the candidate.
+    // A newly created directory reserves the backup name without overwriting
+    // an existing file. All three paths remain on the same volume.
+    let directory = target.with_file_name(format!(
+        ".rdh-previous-{}",
+        crate::random::hex_token::<16>()?
+    ));
+    let backup = directory.join(target.file_name().unwrap());
+    let target_name = windows_path(target)?;
+    let candidate_name = windows_path(candidate)?;
+    let backup_name = windows_path(&backup)?;
+    fs::create_dir(&directory)?;
+    // SAFETY: the terminated path buffers remain alive throughout the call;
+    // optional reserved arguments are null. Flags=0 preserves original ACLs.
+    let replaced = unsafe {
+        ReplaceFileW(
+            target_name.as_ptr(),
+            candidate_name.as_ptr(),
+            backup_name.as_ptr(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
         )
     };
-    if renamed == 0 {
-        return Err(Error::message(format!(
-            "Atomic executable replacement is unavailable or was denied; the installed executable is unchanged: {}",
-            std::io::Error::last_os_error()
-        )));
+    if replaced == 0 {
+        let error = std::io::Error::last_os_error();
+        let message = if error.raw_os_error() == Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 as i32) {
+            // The documented partial outcome leaves the original at backup.
+            match restore_windows_backup(&backup, target) {
+                Ok(()) => format!("Update failed ({error}); original executable restored"),
+                Err(restore) => format!(
+                    "Update failed ({error}); restoration failed ({restore}). Original executable is preserved at {}",
+                    backup.display()
+                ),
+            }
+        } else {
+            format!("Executable replacement failed; the installed executable is unchanged: {error}")
+        };
+        let _ = fs::remove_dir(&directory);
+        return Err(Error::message(message));
     }
+    if let Err(error) = fs::remove_file(&backup) {
+        eprintln!(
+            "Updated executable installed; previous executable is retained at {} and may be removed after this command exits: {error}",
+            backup.display()
+        );
+    }
+    let _ = fs::remove_dir(&directory);
     Ok(())
 }
 
@@ -472,6 +508,28 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_restoration_preserves_a_new_target_and_keeps_the_original_recoverable() {
+        let dir = std::env::temp_dir().join(format!(
+            "rdh-restore-test-{}",
+            crate::random::hex_token::<8>().unwrap()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("rdh.exe");
+        let backup = dir.join("previous.exe");
+        fs::write(&backup, b"original").unwrap();
+        fs::write(&target, b"other creator").unwrap();
+        assert!(restore_windows_backup(&backup, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"other creator");
+        assert_eq!(fs::read(&backup).unwrap(), b"original");
+        fs::remove_file(&target).unwrap();
+        restore_windows_backup(&backup, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert!(!backup.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn replaces_running_windows_image_in_disposable_copy() {
         let dir = std::env::temp_dir().join(format!(
             "rdh-running-test-{}",
@@ -497,6 +555,14 @@ mod tests {
         );
         assert!(dir.join("replacement-confirmed").exists());
         assert!(copy.is_file());
+        assert!(
+            std::process::Command::new(&copy)
+                .arg("--list")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -512,9 +578,13 @@ mod tests {
             target,
             std::env::current_exe().unwrap().canonicalize().unwrap()
         );
-        let bytes = fs::read(&target).unwrap();
+        let mut bytes = fs::read(&target).unwrap();
+        // A PE overlay keeps the fixture executable valid while distinguishing
+        // the replacement from the image that is currently running.
+        bytes.extend_from_slice(b"\nrdh-updated-image-fixture\n");
         let candidate = stage(&target, &bytes, &format!("{:x}", Sha256::digest(&bytes))).unwrap();
         replace(&candidate.0, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), bytes);
         fs::write(
             target.parent().unwrap().join("replacement-confirmed"),
             b"ok",
