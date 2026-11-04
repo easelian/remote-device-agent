@@ -18,6 +18,9 @@ mod posix;
 #[cfg(all(windows, feature = "experimental-windows-startup"))]
 mod windows;
 
+#[cfg(all(test, windows, feature = "experimental-windows-startup"))]
+pub(crate) use windows::administrator;
+
 #[cfg(all(windows, feature = "experimental-windows-startup"))]
 pub(crate) use grant::permits as grant_permits;
 use std::path::{Path, PathBuf};

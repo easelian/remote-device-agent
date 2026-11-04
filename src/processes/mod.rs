@@ -173,7 +173,7 @@ mod windows_default_tests {
 ))]
 mod native;
 
-#[cfg(all(windows, feature = "experimental-windows-startup"))]
+#[cfg(all(test, windows, feature = "experimental-windows-startup"))]
 pub(crate) use native::platform::quote as windows_argument;
 
 #[cfg(all(windows, feature = "experimental-windows-processes"))]

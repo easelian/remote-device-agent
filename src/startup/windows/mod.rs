@@ -172,7 +172,7 @@ impl NativeStartup {
                 .ok_or_else(|| {
                     Error::message("LOCALAPPDATA is required for Windows automatic startup")
                 })?;
-            if PathBuf::from(base) != standard {
+            if Path::new(&base) != standard.as_path() {
                 return Err(Error::message(
                     "Windows automatic startup requires the standard LOCALAPPDATA configuration directory",
                 ));
