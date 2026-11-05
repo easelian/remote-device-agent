@@ -11,6 +11,9 @@ use crate::error::{Error, Result};
 use crate::random;
 
 const TRACKED: &[&str] = &[
+    "browser_open",
+    "browser_act",
+    "browser_control",
     "write_file",
     "edit_file",
     "make_directory",
@@ -166,7 +169,7 @@ pub fn result_summary(value: &Value) -> Value {
     let Some(source) = value.as_object() else {
         return Value::Object(out);
     };
-    for key in ["job_id", "search_id"] {
+    for key in ["job_id", "search_id", "session_id", "tab_id"] {
         if let Some(value) = source
             .get(key)
             .and_then(Value::as_str)

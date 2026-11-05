@@ -9,6 +9,13 @@ use crate::error::{Error, Result};
 use crate::storage;
 
 pub const KNOWN_OPERATIONS: &[&str] = &[
+    "browser_open",
+    "browser_sessions",
+    "browser_tabs",
+    "browser_observe",
+    "browser_act",
+    "browser_wait",
+    "browser_control",
     "device_info",
     "get_operation_status",
     "get_startup",
@@ -54,6 +61,7 @@ pub struct Sandbox {
 
 #[derive(Clone)]
 pub struct Policy {
+    pub browser: crate::browser::Settings,
     pub allowed: Option<BTreeSet<String>>,
     pub readonly_roots: BTreeSet<String>,
     protected: Vec<Vec<String>>,
@@ -139,6 +147,7 @@ fn parts(path: &str) -> std::result::Result<Vec<String>, String> {
 impl Default for Policy {
     fn default() -> Self {
         Self {
+            browser: crate::browser::Settings::default(),
             allowed: None,
             readonly_roots: BTreeSet::new(),
             protected: Vec::new(),
@@ -199,6 +208,7 @@ impl Policy {
                 "sandbox",
                 "audit",
                 "inherit_env",
+                "browser",
             ],
             "Hardening configuration",
         )?;
@@ -235,7 +245,8 @@ impl Policy {
             allowed.insert("get_operation_status".into());
             Some(allowed)
         };
-        let protected = strings(map.get("protected_paths"), "protected_paths", 64)?
+        let browser = crate::browser::Settings::parse(map.get("browser"))?;
+        let mut protected = strings(map.get("protected_paths"), "protected_paths", 64)?
             .into_iter()
             .map(|path| {
                 if path.is_empty()
@@ -253,6 +264,10 @@ impl Policy {
                 Ok(components)
             })
             .collect::<Result<Vec<_>>>()?;
+
+        if browser.enabled {
+            protected.push(vec![".rdh-browser".into()]);
+        }
 
         let sandbox = if let Some(value) = map.get("sandbox") {
             let sandbox = value
@@ -389,6 +404,7 @@ impl Policy {
             }
         }
         Ok(Self {
+            browser,
             allowed,
             readonly_roots: readonly.into_iter().collect(),
             protected,

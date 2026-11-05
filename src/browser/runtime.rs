@@ -1,0 +1,1023 @@
+use super::{
+    Failure, Principal, Result, Settings,
+    cdp::{Cdp, Control},
+    page::{self, Element},
+    process::{self, BrowserProcess},
+};
+use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex as AsyncMutex;
+
+const MAX_SESSIONS: usize = 2;
+const MAX_TABS: usize = 8;
+const IDLE: Duration = Duration::from_secs(600);
+
+#[derive(Clone)]
+struct Target {
+    id: String,
+    session: String,
+    kind: String,
+    url: String,
+    title: String,
+    dialog: Option<Value>,
+    parent: Option<String>,
+}
+struct Slot {
+    owner: String,
+    control: Arc<Control>,
+    closing: AtomicBool,
+    transport: Mutex<Option<Cdp>>,
+    session: AsyncMutex<Session>,
+}
+struct Session {
+    process: Option<BrowserProcess>,
+    targets: Arc<Mutex<HashMap<String, Target>>>,
+    references: HashMap<String, Element>,
+    active: String,
+    observed_tab: String,
+    touched: Instant,
+}
+struct Admission {
+    online: bool,
+    closing: bool,
+}
+pub struct Browsers {
+    settings: Settings,
+    executable: Option<PathBuf>,
+    root: Option<PathBuf>,
+    sessions: Arc<Mutex<HashMap<String, Arc<Slot>>>>,
+    initialized: Mutex<bool>,
+    admission: Mutex<Admission>,
+}
+
+impl Browsers {
+    pub fn new(settings: &Settings, config_path: Option<&Path>, token: &str) -> Self {
+        let root = config_path.and_then(Path::parent).map(|p| {
+            p.join(".rdh-browser")
+                .join(&crate::config::sha256_hex(token.as_bytes())[..24])
+        });
+        Self {
+            settings: settings.clone(),
+            executable: process::detect(settings.executable.as_deref()),
+            root,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            initialized: Mutex::new(false),
+            admission: Mutex::new(Admission {
+                online: true,
+                closing: false,
+            }),
+        }
+    }
+    pub fn info(&self) -> Value {
+        let reason = if !self.settings.enabled {
+            Some("disabled_by_local_policy")
+        } else if self.root.is_none() {
+            Some("private_storage_unavailable")
+        } else if self.executable.is_none() {
+            Some("browser_not_installed")
+        } else {
+            None
+        };
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":["temporary"],"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":false,"file_transfer":false})
+    }
+    fn prepare(&self) -> Result<&Path> {
+        if self.info()["available"] != true {
+            return Err(Failure::new("browser_unavailable"));
+        }
+        let root = self.root.as_deref().unwrap();
+        let mut initialized = self.initialized.lock().unwrap();
+        if !*initialized {
+            let parent = root.parent().unwrap();
+            for path in [parent, root] {
+                match crate::storage::create_private_dir(path) {
+                    Ok(_) => {}
+                    Err(crate::error::Error::Io(error))
+                        if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    {
+                        crate::storage::private_metadata(path, true).map_err(super::io_error)?;
+                    }
+                    Err(error) => return Err(super::io_error(error)),
+                }
+            }
+            process::recover(root)?;
+            *initialized = true;
+        }
+        Ok(root)
+    }
+    pub fn dispatch(
+        &self,
+        operation: &str,
+        params: &Value,
+        principal: &Principal,
+        deadline: Instant,
+    ) -> Result<Value> {
+        if !principal.valid() {
+            return Err(Failure::new("browser_unauthorized"));
+        }
+        validate(operation, params)?;
+        tokio::runtime::Handle::current()
+            .block_on(self.execute(operation, params, principal, deadline))
+    }
+    async fn execute(
+        &self,
+        operation: &str,
+        params: &Value,
+        principal: &Principal,
+        deadline: Instant,
+    ) -> Result<Value> {
+        self.prepare()?;
+        self.expire().await;
+        if operation == "browser_open" {
+            return self.open(params, principal, deadline).await;
+        }
+        if operation == "browser_sessions" {
+            let slots: Vec<_> = self
+                .sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, s)| s.owner == principal.owner)
+                .map(|(id, s)| (id.clone(), s.clone()))
+                .collect();
+            let mut sessions = Vec::new();
+            for (id, slot) in slots {
+                let (epoch, paused) = slot.control.snapshot();
+                let state = match slot.session.try_lock() {
+                    Ok(s) if s.process.as_ref().is_some_and(|p| p.cdp.connected()) => "ready",
+                    Ok(s) if s.process.is_none() => "closed",
+                    Ok(_) => "lost",
+                    Err(_) => "busy",
+                };
+                sessions.push(json!({"session_id":id,"state":state,"control_epoch":epoch,"controller":if paused {"paused"} else {"ai"}}));
+            }
+            return Ok(json!({"sessions":sessions}));
+        }
+        let id = params["session_id"]
+            .as_str()
+            .ok_or_else(|| Failure::new("browser_invalid_params"))?;
+        let slot = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|s| s.owner == principal.owner)
+            .cloned()
+            .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
+        if operation == "browser_control" {
+            return self.control(id, &slot, params, deadline).await;
+        }
+        let (epoch, paused) = slot.control.snapshot();
+        if paused || slot.closing.load(Ordering::Acquire) {
+            return Err(Failure::new("browser_paused"));
+        }
+        if operation != "browser_tabs" && params["control_epoch"].as_u64() != Some(epoch) {
+            return Err(Failure::new("browser_control_changed"));
+        }
+        let mut session = slot
+            .session
+            .try_lock()
+            .map_err(|_| Failure::new("browser_busy"))?;
+        session.touched = Instant::now();
+        let process = session
+            .process
+            .as_ref()
+            .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
+        if !process.cdp.connected() {
+            return Err(Failure::unknown("browser_lost"));
+        }
+        if process.cdp.pending() != 0 {
+            return Err(Failure::unknown("browser_input_pending"));
+        }
+        let cdp = process.cdp.authorized(slot.control.clone(), epoch);
+        let (cdp, effects) = cdp.track_effects();
+        if operation == "browser_tabs" {
+            let tabs: Vec<_> = session
+                .targets
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|t| t.kind == "page")
+                .map(|t| json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog}))
+                .collect();
+            return Ok(
+                json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs}),
+            );
+        }
+        let tab = params
+            .get("tab_id")
+            .and_then(Value::as_str)
+            .unwrap_or(&session.active)
+            .to_owned();
+        let target = session
+            .targets
+            .lock()
+            .unwrap()
+            .get(&tab)
+            .filter(|t| t.kind == "page")
+            .cloned()
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+        let outcome = async { match operation {
+            "browser_observe" => {
+                if target.dialog.is_some() {
+                    return Err(Failure::new("browser_dialog_open"));
+                }
+                let frames = frames(&cdp, &session, &target, deadline).await?;
+                let (mut value, refs) = page::observe(
+                    &cdp,
+                    &frames,
+                    params["max_nodes"].as_u64().unwrap_or(200) as usize,
+                    params["max_chars"].as_u64().unwrap_or(20000) as usize,
+                    deadline,
+                )
+                .await?;
+                session.references = refs;
+                session.observed_tab = tab.clone();
+                value["page"] = json!({"title":target.title,"url":target.url,"tab_id":tab});
+                Ok(value)
+            }
+            "browser_act" => {
+                let action = &params["action"];
+                match action["kind"].as_str().unwrap_or("") {
+                    "navigate" => {
+                        session.references.clear();
+                        let reply = cdp
+                            .call(
+                                Some(&target.session),
+                                "Page.navigate",
+                                json!({"url":action["url"]}),
+                                deadline,
+                            )
+                            .await?;
+                        if reply.get("errorText").is_some() {
+                            Err(Failure::unknown("browser_navigation_failed"))
+                        } else {
+                            Ok(json!({"navigation_started":true,"business_result_verified":false}))
+                        }
+                    }
+                    "new_tab" => {
+                        if session
+                            .targets
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .filter(|t| t.kind == "page")
+                            .count()
+                            >= MAX_TABS
+                        {
+                            return Err(Failure::new("browser_tab_limit"));
+                        }
+                        let result = cdp
+                            .call(
+                                None,
+                                "Target.createTarget",
+                                json!({"url":"about:blank"}),
+                                deadline,
+                            )
+                            .await?;
+                        let new_tab = result["targetId"]
+                            .as_str()
+                            .ok_or_else(|| Failure::unknown("browser_command_failed"))?
+                            .to_owned();
+                        wait_target(&cdp, &session.targets, &new_tab, deadline).await?;
+                        session.active = new_tab.clone();
+                        Ok(json!({"tab_id":new_tab}))
+                    }
+                    "close_tab" => {
+                        if session
+                            .targets
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .filter(|t| t.kind == "page")
+                            .count()
+                            <= 1
+                        {
+                            return Err(Failure::new("browser_last_tab"));
+                        }
+                        cdp.call(
+                            None,
+                            "Target.closeTarget",
+                            json!({"targetId":tab}),
+                            deadline,
+                        )
+                        .await?;
+                        session.targets.lock().unwrap().remove(&tab);
+                        if session.active == tab {
+                            let next_active = session
+                                .targets
+                                .lock()
+                                .unwrap()
+                                .values()
+                                .find(|t| t.kind == "page")
+                                .map(|t| t.id.clone())
+                                .unwrap_or_default();
+                            session.active = next_active;
+                        }
+                        session.references.clear();
+                        Ok(json!({"tab_closed":true}))
+                    }
+                    "select_tab" => {
+                        session.active = tab;
+                        session.references.clear();
+                        Ok(json!({"active_tab":session.active}))
+                    }
+                    "dialog" => {
+                        if target.dialog.is_none() {
+                            return Err(Failure::new("browser_no_dialog"));
+                        }
+                        cdp.call(
+                            Some(&target.session),
+                            "Page.handleJavaScriptDialog",
+                            json!({"accept":action["accept"]}),
+                            deadline,
+                        )
+                        .await?;
+                        Ok(json!({"dialog_handled":true}))
+                    }
+                    _ => {
+                        if target.dialog.is_some() {
+                            return Err(Failure::new("browser_dialog_open"));
+                        }
+                        if session.observed_tab != tab { return Err(Failure::new("browser_stale_reference")); }
+                        let reference = action["ref"].as_str().unwrap_or("");
+                        let element = session
+                            .references
+                            .get(reference)
+                            .ok_or_else(|| Failure::new("browser_stale_reference"))?;
+                        let result = element.act(&cdp, action, deadline).await;
+                        session.references.clear();
+                        result
+                    }
+                }
+            }
+            "browser_wait" => {
+                let expected = params["url_contains"].as_str().unwrap_or("");
+                let text = params["text_contains"].as_str();
+                loop {
+                    let tree = frames(&cdp, &session, &target, deadline).await?;
+                    if let Some(text) = text {
+                        let (value, _) = page::observe(&cdp, &tree, 200, 20000, deadline).await?;
+                        if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
+                            break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
+                        }
+                    } else if tree.first().is_some_and(|frame| frame.url.contains(expected)) {
+                        break Ok(json!({"condition_observed":true,"url":tree[0].url}));
+                    }
+                    if Instant::now() + Duration::from_millis(100) >= deadline {
+                        break Err(Failure::new("browser_condition_timeout"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+            _ => Err(Failure::new("browser_invalid_params")),
+        }
+        }.await;
+        let outcome = outcome.map_err(|mut error| {
+            if operation == "browser_act" && effects.load(Ordering::Acquire) {
+                error.state = "unknown";
+            }
+            error
+        });
+        if outcome.as_ref().is_err_and(|e| e.state == "unknown") {
+            slot.control.change(true);
+            session.references.clear();
+        }
+        let mut value = outcome?;
+        // A concurrent pause never leaks a completed observation or screenshot from the old epoch.
+        if slot.control.snapshot() != (epoch, false) {
+            return Err(Failure::unknown("browser_control_changed"));
+        }
+        value["session_id"] = id.into();
+        value["control_epoch"] = epoch.into();
+        Ok(value)
+    }
+
+    async fn open(
+        &self,
+        params: &Value,
+        principal: &Principal,
+        deadline: Instant,
+    ) -> Result<Value> {
+        let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
+        let slot = Arc::new(Slot {
+            owner: principal.owner.clone(),
+            control: Arc::new(Control::new()),
+            closing: AtomicBool::new(false),
+            transport: Mutex::new(None),
+            session: AsyncMutex::new(Session {
+                process: None,
+                targets: Arc::new(Mutex::new(HashMap::new())),
+                references: HashMap::new(),
+                active: String::new(),
+                observed_tab: String::new(),
+                touched: Instant::now(),
+            }),
+        });
+        {
+            let admission = self.admission.lock().unwrap();
+            if !admission.online || admission.closing {
+                return Err(Failure::new("browser_paused"));
+            }
+            let mut sessions = self.sessions.lock().unwrap();
+            if sessions.len() >= MAX_SESSIONS {
+                return Err(Failure::new("browser_session_limit"));
+            }
+            sessions.insert(id.clone(), slot.clone());
+        }
+        let mut session = slot.session.lock().await;
+        let result=async {
+            let process=BrowserProcess::launch(self.executable.as_deref().unwrap(),self.root.as_deref().unwrap(),&id,deadline).await?;
+            let cdp=process.cdp.authorized(slot.control.clone(), 1);
+            *slot.transport.lock().unwrap()=Some(cdp.clone());
+            session.process=Some(process);
+            if slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) {
+                cdp.stop();
+                return Err(Failure::new("browser_control_changed"));
+            }
+            guard(cdp.cleanup(),session.targets.clone());
+            cdp.call(None,"Browser.setDownloadBehavior",json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
+            cdp.call(None,"Target.setDiscoverTargets",json!({"discover":true}),deadline).await?;
+            cdp.call(None,"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
+            let target=loop {
+                if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page").cloned(){break target;}
+                if !cdp.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
+                if Instant::now()>=deadline {return Err(Failure::unknown("browser_timeout_unknown"));}
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            session.active=target.id.clone();
+            if let Some(url)=params["url"].as_str(){
+                cdp.call(Some(&target.session),"Page.navigate",json!({"url":url}),deadline).await?;
+            }
+            if slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
+            Ok(json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":"temporary"}))
+        }.await;
+        if result.is_err() {
+            if let Some(process) = session.process.as_mut() {
+                let _ = process.close().await;
+            }
+            self.sessions.lock().unwrap().remove(&id);
+        }
+        if result.is_ok() {
+            let slot = Arc::downgrade(&slot);
+            let sessions = Arc::downgrade(&self.sessions);
+            let id = id.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let (Some(slot), Some(sessions)) = (slot.upgrade(), sessions.upgrade()) else {
+                        break;
+                    };
+                    if let Ok(mut session) = slot.session.try_lock() {
+                        if session.process.is_none() {
+                            break;
+                        }
+                        if session.touched.elapsed() >= IDLE {
+                            slot.control.change(true);
+                            if let Some(process) = session.process.as_mut()
+                                && process.close().await.is_err()
+                            {
+                                continue;
+                            }
+                            session.process = None;
+                            sessions.lock().unwrap().remove(&id);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        result
+    }
+
+    async fn control(
+        &self,
+        id: &str,
+        slot: &Arc<Slot>,
+        params: &Value,
+        deadline: Instant,
+    ) -> Result<Value> {
+        let action = params["action"].as_str().unwrap_or("");
+        if action == "pause" || action == "close" {
+            slot.control.change(true);
+        }
+        if action == "close" {
+            slot.closing.store(true, Ordering::Release);
+            if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
+                cdp.stop();
+            }
+        }
+        let mut session = if action == "close" {
+            tokio::time::timeout_at(deadline.into(), slot.session.lock())
+                .await
+                .map_err(|_| Failure::unknown("browser_input_pending"))?
+        } else {
+            // Fencing is immediate; do not occupy the emergency-control slot while
+            // waiting for a stalled action. The caller can inspect or close now.
+            slot.session
+                .try_lock()
+                .map_err(|_| Failure::unknown("browser_input_pending"))?
+        };
+        session.references.clear();
+        session.touched = Instant::now();
+        let process = session
+            .process
+            .as_mut()
+            .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
+        match action {
+            "close" => {
+                process.close().await?;
+                session.process = None;
+                self.sessions.lock().unwrap().remove(id);
+                Ok(json!({"session_id":id,"state":"closed"}))
+            }
+            "pause" | "resume" => {
+                if !process.cdp.connected() {
+                    return Err(Failure::unknown("browser_lost"));
+                }
+                if process.cdp.pending() != 0 {
+                    return Err(Failure::unknown("browser_input_pending"));
+                }
+                if action == "resume" {
+                    slot.control
+                        .resume(params["control_epoch"].as_u64().unwrap_or(0))?;
+                }
+                let (epoch, paused) = slot.control.snapshot();
+                Ok(
+                    json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"new_observation_required":true}),
+                )
+            }
+            _ => Err(Failure::new("browser_invalid_params")),
+        }
+    }
+    async fn expire(&self) {
+        let slots: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect();
+        for (id, slot) in slots {
+            if let Ok(mut session) = slot.session.try_lock()
+                && session.touched.elapsed() >= IDLE
+            {
+                slot.control.change(true);
+                if let Some(process) = session.process.as_mut() {
+                    let _ = process.close().await;
+                }
+                self.sessions.lock().unwrap().remove(&id);
+            }
+        }
+    }
+    pub fn stop_all(&self) {
+        let mut admission = self.admission.lock().unwrap();
+        admission.closing = true;
+        admission.online = false;
+        for slot in self.sessions.lock().unwrap().values() {
+            slot.control.change(true);
+            slot.closing.store(true, Ordering::Release);
+            if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
+                cdp.stop();
+            }
+        }
+    }
+    pub fn pause_all(&self) {
+        let mut admission = self.admission.lock().unwrap();
+        admission.online = false;
+        for slot in self.sessions.lock().unwrap().values() {
+            slot.control.change(true);
+        }
+    }
+    pub fn mark_online(&self) {
+        let mut admission = self.admission.lock().unwrap();
+        if !admission.closing {
+            admission.online = true;
+        }
+    }
+    pub fn expire_offline(self: &Arc<Self>) {
+        let admission = self.admission.lock().unwrap();
+        if admission.online {
+            return;
+        }
+        let slots: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, slot)| (id.clone(), slot.clone()))
+            .collect();
+        for (_, slot) in &slots {
+            slot.control.change(true);
+            slot.closing.store(true, Ordering::Release);
+            if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
+                cdp.stop();
+            }
+        }
+        let browsers = Arc::clone(self);
+        tokio::spawn(async move {
+            for (id, slot) in slots {
+                let mut session = slot.session.lock().await;
+                if let Some(process) = session.process.as_mut()
+                    && process.close().await.is_err()
+                {
+                    continue;
+                }
+                session.process = None;
+                browsers.sessions.lock().unwrap().remove(&id);
+            }
+        });
+    }
+    pub async fn close(&self) -> bool {
+        self.stop_all();
+        let slots: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+        let mut stopped = true;
+        for slot in slots {
+            let mut session = slot.session.lock().await;
+            if let Some(process) = session.process.as_mut() {
+                stopped &= process.close().await.is_ok();
+            }
+            session.process = None;
+        }
+        if stopped {
+            self.sessions.lock().unwrap().clear();
+        }
+        stopped
+    }
+}
+
+async fn wait_target(
+    cdp: &Cdp,
+    targets: &Arc<Mutex<HashMap<String, Target>>>,
+    id: &str,
+    deadline: Instant,
+) -> Result<()> {
+    loop {
+        if !cdp.connected() {
+            return Err(Failure::unknown("browser_lost"));
+        }
+        if targets.lock().unwrap().contains_key(id) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(Failure::unknown("browser_timeout_unknown"));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+async fn frames(
+    cdp: &Cdp,
+    session: &Session,
+    target: &Target,
+    deadline: Instant,
+) -> Result<Vec<page::Frame>> {
+    let mut frames = page::frame_tree(cdp, &target.session, deadline).await?;
+    let children: Vec<_> = session
+        .targets
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|t| t.kind == "iframe")
+        .cloned()
+        .collect();
+    let mut selected = HashMap::from([(target.session.clone(), Vec::<(String, String)>::new())]);
+    let mut remaining = children;
+    loop {
+        let Some(index) = remaining
+            .iter()
+            .position(|t| t.parent.as_ref().is_some_and(|p| selected.contains_key(p)))
+        else {
+            break;
+        };
+        let child = remaining.remove(index);
+        let parent = child.parent.as_ref().unwrap();
+        let mut ancestors = vec![(parent.clone(), child.id.clone())];
+        ancestors.extend(selected.get(parent).unwrap().iter().cloned());
+        selected.insert(child.session.clone(), ancestors.clone());
+        for mut frame in page::frame_tree(cdp, &child.session, deadline).await? {
+            frame.ancestors = ancestors.clone();
+            if let Some(old) = frames.iter_mut().find(|f| f.id == frame.id) {
+                *old = frame;
+            } else {
+                frames.push(frame);
+            }
+        }
+    }
+    Ok(frames)
+}
+
+fn guard(cdp: Cdp, targets: Arc<Mutex<HashMap<String, Target>>>) {
+    let mut events = cdp.events();
+    tokio::spawn(async move {
+        loop {
+            let event = tokio::select! {
+                event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{cdp.stop();break;}},
+                _=tokio::time::sleep(Duration::from_millis(500))=>{if !cdp.connected(){break;}else{continue;}},
+            };
+            if handle_event(&cdp, &targets, event).await.is_err() {
+                cdp.stop();
+                break;
+            }
+        }
+    });
+}
+async fn handle_event(
+    cdp: &Cdp,
+    targets: &Arc<Mutex<HashMap<String, Target>>>,
+    event: Value,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let params = &event["params"];
+    match event["method"].as_str().unwrap_or("") {
+        "Target.attachedToTarget" => {
+            let info = &params["targetInfo"];
+            let session = params["sessionId"]
+                .as_str()
+                .ok_or_else(|| Failure::unknown("browser_lost"))?;
+            let id = info["targetId"].as_str().unwrap_or("");
+            let kind = info["type"].as_str().unwrap_or("");
+            if !matches!(kind, "page" | "iframe") {
+                cdp.call(
+                    Some(session),
+                    "Runtime.runIfWaitingForDebugger",
+                    json!({}),
+                    deadline,
+                )
+                .await?;
+                return Ok(());
+            }
+            if (kind == "page"
+                && targets
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|t| t.kind == "page")
+                    .count()
+                    >= MAX_TABS)
+                || targets.lock().unwrap().len() >= 40
+            {
+                cdp.call(None, "Target.closeTarget", json!({"targetId":id}), deadline)
+                    .await?;
+                return Ok(());
+            }
+            for method in [
+                "Page.enable",
+                "Runtime.enable",
+                "Network.enable",
+                "Accessibility.enable",
+            ] {
+                cdp.call(Some(session), method, json!({}), deadline).await?;
+            }
+            cdp.call(Some(session),"Network.setBlockedURLs",json!({"urls":["file:*","filesystem:*","javascript:*","chrome:*","chrome-extension:*","devtools:*","mailto:*","tel:*"]}),deadline).await?;
+            cdp.call(Some(session),"Fetch.enable",json!({"patterns":[{"urlPattern":"*","resourceType":"Document","requestStage":"Request"}]}),deadline).await?;
+            cdp.call(
+                Some(session),
+                "Page.setInterceptFileChooserDialog",
+                json!({"enabled":true}),
+                deadline,
+            )
+            .await?;
+            cdp.call(
+                Some(session),
+                "Target.setAutoAttach",
+                json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),
+                deadline,
+            )
+            .await?;
+            cdp.call(
+                Some(session),
+                "Runtime.runIfWaitingForDebugger",
+                json!({}),
+                deadline,
+            )
+            .await?;
+            targets.lock().unwrap().insert(
+                id.into(),
+                Target {
+                    id: id.into(),
+                    session: session.into(),
+                    kind: kind.into(),
+                    url: info["url"].as_str().unwrap_or("").into(),
+                    title: info["title"]
+                        .as_str()
+                        .unwrap_or("")
+                        .chars()
+                        .take(512)
+                        .collect(),
+                    dialog: None,
+                    parent: event["sessionId"].as_str().map(str::to_owned),
+                },
+            );
+        }
+        "Target.detachedFromTarget" => {
+            targets
+                .lock()
+                .unwrap()
+                .retain(|_, t| t.session != params["sessionId"].as_str().unwrap_or(""));
+        }
+        "Target.targetInfoChanged" => {
+            let info = &params["targetInfo"];
+            if let Some(target) = targets
+                .lock()
+                .unwrap()
+                .get_mut(info["targetId"].as_str().unwrap_or(""))
+            {
+                target.url = info["url"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(4096)
+                    .collect();
+                target.title = info["title"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(512)
+                    .collect();
+            }
+        }
+        "Fetch.requestPaused" => {
+            let url = params["request"]["url"].as_str().unwrap_or("");
+            let allowed = page::url_allowed(url) || url == "about:blank";
+            let method = if allowed {
+                "Fetch.continueRequest"
+            } else {
+                "Fetch.failRequest"
+            };
+            let mut args = json!({"requestId":params["requestId"]});
+            if !allowed {
+                args["errorReason"] = "BlockedByClient".into();
+            }
+            cdp.call(event["sessionId"].as_str(), method, args, deadline)
+                .await?;
+        }
+        "Page.javascriptDialogOpening" => {
+            if let Some(target) = targets
+                .lock()
+                .unwrap()
+                .values_mut()
+                .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
+            {
+                target.dialog = Some(
+                    json!({"type":params["type"],"message":params["message"].as_str().unwrap_or("").chars().take(512).collect::<String>()}),
+                );
+            }
+        }
+        "Page.javascriptDialogClosed" => {
+            if let Some(target) = targets
+                .lock()
+                .unwrap()
+                .values_mut()
+                .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
+            {
+                target.dialog = None;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate(operation: &str, params: &Value) -> Result<()> {
+    let map = params
+        .as_object()
+        .ok_or_else(|| Failure::new("browser_invalid_params"))?;
+    let allowed: &[&str] = match operation {
+        "browser_open" => &["url"],
+        "browser_sessions" => &[],
+        "browser_tabs" => &["session_id"],
+        "browser_observe" => &[
+            "session_id",
+            "tab_id",
+            "control_epoch",
+            "max_nodes",
+            "max_chars",
+        ],
+        "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
+        "browser_wait" => &[
+            "session_id",
+            "tab_id",
+            "control_epoch",
+            "url_contains",
+            "text_contains",
+        ],
+        "browser_control" => &["session_id", "control_epoch", "action"],
+        _ => return Err(Failure::new("browser_invalid_params")),
+    };
+    if map.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    for key in ["session_id", "tab_id"] {
+        if let Some(value) = map.get(key)
+            && !value.as_str().is_some_and(|s| {
+                !s.is_empty()
+                    && s.len() <= 128
+                    && s.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+    }
+    for (key, min, max) in [
+        ("max_nodes", 1, 1000),
+        ("max_chars", 128, 64000),
+        ("control_epoch", 1, 9_007_199_254_740_991),
+    ] {
+        if let Some(value) = map.get(key)
+            && !value.as_u64().is_some_and(|v| v >= min && v <= max)
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+    }
+    if let Some(url) = map.get("url")
+        && !url
+            .as_str()
+            .is_some_and(|s| s.len() <= 4096 && page::url_allowed(s))
+    {
+        return Err(Failure::new("browser_url_denied"));
+    }
+    if operation == "browser_act" {
+        let action = params["action"]
+            .as_object()
+            .ok_or_else(|| Failure::new("browser_invalid_params"))?;
+        let kind = action.get("kind").and_then(Value::as_str).unwrap_or("");
+        let fields: &[&str] = match kind {
+            "navigate" => &["kind", "url"],
+            "fill" => &["kind", "ref", "text"],
+            "press" => &["kind", "ref", "key"],
+            "check" => &["kind", "ref", "checked"],
+            "click" => &["kind", "ref"],
+            "new_tab" | "close_tab" | "select_tab" => &["kind"],
+            "dialog" => &["kind", "accept"],
+            _ => return Err(Failure::new("browser_invalid_params")),
+        };
+        if action.len() != fields.len() || action.keys().any(|key| !fields.contains(&key.as_str()))
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if kind == "navigate"
+            && !action["url"]
+                .as_str()
+                .is_some_and(|s| s.len() <= 4096 && page::url_allowed(s))
+        {
+            return Err(Failure::new("browser_url_denied"));
+        }
+        if fields.contains(&"ref") && action["ref"].as_str().is_none_or(|s| s.len() > 128) {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if kind == "fill" && action["text"].as_str().is_none_or(|s| s.len() > 16384) {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if kind == "press"
+            && !action["key"].as_str().is_some_and(|s| {
+                [
+                    "Enter",
+                    "Tab",
+                    "Escape",
+                    "Backspace",
+                    "ArrowDown",
+                    "ArrowUp",
+                    "ArrowLeft",
+                    "ArrowRight",
+                ]
+                .contains(&s)
+            })
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if (kind == "check" && !action["checked"].is_boolean())
+            || (kind == "dialog" && !action["accept"].is_boolean())
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+    }
+    if operation == "browser_control"
+        && !params["action"]
+            .as_str()
+            .is_some_and(|s| ["pause", "resume", "close"].contains(&s))
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if operation == "browser_wait" {
+        let conditions: Vec<_> = ["url_contains", "text_contains"]
+            .into_iter()
+            .filter_map(|key| params.get(key))
+            .collect();
+        if conditions.len() != 1
+            || !conditions[0]
+                .as_str()
+                .is_some_and(|s| !s.is_empty() && s.len() <= 1024)
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+    }
+    Ok(())
+}

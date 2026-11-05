@@ -1,6 +1,7 @@
 pub mod app;
 pub mod audit;
 pub mod binding;
+pub mod browser;
 pub mod cli;
 pub mod cluster;
 pub mod config;

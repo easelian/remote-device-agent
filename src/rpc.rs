@@ -9,6 +9,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::audit::{AuditLog, AuditRecord};
+use crate::browser::{Browsers, OPERATIONS as BROWSER_OPERATIONS, Principal};
 use crate::config::{DeviceConfig, sha256_hex};
 use crate::error::{Error, Result};
 use crate::files::{FILE_OPERATIONS, Files, MUTATION_DEADLINE_EXPIRED, MUTATION_SHUTTING_DOWN};
@@ -65,6 +66,7 @@ struct Request {
     params: Value,
     deadline: Instant,
     receipt_id: Option<String>,
+    browser_principal: Option<Principal>,
 }
 
 pub type ActiveIds = Arc<Mutex<HashSet<String>>>;
@@ -156,6 +158,9 @@ pub struct Runtime {
     startup: Option<Arc<Startup>>,
     audit: Option<Arc<AuditLog>>,
     pub receipts: Receipts,
+    browsers: Arc<Browsers>,
+    browser_work: Arc<Semaphore>,
+    browser_control: Arc<Semaphore>,
     ordinary: Arc<Semaphore>,
     status: Arc<Semaphore>,
     diagnostic_audit: Arc<Semaphore>,
@@ -251,6 +256,7 @@ impl Runtime {
             )
             .map_err(Error::message)?,
         );
+        let browsers = Arc::new(Browsers::new(&policy.browser, config_path, &config.token));
         let receipts = Receipts::new(&config.token)?;
         Ok(Arc::new(Self {
             config,
@@ -262,6 +268,9 @@ impl Runtime {
             startup,
             audit,
             receipts,
+            browsers,
+            browser_work: Arc::new(Semaphore::new(2)),
+            browser_control: Arc::new(Semaphore::new(1)),
             ordinary: Arc::new(Semaphore::new(ORDINARY_LIMIT)),
             status: Arc::new(Semaphore::new(1)),
             diagnostic_audit: Arc::new(Semaphore::new(1)),
@@ -303,6 +312,7 @@ impl Runtime {
             };
             self.offline_epoch.fetch_add(1, Ordering::AcqRel);
             self.processes.mark_online();
+            self.browsers.mark_online();
             *connection = Some((generation, sender));
         }
         true
@@ -375,6 +385,7 @@ impl Runtime {
         {
             *connection = None;
             self.processes.mark_offline();
+            self.browsers.pause_all();
             let epoch = self.offline_epoch.fetch_add(1, Ordering::AcqRel) + 1;
             let runtime = Arc::downgrade(self);
             tokio::spawn(async move {
@@ -392,6 +403,7 @@ impl Runtime {
             && self.offline_epoch.load(Ordering::Acquire) == epoch
         {
             self.processes.stop_offline_jobs();
+            self.browsers.expire_offline();
         }
     }
 
@@ -439,6 +451,9 @@ impl Runtime {
         operations.extend_from_slice(FILE_OPERATIONS);
         operations.extend_from_slice(SEARCH_OPERATIONS);
         operations.extend_from_slice(PROCESS_OPERATIONS);
+        if self.browsers.info()["available"] == true {
+            operations.extend_from_slice(BROWSER_OPERATIONS);
+        }
         if self.startup.is_some() {
             operations.extend_from_slice(STARTUP_OPERATIONS);
         }
@@ -491,7 +506,7 @@ impl Runtime {
             "shell_authority":"Agent OS user; file roots do not sandbox shell commands",
             "capabilities":{"operation_receipts":{"version":1,"instance_id":self.receipts.instance_id,
                 "max_records":self.receipts.max_records,"ttl_seconds":self.receipts.ttl.as_secs()},
-                "request_budget":1,"chunk_encoding":1,"process_tree_termination":Processes::TREE_TERMINATION,
+                "request_budget":1,"chunk_encoding":1,"browser":self.browsers.info(),"process_tree_termination":Processes::TREE_TERMINATION,
                 "operations":operations},
             "search_limits":{"max_concurrent":2,"max_entries":1000,"max_depth":30,"max_visited":10000,
                 "max_result_bytes":256 * 1024,"task_ttl_seconds":30},
@@ -619,6 +634,21 @@ impl Runtime {
             ));
         }
         let result = match request.operation.as_str() {
+            operation if BROWSER_OPERATIONS.contains(&operation) => request
+                .browser_principal
+                .as_ref()
+                .ok_or_else(|| {
+                    Failure::new(
+                        "browser_unauthorized",
+                        "Trusted browser identity is required",
+                        "not_sent",
+                    )
+                })
+                .and_then(|principal| {
+                    self.browsers
+                        .dispatch(operation, &request.params, principal, request.deadline)
+                        .map_err(|error| Failure::new(error.code, error.code, error.state))
+                }),
             "device_info" => Ok(self.info()),
             "get_operation_status" => self
                 .receipts
@@ -828,6 +858,32 @@ impl Runtime {
                 return Ok(());
             }
         };
+        let browser_principal = if BROWSER_OPERATIONS.contains(&operation) {
+            let principal = message
+                .get("browser_principal")
+                .cloned()
+                .and_then(|value| serde_json::from_value::<Principal>(value).ok())
+                .filter(Principal::valid);
+            if principal.is_none()
+                || (crate::browser::MUTATIONS.contains(&operation)
+                    && message.get("operation_receipt").is_none())
+            {
+                send_failure(
+                    sender,
+                    id,
+                    &Failure::new(
+                        "browser_unauthorized",
+                        "Trusted identity and mutation receipts are required",
+                        "not_sent",
+                    ),
+                    None,
+                );
+                return Ok(());
+            }
+            principal
+        } else {
+            None
+        };
         let deadline = Instant::now() + budget;
         let mut active = ids.lock().map_err(|_| InvalidRequest)?;
         if active.contains(id) {
@@ -842,7 +898,11 @@ impl Runtime {
             );
             return Ok(());
         }
-        let semaphore = if operation == "get_operation_status" {
+        let semaphore = if operation == "browser_control" {
+            &self.browser_control
+        } else if BROWSER_OPERATIONS.contains(&operation) {
+            &self.browser_work
+        } else if operation == "get_operation_status" {
             &self.status
         } else {
             &self.ordinary
@@ -875,10 +935,15 @@ impl Runtime {
             }
             let receipt_id = receipt.get("operation_id").unwrap_or(&NULL);
             let instance = receipt.get("instance_id").unwrap_or(&NULL);
-            match self
-                .receipts
-                .begin(receipt_id, instance, operation, &params)
-            {
+            let fingerprint_params = browser_principal
+                .as_ref()
+                .map(|principal| json!({"owner":principal.owner,"params":params}));
+            match self.receipts.begin(
+                receipt_id,
+                instance,
+                operation,
+                fingerprint_params.as_ref().unwrap_or(&params),
+            ) {
                 Ok(Begin::New) => receipt_id.as_str().map(str::to_owned),
                 Ok(Begin::Existing(status)) => {
                     let state = match status["execution_state"].as_str() {
@@ -920,6 +985,7 @@ impl Runtime {
             params,
             deadline,
             receipt_id,
+            browser_principal,
         };
         let response_sender = sender.clone();
         let response_id = id.to_owned();
@@ -1007,6 +1073,7 @@ impl Runtime {
 
     pub async fn shutdown(&self) -> bool {
         self.closing.store(true, Ordering::Release);
+        self.browsers.stop_all();
         if let Ok(mut connection) = self.connection.lock() {
             *connection = None;
         }
@@ -1022,12 +1089,16 @@ impl Runtime {
         let processes = Arc::clone(&self.processes);
         let process_shutdown =
             tokio::task::spawn_blocking(move || processes.close(SHUTDOWN_DEADLINE));
-        let (searches_stopped, operations_stopped, processes_stopped) = tokio::join!(
+        let (searches_stopped, operations_stopped, processes_stopped, browsers_stopped) = tokio::join!(
             self.searches.close(SHUTDOWN_DEADLINE),
             tokio::time::timeout(SHUTDOWN_DEADLINE, wait),
             tokio::time::timeout(SHUTDOWN_DEADLINE, process_shutdown),
+            tokio::time::timeout(SHUTDOWN_DEADLINE, self.browsers.close()),
         );
-        searches_stopped && operations_stopped.is_ok() && matches!(processes_stopped, Ok(Ok(true)))
+        searches_stopped
+            && operations_stopped.is_ok()
+            && matches!(processes_stopped, Ok(Ok(true)))
+            && matches!(browsers_stopped, Ok(true))
     }
 }
 
