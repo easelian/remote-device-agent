@@ -47,7 +47,7 @@ pub async fn launch(
     if binding::report_existing(path)? {
         return Ok(());
     }
-    let mut locks = binding::acquire(path, targets)?;
+    let mut locks = binding::acquire(targets)?;
     // Recheck under the instance lock: unbind can race with startup.
     if binding::pending_unbind(path)? {
         return Ok(());
@@ -138,7 +138,6 @@ pub async fn launch(
     };
     let runtime = Runtime::with_config_path(config.clone(), policy, audit, startup, Some(path))?;
     running.status(json!({"state":"bound","device_id":config.device_id}))?;
-    binding::runtime_started(path)?;
     println!("Connecting to the Hub. Keep this terminal open; press Ctrl+C to stop.");
     let outcome = session::run(&network, &config, &runtime, shutdown).await;
     if !runtime.shutdown().await {
@@ -147,12 +146,11 @@ pub async fn launch(
             "Agent shutdown did not finish; operation outcomes may be unknown. Inspect the previous Agent and its tasks before restarting.",
         ));
     }
-    binding::runtime_stopped(path)?;
     let revoked = matches!(outcome, Err(Error::AuthorizationRejected(_)))
         && network.binding_missing(&config).await.unwrap_or(false);
     if revoked && !binding::pending_unbind(path)? {
         let command = binding::sidecar(path, ".unbind-command");
-        let _command = binding::acquire(&command, std::slice::from_ref(&command))?;
+        let _command = binding::acquire(std::slice::from_ref(&command))?;
         binding::request_unbind(path)?;
         crate::startup::disable_for_unbind(path)?;
         binding::remove_private(path)?;

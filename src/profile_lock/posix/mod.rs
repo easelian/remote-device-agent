@@ -12,6 +12,7 @@ use crate::{random, storage};
 #[derive(Clone, Serialize, Deserialize)]
 struct Owner {
     pid: u64,
+    started: String,
     nonce: String,
 }
 
@@ -89,7 +90,12 @@ fn read_owner(directory: &File) -> Result<(Owner, Metadata)> {
         return Err(owner_error());
     }
     let owner: Owner = serde_json::from_slice(&raw)?;
-    if owner.pid == 0 || owner.pid > i32::MAX as u64 || owner.nonce.len() < 32 {
+    if owner.pid == 0
+        || owner.pid > i32::MAX as u64
+        || owner.started.is_empty()
+        || owner.started.len() > 128
+        || owner.nonce.len() < 32
+    {
         return Err(owner_error());
     }
     Ok((owner, metadata))
@@ -188,6 +194,7 @@ impl ProfileLocks {
             }
             let owner = Owner {
                 pid: u64::from(std::process::id()),
+                started: crate::process_identity::current()?,
                 nonce: random::url_token::<32>()?,
             };
             write_owner(&directory, &owner)?;
@@ -220,7 +227,10 @@ impl ProfileLocks {
                 return Err(owner_error());
             }
             let (owner, owner_metadata) = read_owner(&directory)?;
-            if owner.pid != item.owner.pid || owner.nonce != item.owner.nonce {
+            if owner.pid != item.owner.pid
+                || owner.started != item.owner.started
+                || owner.nonce != item.owner.nonce
+            {
                 return Err(owner_error());
             }
             let current_owner = storage::private_metadata(&item.path.join("owner.json"), false)?;
@@ -261,15 +271,8 @@ impl ProfileLocks {
             };
             let original = directory.metadata()?;
             let (owner, _) = read_owner(&directory)?;
-            // SAFETY: pid is validated as a positive pid_t, and signal zero
-            // performs an existence/permission check without sending a signal.
-            let outcome = unsafe { libc::kill(owner.pid as libc::pid_t, 0) };
-            if outcome == 0 {
+            if crate::process_identity::running(owner.pid as u32, &owner.started)? {
                 return Err(owner_error());
-            }
-            let failure = std::io::Error::last_os_error();
-            if failure.raw_os_error() != Some(libc::ESRCH) {
-                return Err(failure.into());
             }
             let quarantine = append(&lock, &format!(".stale-{}", random::hex_token::<16>()?));
             fs::rename(&lock, &quarantine)?;
@@ -336,6 +339,23 @@ mod tests {
         drop(held);
         ProfileLocks::recover(std::slice::from_ref(&config)).unwrap();
         assert!(!lock_path(&config).exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reused_pid_does_not_keep_a_previous_owners_lock() {
+        let (dir, config) = fixture();
+        let mut held = ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap();
+        let owner = lock_path(&config).join("owner.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&owner).unwrap()).unwrap();
+        value["started"] = serde_json::json!("previous-process-birth");
+        fs::write(&owner, serde_json::to_vec(&value).unwrap()).unwrap();
+        held.retain_on_drop();
+        drop(held);
+        ProfileLocks::recover(std::slice::from_ref(&config)).unwrap();
+        assert!(!lock_path(&config).exists());
+        drop(ProfileLocks::acquire(std::slice::from_ref(&config)).unwrap());
         fs::remove_dir_all(dir).unwrap();
     }
 

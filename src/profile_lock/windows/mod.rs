@@ -3,16 +3,10 @@
 //! Recovery requires the same process visibility as the previous owner and
 //! native Windows validation.
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::mem::size_of;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
-};
 
 use crate::error::{Error, Result};
 use crate::storage::windows::{
@@ -37,6 +31,7 @@ const OWNER_NAME: &[u16] = &[
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct Owner {
     pid: u32,
+    started: String,
     nonce: String,
 }
 
@@ -51,7 +46,11 @@ fn owner_from_bytes(bytes: &[u8]) -> Result<Owner> {
         return Err(owner_error());
     }
     let owner: Owner = serde_json::from_slice(bytes).map_err(|_| owner_error())?;
-    if owner.pid == 0 || owner.nonce.encode_utf16().count() < 32 {
+    if owner.pid == 0
+        || owner.started.is_empty()
+        || owner.started.len() > 128
+        || owner.nonce.encode_utf16().count() < 32
+    {
         return Err(owner_error());
     }
     Ok(owner)
@@ -134,58 +133,6 @@ struct StaleLock {
     owner: Owner,
 }
 
-/// Enumerate the complete system process snapshot. An empty or incomplete
-/// snapshot is never treated as proof of a dead owner. The caller also checks
-/// that this process appears, guarding against a snapshot without process data.
-fn process_snapshot() -> Result<Vec<u32>> {
-    // SAFETY: no borrowed pointers are supplied; success returns an owned handle.
-    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if raw == INVALID_HANDLE_VALUE || raw.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: a successful snapshot is a unique closeable Windows handle.
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let mut entry = PROCESSENTRY32W {
-        dwSize: size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: snapshot is live and entry has the required initialized size.
-    if unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } == 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    let mut processes = Vec::new();
-    loop {
-        if processes.len() >= 1_000_000 {
-            return Err(Error::message(
-                "Windows process snapshot exceeds the safety limit",
-            ));
-        }
-        processes.push(entry.th32ProcessID);
-        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-        // SAFETY: snapshot and entry remain valid for the synchronous call.
-        if unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } == 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(ERROR_NO_MORE_FILES as i32) {
-                return Err(error.into());
-            }
-            break;
-        }
-    }
-    Ok(processes)
-}
-
-fn require_absent(processes: &[u32], current: u32, owners: &[u32]) -> Result<()> {
-    if current == 0 || !processes.contains(&current) {
-        return Err(Error::message(
-            "Windows process snapshot cannot confirm its own process",
-        ));
-    }
-    if owners.iter().any(|pid| processes.contains(pid)) {
-        return Err(owner_error());
-    }
-    Ok(())
-}
-
 pub struct ProfileLocks {
     held: Vec<HeldLock>,
     release_on_drop: bool,
@@ -229,6 +176,7 @@ impl ProfileLocks {
             let mut lock = NewDirectory::create(parent, &name)?;
             let owner = Owner {
                 pid: std::process::id(),
+                started: crate::process_identity::current()?,
                 nonce: random::url_token::<32>()?,
             };
             write_owner(lock.file(), &owner)?;
@@ -320,9 +268,10 @@ impl ProfileLocks {
                     owner,
                 });
             }
-            if !stale.is_empty() {
-                let owners: Vec<u32> = stale.iter().map(|lock| lock.owner.pid).collect();
-                require_absent(&process_snapshot()?, std::process::id(), &owners)?;
+            for lock in &stale {
+                if crate::process_identity::running(lock.owner.pid, &lock.owner.started)? {
+                    return Err(owner_error());
+                }
             }
             // All locks and owner files have been checked before the first delete.
             // Each delete targets the opened object while reclaim guards and
@@ -394,8 +343,10 @@ mod tests {
     #[test]
     fn owner_validation_rejects_unsafe_or_incomplete_records() {
         let nonce = "a".repeat(32);
-        let owner =
-            owner_from_bytes(format!("{{\"pid\":17,\"nonce\":\"{nonce}\"}}").as_bytes()).unwrap();
+        let owner = owner_from_bytes(
+            format!("{{\"pid\":17,\"started\":\"fixture\",\"nonce\":\"{nonce}\"}}").as_bytes(),
+        )
+        .unwrap();
         assert_eq!(owner.pid, 17);
         for bad in [
             "{}".to_owned(),
@@ -406,77 +357,6 @@ mod tests {
             " ".repeat(4097),
         ] {
             assert!(owner_from_bytes(bad.as_bytes()).is_err());
-        }
-    }
-
-    #[test]
-    fn an_incomplete_snapshot_or_live_owner_never_authorizes_recovery() {
-        assert!(require_absent(&[7, 11], 7, &[23]).is_ok());
-        assert!(require_absent(&[7, 11, 23], 7, &[23]).is_err());
-        assert!(require_absent(&[11], 7, &[23]).is_err());
-        assert!(require_absent(&[], 7, &[23]).is_err());
-        assert!(require_absent(&[7], 0, &[23]).is_err());
-    }
-
-    #[test]
-    fn snapshot_tracks_live_and_exited_child_processes() {
-        use std::process::{Child, Command};
-        use std::time::{Duration, Instant};
-
-        const CHILD_ENV: &str = "RDH_TEST_PROFILE_SNAPSHOT_CHILD";
-        if std::env::var_os(CHILD_ENV).is_some() {
-            std::thread::sleep(Duration::from_secs(20));
-            return;
-        }
-        struct ChildGuard(Child);
-        impl Drop for ChildGuard {
-            fn drop(&mut self) {
-                if self.0.try_wait().ok().flatten().is_none() {
-                    let _ = self.0.kill();
-                    let _ = self.0.wait();
-                }
-            }
-        }
-        let mut child = ChildGuard(
-            Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "profile_lock::windows::tests::snapshot_tracks_live_and_exited_child_processes",
-                ])
-                .env(CHILD_ENV, "1")
-                .spawn()
-                .unwrap(),
-        );
-        let pid = child.0.id();
-        let expires = Instant::now() + Duration::from_secs(8);
-        loop {
-            let processes = process_snapshot().unwrap();
-            assert!(processes.contains(&std::process::id()));
-            if processes.contains(&pid) {
-                assert!(require_absent(&processes, std::process::id(), &[pid]).is_err());
-                break;
-            }
-            assert!(
-                Instant::now() < expires,
-                "child was absent from the process snapshot"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        child.0.kill().unwrap();
-        child.0.wait().unwrap();
-        drop(child);
-        let expires = Instant::now() + Duration::from_secs(8);
-        loop {
-            let processes = process_snapshot().unwrap();
-            if !processes.contains(&pid) {
-                assert!(require_absent(&processes, std::process::id(), &[pid]).is_ok());
-                break;
-            }
-            assert!(
-                Instant::now() < expires,
-                "exited child remained in the process snapshot"
-            );
-            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }

@@ -182,32 +182,41 @@ impl Encoding {
             Self::Be => "utf-16be",
         }
     }
-    fn decode(self, b: &[u8]) -> Result<String, String> {
-        let invalid = || {
-            format!(
-                "File is not valid {}; use read_file_chunk for exact bytes",
-                self.name().to_uppercase()
-            )
+    fn invalid(self) -> String {
+        format!(
+            "File is not valid {}; use read_file_chunk for exact bytes",
+            self.name().to_uppercase()
+        )
+    }
+    fn words(self, bytes: &[u8]) -> impl Iterator<Item = u16> + '_ {
+        bytes.chunks_exact(2).map(move |word| {
+            if self == Self::Le {
+                u16::from_le_bytes([word[0], word[1]])
+            } else {
+                u16::from_be_bytes([word[0], word[1]])
+            }
+        })
+    }
+    fn validate(self, bytes: &[u8]) -> Result<(), String> {
+        let valid = if self == Self::Utf8 {
+            std::str::from_utf8(bytes).is_ok()
+        } else {
+            bytes.len().is_multiple_of(2)
+                && char::decode_utf16(self.words(bytes)).all(|character| character.is_ok())
         };
+        if valid { Ok(()) } else { Err(self.invalid()) }
+    }
+    fn decode(self, b: &[u8]) -> Result<String, String> {
         if self == Self::Utf8 {
             return std::str::from_utf8(b)
                 .map(str::to_owned)
-                .map_err(|_| invalid());
+                .map_err(|_| self.invalid());
         }
         if !b.len().is_multiple_of(2) {
-            return Err(invalid());
+            return Err(self.invalid());
         }
-        let words: Vec<u16> = b
-            .chunks_exact(2)
-            .map(|x| {
-                if self == Self::Le {
-                    u16::from_le_bytes([x[0], x[1]])
-                } else {
-                    u16::from_be_bytes([x[0], x[1]])
-                }
-            })
-            .collect();
-        String::from_utf16(&words).map_err(|_| invalid())
+        let words: Vec<u16> = self.words(b).collect();
+        String::from_utf16(&words).map_err(|_| self.invalid())
     }
 }
 struct TextRange {
@@ -224,7 +233,7 @@ fn text_range(bytes: &[u8], offset: u64, length: usize) -> Result<TextRange, Str
     } else {
         Encoding::Utf8
     };
-    encoding.decode(bytes)?; // Validate the whole file, preserving any BOM.
+    encoding.validate(bytes)?; // Validate the whole file, preserving any BOM.
     let start = offset.min(bytes.len() as u64) as usize;
     if encoding != Encoding::Utf8 && !start.is_multiple_of(2) {
         return Err("offset must be aligned to a UTF-16 code unit".into());
@@ -288,7 +297,7 @@ fn info(files: &Files, p: &Value) -> Result<Value, String> {
 }
 fn chunk(files: &Files, p: &Value) -> Result<Value, String> {
     let encoding = if p.get("encoding").is_none_or(Value::is_null) {
-        "both"
+        "text"
     } else {
         string(p, "encoding", None).map_err(|_| "Invalid chunk encoding")?
     };

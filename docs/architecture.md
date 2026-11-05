@@ -18,7 +18,7 @@ flowchart LR
 | --- | --- |
 | [main.rs](../src/main.rs), [cli.rs](../src/cli.rs) | Parse start, unbind and update; help and version do not create a runtime. |
 | [app.rs](../src/app.rs), [pairing.rs](../src/pairing.rs), [config.rs](../src/config.rs) | Validate local state, pair or reuse identity, coordinate launch and cleanup. |
-| [profile_lock](../src/profile_lock/mod.rs), [storage](../src/storage/mod.rs) | Enforce profile exclusion and private platform storage. |
+| [profile_lock](../src/profile_lock/mod.rs), [process_identity.rs](../src/process_identity.rs), [storage](../src/storage/mod.rs) | Enforce profile exclusion using PID and process start identity, with private platform storage. |
 | [session.rs](../src/session.rs), [transport.rs](../src/transport.rs), [rpc.rs](../src/rpc.rs) | Session state, request admission, bounded output, dispatch and deadlines. |
 | [files](../src/files/mod.rs), [searches.rs](../src/searches.rs) | Shared file/search contracts with POSIX descriptor and Windows handle backends. |
 | [processes/mod.rs](../src/processes/mod.rs) | Own process jobs, pipes, output and POSIX process-group or Windows Job Object cleanup. |
@@ -47,10 +47,17 @@ Execution admission and control-generation changes share one lock. A disconnect
 disables the old control entry; queued requests that have not passed execution
 admission are rejected. Already admitted operations keep their concurrency slots
 and original receipts while a replacement control connection becomes active.
-They do not have to finish before reconnecting. Pending receipts are sent through
-the new connection, and recovery by the original operation ID does not execute
-the operation again. See [Cluster discovery](network.md#cluster-discovery) for
+They do not have to finish before reconnecting. After activation, pending receipts
+wait for capacity in the existing bounded writer; the session continues handling
+incoming frames and shutdown while waiting. Recovery by the original operation
+ID does not execute the operation again. See [Cluster discovery](network.md#cluster-discovery) for
 the bounded recovery sequence and timing records.
+
+The Agent retains at most 1,024 receipts. At capacity it evicts the oldest settled
+receipt already acknowledged by the Hub; running and unacknowledged receipts
+remain protected. The paired Hub acknowledges durable completion and never
+dispatches an already claimed operation ID again. Its separate result-retention
+and preparation limits still apply; Agent eviction does not increase those limits.
 
 Starting a process returns a job that can continue after the RPC finishes. Its execution timeout is separate from the response deadline. A later `process_exit` audit event records final status and exit code; a successful `start_process` response alone does not establish command success.
 
@@ -76,6 +83,12 @@ integer fields retain native precision, and timestamps use Unix milliseconds.
 | Executable | One binary replaced by `rdh update` after validation; binding state remains separate. |
 
 An ordinary network disconnect retains managed processes and bounded output for up to five minutes. Successful reconnection cancels the offline cleanup timer. Authorization rejection, prolonged disconnection, or explicit shutdown stops managed work. Shutdown stops accepting requests and closes processes, searches, audit handles, and profile ownership; an unresolved cleanup can leave an operation's outcome unknown.
+
+After a crash, startup can reclaim the instance lock when the recorded PID and
+process start identity no longer identify a live process. This permits restart
+without replaying old operations. External commands may survive the Agent,
+especially on POSIX; their state and lost output are not recovered. A live Agent
+continues to hold ownership while its admitted work is shutting down.
 
 ## Permission boundaries
 

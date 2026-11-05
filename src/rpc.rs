@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::audit::{AuditLog, AuditRecord};
 use crate::config::{DeviceConfig, sha256_hex};
@@ -292,7 +293,6 @@ impl Runtime {
             return false;
         }
         drop(fence);
-        self.notify_pending_receipts();
         true
     }
 
@@ -306,12 +306,6 @@ impl Runtime {
             *connection = Some((generation, sender));
         }
         true
-    }
-
-    fn notify_pending_receipts(&self) {
-        for id in self.receipts.pending() {
-            self.notify_receipt(&id);
-        }
     }
 
     pub fn last_cluster_identity(&self) -> Option<crate::cluster::Identity> {
@@ -338,8 +332,8 @@ impl Runtime {
         }
         fence.highest = Some(identity.clone());
         fence.current = Some((generation, identity.clone()));
-        // Switch the control fence before acknowledging. Receipt replay is
-        // queued afterwards so Core sees ready_ack as the first handshake frame.
+        // Switch the control fence before acknowledging. The session replays
+        // receipts only after Core confirms activation.
         if sender
             .json(&json!({"type":"ready_ack","cluster":identity}))
             .is_err()
@@ -347,7 +341,6 @@ impl Runtime {
             return false;
         }
         drop(fence);
-        self.notify_pending_receipts();
         true
     }
 
@@ -418,13 +411,26 @@ impl Runtime {
         let Some(sender) = sender else {
             return;
         };
-        if let Ok(mut status) = self
-            .receipts
-            .status(&json!(id), &json!(self.receipts.instance_id))
-        {
-            status["type"] = json!("operation_result");
+        if let Some(status) = self.receipt_message(id) {
             let _ = sender.json(&status);
         }
+    }
+
+    fn receipt_message(&self, id: &str) -> Option<Value> {
+        self.receipts
+            .status(&json!(id), &json!(self.receipts.instance_id))
+            .ok()
+            .map(|mut status| {
+                status["type"] = json!("operation_result");
+                status
+            })
+    }
+
+    pub(crate) async fn resend_receipt(&self, sender: &Sender, id: &str) -> Result<()> {
+        if let Some(status) = self.receipt_message(id) {
+            sender.json_wait(&status).await?;
+        }
+        Ok(())
     }
 
     pub fn info(&self) -> Value {
@@ -1038,8 +1044,11 @@ fn clipped(value: &str, limit: usize) -> String {
 
 fn send_success(sender: &Sender, id: &str, result: Value, elapsed: f64) {
     let value = json!({"type":"result", "id":id, "result":result, "execution_ms":elapsed});
-    if serde_json::to_vec(&value).map_or(true, |value| value.len() > MAX_FRAME) {
-        send_failure(
+    match serde_json::to_string(&value) {
+        Ok(encoded) if encoded.len() <= MAX_FRAME => {
+            let _ = sender.send(Message::Text(encoded.into()));
+        }
+        _ => send_failure(
             sender,
             id,
             &Failure::new(
@@ -1048,9 +1057,7 @@ fn send_success(sender: &Sender, id: &str, result: Value, elapsed: f64) {
                 "succeeded",
             ),
             None,
-        );
-    } else {
-        let _ = sender.json(&value);
+        ),
     }
 }
 
@@ -1061,6 +1068,61 @@ fn send_failure(sender: &Sender, id: &str, failure: &Failure, elapsed: Option<f6
         value["execution_ms"] = json!(elapsed);
     }
     let _ = sender.json(&value);
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+    use crate::transport::{MAX_QUEUED_MESSAGES, channel};
+
+    #[test]
+    fn success_frame_preserves_json_and_checks_encoded_byte_limit() {
+        let id = "reply-😀";
+        let result = json!({"content":"\"\\\n😀", "items":[null, true, 42]});
+        let expected = json!({"type":"result","id":id,"result":result,"execution_ms":1.5});
+        let (sender, mut rx, failure) = channel();
+        send_success(&sender, id, result, 1.5);
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame.message.to_text().unwrap(), expected.to_string());
+        drop(frame);
+        assert!(sender.idle());
+        for extra in [0, 1] {
+            let mut content = "\"\\\n😀".to_string();
+            let overhead =
+                json!({"type":"result","id":id,"result":{"content":content},"execution_ms":1.5})
+                    .to_string()
+                    .len();
+            content.push_str(&"x".repeat(MAX_FRAME - overhead + extra));
+            send_success(&sender, id, json!({"content":content}), 1.5);
+            let frame = rx.try_recv().unwrap();
+            let text = frame.message.to_text().unwrap();
+            let reply: Value = serde_json::from_str(text).unwrap();
+            if extra == 0 {
+                assert_eq!(text.len(), MAX_FRAME);
+                assert!(reply["result"].is_object());
+                assert_eq!(reply["execution_ms"], 1.5);
+            } else {
+                assert!(text.len() < MAX_FRAME);
+                assert_eq!(reply["error_code"], "result_too_large");
+                assert_eq!(reply["execution_state"], "succeeded");
+            }
+            assert_eq!(reply["id"], id);
+            assert!(!*failure.borrow());
+            drop(frame);
+            assert!(sender.idle());
+        }
+    }
+
+    #[test]
+    fn success_frame_still_respects_writer_backpressure() {
+        let (sender, _rx, failure) = channel();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            send_success(&sender, "reply", json!({"ok":true}), 0.0);
+        }
+        assert!(!*failure.borrow());
+        send_success(&sender, "overflow", json!({"ok":true}), 0.0);
+        assert!(*failure.borrow());
+    }
 }
 
 #[cfg(all(
@@ -1380,6 +1442,10 @@ mod tests {
         wait_finished(&runtime).await;
         let (new_sender, mut new_rx, _) = channel();
         runtime.bind(2, new_sender.clone());
+        runtime
+            .resend_receipt(&new_sender, &operation_id)
+            .await
+            .unwrap();
         let replay = next_frame(&mut new_rx).await;
         assert_eq!(replay["type"], "operation_result");
         assert_eq!(replay["operation_id"], operation_id);

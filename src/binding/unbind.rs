@@ -34,10 +34,10 @@ pub async fn unbind() -> Result<()> {
 
 pub(super) async fn complete(config: &Path, paths: &[PathBuf]) -> Result<()> {
     let command_path = sidecar(config, ".unbind-command");
-    let mut command = acquire(&command_path, std::slice::from_ref(&command_path))?;
+    let mut command = acquire(std::slice::from_ref(&command_path))?;
     request_unbind(config)?;
     let mut errors = Vec::new();
-    let pid = match local::instance_pid(config) {
+    let process = match local::instance_process(config) {
         Ok(pid) => pid,
         Err(error) => {
             errors.push(format!("Agent identity: {error}"));
@@ -62,7 +62,7 @@ pub(super) async fn complete(config: &Path, paths: &[PathBuf]) -> Result<()> {
     };
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut locks = loop {
-        match acquire(config, paths) {
+        match acquire(paths) {
             Ok(locks) => break locks,
             Err(error) if Instant::now() >= deadline => {
                 errors.push(format!("Agent/task shutdown is not confirmed ({error})"));
@@ -74,24 +74,14 @@ pub(super) async fn complete(config: &Path, paths: &[PathBuf]) -> Result<()> {
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     };
-    if read_optional(&sidecar(config, ".runtime-active"))?.is_some() {
-        errors.push(
-            "previous operation cleanup was not confirmed; inspect the old Agent and its tasks"
-                .into(),
-        );
-        if let Err(error) = crate::startup::disable_for_unbind(config) {
-            errors.push(format!("automatic startup: {error}"));
-        }
-        return Err(pending_error(&errors));
-    }
     if let Err(error) = crate::startup::disable_for_unbind(config) {
         errors.push(format!("automatic startup: {error}"));
     }
-    if let Some(pid) = pid {
-        while local::alive(pid)? && Instant::now() < deadline {
+    if let Some((pid, started)) = process {
+        while crate::process_identity::running(pid, &started)? && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        if local::alive(pid)? {
+        if crate::process_identity::running(pid, &started)? {
             errors.push("Agent process exit is not confirmed".into());
         }
     }

@@ -198,6 +198,29 @@ async fn exercise(listener: TcpListener) {
         .await;
     assert_eq!(chunk["content"], CONTENT);
     assert_eq!(chunk["fingerprint"], info["fingerprint"]);
+    assert!(chunk.get("content_base64").is_none());
+    for encoding in ["text", "base64", "both"] {
+        let selected = peer
+            .call(
+                "read_file_chunk",
+                json!({"root":"work","path":"Straße.txt","encoding":encoding}),
+            )
+            .await;
+        assert_eq!(selected.get("content").is_some(), encoding != "base64");
+        assert_eq!(selected.get("content_base64").is_some(), encoding != "text");
+        if encoding != "base64" {
+            assert_eq!(selected["content"], CONTENT);
+        }
+        if encoding != "text" {
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            assert_eq!(
+                STANDARD
+                    .decode(selected["content_base64"].as_str().unwrap())
+                    .unwrap(),
+                CONTENT.as_bytes()
+            );
+        }
+    }
     let batch = peer
         .call(
             "read_multiple_files",

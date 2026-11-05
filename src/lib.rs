@@ -11,6 +11,7 @@ mod json_number;
 pub mod network;
 pub mod pairing;
 pub mod policy;
+mod process_identity;
 pub mod processes;
 pub mod profile_lock;
 pub mod random;

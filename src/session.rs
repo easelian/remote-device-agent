@@ -216,6 +216,7 @@ async fn session(
     let mut accepted: Option<crate::cluster::Identity> = None;
     let mut alive = true;
     let mut writer_finished = false;
+    let mut pending_receipts = std::collections::VecDeque::<String>::new();
     let outcome = loop {
         tokio::select! {
             _ = interrupted(shutdown) => break End::Stop,
@@ -225,6 +226,14 @@ async fn session(
                 break End::Retry { was_ready: ready, reason: "Gateway send failed".into() };
             },
             _ = send_failed.changed() => break End::Retry { was_ready: ready, reason: "Gateway send budget exceeded".into() },
+            replay = async {
+                runtime.resend_receipt(&sender, pending_receipts.front().expect("pending receipt")).await
+            }, if !pending_receipts.is_empty() => {
+                if replay.is_err() {
+                    break End::Retry { was_ready: ready, reason: "Gateway receipt replay failed".into() };
+                }
+                pending_receipts.pop_front();
+            },
             _ = heartbeat.tick(), if ready => {
                 if !alive { break End::Retry { was_ready: true, reason: "Gateway heartbeat timed out".into() }; }
                 alive = false;
@@ -291,6 +300,7 @@ async fn session(
                     }
                     }
                     ready = true;
+                    pending_receipts = runtime.receipts.pending().into();
                     state.failed_assignment=None;
                     state.previous_connection=runtime.last_cluster_identity();
                     state.report("ready", json!({"recovery_elapsed_ms":state.recovery_started.map(|started|started.elapsed().as_millis())}));
@@ -384,6 +394,172 @@ mod admission_tests {
 
     const TICKET: &str = "abcdefghijklmnopqrstuvwxyz0123456789_-ABCDE";
     const LONG_TOKEN: &str = "long-lived-device-token-must-only-reach-the-gate";
+
+    #[tokio::test]
+    async fn sequential_mutations_with_lost_acks_replay_after_cluster_activation() {
+        const COUNT: usize = 32;
+        struct Directory(std::path::PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        async fn next(
+            socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ) -> Value {
+            let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            serde_json::from_str(message.to_text().expect("JSON frame")).unwrap()
+        }
+        async fn send(
+            socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+            value: Value,
+        ) {
+            socket
+                .send(Message::Text(value.to_string().into()))
+                .await
+                .unwrap();
+        }
+        let root = Directory(
+            std::env::temp_dir().join(format!("rdh-replay-{}", random::hex_token::<12>().unwrap())),
+        );
+        std::fs::create_dir(&root.0).unwrap();
+        let gate = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let core = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let core_address = core.local_addr().unwrap();
+        let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:1",
+            "discovery_url":format!("http://{}",gate.local_addr().unwrap()),"device_id":"replay-test",
+            "token":LONG_TOKEN,"roots":{"work":root.0},"allow_write":true,"allow_shell":false})).unwrap();
+        let audit = Arc::new(
+            crate::audit::AuditLog::open(&root.0.join("audit"), "replay", 5 * 1024 * 1024, 3, true)
+                .unwrap(),
+        );
+        let runtime = Runtime::new(
+            config.clone(),
+            crate::policy::Policy::default(),
+            Some(audit.clone()),
+        )
+        .unwrap();
+        let app = Router::new().route("/agent/assign",post(move |Json(body):Json<Value>| async move {
+            assert_eq!(body["device_id"],"replay-test");
+            Json(json!({"version":2,"assignment_id":"assignment","node_id":"node","boot_id":"boot",
+                "agent_url":format!("ws://{core_address}"),"expires_at":4102444800.0,"access_ticket":TICKET}))
+        }));
+        let gate_task = tokio::spawn(async move { axum::serve(gate, app).await.unwrap() });
+        let core_task = tokio::spawn(async move {
+            for generation in 1..=2 {
+                let (stream, _) = core.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let hello = next(&mut socket).await;
+                let instance = hello["info"]["capabilities"]["operation_receipts"]["instance_id"]
+                    .as_str()
+                    .unwrap();
+                let identity = json!({"device_id":"replay-test","node_id":"node","boot_id":"boot",
+                    "connection_id":format!("connection-{generation}"),"generation":generation,"instance_id":instance});
+                send(&mut socket, json!({"type":"ready","cluster":identity})).await;
+                assert_eq!(
+                    next(&mut socket).await,
+                    json!({"type":"ready_ack","cluster":identity})
+                );
+                send(&mut socket, json!({"type":"active","cluster":identity})).await;
+                if generation == 1 {
+                    // Real effects and ordinary replies succeed one at a time.
+                    // The peer intentionally withholds completion ACKs, as a
+                    // lost ACK or failed receipt persistence can do in practice.
+                    for index in 0..COUNT {
+                        let operation_id = format!("{index:032x}");
+                        send(&mut socket,json!({"type":"request","id":format!("write-{index}"),"cluster":identity,
+                            "operation":"write_file","execution_budget_ms":5000,
+                            "operation_receipt":{"operation_id":operation_id,"instance_id":instance},
+                            "params":{"root":"work","path":format!("file-{index}"),"content":format!("effect-{index}")}})).await;
+                        let mut receipt = false;
+                        let mut result = false;
+                        while !receipt || !result {
+                            let value = next(&mut socket).await;
+                            if value["type"] == "operation_result" {
+                                assert_eq!(value["operation_id"], operation_id);
+                                assert_eq!(value["execution_state"], "succeeded");
+                                receipt = true;
+                            } else {
+                                assert_eq!(value["id"], format!("write-{index}"));
+                                assert!(value["result"]["sha256"].is_string(), "{value}");
+                                result = true;
+                            }
+                        }
+                    }
+                    socket.close(None).await.unwrap();
+                } else {
+                    let mut completed = HashSet::new();
+                    // This current-thread test gives the Agent no concurrent
+                    // writer thread during binding. Replay must wait for its
+                    // existing 16-frame queue instead of synchronously filling it.
+                    for _ in 0..COUNT {
+                        let receipt = next(&mut socket).await;
+                        assert_eq!(receipt["type"], "operation_result");
+                        assert_eq!(receipt["execution_state"], "succeeded");
+                        assert!(
+                            completed.insert(receipt["operation_id"].as_str().unwrap().to_owned())
+                        );
+                        send(&mut socket,json!({"type":"operation_ack","operation_id":receipt["operation_id"],"instance_id":instance})).await;
+                    }
+                    assert_eq!(completed.len(), COUNT);
+                    socket
+                        .send(Message::Close(Some(
+                            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                                code: CloseCode::Policy,
+                                reason: "fixture complete".into(),
+                            },
+                        )))
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let network = Network::new(None, None, "", None).unwrap();
+        let (_stop, mut shutdown) = watch::channel(false);
+        let mut state = SessionState::new();
+        let first = tokio::time::timeout(
+            Duration::from_secs(10),
+            session(&network, &config, &runtime, &mut shutdown, &mut state),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            first,
+            End::Retry {
+                was_ready: true,
+                ..
+            }
+        ));
+        assert_eq!(runtime.receipts.pending().len(), COUNT);
+        let audit_before = audit.stats()["written"].clone();
+        let second = tokio::time::timeout(
+            Duration::from_secs(10),
+            session(&network, &config, &runtime, &mut shutdown, &mut state),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(second, End::Authorization(_)));
+        core_task.await.unwrap();
+        assert!(runtime.receipts.pending().is_empty());
+        assert_eq!(
+            audit.stats()["written"],
+            audit_before,
+            "replay must not execute or audit another mutation"
+        );
+        for index in 0..COUNT {
+            assert_eq!(
+                std::fs::read_to_string(root.0.join(format!("file-{index}"))).unwrap(),
+                format!("effect-{index}")
+            );
+        }
+        assert!(runtime.shutdown().await);
+        gate_task.abort();
+        let _ = gate_task.await;
+    }
 
     #[tokio::test]
     async fn discovery_binds_instance_and_core_receives_only_the_ticket() {

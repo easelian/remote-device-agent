@@ -304,6 +304,20 @@ impl Receipts {
             return Ok(Begin::Existing(self.status_of(operation_id, Some(record))));
         }
         if state.records.len() >= self.max_records {
+            // The paired Hub acknowledges only durable completion and never
+            // dispatches an already claimed ID again. Keep unacknowledged and
+            // running work; old acknowledged history need not block new work.
+            let oldest = state
+                .records
+                .iter()
+                .filter(|(_, record)| record.settled && record.acknowledged)
+                .min_by_key(|(_, record)| record.sequence)
+                .map(|(id, _)| id.clone());
+            if let Some(oldest) = oldest {
+                state.records.remove(&oldest);
+            }
+        }
+        if state.records.len() >= self.max_records {
             return Err(ReceiptError::new(
                 "operation_capacity",
                 "Operation receipt capacity is busy",
@@ -412,6 +426,121 @@ impl Receipts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acknowledged_history_does_not_block_sequential_operations() {
+        let receipts = Receipts::new("token").unwrap();
+        let instance = json!(receipts.instance_id);
+        for index in 0..2048 {
+            let id = json!(format!("{index:032x}"));
+            assert!(matches!(
+                receipts
+                    .begin(&id, &instance, "write_file", &json!({}))
+                    .unwrap(),
+                Begin::New
+            ));
+            receipts.complete(
+                id.as_str().unwrap(),
+                "succeeded",
+                &json!({"size_bytes": 1}),
+                None,
+            );
+            receipts.acknowledge(&id, &instance);
+            assert!(receipts.pending().is_empty());
+        }
+        assert!(receipts.quiescent());
+        assert_eq!(receipts.state.lock().unwrap().records.len(), 1024);
+        assert_eq!(
+            receipts
+                .status(&json!(format!("{:032x}", 0)), &instance)
+                .unwrap()["execution_state"],
+            "unknown"
+        );
+        assert_eq!(
+            receipts
+                .status(&json!(format!("{:032x}", 2047)), &instance)
+                .unwrap()["execution_state"],
+            "succeeded"
+        );
+    }
+
+    #[test]
+    fn pressure_preserves_running_unacknowledged_and_duplicate_records() {
+        let receipts = Receipts::with_limits("token", 3, Duration::from_secs(3600)).unwrap();
+        let instance = json!(receipts.instance_id);
+        let ids: Vec<_> = (0..5).map(|n| json!(format!("{n:032x}"))).collect();
+        for id in &ids[..3] {
+            assert!(matches!(
+                receipts
+                    .begin(id, &instance, "write_file", &json!({}))
+                    .unwrap(),
+                Begin::New
+            ));
+        }
+        receipts.complete(ids[1].as_str().unwrap(), "succeeded", &json!({}), None);
+        receipts.complete(
+            ids[2].as_str().unwrap(),
+            "failed",
+            &json!({}),
+            Some("io_error"),
+        );
+        receipts.acknowledge(&ids[0], &instance); // An early ACK cannot retire running work.
+        assert_eq!(
+            receipts
+                .begin(&ids[3], &instance, "write_file", &json!({}))
+                .err()
+                .unwrap()
+                .code,
+            "operation_capacity"
+        );
+        receipts.acknowledge(&ids[2], &json!("different-instance"));
+        assert_eq!(
+            receipts
+                .begin(&ids[3], &instance, "write_file", &json!({}))
+                .err()
+                .unwrap()
+                .code,
+            "operation_capacity"
+        );
+        receipts.acknowledge(&ids[2], &instance);
+        assert!(matches!(
+            receipts
+                .begin(&ids[2], &instance, "write_file", &json!({}))
+                .unwrap(),
+            Begin::Existing(_)
+        ));
+        assert_eq!(
+            receipts
+                .begin(&ids[2], &instance, "write_file", &json!({"changed": true}))
+                .err()
+                .unwrap()
+                .code,
+            "operation_conflict"
+        );
+        assert!(matches!(
+            receipts
+                .begin(&ids[3], &instance, "write_file", &json!({}))
+                .unwrap(),
+            Begin::New
+        ));
+        assert_eq!(
+            receipts.status(&ids[0], &instance).unwrap()["execution_state"],
+            "running"
+        );
+        assert_eq!(
+            receipts.status(&ids[1], &instance).unwrap()["execution_state"],
+            "succeeded"
+        );
+        assert_eq!(receipts.pending(), vec![ids[1].as_str().unwrap()]);
+        assert_eq!(
+            receipts
+                .begin(&ids[4], &instance, "write_file", &json!({}))
+                .err()
+                .unwrap()
+                .code,
+            "operation_capacity"
+        );
+    }
 
     #[test]
     fn receipt_fingerprints_distinguish_adjacent_large_integers() {
