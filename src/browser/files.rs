@@ -10,9 +10,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -105,21 +104,10 @@ fn hash_valid(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn open_content(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(io_error)?;
-    let metadata = file.metadata().map_err(io_error)?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::getuid() }
-        || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
-    {
-        return Err(Failure::new("browser_file_unavailable"));
-    }
-    Ok(file)
+    crate::storage::open_private_file(path, false)
+        .map_err(|_| Failure::new("browser_file_unavailable"))
 }
+
 fn hash_file(file: &mut File) -> Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; CHUNK];
@@ -344,11 +332,10 @@ impl Files {
         let mut bytes = vec![0u8; CHUNK.min((meta.size_bytes - offset) as usize)];
         file.read_exact(&mut bytes).map_err(io_error)?;
         let after = file.metadata().map_err(io_error)?;
-        if before.dev() != after.dev()
-            || before.ino() != after.ino()
-            || before.len() != after.len()
-            || before.mtime_nsec() != after.mtime_nsec()
-            || before.mtime() != after.mtime()
+        // Both snapshots describe the same held file handle. Its identity is
+        // fixed; changes to length or write time invalidate this chunk.
+        if before.len() != after.len()
+            || before.modified().map_err(io_error)? != after.modified().map_err(io_error)?
         {
             return Err(Failure::new("browser_file_changed"));
         }
@@ -555,12 +542,7 @@ impl Files {
                         .ok_or_else(|| Failure::new("browser_file_incomplete"))?
                         .to_owned(),
                 );
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                    .open(path.join("content"))
+                let mut file = crate::storage::create_private_file(&path.join("content"))
                     .map_err(io_error)?;
                 let mut received = 0u64;
                 let mut hash = Sha256::new();

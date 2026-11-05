@@ -10,8 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot, watch},
 };
 
@@ -33,7 +32,14 @@ struct Inner {
     next: AtomicU64,
     closed: AtomicBool,
     slots: Arc<Semaphore>,
-    stop: watch::Sender<bool>,
+    stop: watch::Sender<Shutdown>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shutdown {
+    Running,
+    Graceful,
+    Immediate,
 }
 
 #[derive(Clone)]
@@ -76,10 +82,14 @@ impl Control {
 }
 
 impl Cdp {
-    pub fn new(mut read: UnixStream, mut write: UnixStream) -> Self {
+    pub fn new<R, W>(mut read: R, mut write: W) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let (outgoing, mut requests) = mpsc::channel::<Vec<u8>>(32);
         let (events, _) = broadcast::channel(256);
-        let (stop, mut stopped) = watch::channel(false);
+        let (stop, mut stopped) = watch::channel(Shutdown::Running);
         let inner = Arc::new(Inner {
             pending: Mutex::new(PendingState::default()),
             next: AtomicU64::new(1),
@@ -94,7 +104,10 @@ impl Cdp {
             let mut chunk = [0u8; 16384];
             'reader: loop {
                 let count = tokio::select! {
-                    _ = stopped.changed() => break,
+                    _ = stopped.changed() => {
+                        if *stopped.borrow_and_update() == Shutdown::Immediate { break; }
+                        continue;
+                    },
                     result = read.read(&mut chunk) => match result { Ok(0) | Err(_) => break, Ok(n) => n },
                 };
                 for byte in &chunk[..count] {
@@ -156,7 +169,22 @@ impl Cdp {
         tokio::spawn(async move {
             loop {
                 let frame = tokio::select! {
-                    _ = stopped.changed() => break,
+                    biased;
+                    _ = stopped.changed() => {
+                        let graceful = *stopped.borrow_and_update() == Shutdown::Graceful;
+                        if graceful {
+                            // Fence ordinary commands immediately, but retain the read
+                            // pipe while Chromium flushes profile state and exits.
+                            let close = b"{\"id\":0,\"method\":\"Browser.close\",\"params\":{}}\0";
+                            if matches!(tokio::time::timeout(Duration::from_millis(500), write.write_all(close)).await, Ok(Ok(()))) {
+                                tokio::select! {
+                                    _ = stopped.changed() => {},
+                                    _ = tokio::time::sleep(Duration::from_secs(2)) => {},
+                                }
+                            }
+                        }
+                        break;
+                    },
                     frame = requests.recv() => match frame { Some(frame) => frame, None => break },
                 };
                 if !matches!(
@@ -205,6 +233,9 @@ impl Cdp {
     ) -> Result<Value> {
         if Instant::now() >= deadline {
             return Err(Failure::new("browser_deadline"));
+        }
+        if !self.connected() {
+            return Err(Failure::unknown("browser_lost"));
         }
         let permit = self
             .inner
@@ -357,6 +388,9 @@ impl Cdp {
     pub fn stop(&self) {
         self.inner.finish();
     }
+    pub fn graceful_stop(&self) {
+        self.inner.shutdown(Shutdown::Graceful);
+    }
     pub fn authorized(&self, control: Arc<Control>, epoch: u64) -> Self {
         let mut copy = self.clone();
         copy.authorization = Some((control, epoch, false));
@@ -382,16 +416,90 @@ impl Cdp {
 
 impl Inner {
     fn finish(&self) {
+        self.shutdown(Shutdown::Immediate);
+    }
+    fn shutdown(&self, how: Shutdown) {
         let mut pending = self.pending.lock().unwrap();
-        if self.closed.swap(true, Ordering::AcqRel) {
+        // A transport failure may finish graceful shutdown. Repeated graceful
+        // requests must not downgrade an already stopped transport.
+        if self.closed.swap(true, Ordering::AcqRel) && how == Shutdown::Graceful {
             return;
         }
-        self.stop.send_replace(true);
+        self.stop.send_replace(how);
+        self.slots.close();
         for (_, command) in pending.commands.drain() {
             if let Some(reply) = command.reply {
                 let _ = reply.send(Err(Failure::unknown("browser_lost")));
             }
         }
         pending.dialogs.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    #[tokio::test]
+    async fn graceful_close_fences_work_and_keeps_pipe_for_browser_exit() {
+        let (client, server) = tokio::io::duplex(4096);
+        let (read, write) = tokio::io::split(client);
+        let cdp = Cdp::new(read, write);
+        let worker = cdp.clone();
+        let pending = tokio::spawn(async move {
+            worker
+                .call(
+                    None,
+                    "Runtime.evaluate",
+                    json!({}),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+        });
+        let mut server = BufReader::new(server);
+        let mut frame = Vec::new();
+        server.read_until(0, &mut frame).await.unwrap();
+        cdp.graceful_stop();
+        assert!(pending.await.unwrap().is_err());
+        assert!(!cdp.connected());
+        assert!(
+            cdp.call(
+                None,
+                "Page.navigate",
+                json!({}),
+                Instant::now() + Duration::from_secs(1)
+            )
+            .await
+            .is_err()
+        );
+        frame.clear();
+        tokio::time::timeout(Duration::from_secs(1), server.read_until(0, &mut frame))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&frame[..frame.len() - 1]).unwrap()["method"],
+            "Browser.close"
+        );
+        // The browser can still acknowledge close; no premature EOF before it
+        // has persisted the profile and shut its own pipe down.
+        server
+            .get_mut()
+            .write_all(b"{\"id\":0,\"result\":{}}\0")
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), server.read_u8())
+                .await
+                .is_err()
+        );
+        cdp.stop();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), server.read_u8())
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 }

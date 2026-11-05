@@ -28,8 +28,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ID_BOTH_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_TYPE_DISK,
     FileBasicInfo, FileDispositionInfo, FileIdBothDirectoryInfo, FileIdInfo,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType, OPEN_EXISTING,
-    SYNCHRONIZE, SetFileInformationByHandle,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType,
+    GetFinalPathNameByHandleW, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
+    VOLUME_NAME_NT,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 
@@ -220,6 +221,34 @@ fn snapshot(file: &File) -> Result<Snapshot, String> {
     })
 }
 
+fn public_directory(file: &File) -> Result<(), String> {
+    // A short NTFS name can bypass a textual component check. Ask the kernel
+    // for the normalized path of the held directory before traversing it.
+    let mut path = vec![0u16; 32768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            path.as_mut_ptr(),
+            path.len() as u32,
+            VOLUME_NAME_NT,
+        )
+    } as usize;
+    if length == 0 {
+        return Err(last_error());
+    }
+    if length >= path.len() {
+        return Err(invalid());
+    }
+    let path = String::from_utf16(&path[..length]).map_err(|_| invalid())?;
+    if path
+        .split(['\\', '/'])
+        .any(|part| part.eq_ignore_ascii_case(".rdh-browser"))
+    {
+        return Err("Browser private storage is not exposed by file tools".into());
+    }
+    Ok(())
+}
+
 fn open_base(path: &[u16], access: u32) -> Result<File, String> {
     // SAFETY: root_parts constructs one terminated drive/share path.
     let handle = unsafe {
@@ -241,6 +270,7 @@ fn open_base(path: &[u16], access: u32) -> Result<File, String> {
     if !snapshot(&file)?.directory() {
         return Err(invalid());
     }
+    public_directory(&file)?;
     Ok(file)
 }
 
@@ -320,6 +350,9 @@ fn child(
     let facts = snapshot(&file).map_err(io::Error::other)?;
     if directory && !facts.directory() {
         return Err(io::Error::other(invalid()));
+    }
+    if facts.directory() {
+        public_directory(&file).map_err(io::Error::other)?;
     }
     Ok(file)
 }

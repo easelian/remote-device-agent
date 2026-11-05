@@ -35,7 +35,7 @@ use windows_sys::Win32::{
     },
 };
 
-mod pipe;
+pub(crate) mod pipe;
 pub(super) type Input = pipe::Pipe;
 
 pub(super) const TREE_TERMINATION: &str = "job-object";
@@ -314,9 +314,9 @@ fn executable(shell: &str, cwd: &Path, env: &Environment) -> io::Result<PathBuf>
     Err(io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32))
 }
 
-struct Attributes(Vec<usize>);
+pub(crate) struct Attributes(Vec<usize>);
 impl Attributes {
-    fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         let mut bytes = 0;
         // SAFETY: sizing query has no destination buffer.
         unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes) };
@@ -336,7 +336,7 @@ impl Attributes {
         }
         Ok(Self(buffer))
     }
-    fn handles(&mut self, attribute: u32, handles: &[HANDLE]) -> io::Result<()> {
+    pub(crate) fn handles(&mut self, attribute: u32, handles: &[HANDLE]) -> io::Result<()> {
         // SAFETY: caller retains the slice and its owned handles until this
         // initialized attribute list has been deleted.
         if unsafe {
@@ -354,6 +354,11 @@ impl Attributes {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+}
+impl Attributes {
+    pub(crate) fn apply(&mut self, startup: &mut STARTUPINFOEXW) {
+        startup.lpAttributeList = self.0.as_mut_ptr().cast();
     }
 }
 impl Drop for Attributes {
@@ -452,7 +457,7 @@ fn spawn_native(
     startup.StartupInfo.hStdInput = inherited[0];
     startup.StartupInfo.hStdOutput = inherited[1];
     startup.StartupInfo.hStdError = inherited[2];
-    startup.lpAttributeList = attributes.0.as_mut_ptr().cast();
+    attributes.apply(&mut startup);
     let mut information = PROCESS_INFORMATION::default();
     if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
         return Err(cancelled_error());

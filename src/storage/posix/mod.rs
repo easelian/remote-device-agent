@@ -48,6 +48,45 @@ pub fn create_private_dir(path: &Path) -> Result<Metadata> {
     private_metadata(path, true)
 }
 
+fn verify_stream_file(file: &File, path: &Path) -> Result<()> {
+    let metadata = file.metadata()?;
+    verify_metadata(&metadata, false)?;
+    let current = private_metadata(path, false)?;
+    if metadata.nlink() != 1
+        || current.nlink() != 1
+        || metadata.dev() != current.dev()
+        || metadata.ino() != current.ino()
+    {
+        return Err(Error::message(
+            "Private file must have one link and retain its identity while opened",
+        ));
+    }
+    Ok(())
+}
+
+/// Exclusively create a private, write-only stream. The caller bounds its size.
+pub fn create_private_file(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    verify_stream_file(&file, path)?;
+    Ok(file)
+}
+
+/// Open a checked stream without truncating it or imposing a content-size limit.
+pub fn open_private_file(path: &Path, writable: bool) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(writable)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    verify_stream_file(&file, path)?;
+    Ok(file)
+}
+
 pub fn read_private(path: &Path) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)

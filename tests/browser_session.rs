@@ -1,5 +1,13 @@
 //! Real Chromium + production RPC/receipt path; explicitly opt in with a browser binary.
-#![cfg(target_os = "linux")]
+#![cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 use axum::{
     Json, Router,
     extract::State,
@@ -24,6 +32,10 @@ const PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>RDH browser fi
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("Preserved failing browser fixture: {}", self.0.display());
+            return;
+        }
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -156,7 +168,7 @@ fn profile_peer(root: &std::path::Path, executable: &str, downloads: bool) -> Pe
     browser_peer(root, executable, downloads, false)
 }
 fn browser_peer(root: &std::path::Path, executable: &str, downloads: bool, uploads: bool) -> Peer {
-    let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":{"work":root},"allow_write":false,"allow_shell":false})).unwrap();
+    let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":rdh_agent::config::local_roots(&[format!("work={}", root.display())]).unwrap(),"allow_write":false,"allow_shell":false})).unwrap();
     let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"downloads":downloads,"uploads":uploads,"executable":executable}}), &config).unwrap();
     let runtime =
         Runtime::with_config_path(config, policy, None, None, Some(&root.join("device.json")))
@@ -172,7 +184,7 @@ fn browser_peer(root: &std::path::Path, executable: &str, downloads: bool, uploa
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn bounded_download_delivery_privacy_cancel_and_recovery() {
     use base64::Engine;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -451,7 +463,7 @@ async fn bounded_download_delivery_privacy_cancel_and_recovery() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn named_profile_persistence_isolation_and_exclusive_ownership() {
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").expect("set exact test browser path");
     let temp = Temp(std::env::temp_dir().join(format!(
@@ -459,7 +471,7 @@ async fn named_profile_persistence_isolation_and_exclusive_ownership() {
         random::hex_token::<8>().unwrap()
     )));
     rdh_agent::storage::create_private_dir(&temp.0).unwrap();
-    let app = Router::new().route("/", get(||async {Html(r#"<!doctype html><meta charset="utf-8"><title>Profile fixture</title><h1 id="state"></h1><button id="remember">Remember</button><script>function show(){document.querySelector('#state').textContent=localStorage.getItem('fixture')==='saved'&&document.cookie.includes('fixture=saved')?'Stored login':'Fresh profile';}remember.onclick=()=>{localStorage.setItem('fixture','saved');document.cookie='fixture=saved; Max-Age=86400; SameSite=Lax';show();};show();</script>"#)}));
+    let app = Router::new().route("/", get(||async {Html(r#"<!doctype html><meta charset="utf-8"><title>Profile fixture</title><h1 id="state"></h1><button id="remember">Remember</button><script>function show(){const stored=localStorage.getItem('fixture')==='saved',cookie=document.cookie.includes('fixture=saved');document.querySelector('#state').textContent=stored&&cookie?'Stored login':stored?'Missing cookie':cookie?'Missing storage':'Fresh profile';}remember.onclick=()=>{localStorage.setItem('fixture','saved');document.cookie='fixture=saved; Max-Age=86400; SameSite=Lax';show();};show();</script>"#)}));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -614,6 +626,7 @@ async fn named_profile_persistence_isolation_and_exclusive_ownership() {
             json!({"url":url,"profile_name":"工作账号 中文"}),
         )
         .await;
+    assert!(fresh.get("error").is_none(), "{fresh}");
     let id = fresh["result"]["session_id"].as_str().unwrap();
     peer.observe_named(id, 1, "Fresh profile").await;
     assert!(peer.runtime.shutdown().await);
@@ -622,7 +635,7 @@ async fn named_profile_persistence_isolation_and_exclusive_ownership() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").expect("set exact test browser path");
     let temp = Temp(std::env::temp_dir().join(format!(
@@ -663,7 +676,7 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let config=DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"browser-test","token":"x".repeat(48),"roots":{"work":temp.0},"allow_write":false,"allow_shell":false})).unwrap();
+    let config=DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"browser-test","token":"x".repeat(48),"roots":rdh_agent::config::local_roots(&[format!("work={}", temp.0.display())]).unwrap(),"allow_write":false,"allow_shell":false})).unwrap();
     let policy = Policy::parse(
         &json!({"version":1,"browser":{"enabled":true,"executable":executable}}),
         &config,
@@ -1111,7 +1124,7 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn human_approved_upload_is_private_bound_and_single_use() {
     use base64::Engine;
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
@@ -1250,7 +1263,7 @@ async fn human_approved_upload_is_private_bound_and_single_use() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
@@ -1263,12 +1276,19 @@ async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents(
         .map(|i| format!("<p>Row {i:04}</p>"))
         .collect::<String>();
     let text = "甲😀e\u{301}段落".repeat(500);
-    let text_page = format!("<!doctype html><meta charset=utf-8><p>{text}</p>");
+    let text_page = format!(
+        "<!doctype html><meta charset=utf-8><p>{text}</p><script>fetch('/ready-text',{{method:'POST'}})</script>"
+    );
+    let loaded = Arc::new(AtomicUsize::new(0));
+    let scan_loaded = loaded.clone();
+    let text_loaded = loaded.clone();
     let mutation = Arc::new(AtomicUsize::new(0));
     let app=Router::new()
         .route("/long",get(move||{let page=format!("<!doctype html><meta charset=utf-8>{rows}");async{Html(page)}}))
-        .route("/scan",get(||async{Html(format!("<!doctype html>{}<p>Tail reached</p>","<span></span>".repeat(12000)))}))
+        .route("/scan",get(||async{Html(format!("<!doctype html>{}<p>Tail reached</p><script>fetch('/ready-scan',{{method:'POST'}})</script>","<span></span>".repeat(12000)))}))
         .route("/text",get(move||{let page=text_page.clone();async{Html(page)}}))
+        .route("/ready-scan",post(move||{let loaded=scan_loaded.clone();async move {loaded.store(1,Ordering::Release);"ok"}}))
+        .route("/ready-text",post(move||{let loaded=text_loaded.clone();async move {loaded.store(2,Ordering::Release);"ok"}}))
         .route("/changing",get(||async{Html("<!doctype html><p>Before change</p><p>Second paragraph</p><script>let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;document.querySelector('p').textContent='After change';await fetch('/seen',{method:'POST'});}},20);</script>")}))
         .route("/shadow-changing",get(||async{Html("<!doctype html><div id='host'></div><script>const root=document.querySelector('#host').attachShadow({mode:'open'});root.innerHTML='<p>'+('Shadow before '.repeat(100))+'</p>';let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;root.querySelector('p').firstChild.nodeValue='Shadow after '.repeat(100);await fetch('/seen',{method:'POST'});}},20);</script>")}))
         .route("/change",get(|State(state):State<Arc<AtomicUsize>>|async move{Json(state.load(Ordering::Acquire)>0)}))
@@ -1314,7 +1334,16 @@ async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents(
     assert!(pages >= 6);
     for path in ["scan", "text"] {
         peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/{path}")}})).await;
-        // Navigation acknowledgement is not document readiness.
+        // Wait for the fixture's independent end-of-document signal. A new URL
+        // can be visible before any DOM text is parsed on a native browser.
+        let expected_loaded = if path == "scan" { 1 } else { 2 };
+        for _ in 0..80 {
+            if loaded.load(Ordering::Acquire) == expected_loaded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(loaded.load(Ordering::Acquire), expected_loaded);
         let mut first = Value::Null;
         for _ in 0..40 {
             let candidate = peer

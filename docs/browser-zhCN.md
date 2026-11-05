@@ -2,17 +2,17 @@
 
 [English](browser.md) | 简体中文
 
-通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。当前 worktree 已完成本地验证，这些浏览器改动尚未发布或部署。
+通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。平台实现与原生验证范围见[方案第 17.13 节](browser-plan-zhCN.md#1713-windowsmacos-与共用实现2026-11-05)。这些浏览器改动尚未发布或部署。
 
 服务端需将 Core 的 `http.browser_user_url` 设为用户网站的 origin，在 Gate 的网页登录动作列表允许 `browser:control`，并应用包含 `device-browser` 用途的配套 Auth application-access 契约。Server 示例配置已包含这些设置；构建 worktree 不会修改已部署服务。
 
 ## 启用浏览器
 
-远程设备需要能以 Agent 所属操作系统账号、在启用沙箱的条件下运行的 Chromium 可执行文件。Agent 使用独立的浏览器资料目录和私有协议管道，不接管日常浏览器。当前执行支持限于 Linux；本地验证使用 x64 Headless Chrome 146 和 Chromium 156，其他平台与浏览器安装包尚未验证。
+远程设备需要能以 Agent 所属操作系统账号、在启用沙箱的条件下运行的 Chromium 可执行文件。Agent 使用独立的浏览器资料目录和私有协议管道，不接管日常浏览器。共用运行时支持 Linux 和 macOS；Windows 构建需要原生进程及私有存储功能，默认构建已启用。原生验证覆盖 Linux x64、macOS ARM64 和 Windows 11 ARM64，其他架构与浏览器安装包仍需各自运行证据。
 
 1. 正常运行候选 `rdh`，按需完成设备绑定。终端会显示 `AI browser sessions` 和确切的 `Local browser policy` 路径；已绑定设备继续使用原身份。
-2. 停止 Agent，打开这个策略文件；文件不存在时再创建。保留已有配置，并添加下方的 `browser` 对象。文件必须属于 Agent 用户、权限为 `0600`，且不能是符号链接，详见[本地策略文件](hardening.md#policy-file)。
-3. 将 `executable` 改为已安装浏览器的绝对可执行路径。省略时依次检查 `/usr/bin/chromium`、`/usr/bin/chromium-browser`、`/usr/bin/google-chrome`、`/opt/google/chrome/chrome`。找到文件不代表启动包装器、依赖和沙箱已经验证；首次创建会话时才检查实际启动结果。
+2. 停止 Agent，打开这个策略文件；文件不存在时再创建。保留已有配置，并添加下方的 `browser` 对象。文件必须属于 Agent 用户：Linux/macOS 使用 `0600`，Windows 使用关闭继承的私有 ACL；不接受符号链接或 Windows 重解析路径，详见[本地策略文件](hardening.md#policy-file)。
+3. 按需将 `executable` 设为已安装浏览器的绝对可执行路径；省略时按下表自动查找。找到文件不代表启动包装器、依赖和沙箱已经验证；首次创建会话时才检查实际启动结果。
 4. 重新运行同一个 `rdh`。设备页面会显示浏览器未启用、不支持、未安装或已启用；AI 也可以读取 `device_info.capabilities.browser`。浏览器权限独立于文件和 shell 权限，不需要为此开启 shell 或通用文件写入。
 
 下面的完整策略适用于没有其他本地设置的情况。三个可选功能均关闭，需要时分别改为 `true`；已有策略文件只合并 `browser` 字段，不覆盖其他设置。
@@ -22,13 +22,22 @@
   "version": 1,
   "browser": {
     "enabled": true,
-    "executable": "/usr/bin/chromium",
     "persistent_profiles": false,
     "downloads": false,
     "uploads": false
   }
 }
 ```
+
+自动查找按下列顺序检查文件。显式配置 `executable` 时应填写实际绝对路径，不使用环境变量占位符。
+
+| 平台 | 自动查找位置 |
+| --- | --- |
+| Linux | `/usr/bin/chromium`、`/usr/bin/chromium-browser`、`/usr/bin/google-chrome`、`/opt/google/chrome/chrome` |
+| macOS | `/Applications` 下的 Chrome、Edge、Chromium、Chrome for Testing 应用可执行文件 |
+| Windows | 依次在 `ProgramFiles`、`ProgramFiles(x86)`、`LOCALAPPDATA` 下检查 Chrome、Edge、Chromium |
+
+macOS 保留登录 Cookie 需要浏览器能正常访问用户已解锁的钥匙串。资料持久化用例在已登录用户的 GUI 启动会话中通过；由 SSH 启动时，站点存储保留，但 Cookie 丢失，浏览器报告加密不可用。需要保留登录时，应在相应的已登录用户会话中运行 Agent；Agent 不解锁钥匙串，也不绕过浏览器加密。
 
 如果设置了 `allowed_operations`，还需允许所需的浏览器工具；人工网页使用内部操作 `browser_human`。Agent 不会自动安装浏览器或开启这些权限。浏览器请求使用远程设备的网络，共享文件目录不限制可访问的网站。
 
@@ -54,7 +63,7 @@ AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，
 
 ## 保留登录与传输文件
 
-将 `persistent_profiles` 设为 `true` 后，可以在 `browser_open.profile_name` 指定名称。命名资料绑定当前设备凭据和 AI 授权；关闭会话后保留 Cookie 与站点存储，其他 AI 授权不能直接复用。通过 `browser_profiles` 查看资料，以 `browser_control` 的 `delete_profile` 动作删除未使用的资料。占用中的资料不能重复打开或删除。
+将 `persistent_profiles` 设为 `true` 后，可以在 `browser_open.profile_name` 指定名称。命名资料绑定当前设备凭据和 AI 授权；正常关闭会请求浏览器写入 Cookie 与站点存储，持久化仍依赖上述浏览器和操作系统加密条件。其他 AI 授权不能直接复用。通过 `browser_profiles` 查看资料，以 `browser_control` 的 `delete_profile` 动作删除未使用的资料。占用中的资料不能重复打开或删除。
 
 启用 `downloads` 后，受支持的 HTTP 文档附件会出现在 `browser_files` 和“浏览器文件”页面中，可在登录后的页面保存到本地。附件必须明确声明长度、状态码为 200、没有内容压缩；Blob 和无长度流式下载尚不支持。文件字节不返回给 AI。
 
@@ -66,7 +75,7 @@ AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，
 - 临时资料在所属浏览器进程退出后清理。命名资料保留到明确删除，每个设备绑定最多十六份；浏览器资料、缓存与内存没有硬配额。
 - 上传和下载共用暂存预算：单文件 32 MiB、合计 128 MiB、最多十六份。完成的下载保留 24 小时；已经使用的上传副本最迟保留到创建后 24 小时。关闭会话不删除已完成下载。
 - 解绑确认后，待所属工作停止，再删除这个绑定的私有浏览器资料和暂存文件。无法确认清理时保留绑定记录及待处理状态，供重试；不影响其他绑定或已经保存到本地的文件。
-- Agent 重启会丢弃未完成下载和全部上传副本，核验并清理所属浏览器进程，不恢复旧会话或重放网站动作。此前持久化的命名资料可在恢复后使用。
-- `.rdh-browser` 是 Agent 私有存储，Linux 文件读取、写入、列表、搜索和共享根配置均排除这个目录。Shell 权限仍代表 Agent 所属操作系统账号的权限，这项排除不是 shell 沙箱，也不能隔离同一系统账号的直接访问。
+- Agent 重启会丢弃未完成下载和全部上传副本，不恢复旧会话或重放网站动作。POSIX 恢复会核验原进程组；Windows 的中断运行若缺少持久化的进程树完成标记，将保留资料并返回 `browser_cleanup_pending`，阻止复用和解绑删除。Job 句柄丢失或只观察到主进程退出，均不能证明所有后代已停止；当前尚不支持自动回收这种状态。
+- `.rdh-browser` 是 Agent 私有存储，文件读取、写入、列表、搜索和共享根配置均排除这个目录。名称匹配忽略大小写，Windows 还核对规范目录路径，拒绝短文件名别名。Shell 权限仍代表 Agent 所属操作系统账号的权限，这项排除不是 shell 沙箱，也不能隔离同一系统账号的直接访问。
 
-源码、证据和剩余发布门槛见[浏览器方案与验收计划](browser-plan-zhCN.md)。实际 AI 宿主展示、目标平台运行、负载性能和人工体验验收仍待完成。首次权限配置和浏览器安装目前需要在远程设备本地完成；网页已提供状态说明和已有会话入口。
+源码、证据和剩余发布门槛见[浏览器方案与验收计划](browser-plan-zhCN.md)。实际 AI 宿主展示、其余 OS/架构组合、负载性能和人工体验验收仍待完成。首次权限配置和浏览器安装目前需要在远程设备本地完成；网页已提供状态说明和已有会话入口。

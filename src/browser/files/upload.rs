@@ -101,13 +101,7 @@ impl Files {
         );
         let result = (|| {
             self.save(&meta)?;
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(path.join("content"))
-                .map_err(io_error)?;
+            crate::storage::create_private_file(&path.join("content")).map_err(io_error)?;
             let mut result = value(&meta);
             result["offset"] = 0.into();
             Ok(result)
@@ -166,20 +160,13 @@ impl Files {
             {
                 return Err(Failure::new("browser_upload_offset"));
             }
-            let mut file = OpenOptions::new()
-                .append(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-                .open(path.join("content"))
-                .map_err(io_error)?;
+            let mut file =
+                crate::storage::open_private_file(&path.join("content"), true).map_err(io_error)?;
             let stat = file.metadata().map_err(io_error)?;
-            if !stat.is_file()
-                || stat.nlink() != 1
-                || stat.uid() != unsafe { libc::getuid() }
-                || stat.mode() & 0o077 != 0
-                || stat.len() != upload.received
-            {
+            if stat.len() != upload.received {
                 return Err(Failure::new("browser_file_changed"));
             }
+            file.seek(SeekFrom::End(0)).map_err(io_error)?;
             file.write_all(&bytes)
                 .map_err(|_| Failure::unknown("browser_io_error"))?;
             upload.received += bytes.len() as u64;
@@ -189,13 +176,16 @@ impl Files {
         if params["action"] != "upload_finish" || upload.received != entry.meta.size_bytes {
             return Err(Failure::new("browser_file_incomplete"));
         }
-        let mut file = open_content(&path.join("content"))?;
+        let mut file =
+            crate::storage::open_private_file(&path.join("content"), true).map_err(io_error)?;
         if file.metadata().map_err(io_error)?.len() != entry.meta.size_bytes
             || hash_file(&mut file)? != entry.meta.sha256
         {
             return Err(Failure::new("browser_file_changed"));
         }
         file.sync_all().map_err(io_error)?;
+        // Windows does not permit renaming an open stream that denies deletion.
+        drop(file);
         let payload = path.join("payload");
         crate::storage::create_private_dir(&payload).map_err(io_error)?;
         fs::rename(path.join("content"), payload.join(&entry.meta.name)).map_err(io_error)?;

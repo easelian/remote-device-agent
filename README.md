@@ -116,7 +116,7 @@ See [Network configuration](docs/network.md) and [Hardening](docs/hardening.md).
 
 ## Browser tasks
 
-Opt-in Linux browser sessions support structured page reads, browser-only input,
+Opt-in Linux, macOS and Windows browser sessions support structured page reads, browser-only input,
 human login, screenshots, named profiles and bounded file transfer. Use the
 [Browser guide](docs/browser.md) to enable the local policy and check the matching
 Hub requirements. These browser changes have local validation and are not yet

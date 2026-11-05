@@ -9,11 +9,8 @@ use serde_json::Value;
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
-#[cfg(any(
-    all(test, unix),
-    all(target_os = "macos", feature = "experimental-macos-processes")
-))]
-mod macos;
+#[cfg(any(all(test, unix), target_os = "macos"))]
+pub(crate) mod macos;
 
 #[cfg(any(
     target_os = "linux",
@@ -173,8 +170,21 @@ mod windows_default_tests {
 ))]
 mod native;
 
-#[cfg(all(test, windows, feature = "experimental-windows-startup"))]
+#[cfg(all(
+    windows,
+    feature = "experimental-windows-processes",
+    any(feature = "experimental-windows-private-storage", test)
+))]
 pub(crate) use native::platform::quote as windows_argument;
 
 #[cfg(all(windows, feature = "experimental-windows-processes"))]
 pub(crate) use native::platform::check_program as check_update_program;
+
+// Native browser launch uses the same restricted inheritance list and private
+// nonblocking pipe implementation as the Windows process supervisor.
+#[cfg(all(
+    windows,
+    feature = "experimental-windows-processes",
+    feature = "experimental-windows-private-storage"
+))]
+pub(crate) use native::platform::{Attributes as WindowsProcessAttributes, pipe as windows_pipe};

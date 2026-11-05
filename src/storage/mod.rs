@@ -38,7 +38,10 @@ pub(crate) fn sync_directory(directory: &std::fs::File) -> std::io::Result<()> {
 pub(crate) mod windows;
 
 #[cfg(all(windows, feature = "experimental-windows-private-storage"))]
-pub use windows::{ensure_parent, read_private, write_private_new, write_private_replace};
+pub use windows::{
+    create_private_dir, create_private_file, ensure_parent, open_private_file, private_metadata,
+    read_private, write_private_new, write_private_replace,
+};
 
 #[cfg(unix)]
 #[path = "posix/mod.rs"]
@@ -46,8 +49,8 @@ mod platform;
 
 #[cfg(unix)]
 pub use platform::{
-    create_private_dir, ensure_parent, private_metadata, read_private, write_private_new,
-    write_private_replace,
+    create_private_dir, create_private_file, ensure_parent, open_private_file, private_metadata,
+    read_private, write_private_new, write_private_replace,
 };
 
 #[cfg(all(
@@ -141,5 +144,106 @@ mod tests {
         fs::set_permissions(&config, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_private(&config).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(all(
+    test,
+    any(unix, all(windows, feature = "experimental-windows-private-storage"))
+))]
+mod stream_tests {
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::PathBuf;
+
+    use super::*;
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "rdh-private-stream-{}",
+                crate::random::hex_token::<12>().unwrap()
+            ));
+            create_private_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn streams_support_large_files_and_preserve_contents_when_reopened() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("download");
+        let contents = vec![0x5a; MAX_PRIVATE_FILE_BYTES as usize + 17];
+        let mut created = create_private_file(&path).unwrap();
+        created.write_all(&contents).unwrap();
+        drop(created);
+        assert!(create_private_file(&path).is_err());
+
+        let mut reader = open_private_file(&path, false).unwrap();
+        assert!(reader.write_all(b"forbidden").is_err());
+        let mut actual = Vec::new();
+        reader.read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, contents);
+        drop(reader);
+
+        let mut writer = open_private_file(&path, true).unwrap();
+        let mut prefix = [0; 4];
+        writer.read_exact(&mut prefix).unwrap();
+        assert_eq!(prefix, [0x5a; 4]);
+        assert_eq!(
+            writer.seek(SeekFrom::End(0)).unwrap(),
+            contents.len() as u64
+        );
+        writer.write_all(b"tail").unwrap();
+        drop(writer);
+        let mut actual = Vec::new();
+        open_private_file(&path, false)
+            .unwrap()
+            .read_to_end(&mut actual)
+            .unwrap();
+        assert_eq!(&actual[..contents.len()], contents);
+        assert_eq!(&actual[contents.len()..], b"tail");
+        // The configuration API retains its independent size limit.
+        assert!(read_private(&path).is_err());
+    }
+
+    #[test]
+    fn streams_reject_directories_and_multiply_linked_files() {
+        let fixture = Fixture::new();
+        assert!(open_private_file(&fixture.0, false).is_err());
+        let path = fixture.0.join("download");
+        drop(create_private_file(&path).unwrap());
+        let alias = fixture.0.join("alias");
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(open_private_file(&path, false).is_err());
+        assert!(open_private_file(&alias, true).is_err());
+        fs::remove_file(alias).unwrap();
+        assert!(open_private_file(&path, true).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn streams_reject_symlinks_and_group_readable_files() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let fixture = Fixture::new();
+        let path = fixture.0.join("download");
+        drop(create_private_file(&path).unwrap());
+        let alias = fixture.0.join("alias");
+        symlink(&path, &alias).unwrap();
+        assert!(open_private_file(&alias, false).is_err());
+        assert!(open_private_file(&alias, true).is_err());
+        assert!(create_private_file(&alias).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(open_private_file(&path, false).is_err());
+        assert!(open_private_file(&path, true).is_err());
     }
 }

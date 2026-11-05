@@ -1,13 +1,40 @@
 //! Opt-in browser sessions. The Hub supplies identity outside model arguments.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+)))]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+)))]
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(any(
+    test,
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    ))
+))]
 use serde_json::json;
 
 pub const OPERATIONS: &[&str] = &[
@@ -106,24 +133,96 @@ impl std::fmt::Display for Failure {
 impl std::error::Error for Failure {}
 type Result<T> = std::result::Result<T, Failure>;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod cdp;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod files;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod image;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod page;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod process;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod profiles;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod runtime;
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 pub use runtime::Browsers;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 pub(crate) fn storage_root(config: &std::path::Path, token: &str) -> Option<PathBuf> {
     config.parent().map(|parent| {
         parent
@@ -132,7 +231,15 @@ pub(crate) fn storage_root(config: &std::path::Path, token: &str) -> Option<Path
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 fn storage_lock(root: &std::path::Path) -> PathBuf {
     // The lock must survive deletion of the namespace payload. Config files
     // with different names but the same parent/token share this exclusion.
@@ -142,7 +249,15 @@ fn storage_lock(root: &std::path::Path) -> PathBuf {
 /// Called only after Agent shutdown and while the binding's lifecycle lock is held.
 /// Retire this binding's browser data without touching other namespaces.
 pub(crate) fn remove_binding(config: &std::path::Path, token: &str) -> crate::error::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    ))]
     {
         let Some(root) = storage_root(config, token) else {
             return Ok(());
@@ -166,16 +281,41 @@ pub(crate) fn remove_binding(config: &std::path::Path, token: &str) -> crate::er
         }
         process::recover(&root).map_err(|error| crate::error::Error::message(error.to_string()))?;
         std::fs::remove_dir_all(&root)?;
+        #[cfg(unix)]
         crate::storage::sync_directory(&std::fs::File::open(root.parent().unwrap())?)?;
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    )))]
     let _ = (config, token);
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+)))]
 pub struct Browsers;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+)))]
 impl Browsers {
     pub fn new(_: &Settings, _: Option<&Path>, _: &str) -> Self {
         Self
@@ -204,7 +344,15 @@ impl Browsers {
 }
 
 // Keep all protocol errors content-free: a page can put secrets in CDP errors.
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 fn io_error(_: impl std::fmt::Display) -> Failure {
     Failure::new("browser_io_error")
 }
@@ -212,7 +360,15 @@ fn io_error(_: impl std::fmt::Display) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    ))]
     #[test]
     fn retiring_binding_requires_exclusive_storage_and_preserves_neighbors() {
         let temp = std::env::temp_dir().join(format!(
@@ -250,9 +406,12 @@ mod tests {
         );
         remove_binding(&config, "retired-token").unwrap();
         // A replaced namespace must never redirect retirement to another directory.
-        std::os::unix::fs::symlink(&neighbor, &root).unwrap();
-        assert!(remove_binding(&config, "retired-token").is_err());
-        assert!(neighbor.join("keep").exists());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&neighbor, &root).unwrap();
+            assert!(remove_binding(&config, "retired-token").is_err());
+            assert!(neighbor.join("keep").exists());
+        }
         std::fs::remove_dir_all(temp).unwrap();
     }
     #[test]

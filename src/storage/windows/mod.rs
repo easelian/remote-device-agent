@@ -3,7 +3,7 @@
 //! Replacement requires FileRenameInformationEx;
 //! unsupported systems never fall back to deleting or truncating the target.
 use std::ffi::{OsStr, c_void};
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::io::{self, Read, Write};
 use std::mem::{offset_of, size_of, size_of_val};
 use std::os::windows::ffi::OsStrExt;
@@ -860,6 +860,46 @@ pub(crate) fn open_parent(
 
 pub fn ensure_parent(path: &Path) -> Result<()> {
     open_parent(path, true, true).map(|_| ())
+}
+
+pub fn create_private_dir(path: &Path) -> Result<Metadata> {
+    let (directories, name) = open_parent(path, false, false)?;
+    let directory = create_child(directories.last().expect("root exists"), &name, true)?;
+    Ok(directory.metadata()?)
+}
+
+pub fn private_metadata(path: &Path, directory: bool) -> Result<Metadata> {
+    let (directories, name) = open_parent(path, false, false)?;
+    let file = open_child(
+        directories.last().expect("root exists"),
+        &name,
+        directory,
+        true,
+    )?;
+    check_file_acl(&file)?;
+    Ok(file.metadata()?)
+}
+
+/// Exclusively create a private, write-only stream. The caller bounds its size.
+pub fn create_private_file(path: &Path) -> Result<File> {
+    let (directories, name) = open_parent(path, false, true)?;
+    create_child(directories.last().expect("root exists"), &name, false)
+}
+
+/// Open a checked stream without truncating it or imposing a content-size limit.
+pub fn open_private_file(path: &Path, writable: bool) -> Result<File> {
+    let (directories, name) = open_parent(path, false, false)?;
+    let file = open_child_request(
+        directories.last().expect("root exists"),
+        &name,
+        false,
+        GENERIC_READ | READ_CONTROL | SYNCHRONIZE | if writable { GENERIC_WRITE } else { 0 },
+        FILE_SHARE_READ,
+    )?;
+    check_file_acl(&file)?;
+    // Ancestors stay pinned through the handle-relative open and validation.
+    // The returned handle denies deletion and additional writers for its lifetime.
+    Ok(file)
 }
 
 pub fn read_private(path: &Path) -> Result<Vec<u8>> {
@@ -1814,12 +1854,15 @@ mod tests {
         let path = fixture.write_with_acl(false);
         let error = read_private(&path).unwrap_err().to_string();
         assert!(error.contains("owner or ACL"), "{error}");
+        assert!(private_metadata(&path, false).is_err());
+        assert!(open_private_file(&path, false).is_err());
+        assert!(open_private_file(&path, true).is_err());
     }
 
     #[test]
     fn relative_handle_opens_the_named_file_and_refuses_reparse_points() {
         let fixture = Fixture::new();
-        let path = fixture.write_with_acl(false);
+        let path = fixture.write_with_acl(true);
         let (root, parts) = path_parts(&path).unwrap();
         let mut directories = vec![open_root(&root, false).unwrap()];
         for name in &parts[..parts.len() - 1] {
@@ -1841,6 +1884,9 @@ mod tests {
         let link = fixture.0.join("link.json");
         match std::os::windows::fs::symlink_file(&path, &link) {
             Ok(()) => {
+                assert!(open_private_file(&link, false).is_err());
+                assert!(open_private_file(&link, true).is_err());
+                assert!(private_metadata(&link, false).is_err());
                 let name: Vec<u16> = link.file_name().unwrap().encode_wide().collect();
                 assert!(open_child(directory, &name, false, true).is_err());
                 let target = fixture.0.join("directory");

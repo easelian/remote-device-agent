@@ -419,7 +419,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn browser_storage_is_excluded_from_reads_search_and_root_aliases() {
         let fixture = Fixture::with_write(true);
@@ -451,6 +450,38 @@ mod tests {
             ),
         ] {
             assert!(fixture.call(operation, params).is_err(), "{operation}");
+        }
+        assert!(
+            fixture
+                .call(
+                    "read_file",
+                    json!({"path":"settings/.RDH-BROWSER/binding/Cookies"})
+                )
+                .is_err()
+        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+            let directory = private.parent().unwrap();
+            let path: Vec<u16> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
+            let mut short = vec![0u16; 32768];
+            let length =
+                unsafe { GetShortPathNameW(path.as_ptr(), short.as_mut_ptr(), short.len() as u32) }
+                    as usize;
+            assert!(length > 0 && length < short.len());
+            let short = String::from_utf16(&short[..length]).unwrap();
+            let name = short.rsplit('\\').next().unwrap();
+            // Volumes with 8.3 names disabled return the original spelling.
+            assert!(
+                fixture
+                    .call(
+                        "read_file",
+                        json!({"path":format!("settings/{name}/binding/Cookies")})
+                    )
+                    .is_err()
+            );
+            assert!(Files::new(&BTreeMap::from([("private".into(), short)]), false).is_err());
         }
         let batch = fixture
             .call(

@@ -13,7 +13,7 @@ pub(crate) fn running(pid: u32, identity: &str) -> Result<bool> {
     Ok(started(pid)?.as_deref() == Some(identity))
 }
 
-fn started(pid: u32) -> Result<Option<String>> {
+pub(crate) fn started(pid: u32) -> Result<Option<String>> {
     if pid == 0 {
         return Err(Error::message("Invalid Agent process identity"));
     }

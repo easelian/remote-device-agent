@@ -28,7 +28,7 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, OpenProcessToken,
 };
 
-pub(in crate::processes::native) struct Pipe(OwnedHandle);
+pub(crate) struct Pipe(OwnedHandle);
 
 struct Local(*mut c_void);
 impl Drop for Local {
@@ -113,7 +113,7 @@ fn private_descriptor() -> io::Result<Local> {
 /// Only the returned child end is inheritable. The caller must include it in
 /// CreateProcess's explicit HANDLE_LIST and drop its copy after child creation.
 /// The server end uses synchronous NOWAIT I/O, with no pending OVERLAPPED buffer.
-pub(super) fn pair(child_reads: bool) -> io::Result<(Pipe, OwnedHandle)> {
+pub(crate) fn pair(child_reads: bool) -> io::Result<(Pipe, OwnedHandle)> {
     let descriptor = private_descriptor()?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,

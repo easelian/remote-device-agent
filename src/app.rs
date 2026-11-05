@@ -146,7 +146,15 @@ pub async fn launch(
         None => "enabled; launch is checked when a session is opened",
     };
     println!("AI browser sessions: {browser_status}.");
-    if cfg!(target_os = "linux") {
+    if cfg!(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    )) {
         println!(
             "Local browser policy: {} (restart after changes).",
             crate::policy::sidecar_path(path).display()

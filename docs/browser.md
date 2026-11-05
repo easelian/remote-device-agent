@@ -2,7 +2,7 @@
 
 English | [简体中文](browser-zhCN.md)
 
-Use a connected AI client to read and interact with websites from a bound Linux device, sign in through the same remote browser, and retrieve supported files. This guide applies to Agent builds reporting `capabilities.browser.version = 1` and the matching Rust Hub/MCP and Business web builds. This worktree has been validated locally; these browser changes have not been released or deployed.
+Use a connected AI client to read and interact with websites from a bound Linux, macOS or Windows device, sign in through the same remote browser, and retrieve supported files. This guide applies to Agent builds reporting `capabilities.browser.version = 1` and the matching Rust Hub/MCP and Business web builds. The platform implementations and their validation are recorded in the [acceptance plan](browser-plan-zhCN.md#1713-windowsmacos-与共用实现2026-11-05). These browser changes have not been released or deployed.
 
 For Server operators, set Core's `http.browser_user_url` to the user website's
 origin, allow `browser:control` in Gate's web actions, and apply the matching Auth
@@ -12,11 +12,11 @@ the worktrees.
 
 ## Enable browser sessions
 
-The remote device needs a Chromium executable that can run with its sandbox under the Agent's OS account. The Agent uses a private browser profile and a private protocol pipe. It does not attach to your everyday browser. Current execution support is Linux only; the local validation used x64 Headless Chrome 146 and Chromium 156. Other platforms and browser packages remain unverified.
+The remote device needs a Chromium executable that can run with its sandbox under the Agent's OS account. The Agent uses a private browser profile and a private protocol pipe. It does not attach to your everyday browser. The shared runtime supports Linux and macOS; Windows builds need the native process and private-storage features enabled by the default build. Native validation covers Linux x64, macOS ARM64 and Windows 11 ARM64. Other architectures and browser packages need their own runtime evidence.
 
 1. Run the candidate `rdh` normally and complete device binding if needed. Its terminal output shows `AI browser sessions` and the exact `Local browser policy` path. A bound device keeps its existing identity.
-2. Stop the Agent. Open that policy file, or create it if it does not exist. Preserve existing settings and add the `browser` object below. The policy file must belong to the Agent user, use mode `0600`, and must not be a symbolic link. See [Hardening](hardening.md#policy-file).
-3. Set `executable` to the installed browser's absolute executable path. If omitted, detection checks `/usr/bin/chromium`, `/usr/bin/chromium-browser`, `/usr/bin/google-chrome`, then `/opt/google/chrome/chrome`. Finding a file does not prove that a wrapper, dependencies or the browser sandbox can launch successfully; the first session checks that.
+2. Stop the Agent. Open that policy file, or create it if it does not exist. Preserve existing settings and add the `browser` object below. The policy file must belong to the Agent user: mode `0600` on Linux/macOS, or a private ACL with inheritance disabled on Windows. Symbolic links and Windows reparse paths are rejected. See [Hardening](hardening.md#policy-file).
+3. Optionally set `executable` to the installed browser's absolute executable path. If omitted, use the platform locations below. Finding a file does not prove that a wrapper, dependencies or the browser sandbox can launch successfully; the first session checks that.
 4. Start the same `rdh` again. In the device page, the browser status explains whether it is disabled, unsupported, missing or enabled. Your AI client can also check `device_info.capabilities.browser`. File and shell permissions are separate; browser use does not require enabling shell or general file writes.
 
 This is a complete policy only when no other local settings are needed. The three optional features are disabled here; change each to `true` only when you want it:
@@ -26,13 +26,22 @@ This is a complete policy only when no other local settings are needed. The thre
   "version": 1,
   "browser": {
     "enabled": true,
-    "executable": "/usr/bin/chromium",
     "persistent_profiles": false,
     "downloads": false,
     "uploads": false
   }
 }
 ```
+
+Automatic detection checks these locations in order; an explicit `executable` must contain an actual absolute path, without environment-variable placeholders.
+
+| Platform | Detection locations |
+| --- | --- |
+| Linux | `/usr/bin/chromium`, `/usr/bin/chromium-browser`, `/usr/bin/google-chrome`, `/opt/google/chrome/chrome` |
+| macOS | Chrome, Edge, Chromium, then Chrome for Testing app executables under `/Applications` |
+| Windows | Chrome, Edge, then Chromium under each of `ProgramFiles`, `ProgramFiles(x86)`, then `LOCALAPPDATA` |
+
+On macOS, retained login cookies need the browser's normal access to the user's unlocked Keychain. The persistence fixture passed in the logged-in user's GUI launch session; the SSH-launched fixture retained site storage but lost its cookie and reported unavailable encryption. Run the Agent in the appropriate logged-in user session when retaining logins; the Agent does not unlock the Keychain or bypass browser encryption.
 
 If you use `allowed_operations`, include the browser tools you need. The web pages also require the internal `browser_human` operation. The Agent never installs a browser or enables these permissions automatically. Browser traffic uses the remote device's network; shared file roots do not restrict reachable websites.
 
@@ -58,7 +67,7 @@ If an input result is uncertain, the page stops further input. Use **Check brows
 
 ## Keep a login or transfer a file
 
-Set `persistent_profiles` to `true` to allow `browser_open.profile_name`. The named profile belongs to this device binding and AI authorization. Closing the session preserves cookies and site storage; another AI authorization cannot silently use the same profile. Use `browser_profiles` to inspect profiles and `browser_control` with `delete_profile` to remove an unused one. A profile in use cannot be opened twice or deleted.
+Set `persistent_profiles` to `true` to allow `browser_open.profile_name`. The named profile belongs to this device binding and AI authorization. Normal close asks the browser to flush cookies and site storage; persistence also depends on the browser and OS encryption prerequisites above. Another AI authorization cannot silently use the same profile. Use `browser_profiles` to inspect profiles and `browser_control` with `delete_profile` to remove an unused one. A profile in use cannot be opened twice or deleted.
 
 With `downloads` enabled, supported HTTP document attachments appear in `browser_files` and **Browser files**. Save them from the authenticated page. Each download must have an explicit length, status 200 and no content compression. Blob and streaming downloads without a length are unsupported. File bytes are not returned to the AI.
 
@@ -70,7 +79,7 @@ With `uploads` enabled, take human control, choose a local file and explicitly a
 - Temporary browser profiles are removed when their owned processes stop. Named profiles persist until explicitly deleted; at most sixteen are stored per device binding. Profile/cache disk usage and browser memory do not have a hard quota.
 - File staging allows 32 MiB per file, 128 MiB in total and sixteen entries shared by uploads and downloads. Completed downloads expire after 24 hours. Consumed upload copies expire no later than 24 hours after creation. Closing a session does not remove completed downloads.
 - Confirmed unbinding removes this binding's private browser profiles and artifacts after owned work stops. If cleanup cannot be confirmed, unbinding remains pending and retains the binding record for retry. Other bindings and local downloads are unaffected.
-- Agent restart discards unfinished downloads and all uploads, closes/reconciles owned browser processes, and does not resume old sessions or replay website actions. Previously persisted named profiles may be reused after recovery.
-- `.rdh-browser` is private Agent storage, excluded from Linux file reads, writes, listings, searches and configured roots. Shell permission still grants the Agent OS user's authority; this exclusion is not a shell sandbox or a boundary against that same OS account.
+- Agent restart discards unfinished downloads and all uploads and does not resume old sessions or replay website actions. POSIX recovery checks the original process group. On Windows, an interrupted run without a durable tree-completion marker remains quarantined with `browser_cleanup_pending`: the binding's browser data cannot be reused or deleted by unbinding. Losing the Job handle or observing only the leader exit cannot prove that every descendant stopped. Automatic recovery from this state remains unsupported.
+- `.rdh-browser` is private Agent storage, excluded from file reads, writes, listings, searches and configured roots. Matching ignores case; Windows also checks normalized directory paths to reject short-name aliases. Shell permission still grants the Agent OS user's authority; this exclusion is not a shell sandbox or a boundary against that same OS account.
 
-For source, validation evidence and remaining release gates, see the [browser design and acceptance plan](browser-plan-zhCN.md). Real AI-host rendering, target-platform execution, workload performance and participant usability acceptance remain pending. First-use permission configuration and browser installation are currently local steps; the web page reports readiness and recovers existing sessions.
+For source, validation evidence and remaining release gates, see the [browser design and acceptance plan](browser-plan-zhCN.md). Real AI-host rendering, the remaining OS/architecture matrix, workload performance and participant usability acceptance remain pending. First-use permission configuration and browser installation are currently local steps; the web page reports readiness and recovers existing sessions.

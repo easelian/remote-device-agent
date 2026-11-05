@@ -702,7 +702,7 @@ impl Browsers {
         if action == "close" {
             slot.closing.store(true, Ordering::Release);
             if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
-                cdp.stop();
+                cdp.graceful_stop();
             }
         }
         let mut session = if action == "close" {
@@ -779,7 +779,7 @@ impl Browsers {
             slot.control.change(true);
             slot.closing.store(true, Ordering::Release);
             if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
-                cdp.stop();
+                cdp.graceful_stop();
             }
         }
     }
@@ -812,7 +812,7 @@ impl Browsers {
             slot.control.change(true);
             slot.closing.store(true, Ordering::Release);
             if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
-                cdp.stop();
+                cdp.graceful_stop();
             }
         }
         let browsers = Arc::clone(self);
@@ -937,7 +937,9 @@ fn guard(
                 .await
                 .is_err()
             {
-                cdp.stop();
+                if cdp.connected() {
+                    cdp.stop();
+                }
                 break;
             }
         }
@@ -1102,6 +1104,7 @@ async fn handle_event(
                             )
                             .await
                             .is_err()
+                            && cdp.connected()
                         {
                             cdp.stop();
                         }

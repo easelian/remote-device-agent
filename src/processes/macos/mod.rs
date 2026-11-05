@@ -48,7 +48,7 @@ fn check_snapshot(
     Ok(unique.len() != 1)
 }
 
-#[cfg(all(target_os = "macos", feature = "experimental-macos-processes"))]
+#[cfg(target_os = "macos")]
 fn process_info(pid: u32) -> io::Result<Member> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     // Nonzero arg requests zombie lookup as well as ordinary processes.
@@ -78,8 +78,8 @@ fn process_info(pid: u32) -> io::Result<Member> {
     })
 }
 
-#[cfg(all(target_os = "macos", feature = "experimental-macos-processes"))]
-pub(super) fn group_has_live_members(leader: u32) -> io::Result<bool> {
+#[cfg(target_os = "macos")]
+pub(crate) fn group_has_live_members(leader: u32) -> io::Result<bool> {
     const PROC_PGRP_ONLY: u32 = 2; // Public libproc.h / sys/proc_info.h filter.
     const MAX_MEMBERS: usize = 65_536;
     if leader == 0 || leader > libc::pid_t::MAX as u32 {
@@ -106,6 +106,33 @@ pub(super) fn group_has_live_members(leader: u32) -> io::Result<bool> {
         });
     }
     check_snapshot(leader, &buffer, bytes, process_info)
+}
+
+/// Restart recovery has no child handle. It can only accept a complete empty
+/// group snapshot, and never uses that numeric group to signal processes.
+#[cfg(target_os = "macos")]
+pub(crate) fn group_is_empty(group: u32) -> io::Result<bool> {
+    let mut buffer = vec![0 as libc::pid_t; 65_536];
+    let bytes = unsafe {
+        *libc::__error() = 0;
+        libc::proc_listpids(
+            2,
+            group,
+            buffer.as_mut_ptr().cast(),
+            std::mem::size_of_val(buffer.as_slice()) as libc::c_int,
+        )
+    };
+    let error = io::Error::last_os_error();
+    if bytes < 0
+        || bytes as usize >= std::mem::size_of_val(buffer.as_slice())
+        || !(bytes as usize).is_multiple_of(std::mem::size_of::<libc::pid_t>())
+        || (bytes == 0 && error.raw_os_error() != Some(0))
+    {
+        return Err(io::Error::other(
+            "Incomplete browser process-group snapshot",
+        ));
+    }
+    Ok(bytes == 0)
 }
 
 #[cfg(test)]
@@ -182,7 +209,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(target_os = "macos", feature = "experimental-macos-processes"))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn native_member_information_matches_current_process() {
         let pid = std::process::id();
