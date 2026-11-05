@@ -13,6 +13,7 @@ use serde_json::json;
 pub const OPERATIONS: &[&str] = &[
     "browser_open",
     "browser_sessions",
+    "browser_profiles",
     "browser_tabs",
     "browser_observe",
     "browser_screenshot",
@@ -27,6 +28,7 @@ pub const MUTATIONS: &[&str] = &["browser_open", "browser_act", "browser_control
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub enabled: bool,
+    pub persistent_profiles: bool,
     pub executable: Option<PathBuf>,
 }
 
@@ -109,6 +111,8 @@ mod image;
 mod page;
 #[cfg(target_os = "linux")]
 mod process;
+#[cfg(target_os = "linux")]
+mod profiles;
 #[cfg(target_os = "linux")]
 mod runtime;
 #[cfg(target_os = "linux")]

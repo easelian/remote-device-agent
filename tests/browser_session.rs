@@ -144,10 +144,199 @@ fn reference(observation: &Value, name: &str) -> String {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|n| n["name"] == name && n.get("ref").is_some())
+        .filter(|n| {
+            n["name"].as_str().is_some_and(|n| n.trim() == name.trim()) && n.get("ref").is_some()
+        })
         .collect();
     assert_eq!(nodes.len(), 1, "{observation}");
     nodes[0]["ref"].as_str().unwrap().into()
+}
+
+fn profile_peer(root: &std::path::Path, executable: &str) -> Peer {
+    let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":{"work":root},"allow_write":false,"allow_shell":false})).unwrap();
+    let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"executable":executable}}), &config).unwrap();
+    let runtime =
+        Runtime::with_config_path(config, policy, None, None, Some(&root.join("device.json")))
+            .unwrap();
+    let (sender, receiver, _) = transport::channel();
+    Peer {
+        runtime,
+        sender,
+        receiver,
+        ids: Arc::new(Mutex::new(HashSet::new())),
+        counter: 0,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+async fn named_profile_persistence_isolation_and_exclusive_ownership() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").expect("set exact test browser path");
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-profile-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route("/", get(||async {Html(r#"<!doctype html><meta charset="utf-8"><title>Profile fixture</title><h1 id="state"></h1><button id="remember">Remember</button><script>function show(){document.querySelector('#state').textContent=localStorage.getItem('fixture')==='saved'&&document.cookie.includes('fixture=saved')?'Stored login':'Fresh profile';}remember.onclick=()=>{localStorage.setItem('fixture','saved');document.cookie='fixture=saved; Max-Age=86400; SameSite=Lax';show();};show();</script>"#)}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable);
+    let opened = peer
+        .call(
+            "browser_open",
+            json!({"url":url,"profile_name":"工作账号 中文"}),
+        )
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap();
+    let profile_id = opened["result"]["profile_id"].clone();
+    let observation = peer.observe_named(id, 1, "Remember").await;
+    assert!(
+        observation["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["name"] == "Fresh profile")
+    );
+    let action = peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observation,"Remember")}})).await;
+    assert!(action.get("error").is_none(), "{action}");
+    peer.observe_named(id, 1, "Stored login").await;
+    // Reservation is checked before a second browser can open or delete this data.
+    let duplicate = peer
+        .call(
+            "browser_open",
+            json!({"url":url,"profile_name":"工作账号 中文"}),
+        )
+        .await;
+    assert_eq!(
+        duplicate["error_code"], "browser_profile_busy",
+        "{duplicate}"
+    );
+    let deleted = peer
+        .call(
+            "browser_control",
+            json!({"action":"delete_profile","profile_name":"工作账号 中文"}),
+        )
+        .await;
+    assert_eq!(deleted["error_code"], "browser_profile_busy", "{deleted}");
+    let listed = peer.call("browser_profiles", json!({})).await;
+    assert_eq!(
+        listed["result"]["profiles"],
+        json!([{"profile_id":profile_id,"name":"工作账号 中文","in_use":true,"retention":"until_deleted"}])
+    );
+    let other = peer
+        .raw("browser_profiles", json!({}), Some(&"b".repeat(64)), None)
+        .await;
+    assert_eq!(other["result"]["profiles"], json!([]));
+    // A second Runtime with the same device binding must not run recovery against live data.
+    let mut competing = profile_peer(&temp.0, &executable);
+    let blocked = competing
+        .call("browser_open", json!({"profile_name":"different"}))
+        .await;
+    assert_eq!(blocked["error_code"], "browser_profile_busy", "{blocked}");
+    assert!(competing.runtime.shutdown().await);
+    drop(competing);
+    assert_eq!(
+        peer.call("browser_control", json!({"session_id":id,"action":"close"}))
+            .await["result"]["state"],
+        "closed"
+    );
+    // Normal close persists both local storage and a persistent cookie.
+    let reopened = peer
+        .call(
+            "browser_open",
+            json!({"url":url,"profile_name":"工作账号 中文"}),
+        )
+        .await;
+    assert!(reopened.get("error").is_none(), "{reopened}");
+    assert_eq!(reopened["result"]["profile_id"], profile_id);
+    let id = reopened["result"]["session_id"].as_str().unwrap();
+    peer.observe_named(id, 1, "Stored login").await;
+    let human = peer
+        .human(json!({"action":"status","session_id":id,"view_id":"profile-view"}))
+        .await;
+    assert_eq!(human["result"]["profile_name"], "工作账号 中文");
+    assert_eq!(
+        peer.call("browser_control", json!({"session_id":id,"action":"close"}))
+            .await["result"]["state"],
+        "closed"
+    );
+    // Another principal with the same display name gets separate on-disk data.
+    let other = peer
+        .raw(
+            "browser_open",
+            json!({"url":url,"profile_name":"工作账号 中文"}),
+            Some(&"b".repeat(64)),
+            Some(&random::hex_token::<16>().unwrap()),
+        )
+        .await;
+    assert!(other.get("error").is_none(), "{other}");
+    assert_ne!(other["result"]["profile_id"], profile_id);
+    let other_id = other["result"]["session_id"].as_str().unwrap();
+    let observed = peer
+        .raw(
+            "browser_wait",
+            json!({"session_id":other_id,"control_epoch":1,"text_contains":"Fresh profile"}),
+            Some(&"b".repeat(64)),
+            None,
+        )
+        .await;
+    assert_eq!(observed["result"]["condition_observed"], true, "{observed}");
+    assert_eq!(
+        peer.raw(
+            "browser_control",
+            json!({"session_id":other_id,"action":"close"}),
+            Some(&"b".repeat(64)),
+            Some(&random::hex_token::<16>().unwrap())
+        )
+        .await["result"]["state"],
+        "closed"
+    );
+    assert!(peer.runtime.shutdown().await);
+    drop(peer);
+    // Recreating the Agent runtime neither adopts nor replays any old session.
+    let mut peer = profile_peer(&temp.0, &executable);
+    assert_eq!(
+        peer.call("browser_sessions", json!({})).await["result"]["sessions"],
+        json!([])
+    );
+    let reopened = peer
+        .call(
+            "browser_open",
+            json!({"url":url,"profile_name":"工作账号 中文"}),
+        )
+        .await;
+    assert!(reopened.get("error").is_none(), "{reopened}");
+    let id = reopened["result"]["session_id"].as_str().unwrap();
+    peer.observe_named(id, 1, "Stored login").await;
+    assert_eq!(
+        peer.call("browser_control", json!({"session_id":id,"action":"close"}))
+            .await["result"]["state"],
+        "closed"
+    );
+    let deleted = peer
+        .call(
+            "browser_control",
+            json!({"action":"delete_profile","profile_name":"工作账号 中文"}),
+        )
+        .await;
+    assert_eq!(deleted["result"]["profile_deleted"], true, "{deleted}");
+    assert_eq!(
+        peer.call("browser_profiles", json!({})).await["result"]["profiles"],
+        json!([])
+    );
+    let fresh = peer
+        .call(
+            "browser_open",
+            json!({"url":url,"profile_name":"工作账号 中文"}),
+        )
+        .await;
+    let id = fresh["result"]["session_id"].as_str().unwrap();
+    peer.observe_named(id, 1, "Fresh profile").await;
+    assert!(peer.runtime.shutdown().await);
+    drop(peer);
+    server.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -207,6 +396,10 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     )
     .unwrap();
     assert_eq!(runtime.info()["capabilities"]["browser"]["available"], true);
+    assert_eq!(
+        runtime.info()["capabilities"]["browser"]["profiles"],
+        json!(["temporary"])
+    );
     let (sender, receiver, _) = transport::channel();
     let mut peer = Peer {
         runtime: runtime.clone(),
@@ -217,6 +410,10 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     };
     let denied = peer.raw("browser_open", json!({}), None, None).await;
     assert_eq!(denied["error_code"], "browser_unauthorized");
+    let denied = peer
+        .call("browser_open", json!({"profile_name":"not-enabled"}))
+        .await;
+    assert_eq!(denied["error_code"], "browser_profile_disabled");
     let denied = peer
         .call("browser_open", json!({"url":"file:///etc/passwd"}))
         .await;
@@ -264,6 +461,8 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         .await;
     assert_eq!(denied["error_code"], "browser_session_unavailable");
     let observation = peer.observe(&id, 1).await;
+    assert_eq!(observation["page"]["url"], url);
+    assert_eq!(observation["page"]["title"], "RDH browser fixture");
     assert!(!observation.to_string().contains("MUST_NOT_DISCLOSE"));
     let screenshot = peer
         .call(
@@ -614,6 +813,8 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         .await;
     assert_eq!(close["result"]["state"], "closed", "{close}");
     assert!(runtime.shutdown().await);
+    drop(peer);
+    drop(runtime);
     let private = temp.0.join(".rdh-browser");
     for owner in fs::read_dir(private).unwrap() {
         assert_eq!(fs::read_dir(owner.unwrap().path()).unwrap().count(), 0);

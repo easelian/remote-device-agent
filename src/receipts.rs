@@ -169,7 +169,7 @@ pub fn result_summary(value: &Value) -> Value {
     let Some(source) = value.as_object() else {
         return Value::Object(out);
     };
-    for key in ["job_id", "search_id", "session_id", "tab_id"] {
+    for key in ["job_id", "search_id", "session_id", "tab_id", "profile_id"] {
         if let Some(value) = source
             .get(key)
             .and_then(Value::as_str)
@@ -224,8 +224,10 @@ pub fn result_summary(value: &Value) -> Value {
     {
         out.insert("status".into(), json!(value));
     }
-    if let Some(value) = source.get("stdin_closed").and_then(Value::as_bool) {
-        out.insert("stdin_closed".into(), json!(value));
+    for key in ["stdin_closed", "profile_deleted"] {
+        if let Some(value) = source.get(key).and_then(Value::as_bool) {
+            out.insert(key.into(), json!(value));
+        }
     }
     Value::Object(out)
 }

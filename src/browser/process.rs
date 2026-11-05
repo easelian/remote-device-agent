@@ -1,5 +1,5 @@
 //! Owned Linux process groups and private profiles. Never searches by executable name.
-use super::{Failure, Result, cdp::Cdp, io_error};
+use super::{Failure, Result, cdp::Cdp, io_error, profiles::NamedProfile};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -19,6 +19,7 @@ pub struct BrowserProcess {
     pid: i32,
     identity: String,
     closed: bool,
+    named: Option<NamedProfile>,
 }
 
 fn process_stat(pid: i32) -> Option<(i32, char, String)> {
@@ -84,11 +85,12 @@ impl BrowserProcess {
         executable: &Path,
         root: &Path,
         id: &str,
+        named: Option<NamedProfile>,
         deadline: Instant,
     ) -> Result<Self> {
         let profile = root.join(id);
         crate::storage::create_private_dir(&profile).map_err(io_error)?;
-        let result = Self::spawn(executable, &profile);
+        let result = Self::spawn(executable, &profile, named);
         let mut process = match result {
             Ok(process) => process,
             Err(error) => {
@@ -96,6 +98,20 @@ impl BrowserProcess {
                 return Err(error);
             }
         };
+        // Keep the process owner available until cleanup is confirmed. An error
+        // after spawn must not erase the only directory that restart recovery
+        // can use to block reuse of a possibly live named profile.
+        let metadata = json!({"version":1,"pid":process.pid,"start":process.identity});
+        if process.identity.is_empty()
+            || crate::storage::write_private_new(
+                &profile.join("owner.json"),
+                &serde_json::to_vec(&metadata).unwrap(),
+            )
+            .is_err()
+        {
+            let _ = process.close().await;
+            return Err(Failure::unknown("browser_start_failed"));
+        }
         let ready = process
             .cdp
             .call(None, "Browser.getVersion", json!({}), deadline)
@@ -107,7 +123,7 @@ impl BrowserProcess {
         Ok(process)
     }
 
-    fn spawn(executable: &Path, profile: &Path) -> Result<Self> {
+    fn spawn(executable: &Path, profile: &Path, named: Option<NamedProfile>) -> Result<Self> {
         let (input, browser_input) = UnixStream::pair().map_err(io_error)?;
         let (output, browser_output) = UnixStream::pair().map_err(io_error)?;
         // Finish fallible parent-side setup before a child exists.
@@ -151,7 +167,13 @@ impl BrowserProcess {
                 "--site-per-process",
                 "--window-size=1280,720",
             ])
-            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!(
+                "--user-data-dir={}",
+                named
+                    .as_ref()
+                    .map_or(profile, |p| p.data.as_path())
+                    .display()
+            ))
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -174,26 +196,15 @@ impl BrowserProcess {
         let pid = child.id() as i32;
         let identity = process_stat(pid).map(|v| v.2).unwrap_or_default();
         let cdp = Cdp::new(output, input);
-        let mut process = Self {
+        Ok(Self {
             child,
             cdp,
             profile: profile.into(),
             pid,
             identity,
             closed: false,
-        };
-        let metadata = json!({"version":1,"pid":pid,"start":process.identity});
-        if process.identity.is_empty()
-            || crate::storage::write_private_new(
-                &profile.join("owner.json"),
-                &serde_json::to_vec(&metadata).unwrap(),
-            )
-            .is_err()
-        {
-            process.force_stop();
-            return Err(Failure::new("browser_start_failed"));
-        }
-        Ok(process)
+            named,
+        })
     }
 
     fn force_stop(&mut self) {
@@ -259,6 +270,7 @@ impl BrowserProcess {
         }
         fs::remove_dir_all(&self.profile).map_err(io_error)?;
         self.closed = true;
+        self.named = None;
         Ok(())
     }
 }
@@ -266,6 +278,12 @@ impl BrowserProcess {
 impl Drop for BrowserProcess {
     fn drop(&mut self) {
         if !self.closed {
+            // Reusing a profile requires proven process termination. If normal
+            // close failed, keep its reservation until restart recovery checks
+            // the recorded process group; a best-effort Drop kill is insufficient.
+            if let Some(named) = self.named.as_mut() {
+                named.retain();
+            }
             self.force_stop();
             // Drop must not block an Agent worker forever on an uninterruptible child.
             for _ in 0..20 {
@@ -284,10 +302,10 @@ pub fn recover(root: &Path) -> Result<()> {
     crate::storage::private_metadata(root, true).map_err(io_error)?;
     let entries = fs::read_dir(root)
         .map_err(io_error)?
-        .take(17)
+        .take(19)
         .collect::<std::io::Result<Vec<_>>>()
         .map_err(io_error)?;
-    if entries.len() > 16 {
+    if entries.len() > 18 {
         return Err(Failure::new("browser_cleanup_pending"));
     }
     for entry in entries {
@@ -295,6 +313,10 @@ pub fn recover(root: &Path) -> Result<()> {
         let Some(id) = id.to_str() else {
             return Err(Failure::new("browser_cleanup_pending"));
         };
+        if matches!(id, "profiles" | "agent.rdh-lock") {
+            crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
+            continue;
+        }
         if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Failure::new("browser_cleanup_pending"));
         }

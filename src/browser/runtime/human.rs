@@ -90,7 +90,7 @@ impl Browsers {
                 .collect();
             let sessions: Vec<_>=slots.iter().map(|(id,slot)| {
                 let (epoch,paused)=slot.control.snapshot();
-                json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"}})
+                json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"profile_name":slot.profile_name})
             }).collect();
             return Ok(json!({"sessions":sessions}));
         }
@@ -139,7 +139,7 @@ impl Browsers {
         }
         let (epoch, paused) = slot.control.snapshot();
         if action == "status" {
-            let mut value = json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"}});
+            let mut value = json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"profile_name":slot.profile_name});
             if let Some(human) = session
                 .human
                 .as_ref()
@@ -208,7 +208,7 @@ impl Browsers {
                 return Err(Failure::new("browser_control_changed"));
             }
             return Ok(
-                json!({"session_id":id,"controller":"human","lease":session.human.as_ref().unwrap().value()}),
+                json!({"session_id":id,"controller":"human","profile_name":slot.profile_name,"lease":session.human.as_ref().unwrap().value()}),
             );
         }
         let human = session
@@ -288,17 +288,21 @@ impl Browsers {
                 );
             }
             let stamp = frame_stamp(&cdp, &session, &target, deadline).await?;
+            let tree = frames(&cdp, &session, &target, deadline).await?;
             let focus = if target.dialog.is_some() {
                 None
             } else {
-                text::capture(
-                    &cdp,
-                    &frames(&cdp, &session, &target, deadline).await?,
-                    deadline,
-                )
-                .await?
+                text::capture(&cdp, &tree, deadline).await?
             };
             let image = super::super::image::capture(&cdp, &target.session, deadline).await?;
+            let mut page = page::metadata(
+                &cdp,
+                tree.first()
+                    .ok_or_else(|| Failure::new("browser_tab_unavailable"))?,
+                deadline,
+            )
+            .await?;
+            page["tab_id"] = target.id.clone().into();
             if slot.control.snapshot() != (epoch, true)
                 || frame_stamp(&cdp, &session, &target, deadline).await? != stamp
             {
@@ -327,7 +331,7 @@ impl Browsers {
             return Ok(
                 json!({"session_id":id,"control_epoch":epoch,"frame_id":frame_id,"mime_type":"image/jpeg","data":image["data"],
                 "width":image["width"],"height":image["height"],
-                "page":{"url":target.url,"title":target.title,"tab_id":target.id},"tabs":tabs,"dialog":target.dialog,"text_input_available":text_input_available}),
+                "page":page,"tabs":tabs,"dialog":target.dialog,"text_input_available":text_input_available}),
             );
         }
         let human = session.human.as_ref().unwrap();

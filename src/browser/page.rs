@@ -70,6 +70,27 @@ async fn current(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<()> {
     Ok(())
 }
 
+pub async fn metadata(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<Value> {
+    let context = cdp
+        .call(
+            Some(&frame.session),
+            "Page.createIsolatedWorld",
+            json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),
+            deadline,
+        )
+        .await?;
+    let result = cdp.call(Some(&frame.session), "Runtime.evaluate", json!({
+        "contextId":context["executionContextId"],"returnByValue":true,
+        "expression":"({url:location.href.slice(0,4096),title:document.title.slice(0,512)})",
+    }),deadline).await?;
+    current(cdp, frame, deadline).await?;
+    let value = &result["result"]["value"];
+    if !value["url"].is_string() || !value["title"].is_string() {
+        return Err(Failure::new("browser_stale_reference"));
+    }
+    Ok(value.clone())
+}
+
 async fn object(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> Result<String> {
     let context = cdp
         .call(

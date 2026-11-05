@@ -11,6 +11,7 @@ use crate::storage;
 pub const KNOWN_OPERATIONS: &[&str] = &[
     "browser_open",
     "browser_sessions",
+    "browser_profiles",
     "browser_tabs",
     "browser_observe",
     "browser_screenshot",

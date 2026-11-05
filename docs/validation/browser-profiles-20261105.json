@@ -1,0 +1,129 @@
+{
+  "date": "2026-11-05",
+  "scenario": "named profiles, ownership, persistence and page metadata",
+  "source": {
+    "agent": {
+      "base": "53b9fede27aea90bf1f667ca831b9788f138e175",
+      "files": {
+        "src/browser/mod.rs": "21a5fd9e1921c389009846b3fa5a8b8f032f157a5db67410572f0bcd3725b61b",
+        "src/browser/profiles.rs": "6e4a17cd5031bd6b2885d2a01306c430e2b5e676442e8c354a85edd3c4cb09d1",
+        "src/browser/process.rs": "7fe16574784d44d2292ad0ba39b93753a40bc6f1c17a874a3f46cefb4eade8b2",
+        "src/browser/runtime.rs": "c03eeb7a851122809d32b0b3d69d279663bdc91861df1886d8230fad249ac447",
+        "src/browser/runtime/human.rs": "144f7f50c8636e29a45dfe2706f47240aaa52309bbfb13d6a699e525e70c0528",
+        "src/browser/page.rs": "9c78eff543c66cedca3e4f5dab67c52e90a2f454f846ba0898ba7133ae55b5e5",
+        "src/receipts.rs": "bb658d65bea1eae5781e08aa013aee3f28dac21e5b742907b81af414e4fd38be",
+        "tests/browser_session.rs": "9ba06c8efebf03ff2107d540afe88fb8bf757bbc2cfda6ef91e9623a6f712ef8"
+      }
+    },
+    "server": {
+      "base": "f4ed2fb482d3ee727decc3a8c188843ef86dd235",
+      "files": {
+        "contracts/mcp/v1/tools-list.json": "4eb0d626408fe10aec1dc2273682847c641fd3108c5f59c0d7e1c29d1ff81a54",
+        "apps/core/src/mcp_tools.rs": "0ed5dc1ac946240384f2ba00f1ffb695cedaba128a6ee99460630b056c47618a",
+        "apps/core/src/runtime.rs": "3f18310a58d45928502450f1387aa77d925e54d59b6837ed8309e710b2f221b5",
+        "crates/runtime/src/types.rs": "8aad0cababfea8839153d45aff21ca5249c0265790fd98527324176083e382a5",
+        "apps/business/web/src/Browser.vue": "efe1f22fcd67ef364a9a841854362d5bb2620838a40c0450017ba008213748cf",
+        "tests/core/test_browser_native.py": "47a14c5a8fe68a240d969e4397e78208b63e568022d7a14c92d8f18b790ec8fe"
+      }
+    }
+  },
+  "candidate": {
+    "root": "/tmp/rdh-browser-hub-test-hdqd_au2",
+    "port": 57581,
+    "production_data": false,
+    "selectors": [
+      "tests/core/test_browser_native.py::test_real_browser_mcp_task_recovery_quota_and_agent_crash",
+      "tests/core/test_browser_human.py::test_real_browser_human_page"
+    ],
+    "binaries": {
+      "RDH_TEST_BROWSER_EXECUTABLE": {
+        "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+        "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595"
+      },
+      "RDH_TEST_CLUSTER_AGENT": {
+        "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/target/debug/rdh",
+        "sha256": "7da5fc67dc94e0e792f0fb3b21f4a015847ef0bb63c2cf27bdde18740b2c4779"
+      },
+      "RDH_TEST_RUST_CORE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-core",
+        "sha256": "1c456cfea6037318e9005bc690fa74c28e90992379d6d05b80d19b161d63ee87"
+      },
+      "RDH_TEST_RUST_GATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-gate",
+        "sha256": "2242b5981dbfbbb53e74c96cc3225fa27a6a028db60d872228826f5db10c9336"
+      },
+      "RDH_TEST_RUST_AUTH": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-auth",
+        "sha256": "e7c0bfcda0e2fa3266b768f61d3d8758efa6d8bc9664d04b5dc20b146aeee4d7"
+      },
+      "RDH_TEST_RUST_MIGRATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-migrate",
+        "sha256": "8f7561a4e1c5066f4d94cebf1b4ed281c13e1b5e586f39cfcaa4abbcd4ca37e8"
+      },
+      "RDH_TEST_RUST_RUNTIME_PROBE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/examples/authority_probe",
+        "sha256": "8961f294ee6b8cb1014ccbaaa7b8efc2e21f9e3d07fbad0c164da22745323ecb"
+      }
+    }
+  },
+  "results": {
+    "headless146": {
+      "passed": 2,
+      "failed": 0,
+      "elapsed_seconds": 7.33
+    },
+    "chromium156": {
+      "passed": 2,
+      "failed": 0,
+      "elapsed_seconds": 4.32
+    },
+    "hub_regression": {
+      "passed": 22,
+      "failed": 0,
+      "elapsed_seconds": 88.59
+    },
+    "hub_after_metadata_fix": {
+      "passed": 2,
+      "failed": 0,
+      "elapsed_seconds": 30.68
+    },
+    "agent_clippy": "passed --all-targets --all-features -D warnings",
+    "server_clippy": "passed -p rdh-core -p rdh-gate -p rdh-runtime --all-targets -D warnings",
+    "web_build": "passed"
+  },
+  "earlier_failures": [
+    "profile-tests-01 used a nonexistent test selector; no tests ran; fixture was removed",
+    "chromium156-01 named profile test passed; base test expected a trailing space in an accessible name; test now compares normalized names",
+    "chromium156 observation revealed stale event-derived page URL/title; current document metadata is now read and checked against the observed document"
+  ],
+  "evidence": [
+    ".build/browser-profile-native-03.log",
+    ".build/browser-profile-chromium156-02.log",
+    ".build/browser-profile-clippy-02.log",
+    "server .build/browser-validation/profile-tests-02",
+    "server .build/browser-validation/profile-tests-03",
+    "server .build/browser-validation/profile-clippy-01.log",
+    "server .build/browser-validation/profile-web-build-01.log",
+    "server .build/browser-validation/profile-ui-final/human-login.png"
+  ],
+  "verified": [
+    "local policy defaults to temporary profiles; named data needs persistent_profiles=true",
+    "normal close and new Agent runtime preserve synthetic cookie and localStorage",
+    "same name under another AI grant creates a different private profile",
+    "same profile cannot be opened twice or deleted while in use",
+    "second Agent runtime using same device binding is rejected by existing instance lock",
+    "Agent SIGKILL/restart preserves previously flushed named data without adopting or replaying old sessions",
+    "profile list/cleanup work with exhausted task quota",
+    "receipt summary has profile_id/profile_deleted and no profile display name",
+    "explicit deletion removes profile data; a fresh open has no former login",
+    "human page displays the current profile name or temporary retention"
+  ],
+  "limits": [
+    "Linux x64 only; no Windows or macOS runtime validation",
+    "profile count capped at 16 per device binding; no hard profile disk quota",
+    "profile scope is current AI authorization; cross-client sharing and web management of inactive/revoked-grant profiles not implemented",
+    "crash persistence proves data saved before a prior normal close, not durability of the newest unflushed browser writes",
+    "browser profile permission boundary does not protect against the same operating-system account",
+    "no deployed services or real business accounts were modified"
+  ]
+}

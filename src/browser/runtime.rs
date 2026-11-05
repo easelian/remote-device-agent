@@ -3,6 +3,7 @@ use super::{
     cdp::{Cdp, Control},
     page::{self, Element},
     process::{self, BrowserProcess},
+    profiles::{self, Profiles},
 };
 use serde_json::{Value, json};
 use std::{
@@ -35,6 +36,7 @@ struct Target {
 struct Slot {
     owner: String,
     user: String,
+    profile_name: Option<String>,
     control: Arc<Control>,
     closing: AtomicBool,
     transport: Mutex<Option<Cdp>>,
@@ -60,6 +62,8 @@ pub struct Browsers {
     sessions: Arc<Mutex<HashMap<String, Arc<Slot>>>>,
     initialized: Mutex<bool>,
     admission: Mutex<Admission>,
+    profiles: Profiles,
+    root_lock: Mutex<Option<crate::profile_lock::ProfileLocks>>,
 }
 
 impl Browsers {
@@ -78,6 +82,8 @@ impl Browsers {
                 online: true,
                 closing: false,
             }),
+            profiles: Profiles::default(),
+            root_lock: Mutex::new(None),
         }
     }
     pub fn info(&self) -> Value {
@@ -90,7 +96,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":["temporary"],"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":false})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":false})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
@@ -111,7 +117,13 @@ impl Browsers {
                     Err(error) => return Err(super::io_error(error)),
                 }
             }
+            let lock_path = root.join("agent");
+            crate::profile_lock::ProfileLocks::recover(std::slice::from_ref(&lock_path))
+                .map_err(|_| Failure::new("browser_profile_busy"))?;
+            let lock = crate::profile_lock::ProfileLocks::acquire(&[lock_path])
+                .map_err(|_| Failure::new("browser_profile_busy"))?;
             process::recover(root)?;
+            *self.root_lock.lock().unwrap() = Some(lock);
             *initialized = true;
         }
         Ok(root)
@@ -149,6 +161,16 @@ impl Browsers {
         if operation == "browser_open" {
             return self.open(params, principal, deadline).await;
         }
+        if operation == "browser_profiles" {
+            return self.profiles.list(self.root.as_deref().unwrap(), principal);
+        }
+        if operation == "browser_control" && params["action"] == "delete_profile" {
+            return self.profiles.delete(
+                self.root.as_deref().unwrap(),
+                principal,
+                params["profile_name"].as_str().unwrap(),
+            );
+        }
         if operation == "browser_sessions" {
             let slots: Vec<_> = self
                 .sessions
@@ -167,7 +189,7 @@ impl Browsers {
                     Ok(_) => "lost",
                     Err(_) => "busy",
                 };
-                sessions.push(json!({"session_id":id,"state":state,"control_epoch":epoch,"controller":if paused {"paused"} else {"ai"}}));
+                sessions.push(json!({"session_id":id,"state":state,"control_epoch":epoch,"controller":if paused {"paused"} else {"ai"},"profile_name":slot.profile_name}));
             }
             return Ok(json!({"sessions":sessions}));
         }
@@ -256,7 +278,8 @@ impl Browsers {
                 if before.first().map(|f| (&f.id, &f.loader)) != after.first().map(|f| (&f.id, &f.loader)) {
                     return Err(Failure::new("browser_stale_frame"));
                 }
-                value["page"] = json!({"title":target.title,"url":target.url,"tab_id":tab});
+                value["page"] = page::metadata(&cdp,after.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                value["page"]["tab_id"] = tab.clone().into();
                 Ok(value)
             }
             "browser_observe" => {
@@ -274,7 +297,8 @@ impl Browsers {
                 .await?;
                 session.references = refs;
                 session.observed_tab = tab.clone();
-                value["page"] = json!({"title":target.title,"url":target.url,"tab_id":tab});
+                value["page"] = page::metadata(&cdp,frames.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                value["page"]["tab_id"] = tab.clone().into();
                 Ok(value)
             }
             "browser_act" => {
@@ -439,10 +463,15 @@ impl Browsers {
         principal: &Principal,
         deadline: Instant,
     ) -> Result<Value> {
+        let profile_name = params["profile_name"].as_str();
+        if profile_name.is_some() && !self.settings.persistent_profiles {
+            return Err(Failure::new("browser_profile_disabled"));
+        }
         let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
         let slot = Arc::new(Slot {
             owner: principal.owner.clone(),
             user: principal.user.clone(),
+            profile_name: profile_name.map(str::to_owned),
             control: Arc::new(Control::new()),
             closing: AtomicBool::new(false),
             transport: Mutex::new(None),
@@ -469,7 +498,8 @@ impl Browsers {
         }
         let mut session = slot.session.lock().await;
         let result=async {
-            let process=BrowserProcess::launch(self.executable.as_deref().unwrap(),self.root.as_deref().unwrap(),&id,deadline).await?;
+            let named = profile_name.map(|name|self.profiles.open(self.root.as_deref().unwrap(),principal,name)).transpose()?;
+            let process=BrowserProcess::launch(self.executable.as_deref().unwrap(),self.root.as_deref().unwrap(),&id,named,deadline).await?;
             let cdp=process.cdp.authorized(slot.control.clone(), 1);
             *slot.transport.lock().unwrap()=Some(cdp.clone());
             session.process=Some(process);
@@ -492,7 +522,7 @@ impl Browsers {
                 cdp.call(Some(&target.session),"Page.navigate",json!({"url":url}),deadline).await?;
             }
             if slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
-            Ok(json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":"temporary"}))
+            Ok(json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))}))
         }.await;
         if result.is_err() {
             if let Some(process) = session.process.as_mut() {
@@ -972,8 +1002,8 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         .as_object()
         .ok_or_else(|| Failure::new("browser_invalid_params"))?;
     let allowed: &[&str] = match operation {
-        "browser_open" => &["url"],
-        "browser_sessions" => &[],
+        "browser_open" => &["url", "profile_name"],
+        "browser_sessions" | "browser_profiles" => &[],
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
         "browser_observe" => &[
@@ -991,10 +1021,15 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "url_contains",
             "text_contains",
         ],
-        "browser_control" => &["session_id", "control_epoch", "action"],
+        "browser_control" => &["session_id", "control_epoch", "action", "profile_name"],
         _ => return Err(Failure::new("browser_invalid_params")),
     };
     if map.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if let Some(value) = params.get("profile_name")
+        && !value.as_str().is_some_and(profiles::valid_name)
+    {
         return Err(Failure::new("browser_invalid_params"));
     }
     for key in ["session_id", "tab_id"] {
@@ -1102,7 +1137,14 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     if operation == "browser_control"
         && !params["action"]
             .as_str()
-            .is_some_and(|s| ["pause", "resume", "close"].contains(&s))
+            .is_some_and(|s| ["pause", "resume", "close", "delete_profile"].contains(&s))
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if operation == "browser_control"
+        && ((params["action"] == "delete_profile"
+            && (map.len() != 2 || !map.contains_key("profile_name")))
+            || (params["action"] != "delete_profile" && map.contains_key("profile_name")))
     {
         return Err(Failure::new("browser_invalid_params"));
     }
