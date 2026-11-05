@@ -1,0 +1,1332 @@
+{
+  "date": "2026-11-05",
+  "branch": "work/browser-p0",
+  "worktree": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0",
+  "source_revision_is_base": true,
+  "environment": {
+    "glibc": [
+      "glibc",
+      "2.38"
+    ],
+    "kernel": "7.2.0-kylin",
+    "cpu_count": 128,
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "cpu_affinity_or_exclusive_host": false
+  },
+  "validation": {
+    "fmt": "passed",
+    "clippy": "cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings",
+    "clippy_result": "passed",
+    "production_runtime_files_modified": false,
+    "existing_main_documents_unchanged": true,
+    "remaining_profile_directories": []
+  },
+  "runs": {
+    "run-09-release": {
+      "browser_path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+      "browser_version": {
+        "jsVersion": "14.6.202.22",
+        "product": "HeadlessChrome/146.0.7680.153",
+        "protocolVersion": "1.3",
+        "revision": "@85fd829a1b2049479ead5ed578f5ed105a094fe4",
+        "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/146.0.7680.153 Safari/537.36"
+      },
+      "build_profile": "release",
+      "checks": [
+        {
+          "evidence": {
+            "group": 465775,
+            "members": [
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "0",
+                "pid": 465775,
+                "renderer": false,
+                "rss_kib": "92812 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465778,
+                "renderer": false,
+                "rss_kib": "40500 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465779,
+                "renderer": false,
+                "rss_kib": "41356 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465781,
+                "renderer": false,
+                "rss_kib": "11484 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465798,
+                "renderer": false,
+                "rss_kib": "124400 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465800,
+                "renderer": false,
+                "rss_kib": "66348 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465803,
+                "renderer": true,
+                "rss_kib": "88320 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465804,
+                "renderer": true,
+                "rss_kib": "66764 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465828,
+                "renderer": true,
+                "rss_kib": "76708 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 465836,
+                "renderer": true,
+                "rss_kib": "50452 kB",
+                "seccomp": "2",
+                "state": "S"
+              }
+            ],
+            "no_sandbox_flag": false,
+            "all_recorded_pids_absent_after_run": true
+          },
+          "name": "renderer_sandbox",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "independent_site_saves": 1,
+            "input_method": "Input.insertText",
+            "value_verified": true
+          },
+          "name": "semantic_form_and_unicode",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "child_nodes": 7,
+            "distinct_session": true,
+            "independent_site_clicks": 1,
+            "main_tree_omits_child_content": true
+          },
+          "name": "out_of_process_iframe",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "button_observed": true
+          },
+          "name": "open_shadow_semantics",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "covered_rejected": true,
+            "detached_rejected": true
+          },
+          "name": "stale_and_occlusion",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "redirect_and_link_interception": "not_implemented",
+            "rejected": 3
+          },
+          "name": "direct_navigation_scheme",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "elapsed_ms": 808.348392,
+            "handoff_rejected_while_pending": true,
+            "late_effect_observed": true,
+            "late_replies": 2,
+            "pending_after_browser_level_reply": 2,
+            "pending_at_timeout": 2
+          },
+          "name": "timeout_and_handoff",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "after_replies": 0,
+            "held_after_timeout": 32,
+            "overflow_rejected": true
+          },
+          "name": "bounded_outstanding_commands",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "ai_observation_blocked_in_human_mode": true,
+            "duplicate_rejected": true,
+            "old_epoch_rejected": true,
+            "real_viewer_image_loaded": true,
+            "scope": "loopback prototype, no Hub auth, no human usability claim",
+            "secret_not_in_resumed_observation": true,
+            "unicode_secret_inserted_via_ui": true,
+            "viewer_cleanup": {
+              "forced": false,
+              "milliseconds": 179.790817,
+              "profile_removed": true,
+              "remaining_group_members": 0
+            },
+            "viewer_png_bytes": 88898
+          },
+          "name": "local_handoff_viewer",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "png_bytes": 34125,
+            "viewport": [
+              1280,
+              720
+            ]
+          },
+          "name": "screenshot",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "old_reference_rejected": true
+          },
+          "name": "navigation_invalidates_reference",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "forced": false,
+            "milliseconds": 181.80004399999999,
+            "profile_removed": true,
+            "remaining_group_members": 0
+          },
+          "name": "normal_cleanup",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "cleanup": {
+              "forced": true,
+              "milliseconds": 3146.449131,
+              "profile_removed": true,
+              "remaining_group_members": 0
+            },
+            "close_reason": "message_capacity",
+            "connection_survived": false,
+            "observation_failed_with_limit": true,
+            "paragraphs": 30000
+          },
+          "name": "oversized_ax_tree",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "cleanup": {
+              "forced": false,
+              "milliseconds": 790.525622,
+              "profile_removed": true,
+              "remaining_group_members": 0
+            },
+            "disconnected_handoff_rejected": true,
+            "other_browser_alive": true
+          },
+          "name": "browser_crash_cleanup_and_isolation",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "forced": false,
+            "milliseconds": 197.76493,
+            "profile_removed": true,
+            "remaining_group_members": 0
+          },
+          "name": "second_normal_cleanup",
+          "status": "passed"
+        }
+      ],
+      "environment": {
+        "arch": "x86_64",
+        "os_release": "NAME=\"Kylin\"\nFULL_NAME=\"kylin\"\nVERSION=\"银河麒麟桌面操作系统V11 SP1\"\nVERSION_US=\"Kylin Linux Desktop V11 SP1\"\nID=kylin\nPRETTY_NAME=\"Kylin V11\"\nVERSION_ID=\"v11\"\nHOME_URL=\"http://www.kylinos.cn/\"\nVERSION_CODENAME=kylin\nKYLIN_RELEASE_ID=\"2606\"\nID_LIKE=openKylin\n"
+      },
+      "limitations": [
+        "Linux only",
+        "small synthetic pages",
+        "no Hub/MCP integration",
+        "no production auth or receipt integration",
+        "no external sites",
+        "no cross-platform acceptance"
+      ],
+      "measurements": {
+        "fill_including_checks": {
+          "max_ms": 3.334969,
+          "p50_ms": 1.142914,
+          "p95_ms": 1.626637,
+          "raw_ms": [
+            0.948579,
+            0.951273,
+            0.959325,
+            0.9785539999999999,
+            0.987277,
+            0.9973029999999999,
+            0.998275,
+            1.000167,
+            1.0019689999999999,
+            1.011074,
+            1.013978,
+            1.016331,
+            1.016812,
+            1.017324,
+            1.017894,
+            1.0204980000000001,
+            1.021349,
+            1.02852,
+            1.0347,
+            1.036912,
+            1.050743,
+            1.0526559999999998,
+            1.059207,
+            1.059728,
+            1.073378,
+            1.073659,
+            1.075121,
+            1.075512,
+            1.0765429999999998,
+            1.077955,
+            1.084034,
+            1.084044,
+            1.086598,
+            1.090354,
+            1.091917,
+            1.095822,
+            1.095832,
+            1.098085,
+            1.101281,
+            1.101792,
+            1.109834,
+            1.110284,
+            1.112347,
+            1.113269,
+            1.119599,
+            1.1246859999999999,
+            1.129613,
+            1.137365,
+            1.1411010000000001,
+            1.142914,
+            1.146979,
+            1.148302,
+            1.149694,
+            1.151516,
+            1.152058,
+            1.1534200000000001,
+            1.156584,
+            1.161362,
+            1.1664100000000002,
+            1.1675609999999998,
+            1.1684729999999999,
+            1.169093,
+            1.171687,
+            1.175343,
+            1.1765739999999998,
+            1.1771559999999999,
+            1.178318,
+            1.18644,
+            1.187261,
+            1.188653,
+            1.194662,
+            1.1953230000000001,
+            1.197196,
+            1.2039760000000002,
+            1.21954,
+            1.226831,
+            1.2302170000000001,
+            1.230537,
+            1.240642,
+            1.243045,
+            1.248424,
+            1.25248,
+            1.256266,
+            1.25951,
+            1.26585,
+            1.2712279999999998,
+            1.279361,
+            1.280703,
+            1.2991000000000001,
+            1.354645,
+            1.35835,
+            1.363688,
+            1.373403,
+            1.38432,
+            1.626637,
+            2.531981,
+            2.739205,
+            2.7487700000000004,
+            2.843213,
+            3.334969
+          ],
+          "samples": 100
+        },
+        "harness_rss_after_kib": 11392,
+        "harness_rss_before_kib": 11316,
+        "observation": {
+          "max_ms": 3.147173,
+          "p50_ms": 1.2007109999999999,
+          "p95_ms": 2.6080460000000003,
+          "raw_ms": [
+            0.827495,
+            0.872343,
+            0.8727640000000001,
+            0.888658,
+            0.9046930000000001,
+            0.94899,
+            1.0349199999999998,
+            1.079708,
+            1.084746,
+            1.094249,
+            1.096103,
+            1.101691,
+            1.108922,
+            1.110925,
+            1.110966,
+            1.1175359999999999,
+            1.123124,
+            1.131737,
+            1.139648,
+            1.1411209999999998,
+            1.142974,
+            1.1531390000000001,
+            1.156294,
+            1.157446,
+            1.161201,
+            1.1622430000000001,
+            1.1631639999999999,
+            1.165688,
+            1.165848,
+            1.167231,
+            1.1675609999999998,
+            1.1676410000000002,
+            1.168653,
+            1.169103,
+            1.169654,
+            1.170085,
+            1.1704949999999998,
+            1.1728999999999998,
+            1.176775,
+            1.17989,
+            1.1806510000000001,
+            1.18611,
+            1.189714,
+            1.189995,
+            1.1920979999999999,
+            1.1921080000000002,
+            1.194251,
+            1.198858,
+            1.19975,
+            1.2007109999999999,
+            1.2016520000000002,
+            1.207481,
+            1.207482,
+            1.208353,
+            1.209344,
+            1.210015,
+            1.2122789999999999,
+            1.214823,
+            1.216265,
+            1.217667,
+            1.217737,
+            1.2191999999999998,
+            1.2303760000000001,
+            1.230567,
+            1.231147,
+            1.233451,
+            1.233641,
+            1.236446,
+            1.237738,
+            1.241053,
+            1.251749,
+            1.2523689999999998,
+            1.262686,
+            1.263847,
+            1.2652189999999999,
+            1.270988,
+            1.271559,
+            1.272631,
+            1.275225,
+            1.278119,
+            1.282586,
+            1.283787,
+            1.2929709999999999,
+            1.2941829999999999,
+            1.3101070000000001,
+            1.320804,
+            1.352492,
+            1.374886,
+            1.3940350000000001,
+            1.4843009999999999,
+            1.503751,
+            1.634178,
+            2.013274,
+            2.202781,
+            2.6080460000000003,
+            2.738905,
+            2.759455,
+            2.903564,
+            2.978017,
+            3.147173
+          ],
+          "samples": 100
+        },
+        "scope": "one small local fixture; no Hub, model or network emulation",
+        "warmups": 5
+      },
+      "renderer_process_evidence": {
+        "group": 465775,
+        "members": [
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "0",
+            "pid": 465775,
+            "renderer": false,
+            "rss_kib": "92812 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465778,
+            "renderer": false,
+            "rss_kib": "40500 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465779,
+            "renderer": false,
+            "rss_kib": "41356 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465781,
+            "renderer": false,
+            "rss_kib": "11484 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465798,
+            "renderer": false,
+            "rss_kib": "124400 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465800,
+            "renderer": false,
+            "rss_kib": "66348 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465803,
+            "renderer": true,
+            "rss_kib": "88320 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465804,
+            "renderer": true,
+            "rss_kib": "66764 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465828,
+            "renderer": true,
+            "rss_kib": "76708 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 465836,
+            "renderer": true,
+            "rss_kib": "50452 kB",
+            "seccomp": "2",
+            "state": "S"
+          }
+        ],
+        "no_sandbox_flag": false
+      },
+      "source_files_sha256": {
+        "examples/browser_p0/bridge.rs": "d1325e30dd93267d1ae6bdd947992fbfc84958dab215aafba0154d0acd4464f7",
+        "examples/browser_p0/browser.rs": "35f19d70a7d70298d4eae6906f06b11576488054dd826c52808105ea788748cd",
+        "examples/browser_p0/cdp.rs": "f59defff67f61a015d69002dc2c89649a433f9c62ec069bcea2d1263bbb211b4",
+        "examples/browser_p0/fixture.rs": "011f625037a1c41ce20821ed1c558a1bccd558a1099b713e7176cffeee0318b0",
+        "examples/browser_p0/main.rs": "50a2a873e947d8ee7f28d3e040ae9bb746d15c89348e4d2c3fb49f7e84717d03",
+        "examples/browser_p0/page.rs": "a0e5e5af1d1159cb3bab40f9d700315ec8c83e86f30d0cc1cd444d1d09b433d6",
+        "examples/browser_p0/scenarios.rs": "7dd66710a1843552067dda85b7fae37ba689c701389bb85464a32539a6fb0fe0"
+      },
+      "source_revision": "14076202f9d84c3d6cd32009e4b1c17eae8c9dbe",
+      "startup_ms": 600.45715,
+      "status": "passed",
+      "synthetic_secret_found_in_text_artifacts": false
+    },
+    "run-10-chromium": {
+      "browser_path": "/snap/chromium/3580/usr/lib/chromium-browser/chrome",
+      "browser_version": {
+        "jsVersion": "15.6.75.27",
+        "product": "Chrome/156.0.8078.79",
+        "protocolVersion": "1.3",
+        "revision": "@a21ce95c24ce3964416f09ae1862f53f319eb4d0",
+        "userAgent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36"
+      },
+      "build_profile": "release",
+      "checks": [
+        {
+          "evidence": {
+            "group": 466733,
+            "members": [
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "0",
+                "pid": 466733,
+                "renderer": false,
+                "rss_kib": "217908 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466741,
+                "renderer": false,
+                "rss_kib": "73728 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466742,
+                "renderer": false,
+                "rss_kib": "72968 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466745,
+                "renderer": false,
+                "rss_kib": "18776 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466767,
+                "renderer": false,
+                "rss_kib": "105320 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466769,
+                "renderer": false,
+                "rss_kib": "110624 kB",
+                "seccomp": "0",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466796,
+                "renderer": false,
+                "rss_kib": "55300 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466829,
+                "renderer": true,
+                "rss_kib": "138060 kB",
+                "seccomp": "2",
+                "state": "R"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466841,
+                "renderer": true,
+                "rss_kib": "101468 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466858,
+                "renderer": true,
+                "rss_kib": "130484 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466859,
+                "renderer": true,
+                "rss_kib": "105120 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466886,
+                "renderer": true,
+                "rss_kib": "113276 kB",
+                "seccomp": "2",
+                "state": "S"
+              },
+              {
+                "cmdline_readable": true,
+                "no_new_privs": "1",
+                "pid": 466905,
+                "renderer": true,
+                "rss_kib": "80112 kB",
+                "seccomp": "2",
+                "state": "S"
+              }
+            ],
+            "no_sandbox_flag": false,
+            "all_recorded_pids_absent_after_run": true
+          },
+          "name": "renderer_sandbox",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "independent_site_saves": 1,
+            "input_method": "Input.insertText",
+            "value_verified": true
+          },
+          "name": "semantic_form_and_unicode",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "child_nodes": 7,
+            "distinct_session": true,
+            "independent_site_clicks": 1,
+            "main_tree_omits_child_content": true
+          },
+          "name": "out_of_process_iframe",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "button_observed": true
+          },
+          "name": "open_shadow_semantics",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "covered_rejected": true,
+            "detached_rejected": true
+          },
+          "name": "stale_and_occlusion",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "redirect_and_link_interception": "not_implemented",
+            "rejected": 3
+          },
+          "name": "direct_navigation_scheme",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "elapsed_ms": 805.9431999999999,
+            "handoff_rejected_while_pending": true,
+            "late_effect_observed": true,
+            "late_replies": 2,
+            "pending_after_browser_level_reply": 2,
+            "pending_at_timeout": 2
+          },
+          "name": "timeout_and_handoff",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "after_replies": 0,
+            "held_after_timeout": 32,
+            "overflow_rejected": true
+          },
+          "name": "bounded_outstanding_commands",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "ai_observation_blocked_in_human_mode": true,
+            "duplicate_rejected": true,
+            "old_epoch_rejected": true,
+            "real_viewer_image_loaded": true,
+            "scope": "loopback prototype, no Hub auth, no human usability claim",
+            "secret_not_in_resumed_observation": true,
+            "unicode_secret_inserted_via_ui": true,
+            "viewer_cleanup": {
+              "forced": false,
+              "milliseconds": 187.701523,
+              "profile_removed": true,
+              "remaining_group_members": 0
+            },
+            "viewer_png_bytes": 72344
+          },
+          "name": "local_handoff_viewer",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "png_bytes": 33502,
+            "viewport": [
+              1280,
+              720
+            ]
+          },
+          "name": "screenshot",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "old_reference_rejected": true
+          },
+          "name": "navigation_invalidates_reference",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "forced": false,
+            "milliseconds": 189.76209899999998,
+            "profile_removed": true,
+            "remaining_group_members": 0
+          },
+          "name": "normal_cleanup",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "cleanup": {
+              "forced": true,
+              "milliseconds": 3128.830957,
+              "profile_removed": true,
+              "remaining_group_members": 0
+            },
+            "close_reason": "message_capacity",
+            "connection_survived": false,
+            "observation_failed_with_limit": true,
+            "paragraphs": 30000
+          },
+          "name": "oversized_ax_tree",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "cleanup": {
+              "forced": false,
+              "milliseconds": 138.561642,
+              "profile_removed": true,
+              "remaining_group_members": 0
+            },
+            "disconnected_handoff_rejected": true,
+            "other_browser_alive": true
+          },
+          "name": "browser_crash_cleanup_and_isolation",
+          "status": "passed"
+        },
+        {
+          "evidence": {
+            "forced": false,
+            "milliseconds": 184.115323,
+            "profile_removed": true,
+            "remaining_group_members": 0
+          },
+          "name": "second_normal_cleanup",
+          "status": "passed"
+        }
+      ],
+      "environment": {
+        "arch": "x86_64",
+        "os_release": "NAME=\"Kylin\"\nFULL_NAME=\"kylin\"\nVERSION=\"银河麒麟桌面操作系统V11 SP1\"\nVERSION_US=\"Kylin Linux Desktop V11 SP1\"\nID=kylin\nPRETTY_NAME=\"Kylin V11\"\nVERSION_ID=\"v11\"\nHOME_URL=\"http://www.kylinos.cn/\"\nVERSION_CODENAME=kylin\nKYLIN_RELEASE_ID=\"2606\"\nID_LIKE=openKylin\n"
+      },
+      "limitations": [
+        "Linux only",
+        "small synthetic pages",
+        "no Hub/MCP integration",
+        "no production auth or receipt integration",
+        "no external sites",
+        "no cross-platform acceptance"
+      ],
+      "measurements": {
+        "fill_including_checks": {
+          "max_ms": 3.633592,
+          "p50_ms": 1.43709,
+          "p95_ms": 2.111834,
+          "raw_ms": [
+            1.204477,
+            1.236186,
+            1.2473720000000001,
+            1.250877,
+            1.254082,
+            1.259441,
+            1.261514,
+            1.266952,
+            1.2767469999999999,
+            1.2779989999999999,
+            1.2825149999999998,
+            1.2911489999999999,
+            1.2969979999999999,
+            1.3036370000000002,
+            1.303817,
+            1.303878,
+            1.3168279999999999,
+            1.3169279999999999,
+            1.320843,
+            1.322807,
+            1.324118,
+            1.330829,
+            1.330959,
+            1.334424,
+            1.341495,
+            1.3436679999999999,
+            1.348395,
+            1.3511389999999999,
+            1.355676,
+            1.359882,
+            1.363188,
+            1.363438,
+            1.3693170000000001,
+            1.370298,
+            1.378301,
+            1.383369,
+            1.3944750000000001,
+            1.3960380000000001,
+            1.402647,
+            1.4031479999999998,
+            1.406814,
+            1.4080659999999998,
+            1.413605,
+            1.419493,
+            1.419543,
+            1.424812,
+            1.431031,
+            1.4325729999999999,
+            1.434336,
+            1.43709,
+            1.4376309999999999,
+            1.437992,
+            1.438462,
+            1.445653,
+            1.4482570000000001,
+            1.455598,
+            1.459034,
+            1.465193,
+            1.480967,
+            1.484172,
+            1.489459,
+            1.494226,
+            1.49626,
+            1.501808,
+            1.504011,
+            1.512444,
+            1.513926,
+            1.514678,
+            1.520176,
+            1.520717,
+            1.534538,
+            1.550722,
+            1.555569,
+            1.5706120000000001,
+            1.5723449999999999,
+            1.574719,
+            1.579296,
+            1.579907,
+            1.591454,
+            1.5917839999999999,
+            1.638275,
+            1.6529470000000002,
+            1.678246,
+            1.6884720000000002,
+            1.715622,
+            1.736264,
+            1.760651,
+            1.787741,
+            1.791928,
+            1.794412,
+            1.7954329999999998,
+            1.842124,
+            1.848984,
+            1.900793,
+            2.111834,
+            2.159355,
+            2.221139,
+            2.236272,
+            2.342754,
+            3.633592
+          ],
+          "samples": 100
+        },
+        "harness_rss_after_kib": 11408,
+        "harness_rss_before_kib": 10772,
+        "observation": {
+          "max_ms": 1.923187,
+          "p50_ms": 1.2440870000000002,
+          "p95_ms": 1.635201,
+          "raw_ms": [
+            1.090073,
+            1.090755,
+            1.0927980000000002,
+            1.1150820000000001,
+            1.126519,
+            1.12718,
+            1.128912,
+            1.1328690000000001,
+            1.136855,
+            1.1390479999999998,
+            1.139789,
+            1.1552820000000001,
+            1.156594,
+            1.157545,
+            1.158257,
+            1.1588880000000001,
+            1.159999,
+            1.162193,
+            1.168523,
+            1.168583,
+            1.170785,
+            1.1723890000000001,
+            1.173841,
+            1.176575,
+            1.177025,
+            1.1809509999999999,
+            1.181422,
+            1.183525,
+            1.18672,
+            1.186821,
+            1.188453,
+            1.189004,
+            1.191317,
+            1.198448,
+            1.1997,
+            1.204968,
+            1.206911,
+            1.207462,
+            1.216255,
+            1.216896,
+            1.2266709999999998,
+            1.228523,
+            1.229125,
+            1.233641,
+            1.234052,
+            1.234953,
+            1.236696,
+            1.238018,
+            1.242134,
+            1.2440870000000002,
+            1.245128,
+            1.252199,
+            1.2528409999999999,
+            1.2534720000000001,
+            1.256666,
+            1.257627,
+            1.258889,
+            1.2644380000000002,
+            1.266521,
+            1.2763959999999999,
+            1.276567,
+            1.277408,
+            1.287463,
+            1.2930920000000001,
+            1.297538,
+            1.2999319999999999,
+            1.2999820000000002,
+            1.313051,
+            1.3198420000000002,
+            1.3416350000000001,
+            1.353523,
+            1.3565280000000002,
+            1.357329,
+            1.359502,
+            1.3691669999999998,
+            1.374555,
+            1.377038,
+            1.386202,
+            1.390369,
+            1.399033,
+            1.400044,
+            1.409218,
+            1.409638,
+            1.426934,
+            1.459253,
+            1.46371,
+            1.4644320000000002,
+            1.465833,
+            1.48309,
+            1.492775,
+            1.537512,
+            1.5607380000000002,
+            1.567097,
+            1.6224010000000002,
+            1.635201,
+            1.673899,
+            1.745738,
+            1.755052,
+            1.889677,
+            1.923187
+          ],
+          "samples": 100
+        },
+        "scope": "one small local fixture; no Hub, model or network emulation",
+        "warmups": 5
+      },
+      "renderer_process_evidence": {
+        "group": 466733,
+        "members": [
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "0",
+            "pid": 466733,
+            "renderer": false,
+            "rss_kib": "217908 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466741,
+            "renderer": false,
+            "rss_kib": "73728 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466742,
+            "renderer": false,
+            "rss_kib": "72968 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466745,
+            "renderer": false,
+            "rss_kib": "18776 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466767,
+            "renderer": false,
+            "rss_kib": "105320 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466769,
+            "renderer": false,
+            "rss_kib": "110624 kB",
+            "seccomp": "0",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466796,
+            "renderer": false,
+            "rss_kib": "55300 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466829,
+            "renderer": true,
+            "rss_kib": "138060 kB",
+            "seccomp": "2",
+            "state": "R"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466841,
+            "renderer": true,
+            "rss_kib": "101468 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466858,
+            "renderer": true,
+            "rss_kib": "130484 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466859,
+            "renderer": true,
+            "rss_kib": "105120 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466886,
+            "renderer": true,
+            "rss_kib": "113276 kB",
+            "seccomp": "2",
+            "state": "S"
+          },
+          {
+            "cmdline_readable": true,
+            "no_new_privs": "1",
+            "pid": 466905,
+            "renderer": true,
+            "rss_kib": "80112 kB",
+            "seccomp": "2",
+            "state": "S"
+          }
+        ],
+        "no_sandbox_flag": false
+      },
+      "source_files_sha256": {
+        "examples/browser_p0/bridge.rs": "d1325e30dd93267d1ae6bdd947992fbfc84958dab215aafba0154d0acd4464f7",
+        "examples/browser_p0/browser.rs": "35f19d70a7d70298d4eae6906f06b11576488054dd826c52808105ea788748cd",
+        "examples/browser_p0/cdp.rs": "f59defff67f61a015d69002dc2c89649a433f9c62ec069bcea2d1263bbb211b4",
+        "examples/browser_p0/fixture.rs": "011f625037a1c41ce20821ed1c558a1bccd558a1099b713e7176cffeee0318b0",
+        "examples/browser_p0/main.rs": "50a2a873e947d8ee7f28d3e040ae9bb746d15c89348e4d2c3fb49f7e84717d03",
+        "examples/browser_p0/page.rs": "a0e5e5af1d1159cb3bab40f9d700315ec8c83e86f30d0cc1cd444d1d09b433d6",
+        "examples/browser_p0/scenarios.rs": "7dd66710a1843552067dda85b7fae37ba689c701389bb85464a32539a6fb0fe0"
+      },
+      "source_revision": "14076202f9d84c3d6cd32009e4b1c17eae8c9dbe",
+      "startup_ms": 182.889715,
+      "status": "passed",
+      "synthetic_secret_found_in_text_artifacts": false
+    }
+  },
+  "binary_sha256": {
+    "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/target/release/examples/browser_p0": "1eb3b671c6d411cfaceed0a5c4eef25afc872fec183e7a519f685318aa4c5dbe",
+    "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595",
+    "/snap/chromium/3580/usr/lib/chromium-browser/chrome": "2cdc4759ce0d4fa5cbc21e764cebfb389bae39df79a3de18169606c0036ad4a8"
+  },
+  "earlier_runs": [
+    {
+      "run": "run-01",
+      "result": "sandbox loopback bind EPERM; no browser test executed"
+    },
+    {
+      "run": "run-02 / run-03",
+      "result": "7 functional checks passed; viewer input rejected with viewer incorrectly sharing the controlled CDP connection"
+    },
+    {
+      "run": "run-04",
+      "result": "13 checks passed in Debug after using an independent viewer browser"
+    },
+    {
+      "run": "run-05-release / run-06-release",
+      "result": "renderer classification failed because proc cmdline was unreadable; diagnostics retained; fixed by joining SystemInfo.getProcessInfo with proc status"
+    },
+    {
+      "run": "run-07-release / run-08-chromium",
+      "result": "15 checks passed on both browsers; repeated after adding explicit WebSocket capacity-error evidence to rule out other disconnect causes"
+    }
+  ],
+  "unverified": [
+    "Ubuntu 24.04, Windows and macOS native runtime",
+    "Agent or harness abrupt-exit orphan recovery and escaped process groups",
+    "Hub/MCP integration, real identity, revocation, receipts, host resumption",
+    "redirect, popup and special-protocol interception before effects",
+    "generic input quiescence across all action types and frames",
+    "human usability, network shaping, large-page successful observation",
+    "browser redistribution, installer and update matrix"
+  ]
+}

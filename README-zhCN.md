@@ -80,6 +80,7 @@ rdh update
 - [生命周期](docs/native-lifecycle-zhCN.md)（[English](docs/native-lifecycle.md)）：启动、解绑和程序替换。
 - [架构](docs/architecture.md)：连接、请求和工作生命周期。
 - [分发说明](docs/distribution.md)：产物、安装器和发布准备。
+- [浏览器能力设计与实施计划](docs/browser-plan-zhCN.md)：用户任务、实现规划、P0 原型结果和验收指标；正式浏览器能力尚未接入。
 
 ## 许可证
 
