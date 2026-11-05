@@ -114,6 +114,14 @@ its saved Hub. Connections are direct by default; `RDH_USE_ENV_PROXY=1` enables
 local proxy variables and `RDH_CA_BUNDLE` adds PEM trust roots.
 See [Network configuration](docs/network.md) and [Hardening](docs/hardening.md).
 
+## Browser tasks
+
+Opt-in Linux browser sessions support structured page reads, browser-only input,
+human login, screenshots, named profiles and bounded file transfer. Use the
+[Browser guide](docs/browser.md) to enable the local policy and check the matching
+Hub requirements. These browser changes have local validation and are not yet
+released or deployed.
+
 ## Development and documentation
 
 Use Rust 1.93.0 and the checked-in lockfile. Build and test instructions are in

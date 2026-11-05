@@ -128,10 +128,7 @@ pub struct Browsers {
 
 impl Browsers {
     pub fn new(settings: &Settings, config_path: Option<&Path>, token: &str) -> Self {
-        let root = config_path.and_then(Path::parent).map(|p| {
-            p.join(".rdh-browser")
-                .join(&crate::config::sha256_hex(token.as_bytes())[..24])
-        });
+        let root = config_path.and_then(|config| super::storage_root(config, token));
         let files = Files::new(root.as_deref());
         Self {
             settings: settings.clone(),
@@ -168,22 +165,26 @@ impl Browsers {
         let mut initialized = self.initialized.lock().unwrap();
         if !*initialized {
             let parent = root.parent().unwrap();
-            for path in [parent, root] {
+            fn prepare_directory(path: &Path) -> Result<()> {
                 match crate::storage::create_private_dir(path) {
-                    Ok(_) => {}
+                    Ok(_) => Ok(()),
                     Err(crate::error::Error::Io(error))
                         if error.kind() == std::io::ErrorKind::AlreadyExists =>
                     {
-                        crate::storage::private_metadata(path, true).map_err(super::io_error)?;
+                        crate::storage::private_metadata(path, true)
+                            .map(|_| ())
+                            .map_err(super::io_error)
                     }
-                    Err(error) => return Err(super::io_error(error)),
+                    Err(error) => Err(super::io_error(error)),
                 }
             }
-            let lock_path = root.join("agent");
+            prepare_directory(parent)?;
+            let lock_path = super::storage_lock(root);
             crate::profile_lock::ProfileLocks::recover(std::slice::from_ref(&lock_path))
                 .map_err(|_| Failure::new("browser_profile_busy"))?;
             let lock = crate::profile_lock::ProfileLocks::acquire(&[lock_path])
                 .map_err(|_| Failure::new("browser_profile_busy"))?;
+            prepare_directory(root)?;
             process::recover(root)?;
             self.files.prepare()?;
             let lock = Arc::new(lock);
@@ -375,6 +376,7 @@ impl Browsers {
                     && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&frames)) {
                     return Err(Failure::new("browser_stale_cursor"));
                 }
+                let next_token=crate::random::hex_token::<16>().map_err(super::io_error)?;
                 let previous=session.read.take();
                 let mut read=if params["cursor"].is_string() {
                     previous.unwrap()
@@ -406,7 +408,7 @@ impl Browsers {
                 session.references = refs;
                 session.observed_tab = tab.clone();
                 if read.cursor.more() {
-                    read.token=crate::random::hex_token::<16>().map_err(super::io_error)?;
+                    read.token=next_token;
                     read.until=Instant::now()+Duration::from_secs(300);
                     value["next_cursor"]=read.token.clone().into();
                     session.read=Some(read);
@@ -837,6 +839,11 @@ impl Browsers {
         }
         self.files.wait().await;
         stopped
+    }
+    // Runtime has joined all request workers and browser-owned tasks before this call.
+    pub fn release_stopped_storage(&self) {
+        self.files.release_stopped_storage();
+        self.root_lock.lock().unwrap().take();
     }
 }
 

@@ -123,6 +123,56 @@ mod runtime;
 #[cfg(target_os = "linux")]
 pub use runtime::Browsers;
 
+#[cfg(target_os = "linux")]
+pub(crate) fn storage_root(config: &std::path::Path, token: &str) -> Option<PathBuf> {
+    config.parent().map(|parent| {
+        parent
+            .join(".rdh-browser")
+            .join(&crate::config::sha256_hex(token.as_bytes())[..24])
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn storage_lock(root: &std::path::Path) -> PathBuf {
+    // The lock must survive deletion of the namespace payload. Config files
+    // with different names but the same parent/token share this exclusion.
+    root.with_extension("agent")
+}
+
+/// Called only after Agent shutdown and while the binding's lifecycle lock is held.
+/// Retire this binding's browser data without touching other namespaces.
+pub(crate) fn remove_binding(config: &std::path::Path, token: &str) -> crate::error::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(root) = storage_root(config, token) else {
+            return Ok(());
+        };
+        let parent = root.parent().unwrap();
+        match std::fs::symlink_metadata(parent) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
+        }
+        crate::storage::private_metadata(parent, true)?;
+        let path = storage_lock(&root);
+        crate::profile_lock::ProfileLocks::recover(std::slice::from_ref(&path))?;
+        let _lock = crate::profile_lock::ProfileLocks::acquire(&[path])?;
+        match crate::storage::private_metadata(&root, true) {
+            Err(crate::error::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+        process::recover(&root).map_err(|error| crate::error::Error::message(error.to_string()))?;
+        std::fs::remove_dir_all(&root)?;
+        crate::storage::sync_directory(&std::fs::File::open(root.parent().unwrap())?)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (config, token);
+    Ok(())
+}
+
 #[cfg(not(target_os = "linux"))]
 pub struct Browsers;
 #[cfg(not(target_os = "linux"))]
@@ -133,6 +183,7 @@ impl Browsers {
     pub fn info(&self) -> Value {
         json!({"version":1,"available":false,"reason":"platform_not_supported"})
     }
+    pub fn release_stopped_storage(&self) {}
     pub fn dispatch(
         &self,
         _: &str,
@@ -161,6 +212,49 @@ fn io_error(_: impl std::fmt::Display) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retiring_binding_requires_exclusive_storage_and_preserves_neighbors() {
+        let temp = std::env::temp_dir().join(format!(
+            "rdh-browser-retire-{}",
+            crate::random::hex_token::<8>().unwrap()
+        ));
+        crate::storage::create_private_dir(&temp).unwrap();
+        let config = temp.join("device.json");
+        let root = storage_root(&config, "retired-token").unwrap();
+        let neighbor = storage_root(&config, "other-token").unwrap();
+        for path in [
+            root.parent().unwrap(),
+            &root,
+            &neighbor,
+            &root.join("profiles"),
+            &root.join("artifacts"),
+        ] {
+            crate::storage::create_private_dir(path).unwrap();
+        }
+        crate::storage::write_private_replace(
+            &root.join("profiles/test"),
+            b"synthetic login state",
+        )
+        .unwrap();
+        crate::storage::write_private_replace(&neighbor.join("keep"), b"other binding").unwrap();
+        let mut live = crate::profile_lock::ProfileLocks::acquire(&[storage_lock(&root)]).unwrap();
+        assert!(remove_binding(&temp.join("alias.json"), "retired-token").is_err());
+        assert!(root.join("profiles/test").exists());
+        live.release().unwrap();
+        remove_binding(&config, "retired-token").unwrap();
+        assert!(!root.exists());
+        assert_eq!(
+            std::fs::read(neighbor.join("keep")).unwrap(),
+            b"other binding"
+        );
+        remove_binding(&config, "retired-token").unwrap();
+        // A replaced namespace must never redirect retirement to another directory.
+        std::os::unix::fs::symlink(&neighbor, &root).unwrap();
+        assert!(remove_binding(&config, "retired-token").is_err());
+        assert!(neighbor.join("keep").exists());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
     #[test]
     fn settings_are_explicit_and_principals_are_not_free_form() {
         assert!(!Settings::parse(None).unwrap().enabled);

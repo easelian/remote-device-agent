@@ -151,6 +151,25 @@ async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
     .write_new(&config)
     .unwrap();
     let original = storage::read_private(&config).unwrap();
+    #[cfg(target_os = "linux")]
+    let browser_root = {
+        let parent = config.parent().unwrap().join(".rdh-browser");
+        let root = parent.join(
+            &rdh_agent::config::sha256_hex(b"isolated-lifecycle-token-for-native-tests-1234")[..24],
+        );
+        for path in [
+            &parent,
+            &root,
+            &root.join("profiles"),
+            &root.join("artifacts"),
+        ] {
+            storage::create_private_dir(path).unwrap();
+        }
+        storage::write_private_replace(&root.join("profiles/test"), b"synthetic login state")
+            .unwrap();
+        storage::write_private_replace(&root.join("artifacts/test"), b"synthetic file").unwrap();
+        root
+    };
     let mut first = start(&base, &config, "first").await;
     first.kill().await.unwrap();
     first.wait().await.unwrap();
@@ -198,6 +217,25 @@ async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
     assert!(sidecar(&config, ".unbind.json").exists());
     assert_eq!(storage::read_private(&config).unwrap(), original);
     allow.store(true, std::sync::atomic::Ordering::Release);
+    #[cfg(target_os = "linux")]
+    {
+        assert!(browser_root.join("profiles/test").exists());
+        let mut live =
+            rdh_agent::profile_lock::ProfileLocks::acquire(&[browser_root.with_extension("agent")])
+                .unwrap();
+        let blocked = tokio::time::timeout(
+            Duration::from_secs(8),
+            command(&base).arg("unbind").output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!blocked.status.success());
+        assert!(String::from_utf8_lossy(&blocked.stderr).contains("browser data cleanup"));
+        assert!(config.exists() && sidecar(&config, ".unbind.json").exists());
+        assert!(browser_root.join("artifacts/test").exists());
+        live.release().unwrap();
+    }
     let completed = tokio::time::timeout(
         Duration::from_secs(8),
         command(&base).arg("unbind").output(),
@@ -215,6 +253,8 @@ async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
             && !sidecar(&config, ".unbind.json").exists()
             && !sidecar(&config, ".rdh-lock").exists()
     );
+    #[cfg(target_os = "linux")]
+    assert!(!browser_root.exists());
     server.abort();
     let _ = server.await;
     drop(fixture);

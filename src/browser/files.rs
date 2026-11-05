@@ -682,6 +682,9 @@ impl Files {
         })
         .await;
     }
+    pub fn release_stopped_storage(&self) {
+        self.root_lock.lock().unwrap().take();
+    }
 }
 
 #[cfg(test)]

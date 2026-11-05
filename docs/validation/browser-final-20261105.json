@@ -1,0 +1,205 @@
+{
+  "date": "2026-11-05",
+  "scenario": "final local Linux browser candidate: device entry, private storage, unbinding and full feature regression",
+  "status": "locally_validated_not_released",
+  "source": {
+    "agent": {
+      "branch": "work/browser-p0",
+      "base": "318ebe8e9bb55288417b42b2bdc0e2cc5009f483",
+      "files": {
+        "src/app.rs": "4ccdacb80b8f8e46922a58fe22187ea59feb387a9ff0889d4a78c47c497b3a52",
+        "src/binding/unbind.rs": "b4cf6fac0c00a2e66c7a4d40ded8461ce8ca7492314b63dd12a85afe5a0210f5",
+        "src/browser/files.rs": "145354ace612cde1259ed838c948681a9ed0e41451fb0298372252cf7607c0e2",
+        "src/browser/mod.rs": "467cbf1e1f786e94f7504ed953ee0d019b66a921f2f5813bf476323520adbca9",
+        "src/browser/process.rs": "b9e987384514a125630bb3f7c45d7dd2cbd3b704dcbed6a31f198d43618f0c22",
+        "src/browser/runtime.rs": "9b8d1ee243bd3a0ed8a38bfd07ad0e1dd09cdc833f6e9b7d1a35523b93b701a0",
+        "src/files/mod.rs": "bcc2e8b95982578f260d53be1372636174206219c5b3b1b3002cda10b6482f5d",
+        "src/files/native.rs": "8433d59fd8acf97866be9df18c140cd8e9bbe52eae388feba6a45b80abff5bb9",
+        "src/rpc.rs": "02e15cfad7129f55f1a7e66272e06d52142466ed33b97d1b4893dddc0b785346",
+        "tests/lifecycle_recovery.rs": "4f0133dcfddafa0aa33cce4e20140aaf317f86d27464044d4540ce1056758345"
+      },
+      "definition": "Base commit plus these file contents identifies the tested implementation; guide/evidence-only edits followed the run."
+    },
+    "server": {
+      "branch": "work/browser-p0",
+      "commit": "b6a68749ef13e844aff99657860cba3b21f07b57",
+      "files": {
+        "apps/business/web/src/BrowserSessions.vue": "b4551876888049d209003b97db208192af68a0d8dd8a0391665e223321602478",
+        "apps/business/web/src/Devices.vue": "a4ce6ba800b82df0e75b80c826bf2b8652e627e39f95eb7a9a7296c79aa60375",
+        "apps/business/web/src/rdh-copy.ts": "ce1764d8c076024d2949361c098fea187b27cc3b9c4dffbbe48e273fa33fa952",
+        "apps/business/web/src/router.ts": "15c97a91f37565e8dda4d1b20f2675ed764ca81efdcd67cf63aabd2402d41707",
+        "contracts/mcp/v1/instructions.txt": "ed219bd0c0c3432488c72e8db28a5764480aa3941f70b10a13481114ec4f10c9",
+        "contracts/mcp/v1/tools-list.json": "05b73572dd5c151c63e67e72d13fc94408e309e1df374f36ee854a2499aa45eb",
+        "tests/browser_human_ui.mjs": "53a69b7fe7a3b517cbc1153ff5d4a3fe0819efa57607c674f2c6abef84f3db4c"
+      }
+    }
+  },
+  "environment": {
+    "os": "Kylin V11 SP1 x86_64",
+    "kernel": "7.2.0-kylin",
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "cargo": "cargo 1.93.0 (083ac5135 2025-12-15)",
+    "node": "v24.15.0",
+    "database": "disposable PostgreSQL 16; no production data",
+    "browsers": [
+      {
+        "version": "Headless Chrome 146.0.7680.153",
+        "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+        "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595"
+      },
+      {
+        "version": "Chromium 156.0.8078.79",
+        "path": "/snap/chromium/3580/usr/lib/chromium-browser/chrome",
+        "sha256": "2cdc4759ce0d4fa5cbc21e764cebfb389bae39df79a3de18169606c0036ad4a8"
+      }
+    ],
+    "execution": "one serial executor; debug candidate builds; local loopback fixture sites; synthetic accounts and data; host resources not isolated"
+  },
+  "candidate": {
+    "root": "/tmp/rdh-browser-hub-test-b903getn",
+    "port": 53777,
+    "production_data": false,
+    "selectors": [
+      "tests/core/test_browser_native.py",
+      "tests/core/test_browser_human.py",
+      "tests/core/test_browser_files.py",
+      "tests/core/test_browser_upload.py",
+      "tests/core/test_browser_pagination.py",
+      "tests/core/test_rust_mcp_native.py::test_catalog_and_protocol_versions",
+      "tests/core/test_rust_mcp_native.py::test_standard_python_sdk_client",
+      "tests/contracts/test_wire_contracts.py"
+    ],
+    "binaries": {
+      "RDH_TEST_BROWSER_EXECUTABLE": {
+        "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+        "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595"
+      },
+      "RDH_TEST_CLUSTER_AGENT": {
+        "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/target/debug/rdh",
+        "sha256": "fdd853bce300b75dd7a6c016e4b2789b161afd69192acd8f1df0fcda75510749"
+      },
+      "RDH_TEST_RUST_CORE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-core",
+        "sha256": "a00b2b33f2e5952d6cd40fdb27b982691aeba9a6fb509e0fb8c5ae3dc90d053c"
+      },
+      "RDH_TEST_RUST_GATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-gate",
+        "sha256": "a39252e2bec61324fbdff2a310b08c3fa1709b38d0e8064f7a6f3df292d7b0ad"
+      },
+      "RDH_TEST_RUST_AUTH": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-auth",
+        "sha256": "e7c0bfcda0e2fa3266b768f61d3d8758efa6d8bc9664d04b5dc20b146aeee4d7"
+      },
+      "RDH_TEST_RUST_MIGRATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-migrate",
+        "sha256": "8f7561a4e1c5066f4d94cebf1b4ed281c13e1b5e586f39cfcaa4abbcd4ca37e8"
+      },
+      "RDH_TEST_RUST_RUNTIME_PROBE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/examples/authority_probe",
+        "sha256": "8961f294ee6b8cb1014ccbaaa7b8efc2e21f9e3d07fbad0c164da22745323ecb"
+      }
+    }
+  },
+  "commands": {
+    "agent": [
+      "cargo fmt --all --check",
+      "cargo clippy --locked --offline --workspace --all-targets --all-features -- -D warnings",
+      "cargo test --locked --offline --workspace --all-targets --all-features",
+      "RDH_BROWSER_EXECUTABLE=<each recorded browser path> cargo test --locked --offline --test browser_session -- --ignored --nocapture --test-threads=1",
+      "cargo build --locked --offline --bin rdh"
+    ],
+    "server": [
+      "cargo clippy --locked --offline -p rdh-core -p rdh-runtime -p rdh-gate --all-targets -- -D warnings",
+      "cargo build --locked --offline -p rdh-core -p rdh-gate",
+      "npm run build (cwd: apps/business/web; Node 24.15.0)",
+      "python3 .build/browser-validation/run.py final-tests-01 tests/core/test_browser_native.py tests/core/test_browser_human.py tests/core/test_browser_files.py tests/core/test_browser_upload.py tests/core/test_browser_pagination.py tests/core/test_rust_mcp_native.py::test_catalog_and_protocol_versions tests/core/test_rust_mcp_native.py::test_standard_python_sdk_client tests/contracts/test_wire_contracts.py"
+    ],
+    "hub_ui_environment": {
+      "RDH_TEST_BROWSER_ARTIFACT_DIR": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/.build/browser-validation/final-ui-01"
+    }
+  },
+  "results": {
+    "agent_workspace": {
+      "passed": 146,
+      "failed": 0,
+      "ignored": 5
+    },
+    "native_headless146": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 14.55
+    },
+    "native_chromium156": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 9.7
+    },
+    "hub_web_and_wire_contracts": {
+      "passed": 32,
+      "failed": 0,
+      "elapsed_seconds": 220.38
+    },
+    "agent_format": "passed",
+    "agent_clippy": "passed",
+    "server_clippy": "passed",
+    "candidate_builds": "passed",
+    "web_build": "passed",
+    "cleanup": {
+      "removed": true,
+      "production_data": false
+    },
+    "counting": "Each integration test covers multiple scenarios. Counts do not represent the planned real-model task matrix or participant sample."
+  },
+  "verified": [
+    "Device browser readiness -> session list -> explicit human claim -> synthetic login -> explicit handback -> AI observes the result",
+    "Structured reads, fresh refs, controls, same-process and cross-process frames, ancestor overlays and dialog handling",
+    "Bounded continuation preserves long text and invalidates tokens on tested document/open-shadow mutations, navigation, actions and control changes",
+    "Ownership and authorization checks before admission and disclosure; revoked human/account/device grants do not disclose completion",
+    "Named-profile isolation, exclusive use, persistence and actual Agent crash/restart recovery without action replay",
+    "Downloads are size/hash-checked before delivery; partial/oversized files rejected, shared staging budgets enforced, reads cancelled and artifacts deleted",
+    "User-approved upload chunks reach the website unchanged; wrong-site, repeated, incomplete and unauthorized uses reject",
+    "Reserved browser storage excluded from direct reads, batches, lists, searches, mutations and configured private-root aliases",
+    "Failed revocation or occupied namespace retains pending unbind; successful retry deletes only the matching binding data"
+  ],
+  "limits": [
+    "Only local Linux x64 execution was validated; Windows and macOS browser backends are not implemented.",
+    "No main-branch merge, push, deployment, production-account operation or release occurred.",
+    "Real AI-host image display and conversation continuation, complete task matrix, degraded networks, workload performance and participant usability remain unaccepted.",
+    "First-use policy setup and browser installation remain local manual steps; no web configuration or managed browser installer is delivered.",
+    "Download support requires HTTP 200, known length and identity encoding; upload sources are explicitly selected local files and main-page controls.",
+    "Browser profiles/cache/memory have no hard quota; network destinations are not confined; generic file exclusion is not a same-OS-user or shell boundary.",
+    "Observations are not atomic website snapshots and input ACKs do not establish business success; special-scheme coverage is not an all-path guarantee.",
+    "Raw logs/screenshots and the isolated test runner are local ignored artifacts; publication requires durable evidence attachments."
+  ],
+  "evidence": {
+    "agent": {
+      ".build/browser-final-build-01.log": "021ee3496bddc0bf92f3b0d422364f104285fec0cd7d569d4936663a25630fb5",
+      ".build/browser-final-clippy-01.log": "6e01bc79968b2c0858417fa014ea0f454f839f17388caf8bcd5704d2cb277495",
+      ".build/browser-final-fmt-01.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      ".build/browser-final-native-146-01.log": "3cbadf2facbe9ecea413a2310213e3ab45d8127d1f8035d46adceed5ad37a6bd",
+      ".build/browser-final-native-156-01.log": "724a23351e9aa59b5e8c99feb129bf649725ab1e28287b023407ceaa338ef4ef",
+      ".build/browser-final-workspace-01.log": "e9af0c82e1ec390618b031db619ec09201d96452a40c56596a830f989e8aa486",
+      ".build/browser-retire-lifecycle-02.log": "a086efebe17646f3813f517a9055f11fccacf5ce3e6cea3aafcf7d29a5f00957",
+      ".build/browser-retire-unit-02.log": "144dcdec6c25f690a7bfecdc3c6c85b020a3624a202429c326111137ec2c4528"
+    },
+    "server": {
+      ".build/browser-validation/final-build-01.log": "4ec1ce159c60022b52a7b28ddd456b8631b3bdd6899834cd205373ab27f66a40",
+      ".build/browser-validation/final-clippy-01.log": "bae8236541a8bbefa67bcea3d4bf46b2f8f4fc01c94e06e2933cc3af1959d2e8",
+      ".build/browser-validation/final-tests-01/cleanup.json": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      ".build/browser-validation/final-tests-01/environment.json": "58f682e29709e502e771a4d52ceb3cbde14b6774b7b30bd49c609c3822a5f7c7",
+      ".build/browser-validation/final-tests-01/junit.xml": "decc71528ceda40825721ee459bbdd11c5e542d9a542a25f26d5cc532ddfc031",
+      ".build/browser-validation/final-tests-01/pytest.log": "803e19bcc37435647ba9ac1897f1b2669bf5ab4f90e1e0a3a3c3ac729259f0e4",
+      ".build/browser-validation/final-web-01.log": "a84b987b79a47963eaa07dc4c754da5eae318d815fd370025607c136fb4d550a"
+    },
+    "screenshots": {
+      ".build/browser-validation/final-ui-01/browser-files-deleted.png": "3487f3170f4d4fb3d4666f723aa2ea08b0dde471ba4f79296057ea8bfa3beca3",
+      ".build/browser-validation/final-ui-01/browser-files-ready.png": "ddea3a45ab62b3608954fe23869752021f188cd479c83e379fb2ecdf14cbb7d4",
+      ".build/browser-validation/final-ui-01/browser-sessions.png": "57b96f2365ab2127446795773ecc7df305dfff52981b04b2fa3a88ba6c99708d",
+      ".build/browser-validation/final-ui-01/browser-upload-ready.png": "531f02cd7cd1b58d45e88f3f3205cd170718eab1590121e59c7622f9a21185e9",
+      ".build/browser-validation/final-ui-01/human-login.png": "5c113393374fb32e00a521c299068efd65b200f4bc86a5f9d7e5c84f8453227b",
+      ".build/browser-validation/final-ui-01/human-released.png": "6dc09459be5dadd06efc8fff3d457058b94ef752b36a4f419261b69ca94ad88f"
+    }
+  }
+}

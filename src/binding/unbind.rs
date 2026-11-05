@@ -110,6 +110,11 @@ pub(super) async fn complete(config: &Path, paths: &[PathBuf]) -> Result<()> {
     if !errors.is_empty() {
         return Err(pending_error(&errors));
     }
+    if let Some(raw) = read_optional(config)? {
+        let current = DeviceConfig::parse(serde_json::from_slice(&raw)?)?;
+        crate::browser::remove_binding(config, &current.token)
+            .map_err(|error| pending_error(&[format!("browser data cleanup: {error}")]))?;
+    }
     remove_private(config)?;
     remove_private(&sidecar(config, ".pairing.json"))?;
     remove_private(&sidecar(config, ".unbind.json"))?;

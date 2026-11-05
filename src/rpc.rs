@@ -1106,10 +1106,14 @@ impl Runtime {
             tokio::time::timeout(SHUTDOWN_DEADLINE, process_shutdown),
             tokio::time::timeout(SHUTDOWN_DEADLINE, self.browsers.close()),
         );
-        searches_stopped
+        let stopped = searches_stopped
             && operations_stopped.is_ok()
             && matches!(processes_stopped, Ok(Ok(true)))
-            && matches!(browsers_stopped, Ok(true))
+            && matches!(browsers_stopped, Ok(true));
+        if stopped {
+            self.browsers.release_stopped_storage();
+        }
+        stopped
     }
 }
 

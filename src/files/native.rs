@@ -75,6 +75,9 @@ fn normalize(path: &str) -> Result<String, String> {
     }
     let mut parts = Vec::new();
     for part in path.split('/') {
+        if part == ".rdh-browser" {
+            return Err("Browser private storage is not exposed by file tools".into());
+        }
         if part == ".." {
             return Err("Path must be relative to a root, with no '..' or NUL".into());
         }
@@ -354,7 +357,8 @@ struct Entry {
     size: u64,
 }
 fn entries(file: Opened) -> Result<Vec<Entry>, String> {
-    let (entries, truncated) = entries_bounded(file, MAX_ENTRIES, None)?;
+    let (mut entries, truncated) = entries_bounded(file, MAX_ENTRIES, None)?;
+    entries.retain(|entry| entry.name != ".rdh-browser");
     if truncated {
         Err("Directory exceeds 10000 entries".into())
     } else {
@@ -377,6 +381,7 @@ pub(super) fn search_entries(
         Some((cancelled, deadline)),
     )?;
     root.verify()?;
+    entries.retain(|entry| entry.name != ".rdh-browser");
     entries.sort_by(|a, b| a.name.encode_utf16().cmp(b.name.encode_utf16()));
     Ok((
         entries

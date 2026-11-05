@@ -419,6 +419,79 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn browser_storage_is_excluded_from_reads_search_and_root_aliases() {
+        let fixture = Fixture::with_write(true);
+        let private = fixture.path.join("settings/.rdh-browser/binding");
+        fs::create_dir_all(&private).unwrap();
+        fs::write(private.join("Cookies"), "synthetic-browser-secret").unwrap();
+        fs::write(fixture.path.join("visible"), "ordinary content").unwrap();
+        for (operation, params) in [
+            (
+                "read_file",
+                json!({"path":"settings/.rdh-browser/binding/Cookies"}),
+            ),
+            (
+                "read_file_chunk",
+                json!({"path":"settings/.rdh-browser/binding/Cookies"}),
+            ),
+            ("file_info", json!({"path":"settings/.rdh-browser"})),
+            (
+                "list_directory",
+                json!({"path":"settings/.rdh-browser/binding"}),
+            ),
+            (
+                "write_file",
+                json!({"path":"settings/.rdh-browser/binding/Cookies","content":"changed"}),
+            ),
+            (
+                "move_file",
+                json!({"source":"settings/.rdh-browser/binding/Cookies","destination":"exposed"}),
+            ),
+        ] {
+            assert!(fixture.call(operation, params).is_err(), "{operation}");
+        }
+        let batch = fixture
+            .call(
+                "read_multiple_files",
+                json!({"paths":["settings/.rdh-browser/binding/Cookies","visible"]}),
+            )
+            .unwrap();
+        assert!(batch["files"][0]["error"].is_string());
+        assert_eq!(batch["files"][1]["content"], "ordinary content");
+        let list = fixture
+            .call("list_directory", json!({"path":"settings"}))
+            .unwrap();
+        assert!(list["entries"].as_array().unwrap().is_empty());
+        for content in [false, true] {
+            let found=fixture.call("search_files",json!({"query":if content {"synthetic-browser-secret"}else{"Cookies"},"content":content})).unwrap();
+            assert!(found["matches"].as_array().unwrap().is_empty());
+        }
+        let (entries, _) = fixture
+            .files
+            .search_entries(
+                "work",
+                "settings",
+                100,
+                &std::sync::atomic::AtomicBool::new(false),
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .unwrap();
+        assert!(entries.is_empty());
+        assert!(
+            Files::new(
+                &BTreeMap::from([("private".into(), private.to_string_lossy().into_owned())]),
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(private.join("Cookies")).unwrap(),
+            "synthetic-browser-secret"
+        );
+    }
+
     #[test]
     fn utf8_bytes_bom_digest_and_strict_boundaries() {
         let fixture = Fixture::new();

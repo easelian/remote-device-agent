@@ -2,7 +2,7 @@
 
 本文定义 RDH 浏览器能力要解决的用户问题、拟实现的行为、跨组件契约、实施顺序和验收方法，是本功能持续推进的统一设计入口。
 
-状态：**已接入 Linux Agent、Rust Hub/MCP 与同会话远程人工接管；已支持 MCP 图片内容块和命名登录配置，已支持受限附件下载、用户交付和一次性文件上传授权和长页面续读，尚不满足公开试用门槛**。日期：2026-11-05。第 17.3–17.11 节记录实际结果；未注明已实现的接口、默认值、容量和性能数字仍是拟议设计或验收目标。实施过程中在本文件更新决策、里程碑和证据位置；协议落地后，以对应机器可校验的契约为准。
+状态：**Linux Agent 与配套 Hub/Web 已实现浏览器任务主流程，并完成本地集成验证；尚不满足公开试用门槛**。当前支持结构化观察与续读、浏览器内输入、同会话人工接管、MCP 图片、命名登录配置及受限上传下载。日期：2026-11-05。第 17.3–17.12 节记录实际结果；未注明已实现的接口、默认值、容量和性能数字仍是拟议设计或验收目标。实施过程中在本文件更新决策、里程碑和证据位置；协议落地后，以对应机器可校验的契约为准。
 
 实现位于独立分支 `work/browser-p0`；Agent 与 Server 各有配套 worktree，主工作区保持不变。[P0 example](../examples/browser_p0/main.rs) 保留机制验证；正式 Agent 入口位于 [src/browser](../src/browser/mod.rs)。所有验收仅使用隔离数据库、临时服务和本地测试页面，未部署或操作真实业务账号。
 
@@ -639,9 +639,10 @@ P0 允许使用测试专用页面和隔离配置，不能引入真实账号来�
 | 远程人工接管 | 已通过真实服务链路和用户网页场景 | 第 17.5 节；P3 的平台与系统化披露屏障验收仍未关闭 |
 | MCP 图片与命名登录配置 | 已通过本地真实链路 | 第 17.6、17.8 节；宿主显示与跨平台仍待验证 |
 | 受限下载、上传与用户交付 | 已通过本地完整任务 | 第 17.9–17.10 节；远程源文件上传和更广的下载类型仍待实现 |
+| 使用入口与本地启用 | 已有状态提示、网页会话入口和双语指南 | 第 17.12 节；自动安装和网页权限配置仍未交付 |
 | 长页面分段读取 | 已通过两种 Chromium 和真实 MCP 链路 | 第 17.11 节；持续变化页面与非 DOM 内容仍有边界 |
 | 性能、跨平台、模型任务和人工体验 | 只有小型本地夹具的驱动基线 | Ubuntu/Windows/macOS、真实宿主、模型任务和人工体验未验证 |
-| 发布与部署 | 未进行 | P6 后按实际版本和范围记录 |
+| 发布与部署 | 未进行 | P5 通过后按实际版本和范围记录 |
 
 每个阶段完成时，更新本表和受影响章节，并在提交/验收记录中保存：问题编号、源码提交、构建和浏览器版本、测试命令、环境、样本数、原始结果路径、失败/跳过项、限制和下一步。原始结果可放被忽略的 `.build/browser-validation/<run-id>/`；对外验收应附可长期取得的 CI 产物或发布附件，不能只依赖本机临时目录。
 
@@ -829,19 +830,32 @@ AI 使用 `browser_files` 取得文件名称、来源站点、大小、摘要、
 
 [验证记录](validation/browser-pagination-20261105.json) 保存源码、候选二进制和日志。原生测试完整还原 6,000 条记录、穿过 12,000 个空元素到达尾部，并在很小字符预算下还原含中文、emoji 和组合字符的长文本；普通文档与开放 Shadow DOM 的段间变化均拒绝。同一反例在 Headless Chrome 146 和 Chromium 156 通过。改动后的真实 Hub 回归 29 项通过；补充 Shadow DOM 和错误清理后，受影响的原生及 Hub 续读场景再次通过，两侧 Clippy 通过。这些检查不构成真实模型的任务成功率或大型动态站点性能结论。
 
+### 17.12 使用入口、私有数据与最终本地验收（2026-11-05）
+
+[中文使用指南](browser-zhCN.md)与[英文使用指南](browser.md)说明当前构建的启用步骤、配套 Hub 要求、AI 任务流程、人工登录、文件交付、资源限制和故障处理。Agent 本地启动输出浏览器状态和确切策略文件路径，设备网页区分未启用、未安装、不支持及已启用。从设备页可查看当前账号的浏览器会话，再明确进入接管页；不需要依赖先前对话里留下的链接，也不会仅因查看列表就自动接管。
+
+文件层将 `.rdh-browser` 设为保留目录，Linux 直接读取、批量读取、列表、同步/异步搜索及共享根配置均不能进入。它独立于只限制写入的 `protected_paths`，浏览器关闭或策略禁用后仍生效。已授权 shell 和同一系统账号的直接访问不受这项文件工具规则约束。
+
+确认解绑后，在所有请求工作、浏览器进程、事件任务及文件任务结束后释放运行期存储锁，再删除这个设备凭据对应的浏览器资料和暂存文件。命名空间锁位于删除目录之外；同一父目录中不同配置文件使用同一凭据时仍互斥，删除过程不会先删掉排他锁再与新实例竞争。清理无法确认时保留凭据及待处理状态，允许检查后重试；不删除相邻绑定或用户已保存到本地的文件。Agent 发现 Hub 已撤销绑定时也经过同一清理路径。
+
+最终源码的串行验收通过：Agent 常规测试 146 项；Headless Chrome 146 与 Chromium 156 各 5 项真实浏览器集成测试；Hub/Web、授权和协议回归 32 项。两侧严格 Clippy、Agent 格式检查、候选二进制和 Web 构建通过。完整网页路径覆盖设备页进入会话、人工登录、明确交回、AI 观察结果，以及文件批准、下载核验和删除。解绑测试覆盖撤销失败、存储锁仍被占用、成功后仅清理所属绑定；文件层测试覆盖读取、批量读取、列表、搜索与内部共享根别名。各项测试包含多个场景，数量不等同于第 16 节的任务矩阵样本数。
+
+[最终本地验证记录](validation/browser-final-20261105.json) 保存源码与候选二进制摘要、命令、日志、截图和环境边界。Hub 测试使用的临时服务与数据库已经清理；没有更新线上服务或主工作区。原始日志保存在本机 `.build` 中，发布时仍需附长期可取得的证据产物。
+
+首次启用仍需在远程设备本地安装/选择浏览器并编辑策略，尚未交付网页一键配置或受管理的浏览器安装。当前执行后端只支持 Linux；Windows、macOS、实际 AI 宿主展示与续接、完整任务矩阵、负载性能和人工体验仍需各自证据。公开试用门槛继续按第 16 节执行，不能以本地夹具通过替代。
+
 ## 18. 已核对的当前代码边界
 
-本节保留最初接入分析的快照，当前 worktree 已按第 17.4 节改变浏览器相关路径。最初核对快照为 Agent `14076202f9d84c3d6cd32009e4b1c17eae8c9dbe`、Server `114a51953f29f7c26e1843c72301406e955ecda1`、Codex 插件 `0ffdc4bb1670633ad7ad01fb4869ca1d78ee5105`。Server 工作区另有身份与网站修改，本设计工作不修改它们；实现前应重新核对相关文件。
+本表对应 `work/browser-p0` 的当前实现。Agent 链接指向本仓库；Server 路径为配套 Server worktree 的仓库相对路径。原型结果、各次验证和未满足的发布门槛分别保留在第 17 节，不能把当前源码或本机测试替代部署和目标平台证据。
 
-| 当前事实 | 源码依据 | 对本方案的约束 |
+| 当前实现 | 源码位置 | 使用边界 |
 | --- | --- | --- |
-| Agent 通过主动 WebSocket 接入 Hub，普通操作默认最多 8 个、响应预算 20 秒 | [rpc.rs](../src/rpc.rs)、[session.rs](../src/session.rs)、[架构](architecture.md) | 浏览器沿用已有设备通道和执行身份，需要独立有界的异步路径 |
-| Agent 请求包含 ID、操作、参数、期限与可选回执，没有用户/客户端主体 | [rpc.rs](../src/rpc.rs) 的 `Request` | 必须新增可信主体契约，不能仅依赖客户端提供 session ID |
-| Hub 已持有用户、客户端和授权家族，但当前下发消息不含这些主体 | [RequestContext](https://github.com/easelian/remote-device-server/blob/114a51953f29f7c26e1843c72301406e955ecda1/crates/runtime/src/types.rs)、[Core 分派](https://github.com/easelian/remote-device-server/blob/114a51953f29f7c26e1843c72301406e955ecda1/apps/core/src/runtime.rs) | Core 注入并绑定浏览器上下文，Agent 校验 |
-| 当前 MCP 成功结果使用结构化 JSON；Agent/Hub 单帧上限为 2 MiB，MCP 还有编码后检查 | [Agent transport](../src/transport.rs)、[Core worker](https://github.com/easelian/remote-device-server/blob/114a51953f29f7c26e1843c72301406e955ecda1/apps/core/src/worker.rs)、[MCP 输出](https://github.com/easelian/remote-device-server/blob/114a51953f29f7c26e1843c72301406e955ecda1/apps/core/src/mcp_tools.rs) | 图片内容块、产物和接管通路需要明确新增及宿主验证 |
-| Agent 回执跨重连、不跨进程重启，Hub 提交确认后 ACK | [receipts.rs](../src/receipts.rs)、[Hub 接收](https://github.com/easelian/remote-device-server/blob/114a51953f29f7c26e1843c72301406e955ecda1/apps/core/src/agent/receive.rs) | 去重和恢复可复用；不能承诺网站事务恰好一次 |
-| HTTP 取消不丢弃已接纳的执行和结算 | [MCP 调用生命周期](https://github.com/easelian/remote-device-server/blob/114a51953f29f7c26e1843c72301406e955ecda1/apps/core/src/mcp.rs) | 暂停/接管需要显式协议，不能靠关闭 HTTP 实现 |
-| 当前关闭流程等待搜索、进程和在途工作 | [Runtime::shutdown](../src/rpc.rs) | 浏览器、媒体和暂存资源必须进入同一生命周期收敛 |
-| 插件技能指导 AI 尊重权限，实际权限由 Hub/Agent/OS 执行 | [插件操作技能](https://github.com/easelian/remote-device-plugin-codex/blob/0ffdc4bb1670633ad7ad01fb4869ca1d78ee5105/plugins/remote-device-hub/skills/remote-device-operations/SKILL.md) | 技能中的“先确认”不等于已有可强制执行的确认或接管协议 |
-
-源码和实际行为发生变化后，应更新本节。其他功能的 CI、发布记录或性能结果不作为浏览器能力的验收证据。
+| 本地策略显式启用浏览器，执行后端仅在 Linux 编译启用 | [browser/mod.rs](../src/browser/mod.rs)、[policy.rs](../src/policy.rs) | 默认关闭；预检发现可执行文件后，仍需在创建会话时验证启动结果 |
+| 浏览器工作、控制和普通文件/进程操作分别受限，关闭等待实际工作结束 | [rpc.rs](../src/rpc.rs)、[browser/runtime.rs](../src/browser/runtime.rs) | 响应期限不等于动作取消；只有完成停止后才释放私有存储排他锁 |
+| Core 从已验证请求构造 AI 主体，人工通路使用独立的 Auth application grant | Server `apps/core/src/runtime.rs`、`apps/core/src/browser.rs`、`crates/runtime/src/application.rs` | 模型参数不能指定用户或所有者；接纳和内容披露都核对权限 |
+| 会话保存控制代次、frame 身份与当前段元素引用；观察支持有界续读 | [browser/runtime.rs](../src/browser/runtime.rs)、[browser/page.rs](../src/browser/page.rs)、[observe.js](../src/browser/observe.js) | 旧引用和游标不能用于控制变化后的页面；观察不是网站原子快照 |
+| 页面动作使用有限 CDP 命令与固定隔离执行函数 | [browser/cdp.rs](../src/browser/cdp.rs)、[browser/page.rs](../src/browser/page.rs) | 不开放任意脚本、原始 CDP 或系统桌面输入；已发送未知输入仍保留在途记录 |
+| Web 提供同会话接管、会话找回与文件交付 | Server `apps/business/web/src/Browser.vue`、`BrowserSessions.vue`、`BrowserFiles.vue`、`BrowserUpload.vue` | 只有明确接管才开放人工输入；交回前由用户确认内容分享范围 |
+| `browser_open`、`browser_act`、`browser_control` 复用操作回执和安全摘要 | [receipts.rs](../src/receipts.rs)；Server `apps/core/src/mcp_tools.rs`、`crates/runtime/src/types.rs` | 去重与恢复不等于网站事务恰好一次；摘要不保存页面或输入正文 |
+| 截图通过 MCP image 块交付；文件字节通过逐块重新授权的人工通路交付 | Server `apps/core/src/mcp_tools.rs`、`apps/core/src/browser.rs`；[browser/files.rs](../src/browser/files.rs) | 图片和文件有各自预算；实际 AI 宿主渲染仍待验证 |
+| 登录资料、文件暂存和运行目录属于设备凭据的私有命名空间 | [browser/profiles.rs](../src/browser/profiles.rs)、[browser/files.rs](../src/browser/files.rs)、[files/native.rs](../src/files/native.rs) | 文件工具排除私有目录；shell 权限和同一 OS 账号不受这项排除约束 |

@@ -137,6 +137,21 @@ pub async fn launch(
         Some(Arc::new(Startup::new(path)?))
     };
     let runtime = Runtime::with_config_path(config.clone(), policy, audit, startup, Some(path))?;
+    let browser = runtime.info()["capabilities"]["browser"].clone();
+    let browser_status = match browser["reason"].as_str() {
+        Some("disabled_by_local_policy") => "disabled in local policy",
+        Some("browser_not_installed") => "no configured Chromium executable was found",
+        Some("platform_not_supported") => "not supported on this platform",
+        Some(_) => "private browser storage is unavailable",
+        None => "enabled; launch is checked when a session is opened",
+    };
+    println!("AI browser sessions: {browser_status}.");
+    if cfg!(target_os = "linux") {
+        println!(
+            "Local browser policy: {} (restart after changes).",
+            crate::policy::sidecar_path(path).display()
+        );
+    }
     running.status(json!({"state":"bound","device_id":config.device_id}))?;
     println!("Connecting to the Hub. Keep this terminal open; press Ctrl+C to stop.");
     let outcome = session::run(&network, &config, &runtime, shutdown).await;
@@ -153,6 +168,7 @@ pub async fn launch(
         let _command = binding::acquire(std::slice::from_ref(&command))?;
         binding::request_unbind(path)?;
         crate::startup::disable_for_unbind(path)?;
+        crate::browser::remove_binding(path, &config.token)?;
         binding::remove_private(path)?;
         binding::remove_private(&binding::sidecar(path, ".pairing.json"))?;
         binding::remove_private(&binding::sidecar(path, ".unbind.json"))?;

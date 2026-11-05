@@ -72,6 +72,10 @@ rdh update
 
 新配对使用编译进 [deployment_defaults.rs](src/deployment_defaults.rs) 的 Hub 地址；已有绑定保留其保存的 Hub。连接默认直连，`RDH_USE_ENV_PROXY=1` 启用本机代理环境变量，`RDH_CA_BUNDLE` 添加 PEM 信任根。详见[网络配置](docs/network.md)和[安全加固](docs/hardening.md)。
 
+## 浏览器任务
+
+Linux 上可选择启用浏览器会话，使用结构化页面读取、浏览器内输入、人工登录、截图、命名资料和受限文件传输。[使用指南](docs/browser-zhCN.md)说明本地启用步骤及配套 Hub 要求。当前浏览器改动已完成本地验证，尚未发布或部署。
+
 ## 开发与文档
 
 使用 Rust 1.93.0 和仓库中的锁文件。构建、测试步骤见[维护说明](docs/maintenance.md#build-and-validate)；平台运行需要对应的操作系统、链接器和 SDK。源码检查与交叉编译不能证明原生运行行为或断电持久性。

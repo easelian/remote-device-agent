@@ -127,6 +127,20 @@ Policy denials include a stable `error_code` alongside the `error` string: `poli
 
 ## Unsupported capabilities
 
-- Sensitive-path filtering for reads (`search_files` content searches do not consult the policy).
-- Pre-write backups and rollback, chunked writes, or screenshots.
-- Server-side untrusted-content marking for prompt-injection mitigation, or write approvals.
+- User-configurable sensitive-path filtering for reads (`search_files` content searches do not consult `protected_paths`; the reserved browser directory is excluded separately).
+- Pre-write backups and rollback, chunked writes, or desktop screenshots. Opt-in browser viewport screenshots use the browser permission below.
+- General write approvals or a guarantee that model clients will ignore instructions embedded in device and page content. The MCP instructions identify that content as untrusted.
+
+## Browser permission
+
+Browser sessions are independent of `allow_shell` and `allow_write`. The local
+`browser` object defaults to disabled, as do its `persistent_profiles`,
+`downloads` and `uploads` options. `executable` optionally selects an absolute
+Chromium path. Restart the Agent after policy changes. See the
+[browser guide](browser.md) for the complete setup and capability checks.
+
+The reserved `.rdh-browser` storage is excluded from Linux file reads, writes,
+listings, searches and configured roots even when browser support is disabled.
+This exclusion is enforced by the file layer and is separate from the
+write-only `protected_paths` policy. Shell commands retain the OS account's
+permissions and are not confined by these file rules.

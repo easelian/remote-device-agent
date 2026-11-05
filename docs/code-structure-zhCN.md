@@ -23,6 +23,7 @@ CLI 接受启动、解绑、更新、帮助和版本查询。运行参数由本�
 | `network.rs`、`cluster.rs`、`transport.rs` | 网络策略、发现和认证传输。 |
 | `session.rs`、`rpc.rs`、`receipts.rs` | 连接、请求准入、分派、工作生命周期和结果回执。 |
 | `files/`、`searches.rs` | 根目录相对文件操作和有界搜索。 |
+| `browser/` | 显式启用的 Linux 浏览器会话、有界观察、浏览器输入、人工接管、命名资料及私有文件暂存。 |
 | `processes/` | 受管进程、输出、stdin 和进程树清理。 |
 | `policy.rs`、`sandbox.rs`、`audit/` | 本地权限、操作系统隔离和脱敏审计。 |
 | `storage/`、`profile_lock/`、`process_identity.rs` | 私有存储、权限检查，以及由 PID 和进程启动时间共同识别的实例所有权。 |
@@ -36,6 +37,8 @@ CLI 接受启动、解绑、更新、帮助和版本查询。运行参数由本�
 Agent 崩溃后，启动流程核对原 PID 和进程启动时间；确认原实例已退出后，可以回收实例锁并启动。旧操作不会自动重跑，内存中的任务和输出也不会恢复。崩溃前启动的外部命令可能继续运行，尤其在 POSIX 系统上；重新启动成功不代表这些命令已经停止。
 
 回执补发在连接激活后等待现有发送队列腾出空间，等待期间仍处理收包和关闭。Agent 最多保留 1,024 条回执，满额时只回收已结束且经 Hub 确认的最旧记录。运行中及尚未确认的回执继续保留；Hub 自身的结果保留和请求准入限制仍然适用。
+
+浏览器工作从 `browser/runtime.rs` 进入。`cdp.rs` 管理有界管道通信及在途输入，`process.rs` 管理 Chromium 进程和私有运行目录；`page.rs` 与 `observe.js` 将语义内容段和动作引用绑定到 frame。`runtime/human.rs` 管理接管租约，`profiles.rs`、`files.rs` 与 `files/upload.rs` 管理登录资料和文件保留。运行时等待工作结束后才释放命名空间锁；确认解绑后只删除对应凭据的命名空间。用法见[浏览器任务](browser-zhCN.md)。
 
 Windows 私有存储和启动授权操作复用 `storage/windows/` 中的 ACL 与句柄基础操作。启动注册通过模块接口和 RPC 分派访问，公开 CLI 不提供启动管理命令。本文不约定本地批准的交互方式。
 

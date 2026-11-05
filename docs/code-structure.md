@@ -27,6 +27,7 @@ pairing prints the verification link even when a browser cannot be opened.
 | `network.rs`, `cluster.rs`, `transport.rs` | Network policy, discovery and authenticated transport. |
 | `session.rs`, `rpc.rs`, `receipts.rs` | Connections, request admission, dispatch, work lifetime and result receipts. |
 | `files/`, `searches.rs` | Root-relative file operations and bounded searches. |
+| `browser/` | Opt-in Linux browser sessions, bounded observations, browser input, human control, named profiles and private file staging. |
 | `processes/` | Managed processes, output, stdin and process-tree cleanup. |
 | `policy.rs`, `sandbox.rs`, `audit/` | Local permissions, OS isolation and redacted audit records. |
 | `storage/`, `profile_lock/`, `process_identity.rs` | Private storage, permission checks and instance ownership identified by PID and process start time. |
@@ -52,6 +53,14 @@ while incoming frames and shutdown continue to be handled. At its 1,024-record
 limit, the Agent evicts only the oldest settled receipt acknowledged by the Hub.
 Running and unacknowledged work stays protected; the Hub's own result-retention
 and admission limits still apply.
+
+Browser work starts in `browser/runtime.rs`. `cdp.rs` owns bounded pipe traffic
+and in-flight input; `process.rs` owns Chromium and its private run directory.
+`page.rs` and `observe.js` bind semantic segments and action references to frames.
+`runtime/human.rs` owns control leases. `profiles.rs`, `files.rs` and
+`files/upload.rs` own persistent login state and file lifetimes. Runtime shutdown
+joins workers before releasing the namespace lock; confirmed unbinding removes
+only that credential's namespace. See [Browser tasks](browser.md).
 
 Windows private storage and startup grant operations reuse ACL and handle
 primitives in `storage/windows/`. Startup registration is reached through its

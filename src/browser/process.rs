@@ -313,7 +313,7 @@ pub fn recover(root: &Path) -> Result<()> {
         let Some(id) = id.to_str() else {
             return Err(Failure::new("browser_cleanup_pending"));
         };
-        if matches!(id, "profiles" | "artifacts" | "agent.rdh-lock") {
+        if matches!(id, "profiles" | "artifacts") {
             crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
             continue;
         }
