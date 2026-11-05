@@ -264,6 +264,16 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     assert_eq!(denied["error_code"], "browser_session_unavailable");
     let observation = peer.observe(&id, 1).await;
     assert!(!observation.to_string().contains("MUST_NOT_DISCLOSE"));
+    let screenshot = peer
+        .call(
+            "browser_screenshot",
+            json!({"session_id":id,"control_epoch":1}),
+        )
+        .await;
+    assert!(screenshot.get("error").is_none(), "{screenshot}");
+    assert_eq!(screenshot["result"]["mime_type"], "image/jpeg");
+    assert!(screenshot["result"]["data"].as_str().unwrap().len() < 512 * 1024);
+    assert!(screenshot["result"]["width"].as_u64().unwrap() <= 1920);
     let old_ref = reference(&observation, "Name ");
     let fill=peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","ref":old_ref,"text":"客户 😀"}})).await;
     assert!(fill.get("error").is_none(), "{fill}");

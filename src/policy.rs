@@ -13,6 +13,7 @@ pub const KNOWN_OPERATIONS: &[&str] = &[
     "browser_sessions",
     "browser_tabs",
     "browser_observe",
+    "browser_screenshot",
     "browser_act",
     "browser_wait",
     "browser_control",

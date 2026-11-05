@@ -90,7 +90,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":["temporary"],"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"file_transfer":false})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":["temporary"],"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":false})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
@@ -246,6 +246,19 @@ impl Browsers {
             .cloned()
             .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
         let outcome = async { match operation {
+            "browser_screenshot" => {
+                if target.dialog.is_some() {
+                    return Err(Failure::new("browser_dialog_open"));
+                }
+                let before = page::frame_tree(&cdp, &target.session, deadline).await?;
+                let mut value = super::image::capture(&cdp, &target.session, deadline).await?;
+                let after = page::frame_tree(&cdp, &target.session, deadline).await?;
+                if before.first().map(|f| (&f.id, &f.loader)) != after.first().map(|f| (&f.id, &f.loader)) {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                value["page"] = json!({"title":target.title,"url":target.url,"tab_id":tab});
+                Ok(value)
+            }
             "browser_observe" => {
                 if target.dialog.is_some() {
                     return Err(Failure::new("browser_dialog_open"));
@@ -955,6 +968,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         "browser_open" => &["url"],
         "browser_sessions" => &[],
         "browser_tabs" => &["session_id"],
+        "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
         "browser_observe" => &[
             "session_id",
             "tab_id",

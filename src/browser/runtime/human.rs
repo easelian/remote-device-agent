@@ -298,21 +298,7 @@ impl Browsers {
                 )
                 .await?
             };
-            let image = cdp
-                .call(
-                    target_session,
-                    "Page.captureScreenshot",
-                    json!({"format":"jpeg","quality":60,"captureBeyondViewport":false}),
-                    deadline,
-                )
-                .await?;
-            let data = image["data"]
-                .as_str()
-                .filter(|s| s.len() <= 750000)
-                .ok_or_else(|| Failure::new("browser_image_too_large"))?;
-            let metrics = cdp
-                .call(target_session, "Page.getLayoutMetrics", json!({}), deadline)
-                .await?;
+            let image = super::super::image::capture(&cdp, &target.session, deadline).await?;
             if slot.control.snapshot() != (epoch, true)
                 || frame_stamp(&cdp, &session, &target, deadline).await? != stamp
             {
@@ -339,8 +325,8 @@ impl Browsers {
                 .map(|t| json!({"tab_id":t.id,"title":t.title,"url":t.url}))
                 .collect();
             return Ok(
-                json!({"session_id":id,"control_epoch":epoch,"frame_id":frame_id,"mime_type":"image/jpeg","data":data,
-                "width":metrics["cssLayoutViewport"]["clientWidth"],"height":metrics["cssLayoutViewport"]["clientHeight"],
+                json!({"session_id":id,"control_epoch":epoch,"frame_id":frame_id,"mime_type":"image/jpeg","data":image["data"],
+                "width":image["width"],"height":image["height"],
                 "page":{"url":target.url,"title":target.title,"tab_id":target.id},"tabs":tabs,"dialog":target.dialog,"text_input_available":text_input_available}),
             );
         }

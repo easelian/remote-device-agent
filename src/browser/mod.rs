@@ -15,6 +15,7 @@ pub const OPERATIONS: &[&str] = &[
     "browser_sessions",
     "browser_tabs",
     "browser_observe",
+    "browser_screenshot",
     "browser_act",
     "browser_wait",
     "browser_control",
@@ -102,6 +103,8 @@ type Result<T> = std::result::Result<T, Failure>;
 
 #[cfg(target_os = "linux")]
 mod cdp;
+#[cfg(target_os = "linux")]
+mod image;
 #[cfg(target_os = "linux")]
 mod page;
 #[cfg(target_os = "linux")]

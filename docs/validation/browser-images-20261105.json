@@ -1,0 +1,117 @@
+{
+  "date": "2026-11-05",
+  "scenario": "bounded native viewport and MCP image content",
+  "source": {
+    "agent": {
+      "base": "2fb8731643d6ca0ef174cfebc601b2628456df96",
+      "files": {
+        "src/browser/image.rs": "9fee065c37f9ca8e430968da2c243936cbfafef923130fbe05e9f69603f5feec",
+        "src/browser/mod.rs": "a09e440ae53328b6059cddd1e66f2bd46ef7f1a5fff263fbdc6538e0e681c349",
+        "src/browser/runtime.rs": "d7c452615be7eb3c3920350f1c85a5066ec4e65c6258a0b7a4902ff46391829e",
+        "src/browser/runtime/human.rs": "11ce8b888bd8df1b372c22eb28467ff2419f53e2f34bd89c67f5d188ca523cc8",
+        "src/policy.rs": "2064e8e507a90c542b9c51b3365c1e7c5b1d055449ddac0f8fd7e268159c9009",
+        "tests/browser_session.rs": "9de04f5d54674c31333bf5f0ed2be698e7c4be4b96364915fd7fa2c95ac3b95e"
+      }
+    },
+    "server": {
+      "base": "e63e584086b78b09c146aa40bf9fab2c2b72d05c",
+      "files": {
+        "apps/business/web/src/Browser.vue": "a9f7d1dab613a1f4d496b9e2b0d3a289e08a256fd202ff4721d5c8738efebc89",
+        "apps/core/src/mcp_tools.rs": "00a47b3a8a3b4b8f786340fadb185c10069857dcca50aa7ed56b6ef124aebc10",
+        "contracts/README.md": "531a03d572b797e79a242d3dcb0b56dbe78f733d795d98bfcbf12b4148b9e769",
+        "contracts/mcp/v1/tools-list.json": "b42fbd949c632468b4cfb17efdafba43a8f0868a99935436abfcc5cd7b829a39",
+        "tests/contracts/test_wire_contracts.py": "3cc4da333f527a8a538eb7bf2e786942f4d77afda98d5f0fb7f65a3a31d17bf3",
+        "tests/core/test_browser_human.py": "fac6370f37fafd9783c290ddf9fc20c7a6645a7058b89e5bdbbe90523d2e269c",
+        "tests/core/test_browser_native.py": "688ca147a0a40d5a1e03d2b96d8166ab257ee3f182a4992b380c4c4cd51205ea",
+        "tests/core/test_rust_mcp_native.py": "e2fc571a4b10e666cdb7f346d54df08bddafbbeb8eafe763a4aa0d6b8531ad41"
+      }
+    }
+  },
+  "candidate": {
+    "root": "/tmp/rdh-browser-hub-test-elbjmx9w",
+    "port": 57685,
+    "production_data": false,
+    "selectors": [
+      "tests/core/test_browser_native.py::test_real_browser_mcp_task_recovery_quota_and_agent_crash"
+    ],
+    "binaries": {
+      "RDH_TEST_BROWSER_EXECUTABLE": {
+        "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+        "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595"
+      },
+      "RDH_TEST_CLUSTER_AGENT": {
+        "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/target/debug/rdh",
+        "sha256": "3fd70a9d1601ee6f7d4e09e254c86ae2f4c7cc09252f47c381571e49047809be"
+      },
+      "RDH_TEST_RUST_CORE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-core",
+        "sha256": "f6004451d1e6cdc50ab1c57adcac50c8079c7f91a4ab11232cdfc73560b0d058"
+      },
+      "RDH_TEST_RUST_GATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-gate",
+        "sha256": "67bd46e9256aeab12bd9a23059376cea05a33836b9203f5ecf6b58a433b01ad3"
+      },
+      "RDH_TEST_RUST_AUTH": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-auth",
+        "sha256": "e7c0bfcda0e2fa3266b768f61d3d8758efa6d8bc9664d04b5dc20b146aeee4d7"
+      },
+      "RDH_TEST_RUST_MIGRATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-migrate",
+        "sha256": "8f7561a4e1c5066f4d94cebf1b4ed281c13e1b5e586f39cfcaa4abbcd4ca37e8"
+      },
+      "RDH_TEST_RUST_RUNTIME_PROBE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/examples/authority_probe",
+        "sha256": "8961f294ee6b8cb1014ccbaaa7b8efc2e21f9e3d07fbad0c164da22745323ecb"
+      }
+    }
+  },
+  "results": {
+    "native_browser": "passed",
+    "agent_clippy": "passed all targets and all features -D warnings",
+    "server_clippy": "passed Core and Gate all targets -D warnings",
+    "web_build": "passed",
+    "image_tests_01": {
+      "passed": 10,
+      "failed": 4,
+      "cause": "Gate candidate still contained the previous tool catalog"
+    },
+    "image_tests_02": {
+      "passed": 5,
+      "failed": 1,
+      "cause": "test used JSON aliases instead of Python SDK snake_case attributes"
+    },
+    "image_tests_03": {
+      "passed": 1,
+      "failed": 0,
+      "elapsed_seconds": 15.04
+    }
+  },
+  "verified": [
+    "one MCP image content block with real Chromium JPEG",
+    "no Base64 duplicated in text or structuredContent",
+    "Python MCP type parsing and standard SDK catalog",
+    "encoded image size rejection",
+    "human control and authorization revocation deny screenshots",
+    "shared image capture keeps human UI login flow working",
+    "existing response envelope size guard"
+  ],
+  "limits": {
+    "max_encoded_image_bytes": 524288,
+    "viewport_max_css_dimension": 1920,
+    "jpeg_quality": 60
+  },
+  "limitations": [
+    "local Linux and HeadlessChrome 146 only",
+    "actual Codex or ChatGPT image rendering not exercised",
+    "viewport capture only; no full page image or arbitrary coordinate tool",
+    "no images persisted by the feature"
+  ],
+  "evidence": [
+    ".build/browser-image-native-01.log",
+    ".build/browser-image-clippy-01.log",
+    "server .build/browser-validation/image-tests-01",
+    "server .build/browser-validation/image-tests-02",
+    "server .build/browser-validation/image-tests-03",
+    "server .build/browser-validation/image-clippy-01.log"
+  ]
+}
