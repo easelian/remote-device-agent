@@ -149,7 +149,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":false})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
@@ -190,6 +190,7 @@ impl Browsers {
         params: &Value,
         principal: &Principal,
         deadline: Instant,
+        operation_id: Option<&str>,
     ) -> Result<Value> {
         if !principal.valid() {
             return Err(Failure::new("browser_unauthorized"));
@@ -202,8 +203,13 @@ impl Browsers {
                 .block_on(self.human(params, principal, deadline));
         }
         validate(operation, params)?;
-        tokio::runtime::Handle::current()
-            .block_on(self.execute(operation, params, principal, deadline))
+        tokio::runtime::Handle::current().block_on(self.execute(
+            operation,
+            params,
+            principal,
+            deadline,
+            operation_id,
+        ))
     }
     async fn execute(
         &self,
@@ -211,6 +217,7 @@ impl Browsers {
         params: &Value,
         principal: &Principal,
         deadline: Instant,
+        operation_id: Option<&str>,
     ) -> Result<Value> {
         self.prepare()?;
         self.expire().await;
@@ -477,7 +484,15 @@ impl Browsers {
                             .references
                             .get(reference)
                             .ok_or_else(|| Failure::new("browser_stale_reference"))?;
-                        let result = element.act(&cdp, action, deadline).await;
+                        let result = if action["kind"] == "attach_file" {
+                            if !self.settings.uploads { return Err(Failure::new("browser_upload_disabled")); }
+                            let operation_id = operation_id.ok_or_else(||Failure::new("browser_unauthorized"))?;
+                            let tree = page::frame_tree(&cdp, &target.session, deadline).await?;
+                            let top = tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?;
+                            let origin = element.prepare_file(&cdp, top, deadline).await?;
+                            let path = self.files.consume_upload(&files::Owner{principal:principal.clone(),session:id.into(),tab:tab.clone(),origin,control:slot.control.clone()},action["file_grant_id"].as_str().unwrap_or(""),operation_id)?;
+                            element.attach_file(&cdp, &path, deadline).await.map(|mut value|{value["file_grant_id"]=action["file_grant_id"].clone();value})
+                        } else { element.act(&cdp, action, deadline).await };
                         session.references.clear();
                         result
                     }
@@ -1283,6 +1298,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "press" => &["kind", "ref", "key"],
             "check" => &["kind", "ref", "checked"],
             "select" => &["kind", "ref", "value"],
+            "attach_file" => &["kind", "ref", "file_grant_id"],
             "scroll" => &["kind", "delta_y"],
             "click" => &["kind", "ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
@@ -1304,6 +1320,16 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             return Err(Failure::new("browser_invalid_params"));
         }
         if kind == "fill" && action["text"].as_str().is_none_or(|s| s.len() > 16384) {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if kind == "attach_file"
+            && action["file_grant_id"].as_str().is_none_or(|s| {
+                s.len() != 32
+                    || !s
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        {
             return Err(Failure::new("browser_invalid_params"));
         }
         if kind == "select"

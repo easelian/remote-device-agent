@@ -176,6 +176,7 @@ pub fn result_summary(value: &Value) -> Value {
         "tab_id",
         "profile_id",
         "artifact_id",
+        "file_grant_id",
     ] {
         if let Some(value) = source
             .get(key)
@@ -231,7 +232,12 @@ pub fn result_summary(value: &Value) -> Value {
     {
         out.insert("status".into(), json!(value));
     }
-    for key in ["stdin_closed", "profile_deleted", "file_deleted"] {
+    for key in [
+        "stdin_closed",
+        "profile_deleted",
+        "file_deleted",
+        "file_selected",
+    ] {
         if let Some(value) = source.get(key).and_then(Value::as_bool) {
             out.insert(key.into(), json!(value));
         }

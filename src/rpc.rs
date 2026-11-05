@@ -646,7 +646,13 @@ impl Runtime {
                 })
                 .and_then(|principal| {
                     self.browsers
-                        .dispatch(operation, &request.params, principal, request.deadline)
+                        .dispatch(
+                            operation,
+                            &request.params,
+                            principal,
+                            request.deadline,
+                            request.receipt_id.as_deref(),
+                        )
                         .map_err(|error| Failure::new(error.code, error.code, error.state))
                 }),
             "device_info" => Ok(self.info()),

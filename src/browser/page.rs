@@ -294,7 +294,8 @@ pub async fn observe(
                         visible["enabled"] = data["enabled"].clone();
                         visible["editable"] = data["editable"].clone();
                         visible["sensitive"] = (data["type"] == "password").into();
-                        if data["type"] != "password" && let Some(value) = node["value"]["value"].as_str() {
+                        visible["file_input"] = (data["type"] == "file").into();
+                        if data["type"] != "password" && data["type"] != "file" && let Some(value) = node["value"]["value"].as_str() {
                             let shown = clipped(value, remaining.min(512));
                             remaining = remaining.saturating_sub(shown.chars().count());
                             if shown.len() < value.len() { omitted.push("value_clipped".into()); }
@@ -341,6 +342,34 @@ pub async fn observe(
 }
 
 impl Element {
+    pub async fn prepare_file(&self, cdp: &Cdp, top: &Frame, deadline: Instant) -> Result<String> {
+        // The consent UI names the top-level site. Cross-origin/nested frames
+        // require a separate presentation contract before they can receive files.
+        if self.frame.id != top.id || self.frame.session != top.session {
+            return Err(Failure::new("browser_upload_denied"));
+        }
+        let data = self.checked(cdp, deadline).await?;
+        if data["tag"] != "INPUT" || data["type"] != "file" {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        let page = metadata(cdp, &self.frame, deadline).await?;
+        origin(page["url"].as_str().unwrap_or(""))
+    }
+    pub async fn attach_file(
+        &self,
+        cdp: &Cdp,
+        path: &std::path::Path,
+        deadline: Instant,
+    ) -> Result<Value> {
+        cdp.call_effect(
+            Some(&self.frame.session),
+            "DOM.setFileInputFiles",
+            json!({"backendNodeId":self.backend,"files":[path]}),
+            deadline,
+        )
+        .await?;
+        Ok(json!({"file_selected":true,"business_result_verified":false}))
+    }
     async fn ancestor_hit(
         &self,
         cdp: &Cdp,
@@ -587,4 +616,14 @@ impl Element {
         }
         Ok(json!({"input_acknowledged":true,"business_result_verified":false}))
     }
+}
+
+pub fn origin(value: &str) -> Result<String> {
+    if !url_allowed(value) {
+        return Err(Failure::new("browser_url_denied"));
+    }
+    Ok(url::Url::parse(value)
+        .map_err(super::io_error)?
+        .origin()
+        .ascii_serialization())
 }

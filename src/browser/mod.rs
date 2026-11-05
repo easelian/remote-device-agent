@@ -31,6 +31,7 @@ pub struct Settings {
     pub enabled: bool,
     pub persistent_profiles: bool,
     pub downloads: bool,
+    pub uploads: bool,
     pub executable: Option<PathBuf>,
 }
 
@@ -132,7 +133,14 @@ impl Browsers {
     pub fn info(&self) -> Value {
         json!({"version":1,"available":false,"reason":"platform_not_supported"})
     }
-    pub fn dispatch(&self, _: &str, _: &Value, _: &Principal, _: Instant) -> Result<Value> {
+    pub fn dispatch(
+        &self,
+        _: &str,
+        _: &Value,
+        _: &Principal,
+        _: Instant,
+        _: Option<&str>,
+    ) -> Result<Value> {
         Err(Failure::new("browser_unavailable"))
     }
     pub fn stop_all(&self) {}

@@ -46,6 +46,37 @@ impl Browsers {
             "list" | "files_list" => &["action"],
             "file_read" => &["action", "artifact_id", "offset"],
             "file_delete" => &["action", "artifact_id"],
+            "upload_begin" => &[
+                "action",
+                "session_id",
+                "view_id",
+                "lease_id",
+                "control_epoch",
+                "tab_id",
+                "source_origin",
+                "name",
+                "size_bytes",
+                "sha256",
+                "approved",
+            ],
+            "upload_chunk" => &[
+                "action",
+                "session_id",
+                "view_id",
+                "lease_id",
+                "control_epoch",
+                "file_grant_id",
+                "offset",
+                "data",
+            ],
+            "upload_finish" | "upload_cancel" => &[
+                "action",
+                "session_id",
+                "view_id",
+                "lease_id",
+                "control_epoch",
+                "file_grant_id",
+            ],
             "close" => &["action", "session_id"],
             "status" | "claim" => &["action", "session_id", "view_id"],
             "screenshot" => &[
@@ -242,6 +273,64 @@ impl Browsers {
             })
             .ok_or_else(|| Failure::new("browser_human_lease_expired"))?;
         let deadline = deadline.min(human.until);
+        if action.starts_with("upload_") {
+            if !self.settings.uploads {
+                return Err(Failure::new("browser_upload_disabled"));
+            }
+            let result = if action == "upload_begin" {
+                let target = session
+                    .targets
+                    .lock()
+                    .unwrap()
+                    .get(&session.active)
+                    .filter(|t| t.ready && t.kind == "page" && t.dialog.is_none())
+                    .cloned()
+                    .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+                if params["tab_id"] != target.id {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                let frames = page::frame_tree(&cdp, &target.session, deadline).await?;
+                let metadata = page::metadata(
+                    &cdp,
+                    frames
+                        .first()
+                        .ok_or_else(|| Failure::new("browser_tab_unavailable"))?,
+                    deadline,
+                )
+                .await?;
+                let origin = page::origin(metadata["url"].as_str().unwrap_or(""))?;
+                let state = slot.control.state.lock().unwrap();
+                if *state != (epoch, true) {
+                    return Err(Failure::new("browser_control_changed"));
+                }
+                self.files.upload_begin(
+                    &files::Owner {
+                        principal: Principal {
+                            version: 1,
+                            owner: slot.owner.clone(),
+                            user: slot.user.clone(),
+                            channel: "ai".into(),
+                        },
+                        session: id.into(),
+                        tab: target.id,
+                        origin,
+                        control: slot.control.clone(),
+                    },
+                    principal,
+                    &human.id,
+                    params,
+                )
+            } else {
+                let state = slot.control.state.lock().unwrap();
+                if *state != (epoch, true) {
+                    return Err(Failure::new("browser_control_changed"));
+                }
+                self.files.upload_step(principal, id, &human.id, params)
+            }?;
+            session.human.as_mut().unwrap().until = Instant::now() + LEASE;
+            session.touched = Instant::now();
+            return Ok(result);
+        }
         if action == "release" {
             if params["share_page_with_ai"] != true {
                 return Err(Failure::new("browser_invalid_params"));

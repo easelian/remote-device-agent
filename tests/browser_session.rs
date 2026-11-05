@@ -153,8 +153,11 @@ fn reference(observation: &Value, name: &str) -> String {
 }
 
 fn profile_peer(root: &std::path::Path, executable: &str, downloads: bool) -> Peer {
+    browser_peer(root, executable, downloads, false)
+}
+fn browser_peer(root: &std::path::Path, executable: &str, downloads: bool, uploads: bool) -> Peer {
     let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":{"work":root},"allow_write":false,"allow_shell":false})).unwrap();
-    let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"downloads":downloads,"executable":executable}}), &config).unwrap();
+    let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"downloads":downloads,"uploads":uploads,"executable":executable}}), &config).unwrap();
     let runtime =
         Runtime::with_config_path(config, policy, None, None, Some(&root.join("device.json")))
             .unwrap();
@@ -1105,4 +1108,143 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         assert_eq!(fs::read_dir(remaining[0].path()).unwrap().count(), 0);
     }
     server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+async fn human_approved_upload_is_private_bound_and_single_use() {
+    use base64::Engine;
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-upload-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    type Uploads = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+    let received: Uploads = Arc::new(Mutex::new(Vec::new()));
+    let app=Router::new().route("/",get(||async{Html(r#"<!doctype html><meta charset="utf-8"><title>Upload fixture</title><label>Upload proof <input id="file" type="file"></label><p id="state">Ready</p><script>file.onchange=async()=>{const f=file.files[0];await fetch('/upload',{method:'POST',headers:{'x-file-name':f.name},body:f});document.querySelector('#state').textContent='Upload received';};</script>"#)}))
+        .route("/upload",post(|State(received):State<Uploads>,headers:axum::http::HeaderMap,body:axum::body::Bytes|async move {
+            received.lock().unwrap().push((headers["x-file-name"].to_str().unwrap().into(),body.to_vec()));"ok"
+        })).with_state(received.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let url = format!("{origin}/");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = browser_peer(&temp.0, &executable, false, true);
+    let opened = peer.call("browser_open", json!({"url":url})).await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap();
+    peer.observe_named(id, 1, "Upload proof").await;
+    let claim = peer
+        .human(json!({"action":"claim","session_id":id,"view_id":"upload-view"}))
+        .await;
+    assert!(claim.get("error").is_none(), "{claim}");
+    let lease = &claim["result"]["lease"];
+    let base = json!({"session_id":id,"view_id":"upload-view","lease_id":lease["lease_id"],"control_epoch":lease["control_epoch"]});
+    let tabs = peer
+        .human({
+            let mut p = base.clone();
+            p["action"] = "screenshot".into();
+            p
+        })
+        .await;
+    let tab = tabs["result"]["page"]["tab_id"].clone();
+    let bytes: Vec<u8> = (0..=255).cycle().take(150001).collect();
+    let sha = rdh_agent::config::sha256_hex(&bytes);
+    let mut begin = base.clone();
+    begin.as_object_mut().unwrap().extend(json!({"action":"upload_begin","tab_id":tab,"source_origin":"https://wrong.test","name":"upload-proof.bin","size_bytes":bytes.len(),"sha256":sha,"approved":true}).as_object().unwrap().clone());
+    assert_eq!(
+        peer.human(begin.clone()).await["error_code"],
+        "browser_upload_denied"
+    );
+    begin["source_origin"] = origin.into();
+    let started = peer.human(begin).await;
+    assert!(started.get("error").is_none(), "{started}");
+    let grant = started["result"]["file_grant_id"].clone();
+    assert_eq!(started["result"]["offset"], 0);
+    assert_eq!(
+        peer.call("browser_files", json!({})).await["result"]["uploads"],
+        json!([])
+    );
+    for (index, chunk) in bytes.chunks(65536).enumerate() {
+        let mut params = base.clone();
+        params.as_object_mut().unwrap().extend(json!({"action":"upload_chunk","file_grant_id":grant,"offset":index*65536,"data":base64::engine::general_purpose::STANDARD.encode(chunk)}).as_object().unwrap().clone());
+        let reply = peer.human(params.clone()).await;
+        assert_eq!(
+            reply["result"]["next_offset"],
+            index * 65536 + chunk.len(),
+            "{reply}"
+        );
+        assert_eq!(
+            peer.human(params).await["error_code"],
+            "browser_upload_offset"
+        );
+    }
+    let mut finish = base.clone();
+    finish["action"] = "upload_finish".into();
+    finish["file_grant_id"] = grant.clone();
+    assert_eq!(peer.human(finish).await["result"]["state"], "approved");
+    let mut release = base;
+    release["action"] = "release".into();
+    release["share_page_with_ai"] = true.into();
+    let released = peer.human(release).await;
+    let epoch = released["result"]["control_epoch"].as_u64().unwrap();
+    let observation = peer.observe_named(id, epoch, "Upload proof").await;
+    let file_ref = reference(&observation, "Upload proof");
+    assert!(
+        observation["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["ref"] == file_ref && n["file_input"] == true)
+    );
+    let listing = peer.call("browser_files", json!({})).await;
+    assert_eq!(listing["result"]["uploads"][0]["state"], "approved");
+    assert!(
+        !serde_json::to_string(&listing)
+            .unwrap()
+            .contains("payload/")
+    );
+    peer.call(
+        "browser_act",
+        json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":url}}),
+    )
+    .await;
+    peer.call(
+        "browser_wait",
+        json!({"session_id":id,"control_epoch":epoch,"text_contains":"Upload proof"}),
+    )
+    .await;
+    let stale=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"attach_file","ref":file_ref,"file_grant_id":grant}})).await;
+    assert_eq!(stale["error_code"], "browser_stale_reference");
+    assert_eq!(
+        peer.call("browser_files", json!({})).await["result"]["uploads"][0]["state"],
+        "approved"
+    );
+    let observation = peer.observe_named(id, epoch, "Upload proof").await;
+    let params = json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"attach_file","ref":reference(&observation,"Upload proof"),"file_grant_id":grant}});
+    let receipt = random::hex_token::<16>().unwrap();
+    let selected = peer
+        .raw(
+            "browser_act",
+            params.clone(),
+            Some(&"a".repeat(64)),
+            Some(&receipt),
+        )
+        .await;
+    assert_eq!(selected["result"]["file_selected"], true, "{selected}");
+    peer.raw("browser_act", params, Some(&"a".repeat(64)), Some(&receipt))
+        .await;
+    peer.observe_named(id, epoch, "Upload received").await;
+    assert_eq!(
+        *received.lock().unwrap(),
+        vec![("upload-proof.bin".into(), bytes)]
+    );
+    let observation = peer.observe_named(id, epoch, "Upload proof").await;
+    let reused=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"attach_file","ref":reference(&observation,"Upload proof"),"file_grant_id":grant}})).await;
+    assert_eq!(reused["error_code"], "browser_upload_denied");
+    assert_eq!(received.lock().unwrap().len(), 1);
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
 }

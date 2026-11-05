@@ -26,6 +26,9 @@ pub const MAX_TOTAL: u64 = 128 * 1024 * 1024;
 pub const MAX_FILES: usize = 16;
 pub const CHUNK: usize = 64 * 1024;
 pub const RETENTION: u64 = 86400;
+mod upload;
+pub use upload::UPLOAD_TTL;
+use upload::Upload;
 
 #[derive(Clone)]
 pub struct Owner {
@@ -53,6 +56,7 @@ struct Metadata {
     created_at: u64,
     expires_at: u64,
     ai_visible: bool,
+    upload: Option<Upload>,
 }
 impl Metadata {
     fn allowed(&self, principal: &Principal) -> bool {
@@ -225,13 +229,17 @@ impl Files {
                 || meta.size_bytes > MAX_FILE
                 || meta.name.len() > 512
                 || meta.origin.len() > 4096
-                || !matches!(meta.state.as_str(), "receiving" | "ready")
+                || !matches!(
+                    meta.state.as_str(),
+                    "receiving" | "ready" | "staging" | "approved" | "consumed"
+                )
                 || meta.expires_at < meta.created_at
                 || meta.expires_at - meta.created_at > RETENTION
             {
                 return Err(Failure::new("browser_file_unavailable"));
             }
-            if meta.state == "receiving" || meta.expires_at <= now() {
+            // Upload grants never survive the session's Agent instance.
+            if meta.upload.is_some() || meta.state == "receiving" || meta.expires_at <= now() {
                 fs::remove_dir_all(path).map_err(io_error)?;
                 continue;
             }
@@ -275,7 +283,9 @@ impl Files {
         let expired: Vec<_> = catalog
             .entries
             .iter()
-            .filter(|(_, e)| e.meta.expires_at <= now() && e.meta.state == "ready")
+            .filter(|(_, e)| {
+                e.meta.expires_at <= now() && (e.meta.state == "ready" || e.meta.upload.is_some())
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for id in expired {
@@ -290,13 +300,23 @@ impl Files {
         let mut files: Vec<_> = catalog
             .entries
             .values()
-            .filter(|e| e.meta.allowed(principal) && e.meta.expires_at > now())
+            .filter(|e| {
+                e.meta.upload.is_none() && e.meta.allowed(principal) && e.meta.expires_at > now()
+            })
             .map(|e| e.meta.value())
             .collect();
         files.sort_by(|a, b| a["created_at"].as_u64().cmp(&b["created_at"].as_u64()));
+        let uploads: Vec<_> = catalog
+            .entries
+            .values()
+            .filter(|e| {
+                e.meta.upload.is_some() && e.meta.allowed(principal) && e.meta.expires_at > now()
+            })
+            .map(|e| upload::value(&e.meta))
+            .collect();
         let failures:Vec<_>=catalog.failures.iter().filter(|(m,_)|m.allowed(principal)).map(|(m,code)|json!({"session_id":m.session_id,"name":m.name,"source_origin":m.origin,"error_code":code})).collect();
         Ok(
-            json!({"files":files,"recent_failures":failures,"max_file_bytes":MAX_FILE,"max_total_bytes":MAX_TOTAL,"retention_seconds":RETENTION}),
+            json!({"files":files,"uploads":uploads,"recent_failures":failures,"max_file_bytes":MAX_FILE,"max_total_bytes":MAX_TOTAL,"retention_seconds":RETENTION}),
         )
     }
     pub fn read(&self, principal: &Principal, id: &str, offset: u64) -> Result<Value> {
@@ -305,7 +325,10 @@ impl Files {
             .entries
             .get(id)
             .filter(|e| {
-                e.meta.allowed(principal) && e.meta.state == "ready" && e.meta.expires_at > now()
+                e.meta.upload.is_none()
+                    && e.meta.allowed(principal)
+                    && e.meta.state == "ready"
+                    && e.meta.expires_at > now()
             })
             .ok_or_else(|| Failure::new("browser_file_unavailable"))?
             .meta;
@@ -340,7 +363,7 @@ impl Files {
             .get(id)
             .filter(|e| e.meta.allowed(principal))
             .ok_or_else(|| Failure::new("browser_file_unavailable"))?;
-        if entry.meta.state != "ready" {
+        if entry.meta.upload.is_none() && entry.meta.state != "ready" {
             entry.cancel.store(true, Ordering::Release);
             return Ok(
                 json!({"artifact_id":id,"file_deleted":false,"cancel_requested":true,"state":"cancelling"}),
@@ -463,6 +486,7 @@ impl Files {
             created_at: created,
             expires_at: created + RETENTION,
             ai_visible: !control.1,
+            upload: None,
         };
         let encoding = values("content-encoding");
         let denied = if !matches!(params["responseStatusCode"].as_u64(), Some(200))
@@ -724,6 +748,7 @@ mod tests {
                 created_at: now(),
                 expires_at: now() + 60,
                 ai_visible: true,
+                upload: None,
             };
             let path = files.path(&meta.id).unwrap();
             crate::storage::create_private_dir(&path).unwrap();
