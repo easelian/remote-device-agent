@@ -165,12 +165,14 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
         "{}",
         String::from_utf8_lossy(&unbound.stderr)
     );
+    let stopped = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
-        tokio::time::timeout(Duration::from_secs(10), child.wait())
-            .await
-            .unwrap()
-            .unwrap()
-            .success()
+        stopped.success(),
+        "Agent exited with {stopped} after unbind:\n{}",
+        fs::read_to_string(&log_path).unwrap()
     );
     assert!(!config.exists());
     assert!(!PathBuf::from(format!("{}.rdh-lock", config.display())).exists());

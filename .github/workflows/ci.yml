@@ -178,6 +178,15 @@ jobs:
           node -e 'const f=require("fs"); const path=require("path"); const m=JSON.parse(f.readFileSync(path.join(process.argv[1],"manifest.json"))); const out=process.argv[2]; f.mkdirSync(path.join(out,"native",m.platform),{recursive:true}); f.copyFileSync(path.join(process.argv[1],m.binary.path),path.join(out,"native",m.platform,m.binary.path)); if(process.platform!=="win32") f.chmodSync(path.join(out,"native",m.platform,m.binary.path),0o755);' "${tree[0]}" "$RUNNER_TEMP/rdh-npm-smoke"
           cp packaging/npm/rdh.cjs "$RUNNER_TEMP/rdh-npm-smoke/rdh.cjs"
           node "$RUNNER_TEMP/rdh-npm-smoke/rdh.cjs" --version | grep -Fx "$(cargo +1.93.0 metadata --locked --no-deps --format-version 1 | node -p "JSON.parse(require('fs').readFileSync(0)).packages.find(p => p.name === 'rdh-agent').version")"
+      - name: Check repeated Windows binding lifecycle
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'Windows' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: |
+          for attempt in {1..10}; do
+            printf 'Windows binding lifecycle attempt %s/10\n' "$attempt"
+            cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_pairing native_windows_cli_pairs_and_reuses_private_identity_without_node -- --exact --nocapture
+          done
       - name: Record Windows process-denial events after the failed tests
         if: ${{ !cancelled() && steps.native_tests.outcome == 'failure' && runner.os == 'Windows' }}
         shell: pwsh

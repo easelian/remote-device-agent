@@ -17,12 +17,11 @@ use axum::{
     routing::post,
 };
 use rdh_agent::{
-    config::{DEFAULT_SERVER, DeviceConfig, ProfilePaths},
+    config::{DEFAULT_SERVER, DeviceConfig, ProfilePaths, local_roots},
     storage,
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -137,7 +136,7 @@ async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
         discovery_url: None,
         device_id: "lifecycle-device".into(),
         token: "isolated-lifecycle-token-for-native-tests-1234".into(),
-        roots: BTreeMap::from([("work".into(), root.to_str().unwrap().into())]),
+        roots: local_roots(&[format!("work={}", root.display())]).unwrap(),
         allow_write: false,
         allow_shell: false,
         shell: if cfg!(windows) {
