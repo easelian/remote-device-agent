@@ -112,10 +112,10 @@ impl Peer {
                     json!({"session_id":id,"control_epoch":epoch}),
                 )
                 .await;
-            if reply["result"]["nodes"]
-                .as_array()
-                .is_some_and(|v| v.iter().any(|n| n["name"] == name))
-            {
+            if reply["result"]["nodes"].as_array().is_some_and(|v| {
+                v.iter()
+                    .any(|n| n["name"].as_str().is_some_and(|s| s.trim() == name.trim()))
+            }) {
                 return reply["result"].clone();
             }
             assert!(
@@ -1244,6 +1244,197 @@ async fn human_approved_upload_is_private_bound_and_single_use() {
     let reused=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"attach_file","ref":reference(&observation,"Upload proof"),"file_grant_id":grant}})).await;
     assert_eq!(reused["error_code"], "browser_upload_denied");
     assert_eq!(received.lock().unwrap().len(), 1);
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-page-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let rows = (0..6000)
+        .map(|i| format!("<p>Row {i:04}</p>"))
+        .collect::<String>();
+    let text = "甲😀e\u{301}段落".repeat(500);
+    let text_page = format!("<!doctype html><meta charset=utf-8><p>{text}</p>");
+    let mutation = Arc::new(AtomicUsize::new(0));
+    let app=Router::new()
+        .route("/long",get(move||{let page=format!("<!doctype html><meta charset=utf-8>{rows}");async{Html(page)}}))
+        .route("/scan",get(||async{Html(format!("<!doctype html>{}<p>Tail reached</p>","<span></span>".repeat(12000)))}))
+        .route("/text",get(move||{let page=text_page.clone();async{Html(page)}}))
+        .route("/changing",get(||async{Html("<!doctype html><p>Before change</p><p>Second paragraph</p><script>let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;document.querySelector('p').textContent='After change';await fetch('/seen',{method:'POST'});}},20);</script>")}))
+        .route("/shadow-changing",get(||async{Html("<!doctype html><div id='host'></div><script>const root=document.querySelector('#host').attachShadow({mode:'open'});root.innerHTML='<p>'+('Shadow before '.repeat(100))+'</p>';let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;root.querySelector('p').firstChild.nodeValue='Shadow after '.repeat(100);await fetch('/seen',{method:'POST'});}},20);</script>")}))
+        .route("/change",get(|State(state):State<Arc<AtomicUsize>>|async move{Json(state.load(Ordering::Acquire)>0)}))
+        .route("/seen",post(|State(state):State<Arc<AtomicUsize>>|async move{state.store(2,Ordering::Release);"ok"})).with_state(mutation.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/long")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap();
+    peer.observe_named(id, 1, "Row 0000").await;
+    let mut cursor = Value::Null;
+    let mut names = Vec::new();
+    let mut pages = 0;
+    loop {
+        let mut params =
+            json!({"session_id":id,"control_epoch":1,"max_nodes":1000,"max_chars":64000});
+        if !cursor.is_null() {
+            params["cursor"] = cursor.clone();
+        }
+        let reply = peer.call("browser_observe", params).await;
+        assert!(reply.get("error").is_none(), "{reply}");
+        let value = &reply["result"];
+        assert!(value["coverage"]["nodes_scanned"].as_u64().unwrap() <= 5000);
+        let nodes = value["nodes"].as_array().unwrap();
+        assert!(nodes.len() <= 1000);
+        names.extend(nodes.iter().map(|n| n["name"].as_str().unwrap().to_owned()));
+        pages += 1;
+        cursor = value["next_cursor"].clone();
+        if cursor.is_null() {
+            assert_eq!(value["coverage"]["sequence_complete"], true);
+            break;
+        }
+        assert!(pages < 15);
+    }
+    assert_eq!(
+        names,
+        (0..6000).map(|i| format!("Row {i:04}")).collect::<Vec<_>>()
+    );
+    assert!(pages >= 6);
+    for path in ["scan", "text"] {
+        peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/{path}")}})).await;
+        // Navigation acknowledgement is not document readiness.
+        let mut first = Value::Null;
+        for _ in 0..40 {
+            let candidate = peer
+                .call(
+                    "browser_observe",
+                    json!({"session_id":id,"control_epoch":1,"max_nodes":4,"max_chars":128}),
+                )
+                .await;
+            if candidate.get("error").is_none()
+                && candidate["result"]["page"]["url"] == format!("{origin}/{path}")
+            {
+                first = candidate;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!first.is_null());
+        let mut reply = first;
+        let mut assembled = String::new();
+        let mut pages = 0;
+        loop {
+            assert!(reply.get("error").is_none(), "{reply}");
+            let value = &reply["result"];
+            for node in value["nodes"].as_array().unwrap() {
+                assembled.push_str(node["name"].as_str().unwrap());
+            }
+            pages += 1;
+            let Some(next) = value["next_cursor"].as_str() else {
+                assert_eq!(value["coverage"]["sequence_complete"], true);
+                break;
+            };
+            assert!(pages < 80);
+            reply=peer.call("browser_observe",json!({"session_id":id,"control_epoch":1,"max_nodes":4,"max_chars":128,"cursor":next})).await;
+        }
+        if path == "scan" {
+            assert_eq!(assembled, "Tail reached");
+            assert!(pages >= 3);
+        } else {
+            assert_eq!(assembled, text);
+        }
+    }
+    peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/changing")}})).await;
+    peer.observe_named(id, 1, "Before change").await;
+    let first = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"max_nodes":1}),
+        )
+        .await;
+    let token = first["result"]["next_cursor"].clone();
+    assert!(token.is_string());
+    mutation.store(1, Ordering::Release);
+    for _ in 0..100 {
+        if mutation.load(Ordering::Acquire) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(mutation.load(Ordering::Acquire), 2);
+    let changed = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"cursor":token}),
+        )
+        .await;
+    assert_eq!(changed["error_code"], "browser_stale_reference");
+    let first = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"max_nodes":1}),
+        )
+        .await;
+    let token = first["result"]["next_cursor"].clone();
+    let claim = peer
+        .human(json!({"action":"claim","session_id":id,"view_id":"pagination"}))
+        .await;
+    let lease = &claim["result"]["lease"];
+    let release=peer.human(json!({"action":"release","session_id":id,"view_id":"pagination","lease_id":lease["lease_id"],"control_epoch":lease["control_epoch"],"share_page_with_ai":true})).await;
+    let stale=peer.call("browser_observe",json!({"session_id":id,"control_epoch":release["result"]["control_epoch"],"cursor":token})).await;
+    assert_eq!(stale["error_code"], "browser_stale_cursor");
+    mutation.store(0, Ordering::Release);
+    peer.call("browser_act",json!({"session_id":id,"control_epoch":release["result"]["control_epoch"],"action":{"kind":"navigate","url":format!("{origin}/shadow-changing")}})).await;
+    let epoch = release["result"]["control_epoch"].as_u64().unwrap();
+    let mut first = Value::Null;
+    for _ in 0..40 {
+        let reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":epoch,"max_chars":128}),
+            )
+            .await;
+        if reply["result"]["nodes"].as_array().is_some_and(|nodes| {
+            nodes.iter().any(|n| {
+                n["name"]
+                    .as_str()
+                    .is_some_and(|v| v.contains("Shadow before"))
+            })
+        }) {
+            first = reply;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let token = first["result"]["next_cursor"].clone();
+    assert!(token.is_string(), "{first}");
+    mutation.store(1, Ordering::Release);
+    for _ in 0..100 {
+        if mutation.load(Ordering::Acquire) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(mutation.load(Ordering::Acquire), 2);
+    let changed = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":epoch,"cursor":token}),
+        )
+        .await;
+    assert_eq!(changed["error_code"], "browser_stale_reference");
     assert!(peer.runtime.shutdown().await);
     server.abort();
     let _ = server.await;

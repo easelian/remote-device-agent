@@ -1,0 +1,114 @@
+{
+  "date": "2026-11-05",
+  "scenario": "bounded semantic continuation and stale-document rejection",
+  "source": {
+    "agent": {
+      "base": "c0a196bb40532dcca76c18c9dd4f9e5c54643b41",
+      "files": {
+        "src/browser/observe.js": "2e0cb6ba02225d4abf01a276891e07d502bcff35e09493689ac138cde607b9d3",
+        "src/browser/page.rs": "188d7bb821d82ff43c0a250c6b45c0ac4882babc20a385c128964dedeb05ca20",
+        "src/browser/runtime.rs": "95b39219a85ba2091c91f3be247b043962c887f66745365a376d269a9dbb84fd",
+        "src/browser/runtime/human.rs": "c94abd06339016e904b9d8b2fce0efd54eaf3d59fb59a5c7b23b83ae6f370f1d",
+        "tests/browser_session.rs": "11ee6f2bbd7fd74fa5c60c7c88799d37cb18adc3e5caf5ef10329261105fe52a"
+      }
+    },
+    "server": {
+      "base": "b39366031c1f5cab5d9620d2bb36f3689ca5d6f2",
+      "files": {
+        "apps/core/src/runtime.rs": "98c7ef62087f1844e91e30dedca5a127362a9f81b3277b9862efc7cf9a95595c",
+        "contracts/mcp/v1/error-messages.json": "c6774fb877938e787bde901cc51a94e59f5a768372af53ba705f6d57dca853ff",
+        "contracts/mcp/v1/tools-list.json": "0be5058b915170030d2519a90ca300462ad7b907014c3c9698a217a0636e1e11",
+        "tests/support/remote_device_hub/hub.py": "78e99c0c401f2f0314b463accd9ef5662920070f1529020b38dab17c5f2f1757",
+        "tests/core/test_browser_pagination.py": "16363fcfaa2751c4377d2cbc6d72bbc125a39ac9307fbf705baaed1254cc59a3"
+      }
+    }
+  },
+  "candidate": {
+    "root": "/tmp/rdh-browser-hub-test-b9l9y4bq",
+    "port": 57591,
+    "production_data": false,
+    "selectors": [
+      "tests/core/test_browser_pagination.py"
+    ],
+    "binaries": {
+      "RDH_TEST_BROWSER_EXECUTABLE": {
+        "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+        "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595"
+      },
+      "RDH_TEST_CLUSTER_AGENT": {
+        "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/target/debug/rdh",
+        "sha256": "2fe38a0428c7c51c60e877fd282f4380988f3ef88178bd7f05567b3c0cde5f78"
+      },
+      "RDH_TEST_RUST_CORE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-core",
+        "sha256": "9e925ee753b0366f235d1f91f1729e2bf933e21c7430ed38573b0392ff6798d4"
+      },
+      "RDH_TEST_RUST_GATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-gate",
+        "sha256": "7bc9caca861cbde24ea011b48c409f5c4978bbd044974b30476d265d4539c6cf"
+      },
+      "RDH_TEST_RUST_AUTH": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-auth",
+        "sha256": "e7c0bfcda0e2fa3266b768f61d3d8758efa6d8bc9664d04b5dc20b146aeee4d7"
+      },
+      "RDH_TEST_RUST_MIGRATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-migrate",
+        "sha256": "8f7561a4e1c5066f4d94cebf1b4ed281c13e1b5e586f39cfcaa4abbcd4ca37e8"
+      },
+      "RDH_TEST_RUST_RUNTIME_PROBE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/examples/authority_probe",
+        "sha256": "8961f294ee6b8cb1014ccbaaa7b8efc2e21f9e3d07fbad0c164da22745323ecb"
+      }
+    }
+  },
+  "results": {
+    "native_full_before_shadow_fix": {
+      "passed": 5,
+      "elapsed_seconds": 14.5
+    },
+    "native_final_headless146": {
+      "passed": 1,
+      "elapsed_seconds": 1.58
+    },
+    "native_final_chromium156": {
+      "passed": 1,
+      "elapsed_seconds": 1.24
+    },
+    "hub_regression_before_shadow_fix": {
+      "passed": 29,
+      "elapsed_seconds": 177.88
+    },
+    "hub_final": {
+      "passed": 1
+    },
+    "agent_clippy": "passed workspace/all-targets/all-features -Dwarnings",
+    "server_clippy": "passed core/runtime/gate all-targets -Dwarnings",
+    "cleanup": {
+      "removed": true,
+      "production_data": false
+    }
+  },
+  "verified": [
+    "6000 records returned in order without duplication or omission",
+    "12000 empty nodes traversed in bounded scan calls to reach tail",
+    "small character budget preserves Chinese emoji combining text",
+    "tokens rotate and old tokens reject; actions navigation and takeover invalidate",
+    "document and visited open-shadow mutations reject continued reads",
+    "terminal MCP page retains final record and actionable button"
+  ],
+  "limits": [
+    "not an atomic snapshot; unvisited frames and changes outside observer/input events are not frozen",
+    "per-control names values and options may remain clipped and reported incomplete",
+    "one active sequence per session; latest segment replaces prior action refs",
+    "Linux x64 only, no public deployment or real-AI-host acceptance"
+  ],
+  "evidence": [
+    ".build/browser-pagination-native-03.log",
+    ".build/browser-pagination-native-04.log",
+    ".build/browser-pagination-native-156-02.log",
+    ".build/browser-pagination-clippy-02.log",
+    "server .build/browser-validation/pagination-tests-01",
+    "server .build/browser-validation/pagination-tests-02",
+    "server .build/browser-validation/pagination-clippy-01.log"
+  ]
+}

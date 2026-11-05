@@ -201,6 +201,66 @@ pub async fn scroll(cdp: &Cdp, frame: &Frame, delta: &Value, deadline: Instant) 
     Ok(value)
 }
 
+pub struct Cursor {
+    frames: Vec<Frame>,
+    readers: Vec<Option<String>>,
+    frame: usize,
+    pages: usize,
+    scanned: usize,
+    omitted: Vec<String>,
+}
+impl Cursor {
+    pub fn new(frames: &[Frame]) -> Result<Self> {
+        if frames.is_empty() || frames.len() > 32 {
+            return Err(Failure::new("browser_frame_limit"));
+        }
+        Ok(Self {
+            frames: frames.to_vec(),
+            readers: vec![None; frames.len()],
+            frame: 0,
+            pages: 0,
+            scanned: 0,
+            omitted: Vec::new(),
+        })
+    }
+    pub fn matches(&self, frames: &[Frame]) -> bool {
+        self.frames.len() == frames.len()
+            && self.frames.iter().zip(frames).all(|(a, b)| {
+                a.session == b.session && a.id == b.id && a.loader == b.loader && a.url == b.url
+            })
+    }
+    pub fn more(&self) -> bool {
+        self.frame < self.frames.len()
+    }
+    async fn check(&self, cdp: &Cdp, deadline: Instant) -> Result<()> {
+        for (frame, reader) in self.frames.iter().zip(&self.readers) {
+            if let Some(reader) = reader {
+                let value=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":reader,"functionDeclaration":"function(){return this.status();}","returnByValue":true}),deadline).await?;
+                if value["result"]["value"]["changed"] != false {
+                    return Err(Failure::new("browser_stale_reference"));
+                }
+            }
+        }
+        Ok(())
+    }
+    pub async fn close(&self, cdp: &Cdp, deadline: Instant) {
+        for (frame, reader) in self.frames.iter().zip(&self.readers) {
+            if let Some(reader) = reader {
+                let _=cdp.cleanup().call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":reader,"functionDeclaration":"function(){this.close();}"}),deadline).await;
+                let _ = cdp
+                    .cleanup()
+                    .call(
+                        Some(&frame.session),
+                        "Runtime.releaseObjectGroup",
+                        json!({"objectGroup":format!("rdh-reader-{}",frame.id)}),
+                        deadline,
+                    )
+                    .await;
+            }
+        }
+    }
+}
+
 pub async fn observe(
     cdp: &Cdp,
     frames: &[Frame],
@@ -208,49 +268,73 @@ pub async fn observe(
     max_chars: usize,
     deadline: Instant,
 ) -> Result<(Value, HashMap<String, Element>)> {
+    let mut cursor = Cursor::new(frames)?;
+    let result = observe_next(cdp, &mut cursor, max_nodes, max_chars, deadline).await;
+    cursor.close(cdp, deadline).await;
+    result
+}
+
+pub async fn observe_next(
+    cdp: &Cdp,
+    cursor: &mut Cursor,
+    max_nodes: usize,
+    max_chars: usize,
+    deadline: Instant,
+) -> Result<(Value, HashMap<String, Element>)> {
     let work_until = deadline.min(Instant::now() + Duration::from_secs(2));
+    cursor.check(cdp, deadline).await?;
     let observation = crate::random::hex_token::<12>().map_err(super::io_error)?;
     let mut nodes = Vec::new();
     let mut refs = HashMap::new();
     let mut remaining = max_chars;
     let mut visited = 0usize;
     let mut omitted = Vec::<String>::new();
-    let mut observed = 0usize;
-    for frame in frames {
-        if nodes.len() >= max_nodes || remaining == 0 || visited >= 5000 {
-            omitted.push("observation_budget".into());
+    let mut observed = std::collections::HashSet::new();
+    while cursor.more() {
+        if nodes.len() >= max_nodes
+            || remaining == 0
+            || visited >= 5000
+            || Instant::now() + Duration::from_millis(200) >= work_until
+        {
             break;
         }
+        let frame = &cursor.frames[cursor.frame];
         current(cdp, frame, deadline).await?;
-        let context = cdp.call(Some(&frame.session), "Page.createIsolatedWorld",
-            json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}), deadline).await?;
-        let collected = cdp.call(Some(&frame.session), "Runtime.evaluate", json!({
-            "contextId":context["executionContextId"], "objectGroup":"rdh-observe",
-            "expression":format!("({COLLECT})({},{})", (max_nodes-nodes.len()).min(200), 5000-visited),
-        }), deadline).await?;
-        let object = collected["result"]["objectId"]
-            .as_str()
-            .ok_or_else(|| Failure::new("browser_stale_reference"))?;
-        let result: Result<()> = async {
-            let summary = cdp.call(Some(&frame.session), "Runtime.callFunctionOn", json!({
-                "objectId":object,"functionDeclaration":"function(){return {nodes:this.summary,scanned:this.scanned,omitted:this.omitted};}","returnByValue":true,
-            }), deadline).await?;
-            let summary = &summary["result"]["value"];
-            visited += summary["scanned"].as_u64().unwrap_or(0) as usize;
-            if let Some(values) = summary["omitted"].as_array() {
-                omitted.extend(values.iter().filter_map(Value::as_str).map(str::to_owned));
-            }
-            let candidates = summary["nodes"].as_array()
-                .ok_or_else(|| Failure::new("browser_stale_reference"))?;
+        if cursor.readers[cursor.frame].is_none() {
+            let context=cdp.call(Some(&frame.session),"Page.createIsolatedWorld",json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),deadline).await?;
+            let group = format!("rdh-reader-{}", frame.id);
+            cdp.call(
+                Some(&frame.session),
+                "Runtime.releaseObjectGroup",
+                json!({"objectGroup":group}),
+                deadline,
+            )
+            .await?;
+            let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})()")}),deadline).await?;
+            cursor.readers[cursor.frame] = Some(
+                created["result"]["objectId"]
+                    .as_str()
+                    .ok_or_else(|| Failure::new("browser_stale_reference"))?
+                    .into(),
+            );
+        }
+        let object = cursor.readers[cursor.frame].as_ref().unwrap();
+        let result:Result<bool>=async {
+            let summary=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(nodes,scan){return this.collect(nodes,scan);}","arguments":[{"value":(max_nodes-nodes.len()).min(200)},{"value":5000-visited}],"returnByValue":true}),deadline).await?;
+            let summary=&summary["result"]["value"];
+            if summary["changed"]!=false {return Err(Failure::new("browser_stale_reference"));}
+            visited+=summary["scanned"].as_u64().unwrap_or(0) as usize;
+            if let Some(values)=summary["omitted"].as_array(){omitted.extend(values.iter().filter_map(Value::as_str).map(str::to_owned));}
+            let candidates=summary["nodes"].as_array().ok_or_else(||Failure::new("browser_stale_reference"))?;
+            let mut processed=0;let mut partial_chars=0;
             for candidate in candidates {
-                if remaining == 0 || nodes.len() >= max_nodes || Instant::now() + Duration::from_millis(200) >= work_until {
-                    omitted.push("observation_budget".into()); break;
-                }
+                if remaining==0 || nodes.len()>=max_nodes || Instant::now()+Duration::from_millis(200)>=work_until {break;}
+                processed+=1;
                 let mut backend = None;
                 let ax;
                 let node = if let Some(index) = candidate["index"].as_u64() {
                     let remote = cdp.call(Some(&frame.session), "Runtime.callFunctionOn", json!({
-                        "objectId":object,"functionDeclaration":"function(i){return this.nodes[i];}",
+                        "objectId":object,"functionDeclaration":"function(i){return this.pending[i].node;}",
                         "arguments":[{"value":index}],"objectGroup":"rdh-observe",
                     }), deadline).await?;
                     let dom = cdp.call(Some(&frame.session), "DOM.describeNode", json!({
@@ -266,10 +350,14 @@ pub async fn observe(
                 let role = if backend.is_some() { node["role"]["value"].as_str() } else { node["role"].as_str() }.unwrap_or("");
                 let full_name = if backend.is_some() { node["name"]["value"].as_str() } else { node["name"].as_str() }.unwrap_or("");
                 let name = clipped(full_name, 512.min(remaining));
-                if name.len() < full_name.len() { omitted.push("text_clipped".into()); }
+                if backend.is_some() && name.len() < full_name.len() { omitted.push("text_clipped".into()); }
                 if name.is_empty() && !interactive(role) { continue; }
                 remaining = remaining.saturating_sub(name.chars().count() + role.len());
                 let mut visible = json!({"role":role,"name":name,"frame_id":frame.id});
+                if backend.is_none() {
+                    visible["text_continued"]=candidate["text_continued"].clone();
+                    visible["text_remaining"]=(candidate["text_remaining"]==true || name.len()<full_name.len()).into();
+                }
                 if interactive(role) && let Some(backend) = backend {
                     let data = details(cdp, frame, backend, deadline).await?;
                     if data["connected"] == true {
@@ -312,11 +400,15 @@ pub async fn observe(
                     }
                 }
                 nodes.push(visible);
+                if backend.is_none() && name.len()<full_name.len() { processed-=1; partial_chars=name.chars().count(); break; }
             }
-            current(cdp, frame, deadline).await?;
-            Ok(())
+            let ack=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(count,chars){return this.ack(count,chars);}","arguments":[{"value":processed},{"value":partial_chars}],"returnByValue":true}),deadline).await?;
+            if ack["result"]["value"]["changed"]!=false {return Err(Failure::new("browser_stale_reference"));}
+            current(cdp,frame,deadline).await?;
+            Ok(ack["result"]["value"]["more"]==true)
         }.await;
         let _ = cdp
+            .cleanup()
             .call(
                 Some(&frame.session),
                 "Runtime.releaseObjectGroup",
@@ -324,18 +416,28 @@ pub async fn observe(
                 deadline,
             )
             .await;
-        result?;
-        observed += 1;
+        observed.insert(frame.id.clone());
+        if !result? {
+            cursor.frame += 1;
+        }
     }
-    if observed < frames.len() {
-        omitted.push("frames_omitted".into());
+    cursor.check(cdp, deadline).await?;
+    cursor.scanned += visited;
+    cursor.pages += 1;
+    cursor.omitted.extend(omitted);
+    cursor.omitted.sort();
+    cursor.omitted.dedup();
+    let mut omitted = cursor.omitted.clone();
+    if cursor.more() {
+        omitted.push("observation_budget".into());
     }
-    omitted.sort();
-    omitted.dedup();
+    let complete = !cursor.more() && cursor.omitted.is_empty();
     Ok((
         json!({"observation_id":observation,"nodes":nodes,"coverage":{
-            "scope":"document_text_and_controls_open_shadow","complete_within_scope":omitted.is_empty(),
-            "omitted":omitted,"frames_observed":observed,"frames_omitted":frames.len()-observed,"nodes_scanned":visited,
+            "scope":"document_text_and_controls_open_shadow","complete_within_scope":complete,
+            "omitted":omitted,"frames_observed":observed.len(),"frames_omitted":cursor.frames.len()-cursor.frame,
+            "frames_completed":cursor.frame,"nodes_scanned":visited,"total_nodes_scanned":cursor.scanned,
+            "page_index":cursor.pages,"more":cursor.more(),"sequence_complete":complete,
         }}),
         refs,
     ))

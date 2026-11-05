@@ -48,11 +48,19 @@ struct Session {
     process: Option<BrowserProcess>,
     targets: Arc<Mutex<HashMap<String, Target>>>,
     references: HashMap<String, Element>,
+    read: Option<PageRead>,
     active: String,
     observed_tab: String,
     touched: Instant,
     human: Option<HumanLease>,
     guard: Option<tokio::task::JoinHandle<()>>,
+}
+struct PageRead {
+    token: String,
+    tab: String,
+    epoch: u64,
+    until: Instant,
+    cursor: page::Cursor,
 }
 
 #[tokio::test]
@@ -63,6 +71,7 @@ async fn cancelled_close_retains_event_task_ownership() {
         process: None,
         targets: Arc::new(Mutex::new(HashMap::new())),
         references: HashMap::new(),
+        read: None,
         active: String::new(),
         observed_tab: String::new(),
         touched: Instant::now(),
@@ -362,21 +371,50 @@ impl Browsers {
                     return Err(Failure::new("browser_dialog_open"));
                 }
                 let frames = frames(&cdp, &session, &target, deadline).await?;
-                let (mut value, refs) = page::observe(
+                if let Some(token)=params["cursor"].as_str()
+                    && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&frames)) {
+                    return Err(Failure::new("browser_stale_cursor"));
+                }
+                let previous=session.read.take();
+                let mut read=if params["cursor"].is_string() {
+                    previous.unwrap()
+                } else {
+                    if let Some(previous)=previous {previous.cursor.close(&cdp,deadline).await;}
+                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&frames)?}
+                };
+                let result=async {
+                let (mut value, refs) = page::observe_next(
                     &cdp,
-                    &frames,
+                    &mut read.cursor,
                     params["max_nodes"].as_u64().unwrap_or(200) as usize,
                     params["max_chars"].as_u64().unwrap_or(20000) as usize,
                     deadline,
                 )
                 .await?;
-                session.references = refs;
-                session.observed_tab = tab.clone();
                 value["page"] = page::metadata(&cdp,frames.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                 value["page"]["tab_id"] = tab.clone().into();
+                Ok::<_,Failure>((value,refs))
+                }.await;
+                let (mut value, refs)=match result {
+                    Ok(value)=>value,
+                    Err(error)=>{
+                        read.cursor.close(&cdp,Instant::now()+Duration::from_millis(500)).await;
+                        session.references.clear();
+                        return Err(error);
+                    }
+                };
+                session.references = refs;
+                session.observed_tab = tab.clone();
+                if read.cursor.more() {
+                    read.token=crate::random::hex_token::<16>().map_err(super::io_error)?;
+                    read.until=Instant::now()+Duration::from_secs(300);
+                    value["next_cursor"]=read.token.clone().into();
+                    session.read=Some(read);
+                } else {read.cursor.close(&cdp,deadline).await;}
                 Ok(value)
             }
             "browser_act" => {
+                if let Some(read)=session.read.take() {read.cursor.close(&cdp,deadline).await;}
                 let action = &params["action"];
                 match action["kind"].as_str().unwrap_or("") {
                     "scroll" => {
@@ -499,14 +537,20 @@ impl Browsers {
                 }
             }
             "browser_wait" => {
+                if let Some(read)=session.read.take() {read.cursor.close(&cdp,deadline).await;}
                 let expected = params["url_contains"].as_str().unwrap_or("");
                 let text = params["text_contains"].as_str();
                 loop {
                     let tree = frames(&cdp, &session, &target, deadline).await?;
                     if let Some(text) = text {
-                        let (value, _) = page::observe(&cdp, &tree, 200, 20000, deadline).await?;
-                        if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
-                            break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
+                        match page::observe(&cdp, &tree, 200, 20000, deadline).await {
+                            Ok((value,_)) => if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
+                                break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
+                            },
+                            // A changing document is normal while waiting for a postcondition.
+                            // Retry observation only; never replay the preceding action.
+                            Err(error) if error.code=="browser_stale_reference" => {},
+                            Err(error) => return Err(error),
                         }
                     } else if tree.first().is_some_and(|frame| frame.url.contains(expected)) {
                         break Ok(json!({"condition_observed":true,"url":tree[0].url}));
@@ -562,6 +606,7 @@ impl Browsers {
                 process: None,
                 targets: Arc::new(Mutex::new(HashMap::new())),
                 references: HashMap::new(),
+                read: None,
                 active: String::new(),
                 observed_tab: String::new(),
                 touched: Instant::now(),
@@ -1231,6 +1276,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "control_epoch",
             "max_nodes",
             "max_chars",
+            "cursor",
         ],
         "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
         "browser_wait" => &[
@@ -1254,6 +1300,15 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     }
     if let Some(value) = params.get("profile_name")
         && !value.as_str().is_some_and(profiles::valid_name)
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if let Some(cursor) = params.get("cursor")
+        && !cursor.as_str().is_some_and(|s| {
+            s.len() == 32
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
     {
         return Err(Failure::new("browser_invalid_params"));
     }

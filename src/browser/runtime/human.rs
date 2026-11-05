@@ -250,6 +250,9 @@ impl Browsers {
                 });
             }
             session.references.clear();
+            if let Some(read) = session.read.take() {
+                read.cursor.close(&cdp, deadline).await;
+            }
             session.touched = Instant::now();
             self.files.disclosure(id, false)?;
             if slot.control.snapshot() != (epoch, true) {
