@@ -162,6 +162,7 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     let saves = Arc::new(Mutex::new(Vec::<Value>::new()));
     let app = Router::new()
         .route("/", get(|| async { Html(PAGE) }))
+        .route("/select",get(||async {Html(r#"<!doctype html><meta charset="utf-8"><style>body{min-height:3000px}</style><label>Region<select id="region"><option value="">Choose</option><option value="cn-n">华北</option><option value="off" disabled>Disabled</option></select></label><p id="status"></p><script>let inputSeen=false;region.oninput=()=>inputSeen=true;region.onchange=async()=>{await fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({selection:region.value,inputSeen})});document.querySelector('#status').textContent='Selected 华北';};window.onscroll=()=>fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({scrollObserved:scrollY})});</script>"#)}))
         .route("/human", get(||async {Html(r#"<!doctype html><meta charset="utf-8"><h1>Human login</h1><form id="login"><input id="secret" type="password" autofocus aria-label="Password"><button>Sign in</button></form><script>let replaced=false;setInterval(async()=>{if(!replaced&&(await(await fetch('/focus-state')).json())){replaced=true;const copy=secret.cloneNode(true);secret.replaceWith(copy);copy.focus();await fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({focusReplaced:true})});}},25);login.onsubmit=async e=>{e.preventDefault();await fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({humanSecret:secret.value})});document.body.innerHTML='<h1>Logged in</h1>';};</script>"#)}))
         .route("/focus-state", get(|State(saves): State<Arc<Mutex<Vec<Value>>>>| async move { Json(saves.lock().unwrap().iter().any(|v|v["replaceFocused"]==true)) }))
         .route("/dialog",get(||async {Html("<h1>Dialog task</h1><button onclick=\"alert('Synthetic dialog')\">Open dialog</button>")}))
@@ -280,6 +281,13 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     let stale=peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","ref":old_ref,"text":"wrong"}})).await;
     assert_eq!(stale["error_code"], "browser_stale_reference");
     let observation = peer.observe(&id, 1).await;
+    assert!(
+        observation["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["value"] == "客户 😀")
+    );
     let save = reference(&observation, "Save customer");
     let args = json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":save}});
     let save_id = random::hex_token::<16>().unwrap();
@@ -546,6 +554,61 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         )
         .await;
     assert!(!observed.to_string().contains("SYNTHETIC-human"));
+    let epoch = released["result"]["control_epoch"].as_u64().unwrap();
+    let navigate = peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":format!("{url}select")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    let observed = peer.observe_named(&id, epoch, "Region").await;
+    let region = observed["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "Region" && node.get("ref").is_some())
+        .unwrap();
+    assert_eq!(region["options"][1]["value"], "cn-n");
+    assert_eq!(region["options"][1]["label"], "华北");
+    assert_eq!(region["options"][2]["disabled"], true);
+    let selected = peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"select","ref":region["ref"],"value":"cn-n"}})).await;
+    assert!(selected.get("error").is_none(), "{selected}");
+    let waited = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":epoch,"text_contains":"Selected 华北"}),
+        )
+        .await;
+    assert!(waited.get("error").is_none(), "{waited}");
+    assert!(
+        saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| *v == json!({"selection":"cn-n","inputSeen":true}))
+    );
+    let scrolled = peer
+        .call(
+            "browser_act",
+            json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"scroll","delta_y":600}}),
+        )
+        .await;
+    assert!(scrolled.get("error").is_none(), "{scrolled}");
+    assert!(scrolled["result"]["scroll_y"].as_f64().unwrap() >= 600.);
+    for _ in 0..40 {
+        if saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["scrollObserved"].as_f64().is_some_and(|y| y >= 600.))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["scrollObserved"].as_f64().is_some_and(|y| y >= 600.))
+    );
     let close = peer
         .call("browser_control", json!({"session_id":id,"action":"close"}))
         .await;

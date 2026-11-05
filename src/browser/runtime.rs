@@ -280,6 +280,13 @@ impl Browsers {
             "browser_act" => {
                 let action = &params["action"];
                 match action["kind"].as_str().unwrap_or("") {
+                    "scroll" => {
+                        if target.dialog.is_some() { return Err(Failure::new("browser_dialog_open")); }
+                        let tree = page::frame_tree(&cdp, &target.session, deadline).await?;
+                        let frame = tree.first().ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+                        session.references.clear();
+                        page::scroll(&cdp, frame, &action["delta_y"], deadline).await
+                    }
                     "navigate" => {
                         session.references.clear();
                         let reply = cdp
@@ -1030,6 +1037,8 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "fill" => &["kind", "ref", "text"],
             "press" => &["kind", "ref", "key"],
             "check" => &["kind", "ref", "checked"],
+            "select" => &["kind", "ref", "value"],
+            "scroll" => &["kind", "delta_y"],
             "click" => &["kind", "ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
             "dialog" => &["kind", "accept", "dialog_id"],
@@ -1050,6 +1059,17 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             return Err(Failure::new("browser_invalid_params"));
         }
         if kind == "fill" && action["text"].as_str().is_none_or(|s| s.len() > 16384) {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if kind == "select"
+            && action["value"]
+                .as_str()
+                .is_none_or(|s| s.chars().count() > 256)
+            || kind == "scroll"
+                && action["delta_y"]
+                    .as_f64()
+                    .is_none_or(|n| !n.is_finite() || n.abs() > 2000.)
+        {
             return Err(Failure::new("browser_invalid_params"));
         }
         if kind == "press"

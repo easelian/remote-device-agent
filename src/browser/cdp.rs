@@ -183,6 +183,25 @@ impl Cdp {
         params: Value,
         deadline: Instant,
     ) -> Result<Value> {
+        self.send(session, method, params, deadline, false).await
+    }
+    pub async fn call_effect(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Value> {
+        self.send(session, method, params, deadline, true).await
+    }
+    async fn send(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+        explicit_effect: bool,
+    ) -> Result<Value> {
         if Instant::now() >= deadline {
             return Err(Failure::new("browser_deadline"));
         }
@@ -246,7 +265,8 @@ impl Cdp {
                 return Err(Failure::new("browser_busy"));
             }
             if let Some(effects) = &self.effects
-                && (method.starts_with("Input.")
+                && (explicit_effect
+                    || method.starts_with("Input.")
                     || matches!(
                         method,
                         "Page.navigate"

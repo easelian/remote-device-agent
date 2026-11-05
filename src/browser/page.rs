@@ -20,6 +20,7 @@ pub struct Element {
     signature: String,
     role: String,
     name: String,
+    choices: Vec<String>,
 }
 
 fn clipped(value: &str, max: usize) -> String {
@@ -92,8 +93,21 @@ const DETAILS: &str = r#"function(){
  const attr=(e,n)=>(e.getAttribute(n)||'').slice(0,512);
  const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),text(p)]);}
  const r=this.getBoundingClientRect(),s=getComputedStyle(this),root=this.getRootNode(),hit=root.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+ const select=this.tagName==='SELECT'?{multiple:this.multiple,complete:this.options.length<=32,options:Array.from({length:Math.min(32,this.options.length)},(_,i)=>{const o=this.options[i];return {value:o.value.length<=256?o.value:null,label:o.label.slice(0,256),label_truncated:o.label.length>256,selected:o.selected,disabled:o.disabled||!!o.closest('optgroup')?.disabled};})}:null;
+ if(select)select.complete=select.complete&&select.options.every(o=>o.value!==null&&!o.label_truncated);
+ if(select)a.push(select);
  return {connected:true,signature:JSON.stringify(a),tag:this.tagName,type:this.type||'',editable:(this.tagName==='INPUT'&&!['button','submit','checkbox','radio','file','hidden'].includes(this.type))||this.tagName==='TEXTAREA'||this.isContentEditable,
- enabled:!this.disabled&&!this.readOnly&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit:hit===this||this.contains(hit),x:r.x+r.width/2,y:r.y+r.height/2,checked:!!this.checked};}"#;
+ enabled:!this.disabled&&!this.readOnly&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit:hit===this||this.contains(hit),x:r.x+r.width/2,y:r.y+r.height/2,checked:!!this.checked,select};}"#;
+
+const SELECT: &str = r#"function(value){
+ if(!this.isConnected||this.ownerDocument!==document||this.tagName!=='SELECT'||this.disabled||this.multiple||this.options.length>1024)return false;
+ let chosen=null;for(const option of this.options){if(option.value===value){if(chosen||option.disabled||option.closest('optgroup')?.disabled)return false;chosen=option;}}
+ if(!chosen)return false;
+ Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(this,value);
+ this.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+ this.dispatchEvent(new Event('change',{bubbles:true}));
+ return true;
+}"#;
 
 async fn details(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> Result<Value> {
     let object = object(cdp, frame, backend, deadline).await?;
@@ -140,6 +154,31 @@ fn interactive(role: &str) -> bool {
 }
 
 const COLLECT: &str = include_str!("observe.js");
+
+pub async fn scroll(cdp: &Cdp, frame: &Frame, delta: &Value, deadline: Instant) -> Result<Value> {
+    current(cdp, frame, deadline).await?;
+    let context = cdp
+        .call(
+            Some(&frame.session),
+            "Page.createIsolatedWorld",
+            json!({
+                "frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false,
+            }),
+            deadline,
+        )
+        .await?;
+    let result = cdp.call_effect(Some(&frame.session), "Runtime.evaluate", json!({
+        "contextId":context["executionContextId"],"returnByValue":true,
+        "expression":format!("(()=>{{window.scrollBy(0,{delta});return {{scroll_x:window.scrollX,scroll_y:window.scrollY}};}})()"),
+    }), deadline).await?;
+    let mut value = result["result"]["value"].clone();
+    if !value.is_object() {
+        return Err(Failure::unknown("browser_not_actionable"));
+    }
+    value["input_acknowledged"] = true.into();
+    value["business_result_verified"] = false.into();
+    Ok(value)
+}
 
 pub async fn observe(
     cdp: &Cdp,
@@ -213,15 +252,40 @@ pub async fn observe(
                 if interactive(role) && let Some(backend) = backend {
                     let data = details(cdp, frame, backend, deadline).await?;
                     if data["connected"] == true {
+                        let mut choices = Vec::new();
+                        if let Some(options) = data["select"]["options"].as_array() {
+                            let mut shown = Vec::new();
+                            for option in options {
+                                let size = ["value","label"].iter().filter_map(|k|option[*k].as_str()).map(|v|v.chars().count()).sum::<usize>() + 32;
+                                if size > remaining { break; }
+                                remaining -= size;
+                                if option["disabled"] != true && let Some(value) = option["value"].as_str() { choices.push(value.into()); }
+                                shown.push(option.clone());
+                            }
+                            let complete = data["select"]["complete"] == true && shown.len() == options.len();
+                            visible["options"] = shown.into();
+                            visible["options_complete"] = complete.into();
+                            visible["multiple"] = data["select"]["multiple"].clone();
+                            if !complete { omitted.push("select_options_omitted".into()); }
+                        }
                         let reference = format!("e_{observation}_{}", refs.len());
                         visible["ref"] = reference.clone().into();
                         visible["enabled"] = data["enabled"].clone();
                         visible["editable"] = data["editable"].clone();
                         visible["sensitive"] = (data["type"] == "password").into();
+                        if data["type"] != "password" && let Some(value) = node["value"]["value"].as_str() {
+                            let shown = clipped(value, remaining.min(512));
+                            remaining = remaining.saturating_sub(shown.chars().count());
+                            if shown.len() < value.len() { omitted.push("value_clipped".into()); }
+                            visible["value"] = shown.into();
+                        }
+                        if matches!(data["type"].as_str(), Some("checkbox" | "radio")) {
+                            visible["checked"] = data["checked"].clone();
+                        }
                         refs.insert(reference, Element {
                             frame: frame.clone(), backend,
                             signature: crate::config::sha256_hex(data["signature"].as_str().unwrap_or("").as_bytes()),
-                            role: role.into(), name: crate::config::sha256_hex(full_name.as_bytes()),
+                            role: role.into(), name: crate::config::sha256_hex(full_name.as_bytes()), choices,
                         });
                     }
                 }
@@ -420,6 +484,30 @@ impl Element {
         }
         let session = Some(self.frame.session.as_str());
         match kind {
+            "select" => {
+                let value = action["value"].as_str().unwrap_or("");
+                if data["tag"] != "SELECT"
+                    || data["select"]["multiple"] == true
+                    || !self.choices.iter().any(|v| v == value)
+                {
+                    return Err(Failure::new("browser_invalid_params"));
+                }
+                let object = object(cdp, &self.frame, self.backend, deadline).await?;
+                let result = cdp.call_effect(session,"Runtime.callFunctionOn",json!({"objectId":object,
+                    "functionDeclaration":SELECT,"arguments":[{"value":value}],"returnByValue":true}),deadline).await;
+                let _ = cdp
+                    .cleanup()
+                    .call(
+                        session,
+                        "Runtime.releaseObject",
+                        json!({"objectId":object}),
+                        deadline,
+                    )
+                    .await;
+                if result?["result"]["value"] != true {
+                    return Err(Failure::unknown("browser_not_actionable"));
+                }
+            }
             "click" | "check" => {
                 if kind == "check" {
                     if !matches!(data["type"].as_str(), Some("checkbox" | "radio")) {
