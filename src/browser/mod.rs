@@ -18,6 +18,7 @@ pub const OPERATIONS: &[&str] = &[
     "browser_act",
     "browser_wait",
     "browser_control",
+    "browser_human",
 ];
 pub const MUTATIONS: &[&str] = &["browser_open", "browser_act", "browser_control"];
 
@@ -53,16 +54,20 @@ impl Settings {
 pub struct Principal {
     pub version: u32,
     pub owner: String,
+    pub user: String,
+    pub channel: String,
 }
 
 impl Principal {
     pub fn valid(&self) -> bool {
         self.version == 1
-            && self.owner.len() == 64
-            && self
-                .owner
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && ["ai", "human"].contains(&self.channel.as_str())
+            && [&self.owner, &self.user].iter().all(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
     }
 }
 
@@ -147,14 +152,18 @@ mod tests {
         assert!(
             !Principal {
                 version: 1,
-                owner: "caller".into()
+                owner: "caller".into(),
+                user: "a".repeat(64),
+                channel: "ai".into()
             }
             .valid()
         );
         assert!(
             Principal {
                 version: 1,
-                owner: "a".repeat(64)
+                owner: "a".repeat(64),
+                user: "a".repeat(64),
+                channel: "ai".into()
             }
             .valid()
         );

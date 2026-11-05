@@ -898,7 +898,12 @@ impl Runtime {
             );
             return Ok(());
         }
-        let semaphore = if operation == "browser_control" {
+        let semaphore = if operation == "browser_control"
+            || operation == "browser_human"
+                && matches!(
+                    params.get("action").and_then(Value::as_str),
+                    Some("claim" | "release" | "close")
+                ) {
             &self.browser_control
         } else if BROWSER_OPERATIONS.contains(&operation) {
             &self.browser_work

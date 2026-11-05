@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex as AsyncMutex;
+mod human;
+use human::HumanLease;
 
 const MAX_SESSIONS: usize = 2;
 const MAX_TABS: usize = 8;
@@ -32,6 +34,7 @@ struct Target {
 }
 struct Slot {
     owner: String,
+    user: String,
     control: Arc<Control>,
     closing: AtomicBool,
     transport: Mutex<Option<Cdp>>,
@@ -44,6 +47,7 @@ struct Session {
     active: String,
     observed_tab: String,
     touched: Instant,
+    human: Option<HumanLease>,
 }
 struct Admission {
     online: bool,
@@ -86,7 +90,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":["temporary"],"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":false,"file_transfer":false})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":["temporary"],"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"file_transfer":false})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
@@ -121,6 +125,13 @@ impl Browsers {
     ) -> Result<Value> {
         if !principal.valid() {
             return Err(Failure::new("browser_unauthorized"));
+        }
+        if (operation == "browser_human") != (principal.channel == "human") {
+            return Err(Failure::new("browser_unauthorized"));
+        }
+        if operation == "browser_human" {
+            return tokio::runtime::Handle::current()
+                .block_on(self.human(params, principal, deadline));
         }
         validate(operation, params)?;
         tokio::runtime::Handle::current()
@@ -175,7 +186,10 @@ impl Browsers {
             return self.control(id, &slot, params, deadline).await;
         }
         let (epoch, paused) = slot.control.snapshot();
-        if paused || slot.closing.load(Ordering::Acquire) {
+        let resolving_dialog = operation == "browser_act" && params["action"]["kind"] == "dialog";
+        if (paused && operation != "browser_tabs" && !resolving_dialog)
+            || slot.closing.load(Ordering::Acquire)
+        {
             return Err(Failure::new("browser_paused"));
         }
         if operation != "browser_tabs" && params["control_epoch"].as_u64() != Some(epoch) {
@@ -185,6 +199,9 @@ impl Browsers {
             .session
             .try_lock()
             .map_err(|_| Failure::new("browser_busy"))?;
+        if session.human.is_some() {
+            return Err(Failure::new("browser_paused"));
+        }
         session.touched = Instant::now();
         let process = session
             .process
@@ -193,10 +210,14 @@ impl Browsers {
         if !process.cdp.connected() {
             return Err(Failure::unknown("browser_lost"));
         }
-        if process.cdp.pending() != 0 {
+        if process.cdp.pending() != 0 && operation != "browser_tabs" && !resolving_dialog {
             return Err(Failure::unknown("browser_input_pending"));
         }
-        let cdp = process.cdp.authorized(slot.control.clone(), epoch);
+        let cdp = if paused {
+            process.cdp.human(slot.control.clone(), epoch)
+        } else {
+            process.cdp.authorized(slot.control.clone(), epoch)
+        };
         let (cdp, effects) = cdp.track_effects();
         if operation == "browser_tabs" {
             let tabs: Vec<_> = session
@@ -208,7 +229,7 @@ impl Browsers {
                 .map(|t| json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog}))
                 .collect();
             return Ok(
-                json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs}),
+                json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}),
             );
         }
         let tab = params
@@ -325,22 +346,14 @@ impl Browsers {
                         Ok(json!({"tab_closed":true}))
                     }
                     "select_tab" => {
+                        cdp.call(Some(&target.session),"Page.bringToFront",json!({}),deadline).await?;
                         session.active = tab;
                         session.references.clear();
                         Ok(json!({"active_tab":session.active}))
                     }
                     "dialog" => {
-                        if target.dialog.is_none() {
-                            return Err(Failure::new("browser_no_dialog"));
-                        }
-                        cdp.call(
-                            Some(&target.session),
-                            "Page.handleJavaScriptDialog",
-                            json!({"accept":action["accept"]}),
-                            deadline,
-                        )
-                        .await?;
-                        Ok(json!({"dialog_handled":true}))
+                        handle_dialog(&cdp,&session.targets,&target,&action["dialog_id"],&action["accept"],deadline).await?;
+                        Ok(json!({"dialog_handled":true,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}))
                     }
                     _ => {
                         if target.dialog.is_some() {
@@ -392,7 +405,7 @@ impl Browsers {
         }
         let mut value = outcome?;
         // A concurrent pause never leaks a completed observation or screenshot from the old epoch.
-        if slot.control.snapshot() != (epoch, false) {
+        if slot.control.snapshot() != (epoch, paused) {
             return Err(Failure::unknown("browser_control_changed"));
         }
         value["session_id"] = id.into();
@@ -409,6 +422,7 @@ impl Browsers {
         let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
         let slot = Arc::new(Slot {
             owner: principal.owner.clone(),
+            user: principal.user.clone(),
             control: Arc::new(Control::new()),
             closing: AtomicBool::new(false),
             transport: Mutex::new(None),
@@ -419,6 +433,7 @@ impl Browsers {
                 active: String::new(),
                 observed_tab: String::new(),
                 touched: Instant::now(),
+                human: None,
             }),
         });
         {
@@ -527,6 +542,9 @@ impl Browsers {
         };
         session.references.clear();
         session.touched = Instant::now();
+        if action == "resume" && session.human.is_some() {
+            return Err(Failure::new("browser_paused"));
+        }
         let process = session
             .process
             .as_mut()
@@ -804,7 +822,12 @@ async fn handle_event(
                     id: id.into(),
                     session: session.into(),
                     kind: kind.into(),
-                    url: info["url"].as_str().unwrap_or("").into(),
+                    url: info["url"]
+                        .as_str()
+                        .unwrap_or("")
+                        .chars()
+                        .take(4096)
+                        .collect(),
                     title: info["title"]
                         .as_str()
                         .unwrap_or("")
@@ -859,6 +882,7 @@ async fn handle_event(
                 .await?;
         }
         "Page.javascriptDialogOpening" => {
+            let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
             if let Some(target) = targets
                 .lock()
                 .unwrap()
@@ -866,7 +890,7 @@ async fn handle_event(
                 .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
             {
                 target.dialog = Some(
-                    json!({"type":params["type"],"message":params["message"].as_str().unwrap_or("").chars().take(512).collect::<String>()}),
+                    json!({"dialog_id":id,"attempted":false,"type":params["type"],"message":params["message"].as_str().unwrap_or("").chars().take(512).collect::<String>()}),
                 );
             }
         }
@@ -883,6 +907,44 @@ async fn handle_event(
         _ => {}
     }
     Ok(())
+}
+
+async fn handle_dialog(
+    cdp: &Cdp,
+    targets: &Arc<Mutex<HashMap<String, Target>>>,
+    target: &Target,
+    id: &Value,
+    accept: &Value,
+    deadline: Instant,
+) -> Result<()> {
+    {
+        let mut targets = targets.lock().unwrap();
+        let dialog = targets
+            .get_mut(&target.id)
+            .and_then(|t| t.dialog.as_mut())
+            .filter(|d| d["dialog_id"] == *id && d["attempted"] == false)
+            .ok_or_else(|| Failure::new("browser_no_dialog"))?;
+        dialog["attempted"] = true.into();
+    }
+    let result = cdp
+        .call(
+            Some(&target.session),
+            "Page.handleJavaScriptDialog",
+            json!({"accept":accept}),
+            deadline,
+        )
+        .await;
+    if result.as_ref().is_err_and(|e| e.state == "not_sent")
+        && let Some(dialog) = targets
+            .lock()
+            .unwrap()
+            .get_mut(&target.id)
+            .and_then(|t| t.dialog.as_mut())
+            .filter(|d| d["dialog_id"] == *id)
+    {
+        dialog["attempted"] = false.into();
+    }
+    result.map(|_| ())
 }
 
 fn validate(operation: &str, params: &Value) -> Result<()> {
@@ -956,7 +1018,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "check" => &["kind", "ref", "checked"],
             "click" => &["kind", "ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
-            "dialog" => &["kind", "accept"],
+            "dialog" => &["kind", "accept", "dialog_id"],
             _ => return Err(Failure::new("browser_invalid_params")),
         };
         if action.len() != fields.len() || action.keys().any(|key| !fields.contains(&key.as_str()))
@@ -995,6 +1057,10 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         }
         if (kind == "check" && !action["checked"].is_boolean())
             || (kind == "dialog" && !action["accept"].is_boolean())
+            || (kind == "dialog"
+                && action["dialog_id"]
+                    .as_str()
+                    .is_none_or(|s| s.is_empty() || s.len() > 128))
         {
             return Err(Failure::new("browser_invalid_params"));
         }

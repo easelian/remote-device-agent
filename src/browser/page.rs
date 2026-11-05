@@ -429,11 +429,7 @@ impl Element {
                         return Ok(json!({"changed":false}));
                     }
                 }
-                let pressed=cdp.call(session,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline).await;
-                // Once pressed, release is mandatory even if the caller's deadline expired.
-                let released=cdp.cleanup().call(session,"Input.dispatchMouseEvent",json!({"type":"mouseReleased","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline.max(Instant::now()+Duration::from_secs(1))).await;
-                pressed?;
-                released?;
+                cdp.input_pair(session,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline).await?;
             }
             "fill" => {
                 if data["editable"] != true || data["type"] == "password" {
@@ -447,10 +443,7 @@ impl Element {
                 )
                 .await?;
                 // Input.insertText follows the browser's editing path, including frontend input events.
-                let pressed=cdp.call(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),deadline).await;
-                let released=cdp.cleanup().call(session,"Input.dispatchKeyEvent",json!({"type":"keyUp","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),deadline.max(Instant::now()+Duration::from_secs(1))).await;
-                pressed?;
-                released?;
+                cdp.input_pair(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),json!({"type":"keyUp","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),deadline).await?;
                 cdp.call(
                     session,
                     "Input.insertText",
@@ -479,25 +472,7 @@ impl Element {
                     "ArrowRight" => 39,
                     _ => return Err(Failure::new("browser_invalid_params")),
                 };
-                let pressed = cdp
-                    .call(
-                        session,
-                        "Input.dispatchKeyEvent",
-                        json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code}),
-                        deadline,
-                    )
-                    .await;
-                let released = cdp
-                    .cleanup()
-                    .call(
-                        session,
-                        "Input.dispatchKeyEvent",
-                        json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),
-                        deadline.max(Instant::now() + Duration::from_secs(1)),
-                    )
-                    .await;
-                pressed?;
-                released?;
+                cdp.input_pair(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
             }
             _ => return Err(Failure::new("browser_invalid_params")),
         }

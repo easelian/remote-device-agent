@@ -42,12 +42,27 @@ impl Peer {
         owner: Option<&str>,
         receipt: Option<&str>,
     ) -> Value {
+        self.raw_as(
+            operation,
+            params,
+            owner.map(|owner| json!({"version":1,"owner":owner,"user":owner,"channel":"ai"})),
+            receipt,
+        )
+        .await
+    }
+    async fn raw_as(
+        &mut self,
+        operation: &str,
+        params: Value,
+        principal: Option<Value>,
+        receipt: Option<&str>,
+    ) -> Value {
         self.counter += 1;
         let id = format!("browser-test-{}", self.counter);
         let mut message =
             json!({"id":id,"operation":operation,"params":params,"execution_budget_ms":15000});
-        if let Some(owner) = owner {
-            message["browser_principal"] = json!({"version":1,"owner":owner});
+        if let Some(principal) = principal {
+            message["browser_principal"] = principal;
         }
         if let Some(receipt) = receipt {
             message["operation_receipt"] =
@@ -66,6 +81,17 @@ impl Peer {
                 return value;
             }
         }
+    }
+    async fn human(&mut self, params: Value) -> Value {
+        self.raw_as(
+            "browser_human",
+            params,
+            Some(
+                json!({"version":1,"owner":"c".repeat(64),"user":"a".repeat(64),"channel":"human"}),
+            ),
+            None,
+        )
+        .await
     }
     async fn call(&mut self, operation: &str, params: Value) -> Value {
         let receipt = rdh_agent::browser::MUTATIONS
@@ -100,7 +126,11 @@ impl Peer {
                 "{reply}"
             );
             assert!(
-                reply.get("error").is_none() || reply["error_code"] == "browser_input_pending",
+                reply.get("error").is_none()
+                    || matches!(
+                        reply["error_code"].as_str(),
+                        Some("browser_input_pending" | "browser_stale_reference")
+                    ),
                 "{reply}"
             );
             last = reply;
@@ -132,6 +162,9 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     let saves = Arc::new(Mutex::new(Vec::<Value>::new()));
     let app = Router::new()
         .route("/", get(|| async { Html(PAGE) }))
+        .route("/human", get(||async {Html(r#"<!doctype html><meta charset="utf-8"><h1>Human login</h1><form id="login"><input id="secret" type="password" autofocus aria-label="Password"><button>Sign in</button></form><script>let replaced=false;setInterval(async()=>{if(!replaced&&(await(await fetch('/focus-state')).json())){replaced=true;const copy=secret.cloneNode(true);secret.replaceWith(copy);copy.focus();await fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({focusReplaced:true})});}},25);login.onsubmit=async e=>{e.preventDefault();await fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({humanSecret:secret.value})});document.body.innerHTML='<h1>Logged in</h1>';};</script>"#)}))
+        .route("/focus-state", get(|State(saves): State<Arc<Mutex<Vec<Value>>>>| async move { Json(saves.lock().unwrap().iter().any(|v|v["replaceFocused"]==true)) }))
+        .route("/dialog",get(||async {Html("<h1>Dialog task</h1><button onclick=\"alert('Synthetic dialog')\">Open dialog</button>")}))
         .route("/next", get(|| async { Html("<h1>Next document</h1>") }))
         .route("/large", get(|| async { Html(format!("<h1>Large page</h1>{}", "<p>bounded text</p>".repeat(50000))) }))
         .route("/overlay", get(|headers: axum::http::HeaderMap| async move {
@@ -354,6 +387,155 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         )
         .await;
     assert_eq!(old_epoch["error_code"], "browser_control_changed");
+    let epoch = resumed["result"]["control_epoch"].as_u64().unwrap();
+    let dialog_page=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":format!("{url}dialog")}})).await;
+    assert!(dialog_page.get("error").is_none(), "{dialog_page}");
+    let observed = peer.observe_named(&id, epoch, "Open dialog").await;
+    let dialog_click=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"click","ref":reference(&observed,"Open dialog")}})).await;
+    assert_eq!(
+        dialog_click["error_code"], "browser_dialog_open",
+        "dialog input: {dialog_click}"
+    );
+    let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+    assert!(tabs["result"]["tabs"][0]["dialog"].is_object(), "{tabs}");
+    let epoch = tabs["result"]["control_epoch"].as_u64().unwrap();
+    let dialog=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"dialog","accept":false,"dialog_id":tabs["result"]["tabs"][0]["dialog"]["dialog_id"]}})).await;
+    assert!(dialog.get("error").is_none(), "dialog handling: {dialog}");
+    let resumed = peer
+        .call(
+            "browser_control",
+            json!({"session_id":id,"control_epoch":epoch,"action":"resume"}),
+        )
+        .await;
+    assert!(resumed.get("error").is_none(), "after dialog: {resumed}");
+    let epoch = resumed["result"]["control_epoch"].as_u64().unwrap();
+    let navigate=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":format!("{url}human")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    peer.observe_named(&id, epoch, "Human login").await;
+    let human_tab =
+        peer.call("browser_tabs", json!({"session_id":id})).await["result"]["active_tab"].clone();
+    let second = peer
+        .call(
+            "browser_act",
+            json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"new_tab"}}),
+        )
+        .await;
+    assert!(second.get("error").is_none(), "{second}");
+    let invalid_human = peer
+        .call(
+            "browser_human",
+            json!({"action":"claim","session_id":id,"view_id":"test-view"}),
+        )
+        .await;
+    assert_eq!(invalid_human["error_code"], "browser_unauthorized");
+    let claimed = peer
+        .human(json!({"action":"claim","session_id":id,"view_id":"test-view"}))
+        .await;
+    assert!(claimed.get("error").is_none(), "{claimed}");
+    let lease = claimed["result"]["lease"].clone();
+    let epoch = lease["control_epoch"].as_u64().unwrap();
+    let hidden = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":epoch}),
+        )
+        .await;
+    assert_eq!(hidden["error_code"], "browser_paused");
+    let resume = peer
+        .call(
+            "browser_control",
+            json!({"session_id":id,"control_epoch":epoch,"action":"resume"}),
+        )
+        .await;
+    assert_eq!(resume["error_code"], "browser_paused");
+    let tabs_picture=peer.human(json!({"action":"screenshot","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch})).await;
+    assert_eq!(
+        tabs_picture["result"]["tabs"].as_array().unwrap().len(),
+        2,
+        "{tabs_picture}"
+    );
+    let switched=peer.human(json!({"action":"input","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch,"sequence":1,"frame_id":tabs_picture["result"]["frame_id"],"input":{"kind":"tab","tab_id":human_tab}})).await;
+    assert!(switched.get("error").is_none(), "{switched}");
+    let old_picture=peer.human(json!({"action":"screenshot","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch})).await;
+    assert_eq!(
+        old_picture["result"]["text_input_available"], true,
+        "{old_picture}"
+    );
+    saves.lock().unwrap().push(json!({"replaceFocused":true}));
+    for _ in 0..40 {
+        if saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["focusReplaced"] == true)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["focusReplaced"] == true)
+    );
+    let replaced=peer.human(json!({"action":"input","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch,"sequence":2,"frame_id":old_picture["result"]["frame_id"],"input":{"kind":"text","text":"MUST-NOT-INSERT"}})).await;
+    assert_eq!(replaced["error_code"], "browser_stale_frame", "{replaced}");
+    for (sequence, input) in [
+        (3, json!({"kind":"text","text":"SYNTHETIC-human-秘密"})),
+        (4, json!({"kind":"key","key":"Enter"})),
+    ] {
+        let picture=peer.human(json!({"action":"screenshot","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch})).await;
+        assert!(picture.get("error").is_none(), "{picture}");
+        assert_eq!(picture["result"]["mime_type"], "image/jpeg");
+        assert!(
+            picture["result"]["data"]
+                .as_str()
+                .unwrap()
+                .starts_with("/9j/")
+        );
+        let args = json!({"action":"input","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch,"sequence":sequence,"frame_id":picture["result"]["frame_id"],"input":input});
+        let sent = peer.human(args.clone()).await;
+        assert!(sent.get("error").is_none(), "{sent}");
+        let repeated = peer.human(args).await;
+        assert_eq!(
+            repeated["error_code"], "browser_duplicate_input",
+            "{repeated}"
+        );
+    }
+    for _ in 0..40 {
+        if saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v["humanSecret"] == "SYNTHETIC-human-秘密")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        saves
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v["humanSecret"] == "SYNTHETIC-human-秘密")
+            .count(),
+        1
+    );
+    let unconfirmed=peer.human(json!({"action":"release","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch,"share_page_with_ai":false})).await;
+    assert_eq!(unconfirmed["error_code"], "browser_invalid_params");
+    let released=peer.human(json!({"action":"release","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch,"share_page_with_ai":true})).await;
+    assert!(released.get("error").is_none(), "{released}");
+    let observed = peer
+        .observe_named(
+            &id,
+            released["result"]["control_epoch"].as_u64().unwrap(),
+            "Logged in",
+        )
+        .await;
+    assert!(!observed.to_string().contains("SYNTHETIC-human"));
     let close = peer
         .call("browser_control", json!({"session_id":id,"action":"close"}))
         .await;

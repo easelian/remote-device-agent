@@ -16,6 +16,7 @@ pub const KNOWN_OPERATIONS: &[&str] = &[
     "browser_act",
     "browser_wait",
     "browser_control",
+    "browser_human",
     "device_info",
     "get_operation_status",
     "get_startup",
