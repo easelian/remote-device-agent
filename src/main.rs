@@ -43,6 +43,12 @@ async fn launch_agent(options: rdh_agent::binding::Options) -> Result<()> {
     result
 }
 fn main() {
+    if let Some(result) = rdh_agent::browser::run_internal_supervisor() {
+        if let Err(error) = result {
+            fail(error);
+        }
+        return;
+    }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match parse(&args) {
         Ok(Action::Help) => print!("{}", rdh_agent::cli::help()),

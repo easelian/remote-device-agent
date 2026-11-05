@@ -17,6 +17,8 @@ mod windows;
 pub use platform::detect;
 #[cfg(windows)]
 use windows as platform;
+#[cfg(windows)]
+pub(super) use windows::supervisor::run as run_supervisor;
 
 pub struct BrowserProcess {
     child: platform::Child,
@@ -136,15 +138,17 @@ impl BrowserProcess {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        // This is the only durable proof available to Windows restart recovery
-        // after its original Job handle is lost. Publish it before deleting data.
+        // Publish completion before deleting data. A retirement name preserves
+        // that fact even if an interrupted deletion removes the owner record.
         self.owner["retired"] = true.into();
-        crate::storage::write_private_replace(
-            &self.profile.join("owner.json"),
-            &serde_json::to_vec(&self.owner).unwrap(),
-        )
-        .map_err(io_error)?;
-        fs::remove_dir_all(&self.profile).map_err(io_error)?;
+        if self.profile.try_exists().map_err(cleanup_pending)? {
+            crate::storage::write_private_replace(
+                &self.profile.join("owner.json"),
+                &serde_json::to_vec(&self.owner).unwrap(),
+            )
+            .map_err(io_error)?;
+        }
+        retire(&self.profile)?;
         self.closed = true;
         self.named = None;
         Ok(())
@@ -169,6 +173,34 @@ impl Drop for BrowserProcess {
     }
 }
 
+fn cleanup_pending(_: impl std::fmt::Display) -> Failure {
+    Failure::new("browser_cleanup_pending")
+}
+
+/// The root exclusion lock protects this transition. The renamed directory is
+/// a durable cleanup state: no browser or witness may still use it. Windows can
+/// briefly deny deletion even after process completion; retry without losing
+/// the completion proof or mistaking partially deleted metadata for live work.
+fn retire(path: &Path) -> Result<()> {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap();
+    let retired = path.with_file_name(format!("retired-{name}"));
+    if path.try_exists().map_err(cleanup_pending)? {
+        if retired.try_exists().map_err(cleanup_pending)? {
+            return Err(Failure::new("browser_cleanup_pending"));
+        }
+        fs::rename(path, &retired).map_err(cleanup_pending)?;
+        #[cfg(unix)]
+        crate::storage::sync_directory(
+            &fs::File::open(path.parent().unwrap()).map_err(cleanup_pending)?,
+        )
+        .map_err(cleanup_pending)?;
+    }
+    if retired.try_exists().map_err(cleanup_pending)? {
+        fs::remove_dir_all(retired).map_err(cleanup_pending)?;
+    }
+    Ok(())
+}
+
 /// Recovery observes native ownership; it never adopts a page or replays input.
 pub fn recover(root: &Path) -> Result<()> {
     let entries = fs::read_dir(root)
@@ -188,19 +220,51 @@ pub fn recover(root: &Path) -> Result<()> {
             crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
             continue;
         }
-        if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let original_id = id.strip_prefix("retired-").unwrap_or(id);
+        if original_id.len() != 32 || !original_id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Failure::new("browser_cleanup_pending"));
         }
         let path = entry.path();
         crate::storage::private_metadata(&path, true).map_err(io_error)?;
-        let owner: Value = serde_json::from_slice(
-            &crate::storage::read_private(&path.join("owner.json")).map_err(io_error)?,
-        )
-        .map_err(io_error)?;
-        if !platform::retired(&owner).map_err(|_| Failure::new("browser_cleanup_pending"))? {
+        if original_id != id {
+            fs::remove_dir_all(path).map_err(cleanup_pending)?;
+            continue;
+        }
+        let owner = match crate::storage::read_private(&path.join("owner.json")) {
+            Ok(bytes) => Some(serde_json::from_slice::<Value>(&bytes).map_err(io_error)?),
+            Err(crate::error::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                None
+            }
+            Err(error) => return Err(io_error(error)),
+        };
+        // The run directory is made before any process setup. Remove only an
+        // atomically empty directory; a racing ownership publication blocks it.
+        if owner.is_none() && fs::read_dir(&path).map_err(io_error)?.next().is_none() {
+            fs::remove_dir(&path).map_err(io_error)?;
+            continue;
+        }
+        if !platform::retired(&path, owner.as_ref())
+            .map_err(|_| Failure::new("browser_cleanup_pending"))?
+        {
             return Err(Failure::new("browser_cleanup_pending"));
         }
-        fs::remove_dir_all(path).map_err(io_error)?;
+        retire(&path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn interrupted_retirement_keeps_completion_without_owner_metadata() {
+    let root = std::env::temp_dir().join(format!(
+        "rdh-retirement-{}",
+        crate::random::hex_token::<12>().unwrap()
+    ));
+    crate::storage::create_private_dir(&root).unwrap();
+    let retired = root.join(format!("retired-{}", "a".repeat(32)));
+    crate::storage::create_private_dir(&retired).unwrap();
+    crate::storage::write_private_new(&retired.join("browser.stderr"), b"remaining data").unwrap();
+    recover(&root).unwrap();
+    assert!(!retired.exists());
+    fs::remove_dir(root).unwrap();
 }

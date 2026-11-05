@@ -146,7 +146,8 @@ impl Drop for Child {
         }
     }
 }
-pub fn retired(owner: &Value) -> io::Result<bool> {
+pub fn retired(_: &Path, owner: Option<&Value>) -> io::Result<bool> {
+    let owner = owner.ok_or_else(|| io::Error::other("Missing browser process owner"))?;
     let pid = owner["pid"]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())

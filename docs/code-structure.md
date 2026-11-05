@@ -57,10 +57,14 @@ and admission limits still apply.
 Browser work starts in `browser/runtime.rs`. `cdp.rs` owns bounded traffic and
 in-flight input over generic asynchronous readers and writers. `process.rs` owns
 launch arguments, the private run directory, startup checks and close ordering.
+It renames completed runs into a retirement state before removing their contents,
+so interrupted cleanup retains the completion evidence.
 `process/posix.rs` supplies inherited descriptors and process-group ownership;
 its Linux and macOS modules observe groups through `/proc` and libproc respectively.
 `process/windows.rs` supplies restricted inherited pipe handles and a creation-time
-kill-on-close Job. Shared private stream APIs in `storage/` apply POSIX permissions
+kill-on-close Job. Its `windows/supervisor.rs` holds a restricted Job handle in an
+independent cleanup child to handle Agent death; it owns no CDP or page input.
+Shared private stream APIs in `storage/` apply POSIX permissions
 or Windows ACL, identity and sharing rules to staged files.
 `page.rs` and `observe.js` bind semantic segments and action references to frames.
 `runtime/human.rs` owns control leases. `profiles.rs`, `files.rs` and

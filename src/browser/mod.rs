@@ -50,6 +50,26 @@ pub const OPERATIONS: &[&str] = &[
     "browser_control",
     "browser_human",
 ];
+
+/// Internal process entry, recognized before public CLI arguments are parsed.
+#[doc(hidden)]
+pub fn run_internal_supervisor() -> Option<crate::error::Result<()>> {
+    #[cfg(all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    ))]
+    {
+        let args: Vec<_> = std::env::args_os().skip(1).collect();
+        process::run_supervisor(&args).map(|result| result.map_err(crate::error::Error::from))
+    }
+    #[cfg(not(all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )))]
+    None
+}
 pub const MUTATIONS: &[&str] = &["browser_open", "browser_act", "browser_control"];
 
 #[derive(Clone, Default, Deserialize, Serialize)]

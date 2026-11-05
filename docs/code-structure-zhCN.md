@@ -38,7 +38,7 @@ Agent 崩溃后，启动流程核对原 PID 和进程启动时间；确认原实
 
 回执补发在连接激活后等待现有发送队列腾出空间，等待期间仍处理收包和关闭。Agent 最多保留 1,024 条回执，满额时只回收已结束且经 Hub 确认的最旧记录。运行中及尚未确认的回执继续保留；Hub 自身的结果保留和请求准入限制仍然适用。
 
-浏览器工作从 `browser/runtime.rs` 进入。`cdp.rs` 接受通用异步读写端，管理有界通信及在途输入；`process.rs` 统一启动参数、私有运行目录、启动检查和关闭顺序。`process/posix.rs` 处理继承的描述符和进程组，内部由 Linux 的 `/proc` 与 macOS 的 libproc 观察组成员；`process/windows.rs` 处理受限继承管道及在进程创建时分配的 kill-on-close Job。暂存文件共用 `storage/` 的私有流接口，由平台实现 POSIX 权限或 Windows ACL、身份及共享检查。
+浏览器工作从 `browser/runtime.rs` 进入。`cdp.rs` 接受通用异步读写端，管理有界通信及在途输入；`process.rs` 统一启动参数、私有运行目录、启动检查和关闭顺序，并先将已结束的运行目录改为回收状态，再删除内容，使中断清理保留完成依据。`process/posix.rs` 处理继承的描述符和进程组，内部由 Linux 的 `/proc` 与 macOS 的 libproc 观察组成员；`process/windows.rs` 处理受限继承管道及在进程创建时分配的 kill-on-close Job。其 `windows/supervisor.rs` 在独立回收子进程中持有受限 Job 句柄，处理 Agent 异常退出，不接触 CDP 或页面输入。暂存文件共用 `storage/` 的私有流接口，由平台实现 POSIX 权限或 Windows ACL、身份及共享检查。
 
 `page.rs` 与 `observe.js` 将语义内容段和动作引用绑定到 frame。`runtime/human.rs` 管理接管租约，`profiles.rs`、`files.rs` 与 `files/upload.rs` 管理登录资料和文件保留。运行时等待工作结束后才释放命名空间锁；确认解绑后只删除对应凭据的命名空间。用法见[浏览器任务](browser-zhCN.md)。
 

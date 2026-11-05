@@ -1,0 +1,2847 @@
+{
+  "date": "2026-11-05",
+  "scenario": "Windows Agent crash recovery, macOS startup dependency fix, and native browser end-to-end Hub/Web acceptance",
+  "status": "specified_fixes_and_native_platform_scenarios_verified_not_released",
+  "source": {
+    "agent": {
+      "base_commit": "50d2ef7a31f547d206367346ec3b4a33dac760ea",
+      "files": {
+        "Cargo.lock": "a11f48f91b758c16a888ede9af4f8b729ae2e985256a1bd575ea119c1ce38374",
+        "Cargo.toml": "2c4c912fabf9023a8b11fbdcd5408bb43581960eb12784b9415ac36f8ce9e40e",
+        "examples/browser_p0/bridge.rs": "d1325e30dd93267d1ae6bdd947992fbfc84958dab215aafba0154d0acd4464f7",
+        "examples/browser_p0/browser.rs": "35f19d70a7d70298d4eae6906f06b11576488054dd826c52808105ea788748cd",
+        "examples/browser_p0/cdp.rs": "f59defff67f61a015d69002dc2c89649a433f9c62ec069bcea2d1263bbb211b4",
+        "examples/browser_p0/fixture.rs": "011f625037a1c41ce20821ed1c558a1bccd558a1099b713e7176cffeee0318b0",
+        "examples/browser_p0/main.rs": "50a2a873e947d8ee7f28d3e040ae9bb746d15c89348e4d2c3fb49f7e84717d03",
+        "examples/browser_p0/page.rs": "a0e5e5af1d1159cb3bab40f9d700315ec8c83e86f30d0cc1cd444d1d09b433d6",
+        "examples/browser_p0/scenarios.rs": "7dd66710a1843552067dda85b7fae37ba689c701389bb85464a32539a6fb0fe0",
+        "packaging/install.ps1": "ea791a4eee944304aef3fbd0ddb06bfb8fa703b1f068aebab7fff8fbe242c424",
+        "packaging/install.sh": "f54a273a1d897d9cfc63ba63434b1c5772030d78709f74226025328ebecf9756",
+        "src/app.rs": "179850c7624f520e000e7491260df6374ef1b954ca13fd35399460756949d599",
+        "src/audit/history.rs": "43ee2a92520588fc717390cb45aa8842c37718c38a01671f6a1aa8ed870d0058",
+        "src/audit/mod.rs": "c195c5ed8fdaeb201796dfabcca2baaef05af68cd284a24b2306c1ed0ffcd969",
+        "src/audit/posix/mod.rs": "f8d10bc2f51c5c27283a1a545513fed2d091275b3e4372f006b091b94774872c",
+        "src/binding/local.rs": "7ac82058390b883d588b7763093a31c2feab1e1dcd1345efb5b950106d4fd40a",
+        "src/binding/mod.rs": "3b05084c54235c532445a5cb8f28e65dba7773e9a30d3dbf253f459124d8e751",
+        "src/binding/unbind.rs": "b4cf6fac0c00a2e66c7a4d40ded8461ce8ca7492314b63dd12a85afe5a0210f5",
+        "src/browser/cdp.rs": "74e409f1d2fa8d98cf0d83a95266c1c10c58a4f459d52c68d382331ff7c8465e",
+        "src/browser/files.rs": "a14f3f9f30daa76af0abf2f70b40f0233ca48c574cc9c68cbf4d08a1f9794d4b",
+        "src/browser/files/upload.rs": "0c251be2239a2c1fb65788f9dbb99aac734077995e837d4db8ce6a6304362d49",
+        "src/browser/image.rs": "9fee065c37f9ca8e430968da2c243936cbfafef923130fbe05e9f69603f5feec",
+        "src/browser/mod.rs": "25d3857c16aabad8944b235967774e0f041865fb4b3df2aeff11a3acc71cdb92",
+        "src/browser/observe.js": "2e0cb6ba02225d4abf01a276891e07d502bcff35e09493689ac138cde607b9d3",
+        "src/browser/page.rs": "188d7bb821d82ff43c0a250c6b45c0ac4882babc20a385c128964dedeb05ca20",
+        "src/browser/process.rs": "6969125f4d1e961c59b2a997f0d572ae2d1cfa3b0792f1579b4b3c7c8c86a77f",
+        "src/browser/process/posix.rs": "d6659c1d6a5d07b1d328f5878cbf15099ed1253db8c21996616530e59d96162f",
+        "src/browser/process/posix/linux.rs": "1edca7f3a3f5f58fdce9f57e2c241a0e9908d8ffd4996c586720adcaa2d1b4ff",
+        "src/browser/process/posix/macos.rs": "ed478a27f46f2396546a02539e17569c2e1c75a55a9868a10cd74b05980b1637",
+        "src/browser/process/windows.rs": "bba5a51d1465d801f9aea9f46aebee9045567a9ef36926d804b85c8d306cfb32",
+        "src/browser/process/windows/supervisor.rs": "e0b901786645485a7e911b88dbed5ea034d4ec3423b0c6faedce70b7b15390be",
+        "src/browser/profiles.rs": "6e4a17cd5031bd6b2885d2a01306c430e2b5e676442e8c354a85edd3c4cb09d1",
+        "src/browser/runtime.rs": "59185cef3d8ba6b82f75fe1b67d2f355310d7a99377f25f4b58888f56ed67853",
+        "src/browser/runtime/human.rs": "c94abd06339016e904b9d8b2fce0efd54eaf3d59fb59a5c7b23b83ae6f370f1d",
+        "src/browser/runtime/human/text.rs": "f9b8afe4e3d47f994b94ec527cf28d91645eae7c8f3f7062f3425b1c5bc41c04",
+        "src/cli.rs": "1288068bb21013efc21be7c487a766cdbae5695de4898d4d71bc3b951dcddfb5",
+        "src/cluster.rs": "dd502265ad92f43692fc83da57957161363445f52b8068cc1b790169df96d063",
+        "src/config.rs": "f8d84628ef678048d9e0925f67b367e48fb4a1e5e0d0ce658ad5a97a6c973284",
+        "src/deployment_defaults.rs": "fee722aa059fadc477e976a7e054e8c8c52aa92a155dade55063ece57881beb0",
+        "src/error.rs": "27b274fd88c55bc7f6e42cf3e9bc0edb4a28d63d9bd4c109e6b628447d507571",
+        "src/files/macos/mod.rs": "bcb69f076aa8dd98d45574999dcd47d07677e3314c96b307f0556a0082724864",
+        "src/files/mod.rs": "4d2d89a820ba3f60afad8f347b986c18f367f0f26616a10eba5a8dc4bfab7776",
+        "src/files/native.rs": "272faf8775821af452f4d2d49bfdda25f7d2af8b2b8e354429bc3acd7fabfbe8",
+        "src/files/posix/mod.rs": "7ada2ca016c7c855d8102b7310c53b1ae0571c9c88c5e895a2489e50b94d1d7c",
+        "src/files/windows/mod.rs": "461c485c1d29cbf4f4727ec128ee283bf14c6f0b12345f8efc8c62ce677cb7e7",
+        "src/json_number.rs": "046f81aa930bd8a8c7c43182d277285010e7d782f08b510331ad5261bd38653c",
+        "src/lib.rs": "c4e1a8423959d02246345e934bbc32869326cb073879fc6d0a8ea34a7cdb36d7",
+        "src/main.rs": "64fd164eea7d53ee2b756072bc80421142cbdf6459c1158c645eb5da445596a7",
+        "src/network.rs": "9d6547b17e8665daaa71db3de7006e8f905fed1ea9bd296a1faef2e9125296ed",
+        "src/pairing.rs": "2596979c67d2d828465470d344c9b0dc18facad32babfcf7ac06a0194e73acfc",
+        "src/policy.rs": "fc47c644d586fd9d153e33becacf2fb82c88a04c3a77fbfde13080bbc32e81c6",
+        "src/process_identity.rs": "52c87c045ab169cbb24a9a6981aba8b3a0593135ad88a6dc9d17d987868cbc86",
+        "src/processes/macos/mod.rs": "a7e66f305a773e83e37e96b8babf0acca50853384a7f4456f568114e720b1933",
+        "src/processes/mod.rs": "b3bf7971c637ad2228e3e5787c82da9f097298933390f53b464af0f1e0883df7",
+        "src/processes/native.rs": "022a50781da0f834f98bad55f3c5fdaed14e47a6d88a65f476d33715006eb277",
+        "src/processes/posix/mod.rs": "ace95285efcbff80b0b961a1cc0e5acf6f0e18c1a140a93b46e59c28805145a1",
+        "src/processes/windows/mod.rs": "c38d4a4918dddf2bfe7712e413e5ac5aae470ca33fea1d5788c6e814fba7b391",
+        "src/processes/windows/pipe.rs": "2852bc3b2283bdd5ba7af91746a1713c7be994d9edcf584031acdcaa1e200b67",
+        "src/processes/windows/tests.rs": "0f3c587c582cd9d6ea7ada4c56ec199c7503837ff6d68135b8445283df573b34",
+        "src/profile_lock/mod.rs": "055b922ad7ff5d37c831a16069d21aace0389f8ce9e40534cd4f4d26d305cd06",
+        "src/profile_lock/posix/mod.rs": "f2e384908caa6b90231f4915f80c6d20d3d59564ea1105ae314ae3cea5000840",
+        "src/profile_lock/windows/mod.rs": "6372d4d3b57f1d4293153a8310e8b2a8a4a17b8e1f2a068291c46072d8ff1a14",
+        "src/random.rs": "94e5307074522362f3263f311e060b58d45088676dfdf730237819365f6c2778",
+        "src/receipts.rs": "93e2d67b89daf03db241b067fa5069146e147ed37f13c60edac380abcc8be368",
+        "src/rpc.rs": "02e15cfad7129f55f1a7e66272e06d52142466ed33b97d1b4893dddc0b785346",
+        "src/sandbox.rs": "808d74df70779f8f7f924ec36aa806f7fc9cb805a3f48adb83353392e7ab989a",
+        "src/searches.rs": "fc269388818fe3cde3002e19e58475035cb86e2cafa7cdb002ace6ffdfd755f8",
+        "src/self_update.rs": "8afffacd0043ae9690eecc72c60aea54ba6d7e903953c7e75ad21903785ff5a6",
+        "src/session.rs": "48bdbe61ce0e08388e721dac87b9c8ca459347f3294b721247277ef82b407a8f",
+        "src/startup/grant.rs": "772f91ffd8893a4415ca10a546940799f53ab8cbde28c16df4584fa38bbaa24d",
+        "src/startup/linux/mod.rs": "7d2934659c78a71aa62d04675a0ec2730bdef57f917f47078619cf27ed1e4437",
+        "src/startup/macos/mod.rs": "965ca53424170a563ebadf01b30eb896e0ef57e660d965f76467bcaddaca2195",
+        "src/startup/mod.rs": "10e028ca2827faef06f5270706cf8a6fec250a844cf94be8d96bf60614bb864c",
+        "src/startup/native.rs": "d9b12a36ebfbc40cab0730e8d805dd9346e4f1f1d2dec28160edec3d3e5efb73",
+        "src/startup/posix/grant.rs": "9b3bc4602bbd91d3286a69bf2697c1c1b487251c9df0a3f93f5411606c9f998e",
+        "src/startup/posix/mod.rs": "bbb083147ff3d4b6b835ffec26209a472bb46496c29bc754fad91d54272866ee",
+        "src/startup/windows/mod.rs": "0d7a4292a41b9f2b0465e774e9032a4e526c856bea63b8d499d7189477c5231d",
+        "src/startup/windows/tasks.rs": "5256134e4b0e2869cd855c6759c511e035b9b066158526f4cbf83f7cd792df00",
+        "src/storage/mod.rs": "30ba9952cb2a665ebb924f01cb851b71a812edd8c76279dff81fdcc9daf5cabe",
+        "src/storage/posix/mod.rs": "d7134723b298021b7be6ebdd4882e8bbb23a2203d8f36903f3e5253ae53bcbdc",
+        "src/storage/windows/audit.rs": "2283cf7d4a0189ddb9747fe570af40201e45a156f12f2a3130eb1407e69076dd",
+        "src/storage/windows/mod.rs": "9242140e10e10f745e60d5a467b851623c2c7398c715b32e1e0c891c3834fe5c",
+        "src/storage/windows/startup_grants.rs": "a9681f3d9a2b6629563e469b5b632352344592afbe7bc713ca8d1a110edb2d7d",
+        "src/system.rs": "8e3840b0f42f64c93c0a50d7e5a71bb77d3001ef7314c8ba0a1b263118e28d4f",
+        "src/transport.rs": "1af39ffb1e05dd8f61b31cc199bdb78548ab04954a4ca2b783117ddd7282827c",
+        "src/update.rs": "02ba3d187948e3656e556519f4a97fcaf5b0801806ac85dfe0e00b8f581b9c66",
+        "tests/browser_session.rs": "33d59db59fecb8bb474a112bbcec5130f97faae617f2ffdcce902fcbf6594336",
+        "tests/file_session.rs": "a9804e977d03a1b65f392d91905637949af0df97beaa58c589b05caa4944e1a5",
+        "tests/lifecycle_recovery.rs": "4f0133dcfddafa0aa33cce4e20140aaf317f86d27464044d4540ce1056758345",
+        "tests/native_bootstrap.rs": "f51e4de7f347b8464a7914e2393dd46718f8878aedbd0a69630e3e227fad3cef",
+        "tests/pairing_session.rs": "cc931ed893760a34e5db424ea4c6ad3b41aa4c015b80561388093a172dca16a4",
+        "tests/process_session.rs": "57e19cd07b2f73a76aa5d4706b6354ba6652b4d19e17e4d750d142ddd7d6bafd",
+        "tests/runtime_threads.rs": "f86b77c500c7d6abd410680b563a314f477ef78969e6c401aedda53a82214150",
+        "tests/sandbox_linux.rs": "c3e72fca83b03f2af23e3933bd766228c132554078a2da8ccd6a418b67a5c85d",
+        "tests/support/binding.rs": "42367b9413da7ced3a20ae66a029c11f6c42eb81b0a6d901927dd1d7ad60e0ff",
+        "tests/support/initial_binary.rs": "c8aa329ebd295b58f922ac7714d17b96c4c572d0dcaa92cfc2d48621b12e55f3",
+        "tests/support/windows.rs": "fb60acdf05b8e7e9655a45a313b813c5980d7ea28a37557b511e89803568447a",
+        "tests/system_info.rs": "5687878c31dffd7ce56afd723e2847955755e451db0801d2524d230636bed328",
+        "tests/windows_pairing.rs": "61921468c342ebdfd08e27448f9bbe7f1df7146ba1bee33536249ea795d537d9",
+        "xtask/Cargo.toml": "f6e2e48fa4e1fa11e787f29e8ed73d0a4a2d9e0268b991866e1b314175e46cea",
+        "xtask/src/archive.rs": "f4701f63e57f19976e8e3d59ffdb23b90fe3422a37b4a51e0960d783cfb24b7c",
+        "xtask/src/main.rs": "9e7ed667882f6900bd2adf230149c92c08f3ebeeb5bcc8df2639f23da9d6583e"
+      },
+      "source_files_verified": 102,
+      "snapshot_note": "Runtime source matches the final native build manifest; only documentation/evidence changes followed those tests."
+    },
+    "server": {
+      "commit": "e95e76de5f5750c3fa655bffd4f2fb50fc8f260e",
+      "production_source_base": "b6a6874",
+      "production_code_changed": false,
+      "test_files": {
+        "tests/core/test_browser_platforms.py": "025b34650617e4525e29afa6d6c37ae86202ab9a2cb6776bb09db1f44af958e5",
+        "tests/README.md": "b0e0d4c4883a3c600fa33f16fa536472158ece32cc0904df36f73586b59e359a"
+      },
+      "harness_note": "Linux/macOS final run 09 precedes retention of optional driver_diagnostics (two lines only). All scenario assertions are identical to the committed harness. Windows final run 10 includes that retention and the bounded idempotent stop-only transport recovery."
+    }
+  },
+  "implementation": {
+    "windows_recovery": "Before creating a browser, persist an intent and start an independent child holding query/terminate rights to the unnamed Job plus the parent process identity. Publish and acknowledge the child identity first. On Agent death terminate that Job, wait for ActiveProcesses == 0, persist matching completion, and exit. Recovery validates nonce, complete records, and process creation identities before permitting profile reuse.",
+    "retirement": "After native completion, atomically rename the run directory to retired-<session_id> before recursive removal; partial deletion retains an unambiguous cleanup state under the namespace lock.",
+    "macos_startup": "Schedule non-page Runtime.runIfWaitingForDebugger work in the existing bounded JoinSet so Fetch.requestPaused can progress while target initialization awaits responses.",
+    "recovery_scope": "No old browser session is adopted and no website input is automatically replayed."
+  },
+  "execution": {
+    "serial": true,
+    "remote_transfer_authorized": true,
+    "production_data": false,
+    "released_or_deployed": false,
+    "main_worktrees_changed_by_this_task": false,
+    "system_trust_or_global_privacy_policy_changed": false,
+    "macos_specific_app_permission": "The user explicitly allowed the test rdh in Local Network settings, then requested continuation.",
+    "human_web_client": "Local Linux Playwright/Headless Chrome; remote task browsers are native Linux Chrome, macOS Chrome and Win11 Edge.",
+    "test_count_meaning": "Native tests and Hub pytest parameters each contain several scenarios; repeated diagnostic rounds and six stage groups are not independent model-task samples."
+  },
+  "platforms": {
+    "linux": {
+      "os": "Kylin V11 SP1 x86_64",
+      "browsers": [
+        {
+          "version": "Headless Chrome 146.0.7680.153",
+          "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+          "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595",
+          "bytes": 184052960
+        },
+        {
+          "version": "Chromium 156.0.8078.79",
+          "path": "/snap/chromium/3580/usr/lib/chromium-browser/chrome",
+          "sha256": "2cdc4759ce0d4fa5cbc21e764cebfb389bae39df79a3de18169606c0036ad4a8",
+          "bytes": 276139168
+        }
+      ],
+      "commands": [
+        {
+          "name": "fmt-linux-recovery-final",
+          "command": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "environment": {},
+          "exit_code": 0,
+          "elapsed_seconds": 0.36
+        },
+        {
+          "name": "clippy-linux-recovery-final",
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "environment": {},
+          "exit_code": 0,
+          "elapsed_seconds": 2.27
+        },
+        {
+          "name": "unit-linux-recovery-final",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "--test-threads=1"
+          ],
+          "environment": {},
+          "exit_code": 0,
+          "elapsed_seconds": 54.0
+        },
+        {
+          "name": "browser-linux-headless146-recovery-final",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--test",
+            "browser_session",
+            "--",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "environment": {
+            "RDH_BROWSER_EXECUTABLE": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 12.72
+        },
+        {
+          "name": "browser-linux-chromium156-recovery-final",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--test",
+            "browser_session",
+            "--",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "environment": {
+            "RDH_BROWSER_EXECUTABLE": "/snap/chromium/3580/usr/lib/chromium-browser/chrome"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 7.15
+        },
+        {
+          "name": "build-linux-recovery-final",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--offline",
+            "--bin",
+            "rdh"
+          ],
+          "environment": {},
+          "exit_code": 0,
+          "elapsed_seconds": 2.81
+        }
+      ],
+      "ordinary_tests_passed": 152,
+      "native_browser_tests_per_browser": 6,
+      "agent_sha256": "c7bf4015021bbae2b5d234eaff4005e1163f6d61e1aa5e9728e0bf5583e988a0"
+    },
+    "macos": {
+      "os": "macOS 27.2",
+      "architecture": "ARM64",
+      "browser": "Google Chrome 158.0.8127.18",
+      "session": "Logged-in GUI user launch agent; Keychain available and Local Network explicitly allowed",
+      "commands": [
+        {
+          "name": "clippy-macos-recovery-final",
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 8.61
+        },
+        {
+          "name": "unit-macos-recovery-final",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 59.41
+        },
+        {
+          "name": "build-macos-recovery-final",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--offline",
+            "--all-features",
+            "--bin",
+            "rdh"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 7.96
+        },
+        {
+          "name": "artifacts-macos-recovery-final",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--all-features",
+            "--test",
+            "browser_session",
+            "--no-run",
+            "--message-format=json"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 0.14
+        }
+      ],
+      "ordinary_tests_passed": 150,
+      "native_browser_tests_passed": 6,
+      "native_browser_runs": [
+        {
+          "iteration": 1,
+          "exit_code": 0,
+          "elapsed_seconds": 15.37,
+          "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-recovery-final-1.stdout",
+          "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-recovery-final-1.stderr"
+        }
+      ],
+      "test_binary": {
+        "path": "/Users/shanghf/rdh-browser-validation-20261105/source/target/debug/deps/browser_session-7d579e169f7acb33",
+        "sha256": "d773b9b9fba1e18794e89f930ffe9e273af35eb3521dff5bc8e445148b2b0d3a"
+      },
+      "agent_sha256": "c02f7da8ba4511b5ce34a439cadea87d5efea66eb25ec3301b8c817ea5ac3566",
+      "cleanup": {
+        "source_files_verified": 102,
+        "mismatches": [],
+        "rdh_sha256": "c02f7da8ba4511b5ce34a439cadea87d5efea66eb25ec3301b8c817ea5ac3566",
+        "remaining_candidate_processes": [],
+        "remaining_hub_directories": [],
+        "remaining_test_services": []
+      }
+    },
+    "windows": {
+      "environment": {
+        "OS": "Microsoft Windows 11 Pro",
+        "Version": "10.0.26200",
+        "Architecture": "ARM 64-bit Processor",
+        "Browser": "156.0.4314.58",
+        "Source": "cross-compiled ARM64 MSVC, static CRT"
+      },
+      "build_environment": {
+        "RUSTFLAGS": "-C target-feature=+crt-static",
+        "XWIN_CROSS_COMPILER": "clang"
+      },
+      "build_commands": [
+        {
+          "name": "clippy-windows-final",
+          "command": [
+            "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/tools/bin/cargo-xwin",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--target",
+            "aarch64-pc-windows-msvc",
+            "--target-dir",
+            "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/target-win-static",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 1.86
+        },
+        {
+          "name": "agent-windows-final",
+          "command": [
+            "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/tools/bin/cargo-xwin",
+            "build",
+            "--locked",
+            "--offline",
+            "--target",
+            "aarch64-pc-windows-msvc",
+            "--target-dir",
+            "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/target-win-static",
+            "--bin",
+            "rdh",
+            "--all-features"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 2.96
+        },
+        {
+          "name": "build-windows-final",
+          "command": [
+            "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/tools/bin/cargo-xwin",
+            "test",
+            "--locked",
+            "--offline",
+            "--target",
+            "aarch64-pc-windows-msvc",
+            "--target-dir",
+            "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/target-win-static",
+            "--lib",
+            "--test",
+            "browser_session",
+            "--all-features",
+            "--no-run",
+            "--message-format=json"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 3.87
+        }
+      ],
+      "native_execution_script": ".build/browser-recovery/windows-native.ps1",
+      "ordinary_library_tests": {
+        "ordinary_identity_passed": 148,
+        "explicit_symlink_permission_test_passed": 1,
+        "unique_passed": 149,
+        "full_workspace_integration_executed": false
+      },
+      "native_browser_tests_passed": 6,
+      "native_browser_seconds": 92.56,
+      "binaries": {
+        "rdh_agent": {
+          "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/target-win-static/aarch64-pc-windows-msvc/debug/deps/rdh_agent-1f3b78bede012328.exe",
+          "name": "rdh_agent-1f3b78bede012328.exe",
+          "sha256": "6acb682f12a715cde610287c32b9025c0740d08ffbfa0ad23180c41589724f95",
+          "bytes": 12925440
+        },
+        "browser_session": {
+          "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/target-win-static/aarch64-pc-windows-msvc/debug/deps/browser_session-2f37150340a5c804.exe",
+          "name": "browser_session-2f37150340a5c804.exe",
+          "sha256": "852586ae3c485e85132d5633e199db588a55bd51c8633c6bb06cd84bddc233b1",
+          "bytes": 9602048
+        },
+        "rdh": {
+          "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/.build/browser-platform/target-win-static/aarch64-pc-windows-msvc/debug/rdh.exe",
+          "name": "rdh.exe",
+          "sha256": "f58e9cc6ab496b2427848061670c692ddd1c1f2a183c18d58b774c6ec832dacb",
+          "bytes": 12765184
+        }
+      },
+      "cleanup": {
+        "checked_at": "2026-11-05T15:19:34.8041843Z",
+        "remaining_candidate_processes": [],
+        "remaining_hub_directories": [],
+        "clean": true
+      }
+    }
+  },
+  "macos_startup_proof": {
+    "pre_fix_native_failure_round": 17,
+    "deterministic_test": "browser::runtime::suspended_non_page_target_cannot_block_page_request_progress",
+    "red": "1 failed before fix",
+    "green": "1 passed after fix",
+    "post_fix_diagnostic_rounds": 20,
+    "tests_per_round": 5,
+    "all_rounds_passed": true,
+    "final_six_test_candidate_verified_separately": true,
+    "repeat_source_note": "The 20-round cycle exercised the target-initialization fix before later retirement and crash-test additions. Only the final six-case native run and accepted Hub runs are attributed to the final 102-file manifest.",
+    "repeat_results": [
+      {
+        "iteration": 1,
+        "exit_code": 0,
+        "elapsed_seconds": 21.5,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-1.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-1.stderr"
+      },
+      {
+        "iteration": 2,
+        "exit_code": 0,
+        "elapsed_seconds": 14.44,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-2.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-2.stderr"
+      },
+      {
+        "iteration": 3,
+        "exit_code": 0,
+        "elapsed_seconds": 14.94,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-3.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-3.stderr"
+      },
+      {
+        "iteration": 4,
+        "exit_code": 0,
+        "elapsed_seconds": 12.25,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-4.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-4.stderr"
+      },
+      {
+        "iteration": 5,
+        "exit_code": 0,
+        "elapsed_seconds": 12.23,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-5.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-5.stderr"
+      },
+      {
+        "iteration": 6,
+        "exit_code": 0,
+        "elapsed_seconds": 12.19,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-6.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-6.stderr"
+      },
+      {
+        "iteration": 7,
+        "exit_code": 0,
+        "elapsed_seconds": 12.78,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-7.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-7.stderr"
+      },
+      {
+        "iteration": 8,
+        "exit_code": 0,
+        "elapsed_seconds": 12.24,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-8.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-8.stderr"
+      },
+      {
+        "iteration": 9,
+        "exit_code": 0,
+        "elapsed_seconds": 12.21,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-9.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-9.stderr"
+      },
+      {
+        "iteration": 10,
+        "exit_code": 0,
+        "elapsed_seconds": 12.24,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-10.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-10.stderr"
+      },
+      {
+        "iteration": 11,
+        "exit_code": 0,
+        "elapsed_seconds": 12.23,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-11.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-11.stderr"
+      },
+      {
+        "iteration": 12,
+        "exit_code": 0,
+        "elapsed_seconds": 12.82,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-12.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-12.stderr"
+      },
+      {
+        "iteration": 13,
+        "exit_code": 0,
+        "elapsed_seconds": 12.19,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-13.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-13.stderr"
+      },
+      {
+        "iteration": 14,
+        "exit_code": 0,
+        "elapsed_seconds": 12.24,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-14.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-14.stderr"
+      },
+      {
+        "iteration": 15,
+        "exit_code": 0,
+        "elapsed_seconds": 12.29,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-15.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-15.stderr"
+      },
+      {
+        "iteration": 16,
+        "exit_code": 0,
+        "elapsed_seconds": 12.24,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-16.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-16.stderr"
+      },
+      {
+        "iteration": 17,
+        "exit_code": 0,
+        "elapsed_seconds": 12.25,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-17.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-17.stderr"
+      },
+      {
+        "iteration": 18,
+        "exit_code": 0,
+        "elapsed_seconds": 12.22,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-18.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-18.stderr"
+      },
+      {
+        "iteration": 19,
+        "exit_code": 0,
+        "elapsed_seconds": 12.8,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-19.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-19.stderr"
+      },
+      {
+        "iteration": 20,
+        "exit_code": 0,
+        "elapsed_seconds": 12.18,
+        "stdout": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-20.stdout",
+        "stderr": "/Users/shanghf/rdh-browser-validation-20261105/browser-macos-cycle-fixed-20.stderr"
+      }
+    ]
+  },
+  "hub_web": {
+    "accepted_runs": {
+      "linux": {
+        "run": "platform-tests-09",
+        "result": "passed",
+        "pytest_cases": 1,
+        "elapsed_seconds": 32.921,
+        "scenario_groups": [
+          {
+            "name": "mcp_forms_image_receipts_profiles_and_agent_crash",
+            "elapsed_seconds": 3.663,
+            "passed": true
+          },
+          {
+            "name": "web_human_login_and_explicit_handback",
+            "elapsed_seconds": 3.57,
+            "passed": true
+          },
+          {
+            "name": "web_upload_and_single_use_ai_selection",
+            "elapsed_seconds": 3.436,
+            "passed": true
+          },
+          {
+            "name": "web_download_cancel_verify_delete",
+            "elapsed_seconds": 3.231,
+            "passed": true
+          },
+          {
+            "name": "mcp_pagination_and_cursor_invalidation",
+            "elapsed_seconds": 1.31,
+            "passed": true
+          },
+          {
+            "name": "human_authority_fencing_and_revocation",
+            "elapsed_seconds": 6.537,
+            "passed": true
+          }
+        ],
+        "candidate": {
+          "sha256": "c7bf4015021bbae2b5d234eaff4005e1163f6d61e1aa5e9728e0bf5583e988a0",
+          "root": "/tmp/rdh-browser-hub-test-tgmcadxs/tests/test_native_browser_platform_t0/agent"
+        },
+        "transport": {
+          "tls": true,
+          "gate_requests": 3,
+          "core_connections": 4,
+          "gate_tls_handshakes": 0,
+          "core_tls_handshakes": 7,
+          "platform": "linux",
+          "completed_stages": 6
+        },
+        "local_cleanup": {
+          "removed": true,
+          "production_data": false
+        },
+        "remote_cleanup": "local fixture teardown"
+      },
+      "macos": {
+        "run": "platform-tests-09",
+        "result": "passed",
+        "pytest_cases": 1,
+        "elapsed_seconds": 35.553,
+        "scenario_groups": [
+          {
+            "name": "mcp_forms_image_receipts_profiles_and_agent_crash",
+            "elapsed_seconds": 4.372,
+            "passed": true
+          },
+          {
+            "name": "web_human_login_and_explicit_handback",
+            "elapsed_seconds": 4.409,
+            "passed": true
+          },
+          {
+            "name": "web_upload_and_single_use_ai_selection",
+            "elapsed_seconds": 3.578,
+            "passed": true
+          },
+          {
+            "name": "web_download_cancel_verify_delete",
+            "elapsed_seconds": 3.147,
+            "passed": true
+          },
+          {
+            "name": "mcp_pagination_and_cursor_invalidation",
+            "elapsed_seconds": 1.178,
+            "passed": true
+          },
+          {
+            "name": "human_authority_fencing_and_revocation",
+            "elapsed_seconds": 6.13,
+            "passed": true
+          }
+        ],
+        "candidate": {
+          "sha256": "c02f7da8ba4511b5ce34a439cadea87d5efea66eb25ec3301b8c817ea5ac3566",
+          "root": "/Users/shanghf/rdh-browser-validation-20261105/hub-macos-238f4153fbc233fa"
+        },
+        "transport": {
+          "tls": true,
+          "gate_requests": 3,
+          "core_connections": 4,
+          "gate_tls_handshakes": 0,
+          "core_tls_handshakes": 7,
+          "platform": "macos",
+          "completed_stages": 6
+        },
+        "local_cleanup": {
+          "removed": true,
+          "production_data": false
+        },
+        "remote_cleanup": {
+          "removed": true
+        }
+      },
+      "windows": {
+        "run": "platform-tests-10",
+        "result": "passed",
+        "pytest_cases": 1,
+        "elapsed_seconds": 74.289,
+        "scenario_groups": [
+          {
+            "name": "mcp_forms_image_receipts_profiles_and_agent_crash",
+            "elapsed_seconds": 20.592,
+            "passed": true
+          },
+          {
+            "name": "web_human_login_and_explicit_handback",
+            "elapsed_seconds": 6.558,
+            "passed": true
+          },
+          {
+            "name": "web_upload_and_single_use_ai_selection",
+            "elapsed_seconds": 7.077,
+            "passed": true
+          },
+          {
+            "name": "web_download_cancel_verify_delete",
+            "elapsed_seconds": 6.915,
+            "passed": true
+          },
+          {
+            "name": "mcp_pagination_and_cursor_invalidation",
+            "elapsed_seconds": 6.446,
+            "passed": true
+          },
+          {
+            "name": "human_authority_fencing_and_revocation",
+            "elapsed_seconds": 7.802,
+            "passed": true
+          }
+        ],
+        "candidate": {
+          "sha256": "f58e9cc6ab496b2427848061670c692ddd1c1f2a183c18d58b774c6ec832dacb",
+          "root": "C:\\Users\\shanghf\\rdh-browser-validation-20261105\\h-9a35283df79d23de"
+        },
+        "transport": {
+          "tls": true,
+          "gate_requests": 4,
+          "core_connections": 4,
+          "gate_tls_handshakes": 0,
+          "core_tls_handshakes": 8,
+          "platform": "windows",
+          "completed_stages": 6
+        },
+        "local_cleanup": {
+          "removed": true,
+          "production_data": false
+        },
+        "remote_cleanup": {
+          "removed": true
+        }
+      }
+    },
+    "service_binaries": {
+      "RDH_TEST_RUST_CORE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-core",
+        "sha256": "a00b2b33f2e5952d6cd40fdb27b982691aeba9a6fb509e0fb8c5ae3dc90d053c"
+      },
+      "RDH_TEST_RUST_GATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-gate",
+        "sha256": "a39252e2bec61324fbdff2a310b08c3fa1709b38d0e8064f7a6f3df292d7b0ad"
+      },
+      "RDH_TEST_RUST_AUTH": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-auth",
+        "sha256": "e7c0bfcda0e2fa3266b768f61d3d8758efa6d8bc9664d04b5dc20b146aeee4d7"
+      },
+      "RDH_TEST_RUST_MIGRATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-migrate",
+        "sha256": "8f7561a4e1c5066f4d94cebf1b4ed281c13e1b5e586f39cfcaa4abbcd4ca37e8"
+      },
+      "RDH_TEST_RUST_RUNTIME_PROBE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/examples/authority_probe",
+        "sha256": "8961f294ee6b8cb1014ccbaaa7b8efc2e21f9e3d07fbad0c164da22745323ecb"
+      }
+    },
+    "default_without_explicit_lan_host": "3 skipped in 0.08s; no remote driver or fixtures allocated",
+    "deployment": "Temporary local PG/Auth/Business/Gate/Core with test-only TLS bridges for both Agent discovery and Core WebSocket; no installed Hub changed."
+  },
+  "observations_and_adjustments": [
+    {
+      "issue": "Windows Agent death previously removed the only Job handle without a surviving completion witness.",
+      "change": "Persisted intent and independent Job-completion child.",
+      "evidence": "Final native crash test covers normal publication and missing owner.json, profile reuse, and an unchanged single website submission count; real Hub crash/restart uses the actual rdh CLI."
+    },
+    {
+      "issue": "Native Windows recovery hit file sharing error 32 after native process completion; partial deletion could remove ownership metadata.",
+      "change": "Durable retired-directory transition before deletion.",
+      "evidence": "Interrupted-retirement regression and final native/Hub crash tests passed."
+    },
+    {
+      "issue": "macOS startup dependency cycle reproduced on diagnostic round 17.",
+      "change": "Non-page target resume no longer blocks the event pump.",
+      "evidence": "Deterministic red/green test, 20 post-fix rounds, and final six-case native run."
+    },
+    {
+      "issue": "macOS GUI Agent failed LAN discovery with no route while curl from SSH/GUI succeeded.",
+      "change": "System log identified Local Network denial. User granted access for this rdh; no global network policy or encryption workaround.",
+      "evidence": "platform-tests-02/03 fail before browser scenarios; 04 and 09 pass after authorization.",
+      "primary_reference": "https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy"
+    },
+    {
+      "issue": "Windows test driver held its Start-Process invocation until the redirected Agent exited, then log collection denied concurrent writer access.",
+      "change": "Detached launcher with identity acknowledgement, uncertain-start teardown, and FileShare.ReadWrite log reads.",
+      "evidence": "platform-tests-05 failure is retained with subsequent verified cleanup."
+    },
+    {
+      "issue": "Deep Windows fixture paths produced Edge file-name-too-long errors and a failed combined cookie/site-storage retention assertion; PowerShell recursive cleanup also failed on a long path.",
+      "change": "Shortened only the disposable configuration path and used an extended path for verified test cleanup. No Agent path-layout change or system long-path setting change.",
+      "evidence": "platform-tests-06/07 fail; 08/09 functional groups and 10 complete after shorter fixture path.",
+      "remaining_limit": "Arbitrary deep custom configuration paths remain unsupported for reliable browser-profile persistence; launch success does not detect every generated-file path limit."
+    },
+    {
+      "issue": "Parallels stop command returned PrlJob_GetRetCode: Invalid argument in final suite 09 after all six Windows functional groups passed.",
+      "change": "Verified recorded identity and cleaned up explicitly; driver now permits one idempotent retry only for this stop/crash transport error. Startup and browser operations are never retried.",
+      "evidence": "Run 09 remains recorded as 2 passed, 1 failed; run 10 Windows passes including automated cleanup."
+    }
+  ],
+  "limits": [
+    "Windows recovery still quarantines missing/corrupt completion evidence, including simultaneous termination of Agent and cleanup child or a system restart without a completed record; it does not infer completion from a disappeared PID/Job or a fixed delay.",
+    "POSIX ownership observes the original process group and does not constrain processes that deliberately escape it.",
+    "macOS retained cookies require the normal user Keychain environment; SSH-only launches are not accepted for cookie persistence. GUI LAN connectivity requires the appropriate Local Network grant.",
+    "Deep Windows custom configuration paths may break generated browser storage files even when browser_open succeeds; shorter fixture paths passing is not a general long-path guarantee.",
+    "Windows ordinary native coverage is the library plus browser integration, not the full workspace. Existing Windows task/service, ProgramData grant fixtures and isolated running-image helper are not run in this pass; macOS plutil-only fixture is skipped.",
+    "Native coverage is Linux x64, macOS ARM64 and Win11 ARM64 only. macOS Intel, Windows x64, Linux ARM64/musl and other browser packages require their own evidence.",
+    "Human UI automation was from Linux Chromium; this does not verify native Safari/Edge human UI clients, mobile interaction, weak networks or real AI-host rendering and conversation continuation.",
+    "Repeated startup diagnosis, these integration tests, and their wall times do not satisfy the model-task matrix, participant usability, long soak, resource hard-cap or performance gates.",
+    "Existing constrained download/upload formats and non-atomic observation boundaries remain unchanged. First enablement/browser installation still requires local configuration.",
+    "Raw evidence is retained locally in ignored .build paths. Stable public release evidence is not published; commits do not constitute deployment or production acceptance."
+  ],
+  "evidence": [
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/agent-windows-final.log",
+      "sha256": "4b363778abd8fc2323dec7b428e46a62562f222fbaead8ae6c67309131ffb39b",
+      "bytes": 180
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/artifacts-macos-recovery-final.log",
+      "sha256": "c6e5f95b8d02d588a2d4119edd757e3b66cb85144b06d9a65243d7189f8e3a48",
+      "bytes": 137977
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-linux-chromium156-recovery-final.log",
+      "sha256": "c17ed104001cbbe66064f9388159297bc25adcd7d9fb63f91d1556adc9213435",
+      "bytes": 703
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-linux-headless146-recovery-final.log",
+      "sha256": "cdfb79266d85b5c4e32a7b99643e07eca4b37f64954087f574bc74bc56ed6dc5",
+      "bytes": 704
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-1.stderr",
+      "sha256": "6b040d14f1b925051ac1dfbee4ad98b301134661e01754a07d9fa05245466e19",
+      "bytes": 604064
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-1.stdout",
+      "sha256": "559758afc6a10dcd7633595ec6559a16b01bcf82318f98b1234fbaf54f58fe94",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-10.stderr",
+      "sha256": "d9c25025921efbfd1e8f274baae34daaed99882fff13304ef1ce1aaa06a63c69",
+      "bytes": 588750
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-10.stdout",
+      "sha256": "1d1ef8207ccdcf9b34db8c0b59723ea8b9bdbc336e2156af154d6414226d3533",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-11.stderr",
+      "sha256": "303f5095c2e8c9a19f258a304db82c120d53a97d7c1bb49f1d1a1daa159bd7a1",
+      "bytes": 589197
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-11.stdout",
+      "sha256": "1d1ef8207ccdcf9b34db8c0b59723ea8b9bdbc336e2156af154d6414226d3533",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-12.stderr",
+      "sha256": "1a9bf143e2966db17ee44af46ed05bfdb747dc11a9c301b29ae1da410fe22b04",
+      "bytes": 609680
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-12.stdout",
+      "sha256": "34884a69ed089017d209544f963eece04313f20b54f4cf113e19d8c07834cc40",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-13.stderr",
+      "sha256": "a0a5bcb98a0baeb3e031c1a1e726d5485e8c2488c8771b294622b72f28821c7c",
+      "bytes": 586159
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-13.stdout",
+      "sha256": "191b5e0dccbf3d3e94fcacf9c8e064c0a0db7d34dc96b1f0b537ea94c990e791",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-14.stderr",
+      "sha256": "e01245a5f383267e919a722c035c0db80793d98aa1831c9a9af744ff0e0c0439",
+      "bytes": 595747
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-14.stdout",
+      "sha256": "97e0086e58af88379f444719d73af6b8e3275fe5ac1c7942fa7f1c66d26adec1",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-15.stderr",
+      "sha256": "3f06ba7331b1d65bb6a2a7c2bbb0509198c3721d807ac01c794acc3d7bf50a94",
+      "bytes": 610199
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-15.stdout",
+      "sha256": "9af82d07f3554912b3de315450c7aaefcaba4e3605ce9c75163a25eddba9fd4d",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-16.stderr",
+      "sha256": "706a8df7f831ba9e001c65b3e68e12e61dc77c751ecb77e0afb58fdd3a30d8d2",
+      "bytes": 596460
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-16.stdout",
+      "sha256": "ae0eb929420ba39eefd509fd505bd10957aedff2e846462242e50a79dbf34e1f",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-17.stderr",
+      "sha256": "448699cd3c8db25b462b2042393906115795ea192f6ae3c12d071af704fc116c",
+      "bytes": 614205
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-17.stdout",
+      "sha256": "a95ddad4e6568df9de08176b63def00cb1e0bd65ff2be4861ed1c1d40410f62f",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-18.stderr",
+      "sha256": "9921c883a9e9b5769ecf8d99b3cd5387d6f5262ca3c68089e6604d411e6813ac",
+      "bytes": 602843
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-18.stdout",
+      "sha256": "97e0086e58af88379f444719d73af6b8e3275fe5ac1c7942fa7f1c66d26adec1",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-19.stderr",
+      "sha256": "e6c428af1737ca9baa00891b0617de19e400c3613359b96ffccc78e901618258",
+      "bytes": 596099
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-19.stdout",
+      "sha256": "9af82d07f3554912b3de315450c7aaefcaba4e3605ce9c75163a25eddba9fd4d",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-2.stderr",
+      "sha256": "fc81294335e75fc0b1a1a7af3a700cd23e31651b2c5ab633b25624a0d3aa89c3",
+      "bytes": 595540
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-2.stdout",
+      "sha256": "13a91ac52419ca57d6d3051b0762f970e630b0645dc749a21c3fa6fe5b54de5c",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-20.stderr",
+      "sha256": "db52cdeaa5360061bcb82d855895bada3d06847afbc0098cc3b2ad5019946e86",
+      "bytes": 609836
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-20.stdout",
+      "sha256": "184b2cca13f3bc2f6649164018d99d1b994e122268ff8defd6da9e4f937ee2e9",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-3.stderr",
+      "sha256": "2c0fdd907dbf8291893b0e0ea1ada4497b671a2593bf35166cd939e13f97752c",
+      "bytes": 588797
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-3.stdout",
+      "sha256": "00ff516006b6be2224b938a57f42c9d0c92439384512911de8fde87b692f9ab5",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-4.stderr",
+      "sha256": "fa95ceb233a097f21a1f77cf5f585b2c50b2cd084333c9333e9eebfd46a0ab94",
+      "bytes": 595927
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-4.stdout",
+      "sha256": "b1ebd9d0a60a3386fcee49858b3b553de595b6366a9a85e02476e44e380b2c3f",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-5.stderr",
+      "sha256": "0386b7ebdc30ac40ffba74f236e0f0d856da496d1d1c05c531ef63531da98274",
+      "bytes": 608026
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-5.stdout",
+      "sha256": "97e0086e58af88379f444719d73af6b8e3275fe5ac1c7942fa7f1c66d26adec1",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-6.stderr",
+      "sha256": "35052ca88fdef1f1ea9c972984bd354691445ef0adacf19209bbfb14ba5adb55",
+      "bytes": 594785
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-6.stdout",
+      "sha256": "b91e40e433cfbb14e6be580ab9738d7842fd0a7671b393ef707e8ed9c199400f",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-7.stderr",
+      "sha256": "4fd000722f69259f50f35ad4ac848c548be9a1d4f9e00305658d8e1a76ce4a01",
+      "bytes": 604005
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-7.stdout",
+      "sha256": "84eb333285c0d155f9ebf4137c197bbe7487f7c3ab5e417fd9f9a042a1b5430e",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-8.stderr",
+      "sha256": "f76433ee9874556d191ab7e27dfa36cb4bae4c9d2ef942ffa13c7054a7197d8f",
+      "bytes": 594956
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-8.stdout",
+      "sha256": "03a96493ded3702cbcf352f416c9ea32026c0fc2fba4455e11c9f011a1ad86ba",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-9.stderr",
+      "sha256": "2bf05640e40e9b7940e926288c65bf582e44c0d6672bc266f5e44f6fe3c2c565",
+      "bytes": 590353
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-cycle-fixed-9.stdout",
+      "sha256": "a95ddad4e6568df9de08176b63def00cb1e0bd65ff2be4861ed1c1d40410f62f",
+      "bytes": 461
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-diagnosis-17.stderr",
+      "sha256": "afa39a81c2f9c0b9a1f9aac28f79253150ba0e8e0b2cda3b6ddfec52fe7dbed8",
+      "bytes": 577994
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-diagnosis-17.stdout",
+      "sha256": "03527a167ae3eb71d3f3331afa642518444485cd3585ea7c5e2283c4ffa15362",
+      "bytes": 555
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-recovery-final-1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-macos-recovery-final-1.stdout",
+      "sha256": "5b5edd8443665a9372e85915079618f281629ffab721d09ab64b528a951ecc16",
+      "bytes": 540
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-windows-recovery-01.stderr",
+      "sha256": "696976fedc759461ae0e8bcc5183e6d91ca3a14bdf58f00e5ce9103ec5fac24b",
+      "bytes": 500
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-windows-recovery-01.stdout",
+      "sha256": "940228f883ccfc50f95510f6f88dd3a2525055ca1e53204031909d7ea2b7f815",
+      "bytes": 641
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-windows-recovery-03.stderr",
+      "sha256": "0f324f079535261e50a642f38b5f1a3a512bcf2dddce508fc1f16ddbeafc8a45",
+      "bytes": 1592
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-windows-recovery-03.stdout",
+      "sha256": "662cb450b1c5635a27bc648206c8b64311e352e1cac652d413a810514e0bc577",
+      "bytes": 292
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-windows-recovery-final.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/browser-windows-recovery-final.stdout",
+      "sha256": "cb2e8bcd3eb67ded8cf738c9fe1b6ee1397758a5f189e22909a135db0c245ccf",
+      "bytes": 540
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/build-linux-recovery-final.log",
+      "sha256": "ed829e899db617ec785dbdb096d0bbda7dc85696d251c397b1b20fb1f25f4ece",
+      "bytes": 180
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/build-macos-recovery-final.log",
+      "sha256": "8b959a3bdc7b2a7c9fa38688c4557b63ed343a0039eb410bacf462ae507b786b",
+      "bytes": 566
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/build-windows-final.log",
+      "sha256": "e5e3184ce76ce0864b4ef8a9c601f061aadc802647236bfc2a58114fabfe80fb",
+      "bytes": 165470
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/build-windows-final.py",
+      "sha256": "ef41e7c63a341d70b423c64b384d52da4270bd1ca00f1de4eca62c811ed82744",
+      "bytes": 2034
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/build-windows-run-final.log",
+      "sha256": "b807c9ce043dbcad4ab2d74c5f4a62eedcb2b0008e722944d7e781ab92ee4750",
+      "bytes": 67
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/clippy-linux-recovery-final.log",
+      "sha256": "7ca6653b6b64d25b44f4873d6d2420b1e1288e04259bf940b573988455d62f99",
+      "bytes": 180
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/clippy-macos-recovery-final.log",
+      "sha256": "4a7427b137f1b101aad48fa7ac1190c3ce8dc4de0fa8a1b62fe16b017703ef31",
+      "bytes": 447
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/clippy-windows-final.log",
+      "sha256": "a98248f65887480651a2afcdf5f8491c2db0652a15e92cbd121eb1d3157d88df",
+      "bytes": 180
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/fmt-linux-recovery-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/linux-results.json",
+      "sha256": "1b0a26467e780a14dc78c887f59e36c21d31e43f76ee9c2c083ff850f599ee96",
+      "bytes": 2029
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/mac-event-cycle-green.log",
+      "sha256": "50e64e41ae3f2f5af1e406aca77bb53f24d795817af99b53d8e7ac380fb760a5",
+      "bytes": 467
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/mac-event-cycle-red.log",
+      "sha256": "9662faf8174b0e90fb49e7b4c2cf0af1c05a2afc53f02d2498c50f45381e99ef",
+      "bytes": 917
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-browser-binary.json",
+      "sha256": "baa7a1eecb23804cc9f5cc20d86afb23da55414699cca8e6724b9abedd8dc57f",
+      "bytes": 201
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-cleanup-recovery-final.json",
+      "sha256": "f9c36e37be487f892bb9a9a82e694a6e46401f391fedcb8aaeacac5980ddc36d",
+      "bytes": 246
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-cycle-fixed-results.json",
+      "sha256": "5e9e92832e93afa69648171eefbf1de788652b274dbee26a8947e181e639bed2",
+      "bytes": 5554
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-network-policy.log",
+      "sha256": "8666bc109c68907041fc61ef0a06534de448f124e456ad7331715a2b792ac6dc",
+      "bytes": 9695
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-recovery-native-results.json",
+      "sha256": "11ea81a1be93b6a10972c201e576802b744c095d829a8bba1a2d3f9124522bdb",
+      "bytes": 285
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-recovery-results.json",
+      "sha256": "34579029dedba4fd7f67f4a5e775df968b283fbd08d00ae6028825e921b03fe5",
+      "bytes": 1145
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/macos-restore-network.log",
+      "sha256": "8f1077137c7c6fb249dab3502e8a8bb661db0c0186197ead87c2273be334e01c",
+      "bytes": 422
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/run-linux.py",
+      "sha256": "5ac35bc3fdf1eb7bd616a291b05c5056381cf0d679ea43b98f4a59b2b4716310",
+      "bytes": 1510
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/run-macos-cycle-fixed.py",
+      "sha256": "7060a7855befb10e439cf565e7b836fb12082effd2020dcccec05c6978c717fb",
+      "bytes": 1693
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/run-macos-native-final.py",
+      "sha256": "1997f17ea848c50223b62b83fb692cd5b0f307397235889685d1a2cf4159d7f6",
+      "bytes": 1670
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/run-macos-recovery-final.py",
+      "sha256": "ff0de535609319653f31b3fb99eb59f62482528db68a1199f4ee5d473346aa3d",
+      "bytes": 1978
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/source-manifest.json",
+      "sha256": "94a98149e7871313d68da8266cd9de2de5560a0bd173109596d9bcc40dc88a84",
+      "bytes": 10088
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/unit-linux-recovery-final.log",
+      "sha256": "71ec7e826cc88a561889f219419e5baed82ae7c7f2467b4a44a3565253106a46",
+      "bytes": 17387
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/unit-macos-recovery-final.log",
+      "sha256": "d26391850283388661a1950f959e6992bdad42695b5011ea3e868deb8cad65ef",
+      "bytes": 17710
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/unit-windows-recovery-final.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/unit-windows-recovery-final.stdout",
+      "sha256": "7b2307e85b2fb89439cae72ff760810ee58113e271d1d7598552884088adca8f",
+      "bytes": 14418
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/unit-windows-symlink-recovery-final.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/unit-windows-symlink-recovery-final.stdout",
+      "sha256": "f23d0306696ef5c633579d35a76e0c1b37f050833df5539dd4c2c88690225a17",
+      "bytes": 213
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-binaries.json",
+      "sha256": "a4d55a40326e207a4d1ee3874927ea778bfbf490500842e79524d389f632d195",
+      "bytes": 1076
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-build-results.json",
+      "sha256": "355af003478bba14d9fd89761b7059c288f9f2a144b11285019b1fb01a685537",
+      "bytes": 1786
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-cleanup-check.ps1",
+      "sha256": "92483dbb4934dd5304259b747dc6262e59a6c45439fa3d0215f74c7691849cb3",
+      "bytes": 982
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-cleanup-recovery-final.json",
+      "sha256": "fac1cbeb43f3c1b0058535baf7bfdc30ef0164dd13e20f21ed35aabcf0a3aff3",
+      "bytes": 243
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-cleanup-recovery-final.log",
+      "sha256": "8f6eced1453d9c0dff0140bb284e05eaa43c1f0a3ec1b8362badbc10e39ac007",
+      "bytes": 231
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-environment.json",
+      "sha256": "1830f2a19001398228e36b98d10c99ff0e96692f523b9b1aefd071f779aa0d97",
+      "bytes": 262
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-inspect-01.log",
+      "sha256": "1a3fcc33fce7a8a9457d9ec0075bf3fa1f95fe88feb6ecf4f2a887b5de11ce42",
+      "bytes": 30592
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-01.log",
+      "sha256": "7bdf6af6e52aba57a408bc9f26a1cd21242f9617bb6c0fa25c1ffab9c07696b5",
+      "bytes": 210
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-02.log",
+      "sha256": "7bdf6af6e52aba57a408bc9f26a1cd21242f9617bb6c0fa25c1ffab9c07696b5",
+      "bytes": 210
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-03.log",
+      "sha256": "cb73c8e2784c462a46bec5152abf0c6877d591796a8ea7c2a1f56bec968f7618",
+      "bytes": 1321
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-04.log",
+      "sha256": "7537c40ed4305160dd8d71161bb6acab56db559f6f30bff8baafaa04f0a89ad9",
+      "bytes": 992
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-05.log",
+      "sha256": "50201bdc18a90ce0d1625f353b857ebf76d8110a827e45c0314f8722d6fcdfb7",
+      "bytes": 68
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-06.log",
+      "sha256": "faece6530a6a85a24272d900004fa54d806aedcc70538b75e97b98ec8d8d91dc",
+      "bytes": 931
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-07.log",
+      "sha256": "d46447ed4c1955afe649b7f375691e8e9ad2db205e8e135f382ebc5c25a10efa",
+      "bytes": 1347
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-08.log",
+      "sha256": "6ba6df71eb069369c47698b530836edd308bc06f0799396b2d323fe5a9e08e9d",
+      "bytes": 729
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native-run-final.log",
+      "sha256": "dd5c9bb2785ca3dacdcf0687a3df9ef422248761be2521a74ff55b08b2cf02e5",
+      "bytes": 729
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-native.ps1",
+      "sha256": "02c5bb6341b9dba0a740e62048eff51a1144522d5c842ce8d2c75f9b0704216b",
+      "bytes": 2530
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-symlink-final.ps1",
+      "sha256": "12efa6148a362664c61c51d4dd0878ac75732c3ebc36002b7995e2b5a4048812",
+      "bytes": 1115
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-symlink-recovery-final.json",
+      "sha256": "5fb500d428564b4bce2edd6d0c99e0c431522fb21ec55643cc7f964b90a0f774",
+      "bytes": 161
+    },
+    {
+      "repository": "agent",
+      "path": ".build/browser-recovery/windows-symlink-recovery-final.log",
+      "sha256": "4a368416c6873a40daef1023cc201db422723f62cb2f35db747ff9a53ec06365",
+      "bytes": 214
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-platforms/driver.py",
+      "sha256": "3e88b8d796975b7d6fba929fa8162896d87a44304e67a253d426d0c5b2c8b8d2",
+      "bytes": 524
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-platforms/remote-host.py",
+      "sha256": "c8ee3bc45aadf297ccdd684bd2b69fd84ae87399ba4e0773e61d9a9ea0551a50",
+      "bytes": 12053
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-platforms/windows-failed-start-cleanup.log",
+      "sha256": "0445351c78f1e4b84d9e99e6cf55a18ea44c9cc52dce1bce335a32175a42805f",
+      "bytes": 19
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-platforms/windows-path-cleanup.log",
+      "sha256": "0445351c78f1e4b84d9e99e6cf55a18ea44c9cc52dce1bce335a32175a42805f",
+      "bytes": 19
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-platforms/windows-transport-cleanup.log",
+      "sha256": "0445351c78f1e4b84d9e99e6cf55a18ea44c9cc52dce1bce335a32175a42805f",
+      "bytes": 19
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-platforms/windows-transport-stop.log",
+      "sha256": "718377cd529755427637e8797a0f748c8e054416ba832a5370b38bb5ee24ccac",
+      "bytes": 19
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-default-skip.log",
+      "sha256": "9dc3bcfbf7d3489e36717854d01f937cf2fdc337f5a98d241d8c37487a0c9f45",
+      "bytes": 99
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/agent-1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/agent-1.stdout",
+      "sha256": "549b81df8883874d00037243f699fa5e81b80bd5cc201462618b374611ba8ded",
+      "bytes": 740
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/agent-2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/agent-2.stdout",
+      "sha256": "7b1993b7a231649248aa1348da84c6355369e8bc04c1b90b78e13108940cf768",
+      "bytes": 1429
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-files-cancelled.png",
+      "sha256": "502afa9a93be601241f0f47ea146d67f47a4c688438958d735195f8d14c1c0da",
+      "bytes": 111808
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-files-delete-confirmation.png",
+      "sha256": "ef444b4936d8e435b8b9fe25023427b9e0204e2c8d3cb873e91cc85a174b3ca9",
+      "bytes": 130611
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-files-deleted.png",
+      "sha256": "7f90be36af1dbdfcbf4ec41286d7596bd70f410736e50c04a15883e0b160d6a4",
+      "bytes": 83754
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-files-ready.png",
+      "sha256": "0de309077b7ce4a124a417a697ddd352662569fc8b0779cb86588aef3f8730f5",
+      "bytes": 104393
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-sessions.png",
+      "sha256": "d80241aac88d80c1fdd5dce50cefad87d9a9dfe078e5326942b3f62611b506f4",
+      "bytes": 77568
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-upload-consent.png",
+      "sha256": "f3263b5c48bf456c0315383085c5b82914503f6bf5d5cd8860d72823aa76c98d",
+      "bytes": 199852
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-upload-ready.png",
+      "sha256": "cfcd10277904a8c40839d955abcd96773b6bebbe250670d18c5256c90f6f8e4e",
+      "bytes": 215013
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/browser-upload-released.png",
+      "sha256": "bbf92fc3c93d5e81144a48089255624d4f15f542a0b0dea257f78b241ffeffd8",
+      "bytes": 193241
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/candidate.json",
+      "sha256": "36ea4cd5921293c9e9fa874706e4a05022aa0a658e3e982a48cf86e6667c4a7f",
+      "bytes": 175
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/human-claimed.png",
+      "sha256": "e3bca32feaacd958ba831294f4b370dc85851ef931acd080171249adeffc5d19",
+      "bytes": 195953
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/human-login.png",
+      "sha256": "7d4b2e66477b52f7966501bcc107c75a4ef97ec7e61072d8280b0ff4fc7b649b",
+      "bytes": 193760
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/human-released.png",
+      "sha256": "7f8d781874b78b96f891c7d4d8786ed6d654a685368474a8f7ce5511599198c9",
+      "bytes": 174970
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/mcp-browser.jpg",
+      "sha256": "a641197ff06e77ac08f06e2cdd33700045b1365c46c6d47a7a11f72c496c34aa",
+      "bytes": 9665
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/stages.json",
+      "sha256": "fcf8314afe1dc8d2edadd6b26d069406c493e0fc8043ef2dd5e769ddec84cfa9",
+      "bytes": 680
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/artifacts/linux/transport.json",
+      "sha256": "d0e0252a498e1c0c92d9ec912faafbdb422c737f2133716824e8855814aa6633",
+      "bytes": 78
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/environment.json",
+      "sha256": "dad525a48e8d3841bb8967ec2d163771c758b6065f219bfb6be0cfc1b7d7a621",
+      "bytes": 1939
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/junit.xml",
+      "sha256": "51f1bb794645a1567f78facf92ddd35f0464449ff888b1349727ba26ae27c893",
+      "bytes": 380
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-01/pytest.log",
+      "sha256": "8960d8f295209b11532d00b6c5f211e529a5c3fd5030ff4926fda5e53d27043c",
+      "bytes": 884
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/artifacts/macos/agent-1.stderr",
+      "sha256": "e50fee24a079d39bee40a9d8be5e3f2a2a378790d588ac9bd28d22ace8849c3b",
+      "bytes": 241
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/artifacts/macos/agent-1.stdout",
+      "sha256": "ca660597f1d512fe755c36fc16c128ea8bb76a0daeedf9fc60026cf7a69478d7",
+      "bytes": 353
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/artifacts/macos/candidate.json",
+      "sha256": "70d4920e4f26a6d27f102a64c478fde090ba299f9703d47d03ee88d85eaea36a",
+      "bytes": 170
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/artifacts/macos/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/environment.json",
+      "sha256": "d37d54872877a40da62942d9a61db4391c09f470b6bfde44ebe6e9c1f8cc8f3b",
+      "bytes": 1939
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/junit.xml",
+      "sha256": "d44cc728c8a64a3f9bfc11c0a403f7d64628f682b7539a9a0d6784a1b4768b9d",
+      "bytes": 841
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-02/pytest.log",
+      "sha256": "cc9d200741202f8f3436a40cb240cdcf462787197639d444dffe4855d029054a",
+      "bytes": 1603
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/artifacts/macos/agent-1.stderr",
+      "sha256": "ea97d7afb13856f07dd4c0e9f551156b7f23c1ff7f51eac69975ae902dd0dd6d",
+      "bytes": 1651
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/artifacts/macos/agent-1.stdout",
+      "sha256": "aadaf61f57784fb7966841e0d271f32a0fa7a37b52c2617d68b28b8b65fbc585",
+      "bytes": 353
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/artifacts/macos/candidate.json",
+      "sha256": "809ef318c1567d7d981b8ce27fa095e421b24c746b526cafddcc61b7d11324bc",
+      "bytes": 170
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/artifacts/macos/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/artifacts/macos/transport.json",
+      "sha256": "8e0dc99ea5b82384d540a81a0bff7f58eb186fb3a6426560aaad8f891209bded",
+      "bytes": 153
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/environment.json",
+      "sha256": "ee27ae89b00530ab2ad6c4a6e8449e5b496bab62e2ef18bae4cf6fdab4d01cf2",
+      "bytes": 1939
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/junit.xml",
+      "sha256": "02790f37fd360e4935abc0bd602046e2419263f25a91f531af0f3489e210551d",
+      "bytes": 841
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-03/pytest.log",
+      "sha256": "873d24547f4d83ec3dcf49d3b37daebf896fedf0a5623ae661a7b7df12c848f0",
+      "bytes": 1603
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/agent-1.stderr",
+      "sha256": "5a510d0a4c647f2851f9da0ed9a0d25a20785bcfd1b23b9ebfd1f6f150a5b02c",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/agent-1.stdout",
+      "sha256": "541f3057cc3797db2ad891ecd9c4a779f7019efe624546c38e6797cb686e6d32",
+      "bytes": 375
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/agent-2.stderr",
+      "sha256": "d4cbb1861f580cbec9f887dbcbfeea47191e0ccd99dbe4024421c0acdf4c81b1",
+      "bytes": 618
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/agent-2.stdout",
+      "sha256": "57f84e6413751291fefce4982d65ff7330093756c783d969bd46973ee8e1feb4",
+      "bytes": 750
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-files-cancelled.png",
+      "sha256": "769e4c47d0219a9c233d0d39d250d350377d1edb0175ba17e012876146fe3dd3",
+      "bytes": 112271
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-files-delete-confirmation.png",
+      "sha256": "0526d3673050eec300484883aac8605c0ac156c55f105f3aa19153865e3e6e78",
+      "bytes": 130355
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-files-deleted.png",
+      "sha256": "c68d7477f81f0b3f2d30f61fef72fd73c82b3a89f9fd61b559185c0f1b91d37e",
+      "bytes": 83987
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-files-ready.png",
+      "sha256": "338fea8a2aa75c7666696fa02ed386dd0d0726007cb80061afc761d656f0b6c4",
+      "bytes": 104922
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-sessions.png",
+      "sha256": "6dd2595e52420619338b36d79328f2c68cb55bf518c6a18c1c9f81ef76c29af5",
+      "bytes": 77253
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-upload-consent.png",
+      "sha256": "8ad625521138563ab574a816a60f535cce75969f0fdb5b35599c5676ee5b0260",
+      "bytes": 200122
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-upload-ready.png",
+      "sha256": "fea61182795e264bc027ab3c1bea6cfe1665bf9ae1fbd6de9e07081feeecec63",
+      "bytes": 216040
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/browser-upload-released.png",
+      "sha256": "20e79f248f46280f044d3123e271b462a74aff07c7aab9a41b26bb6d67df4c79",
+      "bytes": 193421
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/candidate.json",
+      "sha256": "17e51d1e1b866be4270196c80393e96fbb55ebc6872cb4e74c7edc1bfeb90a58",
+      "bytes": 170
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/human-claimed.png",
+      "sha256": "1ef0fbd2de3d594cf8a5062128698094a9b020c0ea7b688ec7646966f0c3753f",
+      "bytes": 195713
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/human-login.png",
+      "sha256": "807ae8dd30d2a358eeb74ba3af40ddcf591f43f5ceb76e7236405a8beb4843ce",
+      "bytes": 193566
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/human-released.png",
+      "sha256": "4834145abaa812f43fe0d3d4d13208c6ec4493516a13535d800320732437de7b",
+      "bytes": 174979
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/mcp-browser.jpg",
+      "sha256": "bc96a74c94e688dc305a74f348d7f3fecb08935cc6e7495abfaa65355d48cbb7",
+      "bytes": 8995
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/stages.json",
+      "sha256": "7c786ee08a193347022812dff9f39ca66cb49c05299fa7afa5b9312f033648c6",
+      "bytes": 680
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/artifacts/macos/transport.json",
+      "sha256": "3e245372c925ae473b524076fd8a9518a0a2c3980e0680694dea27b90fac6d6c",
+      "bytes": 153
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/environment.json",
+      "sha256": "e6365395061e54d7b5a32be5cfdf851c28c1ef25d2d359e5cc201744f45ea630",
+      "bytes": 1939
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/junit.xml",
+      "sha256": "f958b56076fdc75e9045c5e0a35e1a440251864b570517d492269a79cdfc8ea9",
+      "bytes": 380
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-04/pytest.log",
+      "sha256": "6560bed1189eab778c20ce6c304ee9d2938d7e8382cf825000939d4271f86082",
+      "bytes": 884
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/artifacts/windows/agent-1.stderr",
+      "sha256": "6246f68d46e7eb341c532eee413ee6e7092554300880c8bf72beed8026eed0d2",
+      "bytes": 1023
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/artifacts/windows/agent-1.stdout",
+      "sha256": "29e745b966569e3ab3dc685119ca8b41dcb231c0295fab45d52bae77d76b4da4",
+      "bytes": 379
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/artifacts/windows/candidate.json",
+      "sha256": "1d09f5045baca06d6e26f568af83eb7e4fa0159c5c036166331ef2e0642f5540",
+      "bytes": 178
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/artifacts/windows/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/artifacts/windows/transport.json",
+      "sha256": "c352681804da9017a2660d1caeb98eaac15fe31e278435efa47cd0c0df4096cd",
+      "bytes": 155
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/environment.json",
+      "sha256": "faa669f607be115f27436d2852535592431757fa0b9df2a13f21902ca0b723e2",
+      "bytes": 1941
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/junit.xml",
+      "sha256": "80a94560c0711954ee7d010f3e3ab9b6b014525022ffc15ccbb3ae9cd714f93d",
+      "bytes": 6847
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-05/pytest.log",
+      "sha256": "2e1a4afac0927b427e1d78c649f487843a2445fd0734664fac28868233c62293",
+      "bytes": 5564
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/artifacts/windows/agent-1.stderr",
+      "sha256": "f0ad305cebe2cc48beed9af7970e47b9cde6fa8368aa45f494e61e0aabfeb8ba",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/artifacts/windows/agent-1.stdout",
+      "sha256": "ffd8c2bf68e1d718eb89489df66f58670ca039bf3f3d8dda61111b65c5e1aaa7",
+      "bytes": 379
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/artifacts/windows/candidate.json",
+      "sha256": "265688ca66b0b2743a7b49b57b981e15c64bf583c97861cf281159b19fd7a804",
+      "bytes": 178
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/artifacts/windows/mcp-browser.jpg",
+      "sha256": "e8291e88982a48f610713a062d6e64f97773e566a0e3b53c40b575d722bae500",
+      "bytes": 8986
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/artifacts/windows/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/artifacts/windows/transport.json",
+      "sha256": "0f07e1107b95ab4865128a8a6f9c5e7a5c724c8c0f0e1bc2d73e450367250254",
+      "bytes": 155
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/environment.json",
+      "sha256": "ddfaf432940158ec999caeea0dbb323cf3182df2dbe049f1d6fa1e21200f4cdd",
+      "bytes": 1941
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/junit.xml",
+      "sha256": "c23d53e4e8d58d42b190b8ba0bc1945f93dc973813ad0262272e48a800c2a6c3",
+      "bytes": 6840
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-06/pytest.log",
+      "sha256": "a4a10d6823d62e8d78a2146ac776ed93bea5ca6c9f2fae775e0be8fdddd20931",
+      "bytes": 5452
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/agent-1.stderr",
+      "sha256": "daa78868ef8479c3738d1f2bfd00079d7e9792e6c10fad528be14990c7317f30",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/agent-1.stdout",
+      "sha256": "314eef8258a466942fae71ab3ba68af6c76f1215da5fdce22a15fbaf0c92d7f0",
+      "bytes": 379
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/browser-1.json",
+      "sha256": "beb130333e9a274682fa84de71aa71be59ee1af91151496261cec038e8110764",
+      "bytes": 7738
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/candidate.json",
+      "sha256": "2dd815f4eaf6fb348970cac1b9a656fe17676263876114e1913a035eaab99d6e",
+      "bytes": 178
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/mcp-browser.jpg",
+      "sha256": "e8291e88982a48f610713a062d6e64f97773e566a0e3b53c40b575d722bae500",
+      "bytes": 8986
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/profile-reopened.json",
+      "sha256": "f1df4b5d3361efe8b5182f9105dbfab4a8df848c201d04a205c2b0a4ddba9d4e",
+      "bytes": 3105
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/artifacts/windows/transport.json",
+      "sha256": "0f07e1107b95ab4865128a8a6f9c5e7a5c724c8c0f0e1bc2d73e450367250254",
+      "bytes": 155
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/environment.json",
+      "sha256": "c62f115a93cd5894c5e3c7a398e93284cf807109043e1d48853ddfd76a51feb6",
+      "bytes": 1941
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/junit.xml",
+      "sha256": "1b1ac0132afb3aea3f42032e15d3412bba667de912607aa85f68963306f91d88",
+      "bytes": 17274
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-07/pytest.log",
+      "sha256": "3ca182db92fc2ed3733b7368814db1ad2d50cdae0096390eb181af605190be24",
+      "bytes": 8534
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/agent-1.stderr",
+      "sha256": "f0ad51df05aa7e0d2e67301557a69766a2b37986355c13481e07489474dc47ba",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/agent-1.stdout",
+      "sha256": "6618452dcbc246a98c6bffced42d59d6db2f76d549e28dc453652c4a42058152",
+      "bytes": 362
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/agent-2.stderr",
+      "sha256": "a12e6f12049477522b32b26f1b685024c163cdb554e379244665652f430f0b73",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/agent-2.stdout",
+      "sha256": "6618452dcbc246a98c6bffced42d59d6db2f76d549e28dc453652c4a42058152",
+      "bytes": 362
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-1.json",
+      "sha256": "9bc0fc366e404bb07741e39e913d8058b1e850f734277d0ab7b14b9cbf967824",
+      "bytes": 6743
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-2.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-files-cancelled.png",
+      "sha256": "4e660c54d8ef0e49abbe2db5b2362d61b2ae1c42453f139b77c06a354e39a80c",
+      "bytes": 111238
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-files-delete-confirmation.png",
+      "sha256": "4fa6790922ba03f76abcff98b8e029fcc47d6496efd09f05515f89399bb92643",
+      "bytes": 130253
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-files-deleted.png",
+      "sha256": "d2a26dffd42cae06b5f75a59c37c0e7d2e065e915a7e877c14202f9f67ae3008",
+      "bytes": 84258
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-files-ready.png",
+      "sha256": "4cd0859997ac68fae7c25671b38604fc046174304150a5c131059192debd6a36",
+      "bytes": 103864
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-sessions.png",
+      "sha256": "dc31563c168a1e96501a8a531b75c5d6128b6db9dc5b7f59b5c352720afef2e5",
+      "bytes": 77499
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-upload-consent.png",
+      "sha256": "2909b7a14347569ea9d983c3b2100b30f76c86563e5b79cddc9c3d44e67966b0",
+      "bytes": 205520
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-upload-ready.png",
+      "sha256": "7b844ba67e3aeab0830827ffd648df7902e8ff2eb9d0b607663bab5617e9ffc8",
+      "bytes": 219667
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/browser-upload-released.png",
+      "sha256": "4b3bdc657176bbb5907c68e27a92d169285142dc3d9ee1d3fc70b94dc5d94a1c",
+      "bytes": 192724
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/candidate.json",
+      "sha256": "680bfd88c35afa43d6f77716e5124bd66ac3a1f5b0102e7a46c4a346235c31b0",
+      "bytes": 168
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/human-claimed.png",
+      "sha256": "1dd4d087b40c9bad8b5aea8010ee22f56881a685f667cde038841cf050fbee1d",
+      "bytes": 198535
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/human-login.png",
+      "sha256": "bb2896532154f8fb31ad24e73515d4c0da4b5afc62e9aad99ff9d7a38c27ab18",
+      "bytes": 195821
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/human-released.png",
+      "sha256": "a60b5a3f4312a1ad8f8affc7535c1ccca84ff41cf3a73bf8e0c78a329eac3d54",
+      "bytes": 174467
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/mcp-browser.jpg",
+      "sha256": "e8291e88982a48f610713a062d6e64f97773e566a0e3b53c40b575d722bae500",
+      "bytes": 8986
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/profile-reopened.json",
+      "sha256": "c9d2215a15d812b6ac74c9f597ac15790a50610e2c5ab750503743186127347c",
+      "bytes": 3106
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/stages.json",
+      "sha256": "50b3ba915ac008a2296838a1967e0d624e070fda07f2d94b7eb7a43ce8cdf06e",
+      "bytes": 681
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/artifacts/windows/transport.json",
+      "sha256": "3289a224d9b70f9fda5c730245ccb8ca80e7dc6cc06c81274357d9f260e367a5",
+      "bytes": 155
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/environment.json",
+      "sha256": "1fd5e9da0acefd7ff68e00ec9c85e92d0bb28b06dd1a48f45c6bb89eb73ee0df",
+      "bytes": 1941
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/junit.xml",
+      "sha256": "b4e67d0c10d871bd5a6a1c07bbdff8609856bf00b9689d356143ad2c4cdc12ec",
+      "bytes": 382
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-08/pytest.log",
+      "sha256": "fc67b70298947428c6a55182709bb31ba12bbdb9460a1b5f0f39aacfd4ed51f7",
+      "bytes": 886
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/agent-1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/agent-1.stdout",
+      "sha256": "f8289727249069f642d5c00c51ab48f55590a867a4c7cab8e4fef32a0a518f9d",
+      "bytes": 740
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/agent-2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/agent-2.stdout",
+      "sha256": "b1a789bf84d9979551731427cccf22d92a6da045d1a5f160cc5eb690a80e1e4f",
+      "bytes": 1429
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-files-cancelled.png",
+      "sha256": "4713ca2ed06b5cd6bc65cc118a652e161eb7950dceb673debe2f76992e5d7e90",
+      "bytes": 112675
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-files-delete-confirmation.png",
+      "sha256": "8cd3f6e58bddafd4d10dc9ccbbc3812e84584fd5ea66546aa90606965a1a8a06",
+      "bytes": 130419
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-files-deleted.png",
+      "sha256": "130fc8c3617ab73d1cc907d44686bacec1dce85a4d08946ad8400229e4d5b335",
+      "bytes": 83827
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-files-ready.png",
+      "sha256": "935a1afe3c785fbd5f60128a13314e73adbaa5249a2548cc5cc098929f04225e",
+      "bytes": 105319
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-sessions.png",
+      "sha256": "90c853e3202f21b8484ef1998d75127b4319a4a2996b13741b7b0d1bcb43c3cf",
+      "bytes": 77445
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-upload-consent.png",
+      "sha256": "74bc6d9e436d937802d9292a532ad8d4072be81087466cdb183dba9ebcfdc37d",
+      "bytes": 200377
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-upload-ready.png",
+      "sha256": "4a05e36e09353b08c740c0f50cae755146f7e82e751e8ea90e50c0aa6f70236d",
+      "bytes": 215037
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/browser-upload-released.png",
+      "sha256": "53bd8610cf4b934b9357bab387b304187fc09f3f90db0067ee482f44ef7a95cb",
+      "bytes": 193203
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/candidate.json",
+      "sha256": "a46c892956dc534964e242fa636eaaa37491c9da9b0774f4b212f66cf5ec5d58",
+      "bytes": 175
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/human-claimed.png",
+      "sha256": "7177d85906edd95cb958bcfc99d3016f1ae8499e10f43736621946661939030e",
+      "bytes": 195470
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/human-login.png",
+      "sha256": "87ed381f1f26c4e79de5c3a31c3cc685fde37389f6d097cd94e75573d3376389",
+      "bytes": 194092
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/human-released.png",
+      "sha256": "8af6dc4f1f37a321c93a27ce855e71aa7830be5d37b708c9379b673e50a219ff",
+      "bytes": 175058
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/mcp-browser.jpg",
+      "sha256": "a641197ff06e77ac08f06e2cdd33700045b1365c46c6d47a7a11f72c496c34aa",
+      "bytes": 9665
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/profile-reopened.json",
+      "sha256": "8b290d1fcdc9b956c8749b90affcabc83de316bb46a3f102a2922a7e7c7988fe",
+      "bytes": 3107
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/stages.json",
+      "sha256": "af5daf9b80c518c5bf59a9a5148c5f3752ac9bbf12f4baf2c1ca25d46461474c",
+      "bytes": 678
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/linux/transport.json",
+      "sha256": "7040b9a38f5e159ba3f64aded99c50e7a2b00a2f20a009d143fdb1acc310695a",
+      "bytes": 153
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/agent-1.stderr",
+      "sha256": "3096bb2890f9fe40fcfc049e4c1d3c1df8adc5dee5e5b7f878a35c0dde82d19a",
+      "bytes": 360
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/agent-1.stdout",
+      "sha256": "93c7f13a6eef8a2ddb8208537a9624461bff2db0d9022538db6834986b834fcc",
+      "bytes": 375
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/agent-2.stderr",
+      "sha256": "3a3ac61ec9f137b60b6d5af208404bedd4ce84ca3b5bebc2c646de5ead21f998",
+      "bytes": 669
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/agent-2.stdout",
+      "sha256": "181c874758a04fd402eea8f9e894cb0cefbef7130530dd44aeeeea210af376b0",
+      "bytes": 750
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-files-cancelled.png",
+      "sha256": "01d3d665490e2b2a6cf8be4c6dc13953abb986bf8aae1e26f3255472d8721c31",
+      "bytes": 112222
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-files-delete-confirmation.png",
+      "sha256": "e6704b10808f5ff42514dbde67ec5805e440edfb891a8182c9713bc6ef3d6071",
+      "bytes": 130152
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-files-deleted.png",
+      "sha256": "05f453c200d689e5877f21bc6a5423e4552e35805577f3b129feeab8cee2929a",
+      "bytes": 84433
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-files-ready.png",
+      "sha256": "0b77d777a811c853a454116126b4d4d638b77026b76d028f6538693536f543ad",
+      "bytes": 104903
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-sessions.png",
+      "sha256": "6bfba4a5e34591a1725bbb8adc6b675e86fc512aebdb85bf026bd6a1fbe1ebc6",
+      "bytes": 77210
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-upload-consent.png",
+      "sha256": "4786d2c0cccbbaf1fc168d419a0fdc64e223143b8af19b1c657894d533af64c1",
+      "bytes": 199820
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-upload-ready.png",
+      "sha256": "e416e01875165eac603f1c1134f99727e5b72dc6cedc7d111823b789fa18368e",
+      "bytes": 215275
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/browser-upload-released.png",
+      "sha256": "e6c6331a977014738158f68a15ea101504875e37cad36c4430167742fd4746ec",
+      "bytes": 193598
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/candidate.json",
+      "sha256": "4acbcb1a6fd33838a689bac665f80082fcfbe4ee0ae94b37ccb103d09215bcc8",
+      "bytes": 170
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/human-claimed.png",
+      "sha256": "ca4dd1064896ff8c27f4d53125a8e52ca50b675936d4508295959e393c9114e5",
+      "bytes": 195481
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/human-login.png",
+      "sha256": "c40d6c5422eac9f0fb03256dbe1f26bd6cb572dc570a5e12ee52d89537b037ec",
+      "bytes": 193409
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/human-released.png",
+      "sha256": "657fb6c604898ae00cad33dd4cfcae380f4c8be8ed53bd6a15468305b1fefaed",
+      "bytes": 174551
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/mcp-browser.jpg",
+      "sha256": "2e8ab7f66c8982a52f56944bf19a5e5381aa5bbc080f67fc0916c7bdfa052e47",
+      "bytes": 8980
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/profile-reopened.json",
+      "sha256": "1dac5dcab0594de0645e8e58c59738836129bd0b4ec235aade61af5a7a84c484",
+      "bytes": 3106
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/stages.json",
+      "sha256": "42968e0474e1cdafd656312c66ce06b6f4f24b368920e0d6b34498f9ec908a41",
+      "bytes": 679
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/macos/transport.json",
+      "sha256": "3e245372c925ae473b524076fd8a9518a0a2c3980e0680694dea27b90fac6d6c",
+      "bytes": 153
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/agent-1.stderr",
+      "sha256": "f31320ede6e9022df52b8ce6c6888ca022e72d16153758852be57accab140e5d",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/agent-1.stdout",
+      "sha256": "8004bcdff887ea76f013283aa9a4aa20f71b4effb85c3ca325a668f866684a18",
+      "bytes": 362
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-1.json",
+      "sha256": "dbad720d6be374e4d38d14f39b004bb4165575715cfe6b7ee4aff7ef1c9b3d14",
+      "bytes": 6739
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-files-cancelled.png",
+      "sha256": "baf57e590ed9bd238e35808b13882a6dca4e70a87c19c11a927f3751fef368f0",
+      "bytes": 113149
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-files-delete-confirmation.png",
+      "sha256": "3a28bbacfc5ce946b6e27b7da96e05c2ac7f3e3f29c35b0ee156b82f27cf9768",
+      "bytes": 130693
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-files-deleted.png",
+      "sha256": "317f0abbb58daf13ffda54b47eff49024bc2d61211ee9150d515605c122de3a1",
+      "bytes": 83856
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-files-ready.png",
+      "sha256": "a630f8ec48ec36b25fb64a86d62169d7c51d28edc9ac61c8024036175bd66acc",
+      "bytes": 105715
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-sessions.png",
+      "sha256": "c14eb5428550445ccb297b2ec831805383445e6f7dfdad989d894f5a87930927",
+      "bytes": 77230
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-upload-consent.png",
+      "sha256": "2d480f5c4acf486ede3ccae966019c75d7819dc17be01b8c66f9bca949f9a9b9",
+      "bytes": 205373
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-upload-ready.png",
+      "sha256": "746216691f07f8fcde35b153dfc2819daa4f4e534eb36364b60ca54fa5e6841d",
+      "bytes": 220807
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/browser-upload-released.png",
+      "sha256": "a3f32726d8716832f0cbb2255ba62ca505b6b523f891490684e61fb7023089f2",
+      "bytes": 193672
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/candidate.json",
+      "sha256": "04165b414e09bd90784031a4559b2decc2748710bb7d2a9171cdc75e62a2ad57",
+      "bytes": 168
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/human-claimed.png",
+      "sha256": "5e6f6d23701c31a846197f534d10003479d3098de34ee2b47b5088d2ca22c36b",
+      "bytes": 198466
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/human-login.png",
+      "sha256": "1b1e20c6526851f43e4b0a5ffa93fdf1df0c0be1855ad430957743ddaa7b381b",
+      "bytes": 196404
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/human-released.png",
+      "sha256": "72807dd465d8c3640e89c106220f54bdc2448b74bad1e14e05dcaf425d4afd51",
+      "bytes": 174728
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/manual-final-browser_diagnostics.json",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "bytes": 2
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/manual-final-stderr.log",
+      "sha256": "08065bf71e9d0a65a81f2e07e1631af6dcff86042df260f0b2cac4e0cf33e965",
+      "bytes": 1170
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/manual-final-stdout.log",
+      "sha256": "8004bcdff887ea76f013283aa9a4aa20f71b4effb85c3ca325a668f866684a18",
+      "bytes": 362
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/mcp-browser.jpg",
+      "sha256": "e8291e88982a48f610713a062d6e64f97773e566a0e3b53c40b575d722bae500",
+      "bytes": 8986
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/profile-reopened.json",
+      "sha256": "e7148b3f1f460d69e547f1aa1245ea323e3fd3cb951a6f647d3f6993dc83d37c",
+      "bytes": 3106
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/stages.json",
+      "sha256": "27ee958195b58c32b3dbfd8cd1707e2f0775fd944f61ae7f8bb1ce41cdf8b05e",
+      "bytes": 680
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/artifacts/windows/transport.json",
+      "sha256": "3289a224d9b70f9fda5c730245ccb8ca80e7dc6cc06c81274357d9f260e367a5",
+      "bytes": 155
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/environment.json",
+      "sha256": "8e199bcd9c0078f4598d2cadcffa684e523b20c7505561f22a88e79e51171060",
+      "bytes": 1882
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/junit.xml",
+      "sha256": "a5d1ce77a276e94defcd37a326be6f8539789a5ecc23222884a9d1657f9ebd0a",
+      "bytes": 4275
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-09/pytest.log",
+      "sha256": "8340efe8342a7688601e12028eb1c8ba64fe2779607b36a58b62e368e6c29900",
+      "bytes": 3558
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/agent-1.stderr",
+      "sha256": "00e9bd5a6f63241739f755ac522dce2361b37cfe92b232ef94993d9f2497f163",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/agent-1.stdout",
+      "sha256": "ef2a865497d336a66b78ec40d7ebd0e75c633b22dbf9c9d64040fa3d5941ceb0",
+      "bytes": 362
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/agent-2.stderr",
+      "sha256": "f8222e0a51705eff13df8d132cb40ce0bab135e53bc1dc91e711a995d1b74790",
+      "bytes": 309
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/agent-2.stdout",
+      "sha256": "ef2a865497d336a66b78ec40d7ebd0e75c633b22dbf9c9d64040fa3d5941ceb0",
+      "bytes": 362
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-1.json",
+      "sha256": "554a28f6e8709dd5937f800ceba3f78c5b85621253e7718d9c96e1095ae676cf",
+      "bytes": 6736
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-2.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-files-cancelled.png",
+      "sha256": "b60d330541622a75facc4eaeebae9c731987c65ffb9ecb13025a914773da5858",
+      "bytes": 112556
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-files-delete-confirmation.png",
+      "sha256": "4410ee1083b1e55e17c9b4f335a7c7c35222fae22983bfd9f346515c37d1cc58",
+      "bytes": 130452
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-files-deleted.png",
+      "sha256": "b700f2eb7c5b08563657cf5f43ea4342b1e59674ec57031c929a78de0ab1d0af",
+      "bytes": 84261
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-files-ready.png",
+      "sha256": "125129cd62030787138a747184c6f7226858908fa8c35e0faf69e7f14b74f780",
+      "bytes": 105217
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-sessions.png",
+      "sha256": "312c8cd42f5595817777e438e558f63b0fdb822ff35602f4ba738a018de5e1af",
+      "bytes": 77231
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-upload-consent.png",
+      "sha256": "64d4195acdebcc1702b78d96229eabda0d4a2da44c296996786e7dfd28d69f38",
+      "bytes": 204253
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-upload-ready.png",
+      "sha256": "f201389013d42480d15b93138a4e932efbc51b282738a999564e044a4ec77e89",
+      "bytes": 220487
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/browser-upload-released.png",
+      "sha256": "0f087ee10f002744982fed13c0e9d0c25263754449995f5935ac361879c3523d",
+      "bytes": 193200
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/candidate.json",
+      "sha256": "8cd609cd2d129c8439a2fa786c3f28ad135d704ff662b6331aa51b217628582a",
+      "bytes": 168
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/human-claimed.png",
+      "sha256": "08bcb54df0e2459d5f7ec3a04abea81f253c5543dfbbfcbb79ba993d00a04e20",
+      "bytes": 198631
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/human-login.png",
+      "sha256": "52b020dd8d941e3f89f00467e115cc255e83e7fb96c92d8cf44a1d5e7f70fd09",
+      "bytes": 196189
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/human-released.png",
+      "sha256": "fefc1ff57b6ab61002820acf41436d2ae331c23b0d7aff6f3d1dbe290bb365aa",
+      "bytes": 174338
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/mcp-browser.jpg",
+      "sha256": "e8291e88982a48f610713a062d6e64f97773e566a0e3b53c40b575d722bae500",
+      "bytes": 8986
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/profile-reopened.json",
+      "sha256": "f5a6126e234289a90de19d744047b9a0feabb7c8a919546fd3d6e90f6e2e9e6c",
+      "bytes": 3106
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/remote-cleanup.json",
+      "sha256": "a9363561546cb4918207041961ff6d07a1188bc416a8dfa7e158364f8cfab952",
+      "bytes": 18
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/stages.json",
+      "sha256": "2db3064c8e77b4f75ad44b7bb494cc1fb2ae12849f94ca93062afa575265c99f",
+      "bytes": 681
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/artifacts/windows/transport.json",
+      "sha256": "3289a224d9b70f9fda5c730245ccb8ca80e7dc6cc06c81274357d9f260e367a5",
+      "bytes": 155
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/cleanup.json",
+      "sha256": "bf02dcc8dd55ebef7f5b77d8559eef0ae0ea44fba2a0a14d9182eae628fa2db0",
+      "bytes": 44
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/environment.json",
+      "sha256": "b625bfb11c05b33e54ba24dd1055045cdbefff11d59afefdfa989c3c85c0c21c",
+      "bytes": 1941
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/junit.xml",
+      "sha256": "97d2ca3c0ca3724e02764a5ed50ed971bfa4e7828d743a38b2a26c36100aad3c",
+      "bytes": 382
+    },
+    {
+      "repository": "server",
+      "path": ".build/browser-validation/platform-tests-10/pytest.log",
+      "sha256": "7a63ef409f4f100741c9149f1ec4e6ec13df82b51cd65e5533c510060040e7f1",
+      "bytes": 886
+    }
+  ]
+}

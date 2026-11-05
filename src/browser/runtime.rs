@@ -913,6 +913,43 @@ struct DownloadContext {
     session: String,
     control: Arc<Control>,
 }
+
+#[tokio::test]
+async fn suspended_non_page_target_cannot_block_page_request_progress() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (client, browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let cdp = Cdp::new(read, write);
+    let task = guard(cdp.clone(), Arc::new(Mutex::new(HashMap::new())), None);
+    let mut browser = BufReader::new(browser);
+    let scenario = async {
+        browser.get_mut().write_all(br#"{"method":"Target.attachedToTarget","params":{"sessionId":"worker","targetInfo":{"targetId":"worker-target","type":"service_worker"}}}"#).await.unwrap();
+        browser.get_mut().write_all(&[0]).await.unwrap();
+        let mut frame = Vec::new();
+        browser.read_until(0, &mut frame).await.unwrap();
+        let resume: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+        // Renderer startup cannot finish until a document request is released.
+        // A browser may deliver this dependency before acknowledging resume.
+        browser.get_mut().write_all(br#"{"sessionId":"page","method":"Fetch.requestPaused","params":{"requestId":"navigation","request":{"url":"http://127.0.0.1/fixture"}}}"#).await.unwrap();
+        browser.get_mut().write_all(&[0]).await.unwrap();
+        frame.clear();
+        browser.read_until(0, &mut frame).await.unwrap();
+        let continued: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        assert_eq!(continued["method"], "Fetch.continueRequest");
+        assert_eq!(continued["params"]["requestId"], "navigation");
+        for request in [continued, resume] {
+            let mut reply = serde_json::to_vec(&json!({"id":request["id"],"result":{}})).unwrap();
+            reply.push(0);
+            browser.get_mut().write_all(&reply).await.unwrap();
+        }
+    };
+    let result = tokio::time::timeout(Duration::from_secs(1), scenario).await;
+    cdp.stop();
+    task.await.unwrap();
+    result.expect("target resume must not block the request that lets startup finish");
+}
+
 fn guard(
     cdp: Cdp,
     targets: Arc<Mutex<HashMap<String, Target>>>,
@@ -1021,13 +1058,27 @@ async fn handle_event(
             let id = info["targetId"].as_str().unwrap_or("");
             let kind = info["type"].as_str().unwrap_or("");
             if !matches!(kind, "page" | "iframe") {
-                cdp.call(
-                    Some(session),
-                    "Runtime.runIfWaitingForDebugger",
-                    json!({}),
-                    deadline,
-                )
-                .await?;
+                if initializers.len() >= 40 {
+                    return Err(Failure::new("browser_busy"));
+                }
+                let (cdp, session) = (cdp.clone(), session.to_owned());
+                initializers.spawn(async move {
+                    // Resuming a worker can itself wait for a page request.
+                    // Keep Fetch processing available to resolve that dependency,
+                    // just as for page/iframe initialization below.
+                    if cdp
+                        .call(
+                            Some(&session),
+                            "Runtime.runIfWaitingForDebugger",
+                            json!({}),
+                            Instant::now() + Duration::from_secs(125),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        cdp.stop();
+                    }
+                });
                 return Ok(());
             }
             if (kind == "page"

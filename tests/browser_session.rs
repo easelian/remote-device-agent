@@ -29,6 +29,157 @@ const PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>RDH browser fi
 <label>Secret <input type="password" value="MUST_NOT_DISCLOSE"></label><a href="/next">Next page</a>
 <script>form.onsubmit=async e=>{e.preventDefault();const r=await fetch('/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:document.querySelector('#name').value})});document.querySelector('#result').textContent='Saved '+(await r.json()).name;};</script>"#;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn abrupt_runtime_exit_reclaims_owned_browser_without_replaying_input() {
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    if let Some(root) = std::env::var_os("RDH_BROWSER_CRASH_CHILD_ROOT") {
+        let root = PathBuf::from(root);
+        let url = std::env::var("RDH_BROWSER_CRASH_CHILD_URL").unwrap();
+        let mut peer = profile_peer(&root, &executable, false);
+        let opened = peer
+            .call(
+                "browser_open",
+                json!({"url":url,"profile_name":"Crash fixture"}),
+            )
+            .await;
+        assert!(opened.get("error").is_none(), "{opened}");
+        let id = opened["result"]["session_id"].as_str().unwrap();
+        let observed = peer.observe_named(id, 1, "Record once").await;
+        let acted = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Record once")}})).await;
+        assert!(acted.get("error").is_none(), "{acted}");
+        fs::write(
+            root.join("opened.json"),
+            serde_json::to_vec(&opened["result"]).unwrap(),
+        )
+        .unwrap();
+        std::future::pending::<()>().await;
+        unreachable!();
+    }
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-crash-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let received = Arc::new(AtomicUsize::new(0));
+    let saved = received.clone();
+    let app = Router::new()
+        .route("/", get(|| async { Html("<!doctype html><button onclick=\"fetch('/record',{method:'POST'})\">Record once</button>") }))
+        .route("/record", post(move || { let saved = saved.clone(); async move { saved.fetch_add(1, Ordering::AcqRel); "recorded" } }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    for missing_owner in if cfg!(windows) {
+        vec![false, true]
+    } else {
+        vec![false]
+    } {
+        let root = temp.0.join(if missing_owner {
+            "before-owner-publication"
+        } else {
+            "active-session"
+        });
+        rdh_agent::storage::create_private_dir(&root).unwrap();
+        let log = fs::File::create(root.join("child.log")).unwrap();
+        let expected = received.load(Ordering::Acquire) + 1;
+        let mut child = Child(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "abrupt_runtime_exit_reclaims_owned_browser_without_replaying_input",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("RDH_BROWSER_CRASH_CHILD_ROOT", &root)
+                .env("RDH_BROWSER_CRASH_CHILD_URL", &url)
+                .stdout(Stdio::from(log.try_clone().unwrap()))
+                .stderr(Stdio::from(log))
+                .spawn()
+                .unwrap(),
+        );
+        let until = std::time::Instant::now() + Duration::from_secs(30);
+        let opened = loop {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "{}",
+                fs::read_to_string(root.join("child.log")).unwrap()
+            );
+            if let Ok(bytes) = fs::read(root.join("opened.json"))
+                && let Ok(opened) = serde_json::from_slice::<Value>(&bytes)
+                && received.load(Ordering::Acquire) == expected
+            {
+                break opened;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "{}",
+                fs::read_to_string(root.join("child.log")).unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        let id = opened["session_id"].as_str().unwrap();
+        let run = fs::read_dir(root.join(".rdh-browser"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().join(id))
+            .find(|p| p.is_dir())
+            .unwrap();
+        if missing_owner {
+            // Simulate death after creation but before common owner publication.
+            // Only the independent empty-Job witness can retire this directory.
+            fs::remove_file(run.join("owner.json")).unwrap();
+        }
+        child.0.kill().unwrap();
+        assert!(!child.0.wait().unwrap().success());
+        let mut peer = profile_peer(&root, &executable, false);
+        let mut reopened = Value::Null;
+        for _ in 0..30 {
+            reopened = peer
+                .call(
+                    "browser_open",
+                    json!({"url":url,"profile_name":"Crash fixture"}),
+                )
+                .await;
+            if reopened.get("error").is_none() {
+                break;
+            }
+            assert!(
+                matches!(
+                    reopened["error_code"].as_str(),
+                    Some("browser_cleanup_pending" | "browser_profile_busy")
+                ),
+                "{reopened}"
+            );
+            assert_eq!(reopened["execution_state"], "not_sent", "{reopened}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(reopened.get("error").is_none(), "{reopened}");
+        assert_eq!(reopened["result"]["profile_id"], opened["profile_id"]);
+        assert!(!run.exists(), "old browser run directory was not retired");
+        let id = reopened["result"]["session_id"].as_str().unwrap();
+        peer.observe_named(id, 1, "Record once").await;
+        assert_eq!(
+            received.load(Ordering::Acquire),
+            expected,
+            "restart replayed website input"
+        );
+        peer.call("browser_control", json!({"session_id":id,"action":"close"}))
+            .await;
+        assert!(peer.runtime.shutdown().await);
+        drop(peer);
+    }
+    server.abort();
+}
+
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {

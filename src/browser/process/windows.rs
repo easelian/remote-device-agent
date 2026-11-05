@@ -18,7 +18,9 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use windows_sys::Win32::{
-    Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Foundation::{
+        FILETIME, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    },
     System::{
         JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -28,12 +30,14 @@ use windows_sys::Win32::{
         },
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-            EXTENDED_STARTUPINFO_PRESENT, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            EXTENDED_STARTUPINFO_PRESENT, GetProcessTimes, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread,
             STARTF_USESTDHANDLES, STARTUPINFOEXW, WaitForSingleObject,
         },
     },
 };
+
+pub(super) mod supervisor;
 
 pub struct AsyncPipe {
     pipe: windows_pipe::Pipe,
@@ -122,14 +126,118 @@ pub struct Child {
     thread: Option<OwnedHandle>,
     pid: u32,
     identity: String,
+    supervisor: supervisor::Supervisor,
 }
-fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
+pub(super) fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut text: Vec<_> = value.encode_wide().collect();
     if text.contains(&0) {
         return Err(io::Error::other("NUL in native browser argument"));
     }
     text.push(0);
     Ok(text)
+}
+
+pub(super) fn creation_identity(process: HANDLE) -> io::Result<String> {
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(format!(
+        "{:08x}{:08x}",
+        created.dwHighDateTime, created.dwLowDateTime
+    ))
+}
+
+pub(super) struct NativeProcess {
+    process: OwnedHandle,
+    thread: OwnedHandle,
+    pid: u32,
+}
+
+/// The only native process creator used by the browser and its completion witness.
+pub(super) fn create_process(
+    executable: &Path,
+    args: &[OsString],
+    profile: &Path,
+    inherited: &[HANDLE],
+    job: Option<HANDLE>,
+    suspended: bool,
+) -> io::Result<NativeProcess> {
+    let mut command = vec![executable.as_os_str().to_owned()];
+    command.extend_from_slice(args);
+    let text = command
+        .iter()
+        .map(|arg| {
+            arg.to_str()
+                .map(crate::processes::windows_argument)
+                .ok_or_else(|| io::Error::other("Invalid Unicode browser argument"))
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .join(" ");
+    let mut line = wide(OsStr::new(&text))?;
+    let executable = wide(executable.as_os_str())?;
+    let cwd = wide(profile.as_os_str())?;
+    let env = environment(profile)?;
+    let mut attributes = WindowsProcessAttributes::new()?;
+    attributes.handles(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited)?;
+    let jobs = job.map(|job| [job]);
+    if let Some(jobs) = &jobs {
+        attributes.handles(PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs)?;
+    }
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = inherited[0];
+    startup.StartupInfo.hStdOutput = inherited[0];
+    startup.StartupInfo.hStdError = inherited[1];
+    attributes.apply(&mut startup);
+    let mut info = PROCESS_INFORMATION::default();
+    let flags = CREATE_UNICODE_ENVIRONMENT
+        | CREATE_NO_WINDOW
+        | EXTENDED_STARTUPINFO_PRESENT
+        | if suspended { CREATE_SUSPENDED } else { 0 };
+    if unsafe {
+        CreateProcessW(
+            executable.as_ptr(),
+            line.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            flags,
+            env.as_ptr().cast(),
+            cwd.as_ptr(),
+            &startup.StartupInfo,
+            &mut info,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(NativeProcess {
+        process: unsafe { OwnedHandle::from_raw_handle(info.hProcess) },
+        thread: unsafe { OwnedHandle::from_raw_handle(info.hThread) },
+        pid: info.dwProcessId,
+    })
+}
+
+pub(super) fn active_processes(job: HANDLE) -> io::Result<u32> {
+    let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    if unsafe {
+        QueryInformationJobObject(
+            job,
+            JobObjectBasicAccountingInformation,
+            (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+            size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.ActiveProcesses)
 }
 fn environment(profile: &Path) -> io::Result<Vec<u16>> {
     // Preserve only OS/locale prerequisites. Browser credentials, proxy settings,
@@ -184,6 +292,7 @@ impl Child {
         profile: &Path,
         args: &[OsString],
     ) -> io::Result<(Self, AsyncPipe, AsyncPipe)> {
+        let intent = supervisor::Supervisor::prepare(profile)?;
         let (input, child_input) = windows_pipe::pair(true)?;
         let (output, child_output) = windows_pipe::pair(false)?;
         let nul = std::fs::OpenOptions::new()
@@ -209,23 +318,8 @@ impl Child {
             u32::try_from(child_input.as_raw_handle() as usize).map_err(io::Error::other)?;
         let output_number =
             u32::try_from(child_output.as_raw_handle() as usize).map_err(io::Error::other)?;
-        let mut command = Vec::with_capacity(args.len() + 2);
-        command.push(executable.as_os_str().to_owned());
-        command.extend_from_slice(args);
+        let mut command = args.to_vec();
         command.push(format!("--remote-debugging-io-pipes={input_number},{output_number}").into());
-        let text = command
-            .iter()
-            .map(|arg| {
-                arg.to_str()
-                    .map(crate::processes::windows_argument)
-                    .ok_or_else(|| io::Error::other("Invalid Unicode browser argument"))
-            })
-            .collect::<io::Result<Vec<_>>>()?
-            .join(" ");
-        let mut line = wide(OsStr::new(&text))?;
-        let executable = wide(executable.as_os_str())?;
-        let cwd = wide(profile.as_os_str())?;
-        let env = environment(profile)?;
         let raw = unsafe { CreateJobObjectW(null(), null()) };
         if raw.is_null() {
             return Err(io::Error::last_os_error());
@@ -244,57 +338,34 @@ impl Child {
         {
             return Err(io::Error::last_os_error());
         }
-        let jobs = [raw];
-        let mut attributes = WindowsProcessAttributes::new()?;
-        attributes.handles(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
-        attributes.handles(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
-        let mut startup = STARTUPINFOEXW::default();
-        startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup.StartupInfo.hStdInput = inherited[0];
-        startup.StartupInfo.hStdOutput = inherited[0];
-        startup.StartupInfo.hStdError = inherited[1];
-        attributes.apply(&mut startup);
-        let mut info = PROCESS_INFORMATION::default();
-        // The Job is installed by the kernel during creation, before any Chrome
-        // code runs. No inheritable Job handle or unrestricted handle set exists.
-        if unsafe {
-            CreateProcessW(
-                executable.as_ptr(),
-                line.as_mut_ptr(),
-                null(),
-                null(),
-                1,
-                CREATE_SUSPENDED
-                    | CREATE_UNICODE_ENVIRONMENT
-                    | CREATE_NO_WINDOW
-                    | EXTENDED_STARTUPINFO_PRESENT,
-                env.as_ptr().cast(),
-                cwd.as_ptr(),
-                &startup.StartupInfo,
-                &mut info,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        // The witness is running and has durably recorded ownership before any
+        // browser can exist. It owns no CDP handle and cannot emit browser input.
+        let supervisor =
+            supervisor::Supervisor::spawn(&job, profile, inherited[0], inherited[1], intent)?;
+        let native =
+            match create_process(executable, &command, profile, &inherited, Some(raw), true) {
+                Ok(native) => native,
+                Err(error) => {
+                    supervisor.finish_empty();
+                    return Err(error);
+                }
+            };
         let mut child = Self {
             job,
-            process: unsafe { OwnedHandle::from_raw_handle(info.hProcess) },
-            thread: Some(unsafe { OwnedHandle::from_raw_handle(info.hThread) }),
-            pid: info.dwProcessId,
+            process: native.process,
+            thread: Some(native.thread),
+            pid: native.pid,
             identity: String::new(),
+            supervisor,
         };
-        child.identity = crate::process_identity::started(child.pid)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        child.identity = creation_identity(child.process.as_raw_handle()).unwrap_or_default();
         Ok((child, AsyncPipe::new(output), AsyncPipe::new(input)))
     }
     pub fn owner(&self) -> Value {
-        json!({"version":1,"pid":self.pid,"start":self.identity,"container":"windows_job","retired":false})
+        json!({"version":2,"pid":self.pid,"start":self.identity,"container":"windows_job","retired":false,"supervisor_nonce":self.supervisor.nonce()})
     }
     pub fn start(&mut self) -> io::Result<()> {
+        self.supervisor.arm()?;
         if let Some(thread) = self.thread.take()
             && unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX
         {
@@ -306,23 +377,13 @@ impl Child {
         unsafe {
             TerminateJobObject(self.job.as_raw_handle(), 1);
         }
+        let _ = self.supervisor.arm();
     }
     pub fn stopped(&mut self) -> io::Result<bool> {
-        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-        if unsafe {
-            QueryInformationJobObject(
-                self.job.as_raw_handle(),
-                JobObjectBasicAccountingInformation,
-                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                null_mut(),
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
         match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } {
-            WAIT_OBJECT_0 => Ok(info.ActiveProcesses == 0),
+            WAIT_OBJECT_0 => Ok(
+                active_processes(self.job.as_raw_handle())? == 0 && self.supervisor.stopped()?
+            ),
             WAIT_TIMEOUT => Ok(false),
             _ => Err(io::Error::last_os_error()),
         }
@@ -333,11 +394,8 @@ impl Drop for Child {
         self.force_stop();
     }
 }
-pub fn retired(owner: &Value) -> io::Result<bool> {
-    // A disappeared Job name and an exited leader cannot certify descendant
-    // completion after every original Job handle was lost. Only our durable
-    // completion marker, written after ActiveProcesses=0, allows reclamation.
-    Ok(owner["container"] == "windows_job" && owner["retired"] == true)
+pub fn retired(path: &Path, owner: Option<&Value>) -> io::Result<bool> {
+    supervisor::retired(path, owner)
 }
 pub fn detect(configured: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = configured {

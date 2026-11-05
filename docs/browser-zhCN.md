@@ -2,7 +2,7 @@
 
 [English](browser.md) | 简体中文
 
-通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。平台实现与原生验证范围见[方案第 17.13 节](browser-plan-zhCN.md#1713-windowsmacos-与共用实现2026-11-05)。这些浏览器改动尚未发布或部署。
+通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。平台实现与原生验证范围见[方案第 17.14 节](browser-plan-zhCN.md#1714-异常退出恢复启动修正与跨平台联调2026-11-05)。这些浏览器改动尚未发布或部署。
 
 服务端需将 Core 的 `http.browser_user_url` 设为用户网站的 origin，在 Gate 的网页登录动作列表允许 `browser:control`，并应用包含 `device-browser` 用途的配套 Auth application-access 契约。Server 示例配置已包含这些设置；构建 worktree 不会修改已部署服务。
 
@@ -38,6 +38,10 @@
 | Windows | 依次在 `ProgramFiles`、`ProgramFiles(x86)`、`LOCALAPPDATA` 下检查 Chrome、Edge、Chromium |
 
 macOS 保留登录 Cookie 需要浏览器能正常访问用户已解锁的钥匙串。资料持久化用例在已登录用户的 GUI 启动会话中通过；由 SSH 启动时，站点存储保留，但 Cookie 丢失，浏览器报告加密不可用。需要保留登录时，应在相应的已登录用户会话中运行 Agent；Agent 不解锁钥匙串，也不绕过浏览器加密。
+
+以 macOS 用户级 GUI 后台任务启动时，连接局域网 Hub 还需要本地网络权限。在“系统设置 → 隐私与安全性 → 本地网络”中允许对应的 Agent；更换构建或启动入口后重新核对。权限拒绝可能表现为 `No route to host`。参见 [Apple 本地网络权限说明](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。
+
+Windows 上过深的自定义配置目录可能超出浏览器派生文件的路径限制。测试中 Edge 报告 `The filename or extension is too long (0xCE)`，且未通过资料保留检查；同一候选改用较短的本机目录后通过。使用较短的本机配置位置，并在正常关闭、重新打开命名资料后核对登录状态。Agent 的启动检查尚不能发现浏览器所有存储路径限制。
 
 如果设置了 `allowed_operations`，还需允许所需的浏览器工具；人工网页使用内部操作 `browser_human`。Agent 不会自动安装浏览器或开启这些权限。浏览器请求使用远程设备的网络，共享文件目录不限制可访问的网站。
 
@@ -75,7 +79,7 @@ AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，
 - 临时资料在所属浏览器进程退出后清理。命名资料保留到明确删除，每个设备绑定最多十六份；浏览器资料、缓存与内存没有硬配额。
 - 上传和下载共用暂存预算：单文件 32 MiB、合计 128 MiB、最多十六份。完成的下载保留 24 小时；已经使用的上传副本最迟保留到创建后 24 小时。关闭会话不删除已完成下载。
 - 解绑确认后，待所属工作停止，再删除这个绑定的私有浏览器资料和暂存文件。无法确认清理时保留绑定记录及待处理状态，供重试；不影响其他绑定或已经保存到本地的文件。
-- Agent 重启会丢弃未完成下载和全部上传副本，不恢复旧会话或重放网站动作。POSIX 恢复会核验原进程组；Windows 的中断运行若缺少持久化的进程树完成标记，将保留资料并返回 `browser_cleanup_pending`，阻止复用和解绑删除。Job 句柄丢失或只观察到主进程退出，均不能证明所有后代已停止；当前尚不支持自动回收这种状态。
+- Agent 重启会丢弃未完成下载和全部上传副本，不恢复旧会话或重放网站动作。POSIX 恢复会核验原进程组。Windows 的独立回收子进程会在 Agent 异常退出后终止浏览器 Job，确认其中的活动进程归零并保存完成记录；下一次浏览器请求据此清理旧运行目录，允许重新打开资料。清理尚未完成时返回 `browser_cleanup_pending`。如果 Agent 和回收子进程都被结束，或可靠完成记录缺失，资料仍保持隔离，复用和解绑删除会被拒绝；重启系统本身不能补足这项证明。
 - `.rdh-browser` 是 Agent 私有存储，文件读取、写入、列表、搜索和共享根配置均排除这个目录。名称匹配忽略大小写，Windows 还核对规范目录路径，拒绝短文件名别名。Shell 权限仍代表 Agent 所属操作系统账号的权限，这项排除不是 shell 沙箱，也不能隔离同一系统账号的直接访问。
 
 源码、证据和剩余发布门槛见[浏览器方案与验收计划](browser-plan-zhCN.md)。实际 AI 宿主展示、其余 OS/架构组合、负载性能和人工体验验收仍待完成。首次权限配置和浏览器安装目前需要在远程设备本地完成；网页已提供状态说明和已有会话入口。
