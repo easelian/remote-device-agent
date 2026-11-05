@@ -6,6 +6,10 @@
 ))]
 #[path = "support/initial_binary.rs"]
 mod initial_binary;
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "support/windows.rs"]
+mod windows;
 use axum::{
     Json, Router,
     extract::State,
@@ -83,13 +87,17 @@ async fn start(base: &Path, config: &Path, name: &str) -> Child {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
-    let base = std::env::temp_dir().join(format!(
+    let base = std::env::temp_dir().canonicalize().unwrap().join(format!(
         "rdh-lifecycle-{}",
         rdh_agent::random::hex_token::<12>().unwrap()
     ));
+    #[cfg(unix)]
+    storage::create_private_dir(&base).unwrap();
+    #[cfg(windows)]
+    windows::private_directory(&base);
     let fixture = Fixture(base.clone());
     let root = base.join("work");
-    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir(&root).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let allow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
