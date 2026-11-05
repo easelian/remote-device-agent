@@ -1,6 +1,7 @@
 use super::{
     Failure, Principal, Result, Settings,
     cdp::{Cdp, Control},
+    files::{self, Files},
     page::{self, Element},
     process::{self, BrowserProcess},
     profiles::{self, Profiles},
@@ -32,6 +33,7 @@ struct Target {
     title: String,
     dialog: Option<Value>,
     parent: Option<String>,
+    ready: bool,
 }
 struct Slot {
     owner: String,
@@ -50,6 +52,54 @@ struct Session {
     observed_tab: String,
     touched: Instant,
     human: Option<HumanLease>,
+    guard: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[tokio::test]
+async fn cancelled_close_retains_event_task_ownership() {
+    let done = Arc::new(tokio::sync::Notify::new());
+    let signal = done.clone();
+    let mut session = Session {
+        process: None,
+        targets: Arc::new(Mutex::new(HashMap::new())),
+        references: HashMap::new(),
+        active: String::new(),
+        observed_tab: String::new(),
+        touched: Instant::now(),
+        human: None,
+        guard: Some(tokio::spawn(async move {
+            signal.notified().await;
+        })),
+    };
+    for _ in 0..2 {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), session.close())
+                .await
+                .is_err()
+        );
+        assert!(session.guard.is_some());
+    }
+    done.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), session.close())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(session.guard.is_none());
+}
+
+impl Session {
+    async fn close(&mut self) -> Result<()> {
+        if let Some(process) = self.process.as_mut() {
+            process.close().await?;
+        }
+        if let Some(guard) = self.guard.as_mut() {
+            let result = guard.await;
+            self.guard = None;
+            result.map_err(|_| Failure::unknown("browser_cleanup_pending"))?;
+        }
+        self.process = None;
+        Ok(())
+    }
 }
 struct Admission {
     online: bool,
@@ -63,7 +113,8 @@ pub struct Browsers {
     initialized: Mutex<bool>,
     admission: Mutex<Admission>,
     profiles: Profiles,
-    root_lock: Mutex<Option<crate::profile_lock::ProfileLocks>>,
+    root_lock: Mutex<Option<Arc<crate::profile_lock::ProfileLocks>>>,
+    files: Arc<Files>,
 }
 
 impl Browsers {
@@ -72,6 +123,7 @@ impl Browsers {
             p.join(".rdh-browser")
                 .join(&crate::config::sha256_hex(token.as_bytes())[..24])
         });
+        let files = Files::new(root.as_deref());
         Self {
             settings: settings.clone(),
             executable: process::detect(settings.executable.as_deref()),
@@ -84,6 +136,7 @@ impl Browsers {
             }),
             profiles: Profiles::default(),
             root_lock: Mutex::new(None),
+            files,
         }
     }
     pub fn info(&self) -> Value {
@@ -96,7 +149,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":false})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":false})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
@@ -123,7 +176,10 @@ impl Browsers {
             let lock = crate::profile_lock::ProfileLocks::acquire(&[lock_path])
                 .map_err(|_| Failure::new("browser_profile_busy"))?;
             process::recover(root)?;
-            *self.root_lock.lock().unwrap() = Some(lock);
+            self.files.prepare()?;
+            let lock = Arc::new(lock);
+            *self.root_lock.lock().unwrap() = Some(lock.clone());
+            self.files.start(lock);
             *initialized = true;
         }
         Ok(root)
@@ -163,6 +219,14 @@ impl Browsers {
         }
         if operation == "browser_profiles" {
             return self.profiles.list(self.root.as_deref().unwrap(), principal);
+        }
+        if operation == "browser_files" {
+            return self.files.list(principal);
+        }
+        if operation == "browser_control" && params["action"] == "delete_file" {
+            return self
+                .files
+                .delete(principal, params["artifact_id"].as_str().unwrap());
         }
         if operation == "browser_control" && params["action"] == "delete_profile" {
             return self.profiles.delete(
@@ -248,7 +312,7 @@ impl Browsers {
                 .unwrap()
                 .values()
                 .filter(|t| t.kind == "page")
-                .map(|t| json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog}))
+                .map(|t| json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog,"ready":t.ready}))
                 .collect();
             return Ok(
                 json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}),
@@ -267,6 +331,10 @@ impl Browsers {
             .filter(|t| t.kind == "page")
             .cloned()
             .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+        if !(target.ready || operation == "browser_act" && params["action"]["kind"] == "close_tab")
+        {
+            return Err(Failure::new("browser_busy"));
+        }
         let outcome = async { match operation {
             "browser_screenshot" => {
                 if target.dialog.is_some() {
@@ -381,7 +449,7 @@ impl Browsers {
                                 .lock()
                                 .unwrap()
                                 .values()
-                                .find(|t| t.kind == "page")
+                                .find(|t| t.kind == "page" && t.ready)
                                 .map(|t| t.id.clone())
                                 .unwrap_or_default();
                             session.active = next_active;
@@ -483,6 +551,7 @@ impl Browsers {
                 observed_tab: String::new(),
                 touched: Instant::now(),
                 human: None,
+                guard: None,
             }),
         });
         {
@@ -507,12 +576,12 @@ impl Browsers {
                 cdp.stop();
                 return Err(Failure::new("browser_control_changed"));
             }
-            guard(cdp.cleanup(),session.targets.clone());
+            session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})));
             cdp.call(None,"Browser.setDownloadBehavior",json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
             cdp.call(None,"Target.setDiscoverTargets",json!({"discover":true}),deadline).await?;
             cdp.call(None,"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
             let target=loop {
-                if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page").cloned(){break target;}
+                if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page"&&t.ready).cloned(){break target;}
                 if !cdp.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
                 if Instant::now()>=deadline {return Err(Failure::unknown("browser_timeout_unknown"));}
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -525,9 +594,7 @@ impl Browsers {
             Ok(json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))}))
         }.await;
         if result.is_err() {
-            if let Some(process) = session.process.as_mut() {
-                let _ = process.close().await;
-            }
+            let _ = session.close().await;
             self.sessions.lock().unwrap().remove(&id);
         }
         if result.is_ok() {
@@ -546,12 +613,9 @@ impl Browsers {
                         }
                         if session.touched.elapsed() >= IDLE {
                             slot.control.change(true);
-                            if let Some(process) = session.process.as_mut()
-                                && process.close().await.is_err()
-                            {
+                            if session.close().await.is_err() {
                                 continue;
                             }
-                            session.process = None;
                             sessions.lock().unwrap().remove(&id);
                             break;
                         }
@@ -601,8 +665,7 @@ impl Browsers {
             .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
         match action {
             "close" => {
-                process.close().await?;
-                session.process = None;
+                session.close().await?;
                 self.sessions.lock().unwrap().remove(id);
                 Ok(json!({"session_id":id,"state":"closed"}))
             }
@@ -638,14 +701,15 @@ impl Browsers {
                 && session.touched.elapsed() >= IDLE
             {
                 slot.control.change(true);
-                if let Some(process) = session.process.as_mut() {
-                    let _ = process.close().await;
+                if session.close().await.is_err() {
+                    continue;
                 }
                 self.sessions.lock().unwrap().remove(&id);
             }
         }
     }
     pub fn stop_all(&self) {
+        self.files.stop();
         let mut admission = self.admission.lock().unwrap();
         admission.closing = true;
         admission.online = false;
@@ -693,12 +757,9 @@ impl Browsers {
         tokio::spawn(async move {
             for (id, slot) in slots {
                 let mut session = slot.session.lock().await;
-                if let Some(process) = session.process.as_mut()
-                    && process.close().await.is_err()
-                {
+                if session.close().await.is_err() {
                     continue;
                 }
-                session.process = None;
                 browsers.sessions.lock().unwrap().remove(&id);
             }
         });
@@ -709,14 +770,12 @@ impl Browsers {
         let mut stopped = true;
         for slot in slots {
             let mut session = slot.session.lock().await;
-            if let Some(process) = session.process.as_mut() {
-                stopped &= process.close().await.is_ok();
-            }
-            session.process = None;
+            stopped &= session.close().await.is_ok();
         }
         if stopped {
             self.sessions.lock().unwrap().clear();
         }
+        self.files.wait().await;
         stopped
     }
 }
@@ -731,7 +790,7 @@ async fn wait_target(
         if !cdp.connected() {
             return Err(Failure::unknown("browser_lost"));
         }
-        if targets.lock().unwrap().contains_key(id) {
+        if targets.lock().unwrap().get(id).is_some_and(|t| t.ready) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -781,24 +840,105 @@ async fn frames(
     Ok(frames)
 }
 
-fn guard(cdp: Cdp, targets: Arc<Mutex<HashMap<String, Target>>>) {
+struct DownloadContext {
+    files: Arc<Files>,
+    principal: Principal,
+    session: String,
+    control: Arc<Control>,
+}
+fn guard(
+    cdp: Cdp,
+    targets: Arc<Mutex<HashMap<String, Target>>>,
+    downloads: Option<DownloadContext>,
+) -> tokio::task::JoinHandle<()> {
     let mut events = cdp.events();
     tokio::spawn(async move {
+        let mut initializers = tokio::task::JoinSet::new();
         loop {
+            if !cdp.connected() {
+                break;
+            }
             let event = tokio::select! {
+                joined=initializers.join_next(), if !initializers.is_empty()=>{
+                    if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
+                    continue;
+                },
                 event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{cdp.stop();break;}},
                 _=tokio::time::sleep(Duration::from_millis(500))=>{if !cdp.connected(){break;}else{continue;}},
             };
-            if handle_event(&cdp, &targets, event).await.is_err() {
+            if handle_event(&cdp, &targets, downloads.as_ref(), &mut initializers, event)
+                .await
+                .is_err()
+            {
                 cdp.stop();
                 break;
             }
         }
-    });
+        initializers.abort_all();
+        while initializers.join_next().await.is_some() {}
+    })
+}
+async fn initialize_target(cdp: &Cdp, session: &str, downloads: bool) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(125);
+    let mut patterns =
+        vec![json!({"urlPattern":"*","resourceType":"Document","requestStage":"Request"})];
+    if downloads {
+        patterns
+            .push(json!({"urlPattern":"*","resourceType":"Document","requestStage":"Response"}));
+    }
+    cdp.call(
+        Some(session),
+        "Fetch.enable",
+        json!({"patterns":patterns}),
+        deadline,
+    )
+    .await?;
+    cdp.call(
+        Some(session),
+        "Target.setAutoAttach",
+        json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),
+        deadline,
+    )
+    .await?;
+    cdp.call(
+        Some(session),
+        "Runtime.runIfWaitingForDebugger",
+        json!({}),
+        deadline,
+    )
+    .await?;
+    cdp.call(Some(session),"Network.setBlockedURLs",json!({"urls":["file:*","filesystem:*","javascript:*","chrome:*","chrome-extension:*","devtools:*","mailto:*","tel:*"]}),deadline).await?;
+    if downloads {
+        cdp.call(
+            Some(session),
+            "Network.setCacheDisabled",
+            json!({"cacheDisabled":true}),
+            deadline,
+        )
+        .await?;
+    }
+    cdp.call(
+        Some(session),
+        "Page.setInterceptFileChooserDialog",
+        json!({"enabled":true}),
+        deadline,
+    )
+    .await?;
+    for method in [
+        "Page.enable",
+        "Runtime.enable",
+        "Network.enable",
+        "Accessibility.enable",
+    ] {
+        cdp.call(Some(session), method, json!({}), deadline).await?;
+    }
+    Ok(())
 }
 async fn handle_event(
     cdp: &Cdp,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
+    downloads: Option<&DownloadContext>,
+    initializers: &mut tokio::task::JoinSet<()>,
     event: Value,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -830,42 +970,12 @@ async fn handle_event(
                     .count()
                     >= MAX_TABS)
                 || targets.lock().unwrap().len() >= 40
+                || initializers.len() >= 40
             {
                 cdp.call(None, "Target.closeTarget", json!({"targetId":id}), deadline)
                     .await?;
                 return Ok(());
             }
-            for method in [
-                "Page.enable",
-                "Runtime.enable",
-                "Network.enable",
-                "Accessibility.enable",
-            ] {
-                cdp.call(Some(session), method, json!({}), deadline).await?;
-            }
-            cdp.call(Some(session),"Network.setBlockedURLs",json!({"urls":["file:*","filesystem:*","javascript:*","chrome:*","chrome-extension:*","devtools:*","mailto:*","tel:*"]}),deadline).await?;
-            cdp.call(Some(session),"Fetch.enable",json!({"patterns":[{"urlPattern":"*","resourceType":"Document","requestStage":"Request"}]}),deadline).await?;
-            cdp.call(
-                Some(session),
-                "Page.setInterceptFileChooserDialog",
-                json!({"enabled":true}),
-                deadline,
-            )
-            .await?;
-            cdp.call(
-                Some(session),
-                "Target.setAutoAttach",
-                json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),
-                deadline,
-            )
-            .await?;
-            cdp.call(
-                Some(session),
-                "Runtime.runIfWaitingForDebugger",
-                json!({}),
-                deadline,
-            )
-            .await?;
             targets.lock().unwrap().insert(
                 id.into(),
                 Target {
@@ -886,8 +996,52 @@ async fn handle_event(
                         .collect(),
                     dialog: None,
                     parent: event["sessionId"].as_str().map(str::to_owned),
+                    ready: false,
                 },
             );
+            let (cdp, targets, id, session) = (
+                cdp.clone(),
+                targets.clone(),
+                id.to_owned(),
+                session.to_owned(),
+            );
+            let downloads = downloads.is_some();
+            initializers.spawn(async move {
+                // A popup can have no renderer document until its attachment
+                // finishes. The event pump must keep serving Fetch meanwhile.
+                let result = initialize_target(&cdp, &session, downloads).await;
+                if result.is_ok() {
+                    if let Some(target) = targets
+                        .lock()
+                        .unwrap()
+                        .get_mut(&id)
+                        .filter(|t| t.session == session)
+                    {
+                        target.ready = true;
+                    }
+                } else {
+                    let present = targets
+                        .lock()
+                        .unwrap()
+                        .get(&id)
+                        .is_some_and(|t| t.session == session);
+                    if present {
+                        if cdp
+                            .call(
+                                None,
+                                "Target.closeTarget",
+                                json!({"targetId":id}),
+                                Instant::now() + Duration::from_secs(1),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            cdp.stop();
+                        }
+                        targets.lock().unwrap().remove(&id);
+                    }
+                }
+            });
         }
         "Target.detachedFromTarget" => {
             targets
@@ -919,6 +1073,56 @@ async fn handle_event(
         "Fetch.requestPaused" => {
             let url = params["request"]["url"].as_str().unwrap_or("");
             let allowed = page::url_allowed(url) || url == "about:blank";
+            if let Some(downloads) = downloads
+                && allowed
+                && params["responseHeaders"].as_array().is_some_and(|headers| {
+                    headers.iter().any(|h| {
+                        h["name"]
+                            .as_str()
+                            .is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))
+                            && h["value"].as_str().is_some_and(|v| {
+                                v.split(';')
+                                    .next()
+                                    .unwrap_or("")
+                                    .trim()
+                                    .eq_ignore_ascii_case("attachment")
+                            })
+                    })
+                })
+            {
+                let target = targets
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
+                    .cloned()
+                    .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+                let origin = url::Url::parse(url)
+                    .map_err(|_| Failure::new("browser_url_denied"))?
+                    .origin()
+                    .ascii_serialization();
+                let owner = files::Owner {
+                    principal: downloads.principal.clone(),
+                    session: downloads.session.clone(),
+                    tab: target.id,
+                    origin,
+                    control: downloads.control.clone(),
+                };
+                if downloads
+                    .files
+                    .intercept(cdp.cleanup(), target.session, params, owner)
+                    .is_err()
+                {
+                    cdp.call(
+                        event["sessionId"].as_str(),
+                        "Fetch.failRequest",
+                        json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
+                        deadline,
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
             let method = if allowed {
                 "Fetch.continueRequest"
             } else {
@@ -1003,7 +1207,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         .ok_or_else(|| Failure::new("browser_invalid_params"))?;
     let allowed: &[&str] = match operation {
         "browser_open" => &["url", "profile_name"],
-        "browser_sessions" | "browser_profiles" => &[],
+        "browser_sessions" | "browser_profiles" | "browser_files" => &[],
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
         "browser_observe" => &[
@@ -1021,7 +1225,13 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "url_contains",
             "text_contains",
         ],
-        "browser_control" => &["session_id", "control_epoch", "action", "profile_name"],
+        "browser_control" => &[
+            "session_id",
+            "control_epoch",
+            "action",
+            "profile_name",
+            "artifact_id",
+        ],
         _ => return Err(Failure::new("browser_invalid_params")),
     };
     if map.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -1135,9 +1345,9 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         }
     }
     if operation == "browser_control"
-        && !params["action"]
-            .as_str()
-            .is_some_and(|s| ["pause", "resume", "close", "delete_profile"].contains(&s))
+        && !params["action"].as_str().is_some_and(|s| {
+            ["pause", "resume", "close", "delete_profile", "delete_file"].contains(&s)
+        })
     {
         return Err(Failure::new("browser_invalid_params"));
     }
@@ -1145,6 +1355,16 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         && ((params["action"] == "delete_profile"
             && (map.len() != 2 || !map.contains_key("profile_name")))
             || (params["action"] != "delete_profile" && map.contains_key("profile_name")))
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if operation == "browser_control"
+        && ((params["action"] == "delete_file"
+            && (map.len() != 2
+                || !params["artifact_id"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))))
+            || (params["action"] != "delete_file" && map.contains_key("artifact_id")))
     {
         return Err(Failure::new("browser_invalid_params"));
     }

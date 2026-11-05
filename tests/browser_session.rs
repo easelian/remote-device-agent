@@ -152,9 +152,9 @@ fn reference(observation: &Value, name: &str) -> String {
     nodes[0]["ref"].as_str().unwrap().into()
 }
 
-fn profile_peer(root: &std::path::Path, executable: &str) -> Peer {
+fn profile_peer(root: &std::path::Path, executable: &str, downloads: bool) -> Peer {
     let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":{"work":root},"allow_write":false,"allow_shell":false})).unwrap();
-    let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"executable":executable}}), &config).unwrap();
+    let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"downloads":downloads,"executable":executable}}), &config).unwrap();
     let runtime =
         Runtime::with_config_path(config, policy, None, None, Some(&root.join("device.json")))
             .unwrap();
@@ -170,6 +170,285 @@ fn profile_peer(root: &std::path::Path, executable: &str) -> Peer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
+async fn bounded_download_delivery_privacy_cancel_and_recovery() {
+    use base64::Engine;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-file-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let content: Vec<u8> = (0..=255u8).cycle().take(240000).collect();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let payload = content.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let payload = payload.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while request.len() < 8192 && !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.unwrap_or(0);
+                    if count == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let path = std::str::from_utf8(&request)
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
+                if path == "/" {
+                    let body=b"<!doctype html><title>File fixture</title><h1>File task</h1><a href='/report'>Report</a><a href='/short'>Truncated</a><a href='/large'>Too large</a><a href='/unknown'>Unknown length</a><a href='/stall'>Slow report</a><a href='/reserve' target='_blank'>Budget hold</a>";
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(headers.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                    return;
+                }
+                let length = if path == "/large" {
+                    33554433
+                } else if path == "/reserve" {
+                    33554432
+                } else {
+                    payload.len()
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=report.bin\r\nCache-Control: no-store\r\n{}\r\n",
+                    if path == "/unknown" {
+                        String::new()
+                    } else {
+                        format!("Content-Length: {length}\r\n")
+                    }
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                if path == "/stall" || path == "/reserve" {
+                    let _ = socket.write_all(&payload[..4096]).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                } else {
+                    let data = if path == "/short" {
+                        &payload[..97]
+                    } else if path == "/large" {
+                        &[]
+                    } else {
+                        payload.as_slice()
+                    };
+                    let _ = socket.write_all(data).await;
+                }
+            });
+        }
+    });
+    let mut peer = profile_peer(&temp.0, &executable, true);
+    let opened = peer.call("browser_open", json!({"url":url})).await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap();
+    let observation = peer.observe_named(id, 1, "Report").await;
+    let clicked=peer.call("browser_act",json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observation,"Report")}})).await;
+    assert!(clicked.get("error").is_none(), "{clicked}");
+    let mut ready = Value::Null;
+    for _ in 0..100 {
+        let files = peer.call("browser_files", json!({})).await;
+        let file = &files["result"]["files"][0];
+        if file["state"] == "ready" {
+            ready = file.clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(ready["size_bytes"], content.len());
+    let artifact = ready["artifact_id"].as_str().unwrap().to_owned();
+    assert_eq!(ready["sha256"], rdh_agent::config::sha256_hex(&content));
+    assert_eq!(
+        peer.raw("browser_files", json!({}), Some(&"b".repeat(64)), None)
+            .await["result"]["files"],
+        json!([])
+    );
+    let denied = peer
+        .raw_as(
+            "browser_human",
+            json!({"action":"file_read","artifact_id":artifact,"offset":0}),
+            Some(
+                json!({"version":1,"owner":"c".repeat(64),"user":"b".repeat(64),"channel":"human"}),
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(denied["error_code"], "browser_file_unavailable");
+    let claim = peer
+        .human(json!({"action":"claim","session_id":id,"view_id":"files-view"}))
+        .await;
+    assert!(claim.get("error").is_none(), "{claim}");
+    assert_eq!(
+        peer.call("browser_files", json!({})).await["result"]["files"],
+        json!([])
+    );
+    let mut received = Vec::new();
+    loop {
+        let chunk = peer
+            .human(json!({"action":"file_read","artifact_id":artifact,"offset":received.len()}))
+            .await;
+        assert!(chunk.get("error").is_none(), "{chunk}");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(chunk["result"]["data"].as_str().unwrap())
+            .unwrap();
+        assert!(bytes.len() <= 65536);
+        received.extend(bytes);
+        if chunk["result"]["eof"] == true {
+            break;
+        }
+    }
+    assert_eq!(received, content);
+    let released=peer.human(json!({"action":"release","session_id":id,"view_id":"files-view","lease_id":claim["result"]["lease"]["lease_id"],"control_epoch":claim["result"]["lease"]["control_epoch"],"share_page_with_ai":true})).await;
+    assert!(released.get("error").is_none(), "{released}");
+    let epoch = released["result"]["control_epoch"].as_u64().unwrap();
+    for (name, code) in [
+        ("Truncated", "browser_file_incomplete"),
+        ("Too large", "browser_file_limit"),
+        ("Unknown length", "browser_download_unsupported"),
+    ] {
+        let observation = peer.observe_named(id, epoch, name).await;
+        let clicked=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"click","ref":reference(&observation,name)}})).await;
+        assert!(clicked.get("error").is_none(), "{clicked}");
+        let mut failed = false;
+        for _ in 0..100 {
+            let files = peer.call("browser_files", json!({})).await;
+            if files["result"]["recent_failures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["error_code"] == code)
+            {
+                failed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(failed, "missing rejection for {name}");
+        assert_eq!(
+            peer.call("browser_files", json!({})).await["result"]["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    let observation = peer.observe_named(id, epoch, "Slow report").await;
+    let clicked=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"click","ref":reference(&observation,"Slow report")}})).await;
+    assert!(clicked.get("error").is_none(), "{clicked}");
+    let mut slow = String::new();
+    for _ in 0..100 {
+        let files = peer.call("browser_files", json!({})).await;
+        if let Some(file) = files["result"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["state"] == "receiving")
+        {
+            slow = file["artifact_id"].as_str().unwrap().into();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!slow.is_empty());
+    let cancelled = peer
+        .human(json!({"action":"file_delete","artifact_id":slow}))
+        .await;
+    assert_eq!(cancelled["result"]["cancel_requested"], true, "{cancelled}");
+    let mut stopped = false;
+    for _ in 0..100 {
+        let files = peer.call("browser_files", json!({})).await;
+        if files["result"]["files"].as_array().unwrap().len() == 1 {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(stopped);
+    // Reserve declared sizes before receiving bytes. Three 32-MiB streams plus
+    // the completed report fit; a fourth must not create another staged file.
+    let old_failures = peer.call("browser_files", json!({})).await["result"]["recent_failures"]
+        .as_array()
+        .unwrap()
+        .len();
+    for expected in 2..=4 {
+        let observation = peer.observe_named(id, epoch, "Budget hold").await;
+        let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"click","ref":reference(&observation,"Budget hold")}})).await;
+        assert!(clicked.get("error").is_none(), "{clicked}");
+        let mut count = 0;
+        for _ in 0..250 {
+            count = peer.call("browser_files", json!({})).await["result"]["files"]
+                .as_array()
+                .unwrap()
+                .len();
+            if count == expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            count,
+            expected,
+            "{}",
+            peer.call("browser_files", json!({})).await
+        );
+    }
+    let observation = peer.observe_named(id, epoch, "Budget hold").await;
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"click","ref":reference(&observation,"Budget hold")}})).await;
+    assert!(clicked.get("error").is_none(), "{clicked}");
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        last = peer.call("browser_files", json!({})).await["result"].clone();
+        if last["recent_failures"].as_array().unwrap().len() > old_failures {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(last["files"].as_array().unwrap().len(), 4, "{last}");
+    assert_eq!(
+        last["recent_failures"].as_array().unwrap().last().unwrap()["error_code"],
+        "browser_file_limit"
+    );
+    for file in last["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["state"] == "receiving")
+    {
+        let cancel = peer
+            .human(json!({"action":"file_delete","artifact_id":file["artifact_id"]}))
+            .await;
+        assert_eq!(cancel["result"]["cancel_requested"], true, "{cancel}");
+    }
+    assert_eq!(
+        peer.call("browser_control", json!({"session_id":id,"action":"close"}))
+            .await["result"]["state"],
+        "closed"
+    );
+    assert!(peer.runtime.shutdown().await);
+    drop(peer);
+    let mut peer = profile_peer(&temp.0, &executable, true);
+    let files = peer.call("browser_files", json!({})).await;
+    assert_eq!(files["result"]["files"][0]["artifact_id"], artifact);
+    let deleted = peer
+        .call(
+            "browser_control",
+            json!({"action":"delete_file","artifact_id":artifact}),
+        )
+        .await;
+    assert_eq!(deleted["result"]["file_deleted"], true, "{deleted}");
+    assert!(peer.runtime.shutdown().await);
+    drop(peer);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable Linux host"]
 async fn named_profile_persistence_isolation_and_exclusive_ownership() {
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").expect("set exact test browser path");
     let temp = Temp(std::env::temp_dir().join(format!(
@@ -181,7 +460,7 @@ async fn named_profile_persistence_isolation_and_exclusive_ownership() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let mut peer = profile_peer(&temp.0, &executable);
+    let mut peer = profile_peer(&temp.0, &executable, false);
     let opened = peer
         .call(
             "browser_open",
@@ -230,7 +509,7 @@ async fn named_profile_persistence_isolation_and_exclusive_ownership() {
         .await;
     assert_eq!(other["result"]["profiles"], json!([]));
     // A second Runtime with the same device binding must not run recovery against live data.
-    let mut competing = profile_peer(&temp.0, &executable);
+    let mut competing = profile_peer(&temp.0, &executable, false);
     let blocked = competing
         .call("browser_open", json!({"profile_name":"different"}))
         .await;
@@ -296,7 +575,7 @@ async fn named_profile_persistence_isolation_and_exclusive_ownership() {
     assert!(peer.runtime.shutdown().await);
     drop(peer);
     // Recreating the Agent runtime neither adopts nor replays any old session.
-    let mut peer = profile_peer(&temp.0, &executable);
+    let mut peer = profile_peer(&temp.0, &executable, false);
     assert_eq!(
         peer.call("browser_sessions", json!({})).await["result"]["sessions"],
         json!([])
@@ -817,7 +1096,13 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     drop(runtime);
     let private = temp.0.join(".rdh-browser");
     for owner in fs::read_dir(private).unwrap() {
-        assert_eq!(fs::read_dir(owner.unwrap().path()).unwrap().count(), 0);
+        let remaining = fs::read_dir(owner.unwrap().path())
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].file_name(), "artifacts");
+        assert_eq!(fs::read_dir(remaining[0].path()).unwrap().count(), 0);
     }
     server.abort();
 }

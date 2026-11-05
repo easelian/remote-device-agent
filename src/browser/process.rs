@@ -302,10 +302,10 @@ pub fn recover(root: &Path) -> Result<()> {
     crate::storage::private_metadata(root, true).map_err(io_error)?;
     let entries = fs::read_dir(root)
         .map_err(io_error)?
-        .take(19)
+        .take(20)
         .collect::<std::io::Result<Vec<_>>>()
         .map_err(io_error)?;
-    if entries.len() > 18 {
+    if entries.len() > 19 {
         return Err(Failure::new("browser_cleanup_pending"));
     }
     for entry in entries {
@@ -313,7 +313,7 @@ pub fn recover(root: &Path) -> Result<()> {
         let Some(id) = id.to_str() else {
             return Err(Failure::new("browser_cleanup_pending"));
         };
-        if matches!(id, "profiles" | "agent.rdh-lock") {
+        if matches!(id, "profiles" | "artifacts" | "agent.rdh-lock") {
             crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
             continue;
         }

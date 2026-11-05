@@ -43,7 +43,9 @@ impl Browsers {
         self.prepare()?;
         let action = string(params, "action")?;
         let keys: &[&str] = match action {
-            "list" => &["action"],
+            "list" | "files_list" => &["action"],
+            "file_read" => &["action", "artifact_id", "offset"],
+            "file_delete" => &["action", "artifact_id"],
             "close" => &["action", "session_id"],
             "status" | "claim" => &["action", "session_id", "view_id"],
             "screenshot" => &[
@@ -78,6 +80,20 @@ impl Browsers {
             .is_some_and(|m| m.len() == keys.len() && m.keys().all(|k| keys.contains(&k.as_str())))
         {
             return Err(Failure::new("browser_invalid_params"));
+        }
+        match action {
+            "files_list" => return self.files.list(principal),
+            "file_read" => {
+                return self.files.read(
+                    principal,
+                    string(params, "artifact_id")?,
+                    params["offset"]
+                        .as_u64()
+                        .ok_or_else(|| Failure::new("browser_invalid_params"))?,
+                );
+            }
+            "file_delete" => return self.files.delete(principal, string(params, "artifact_id")?),
+            _ => {}
         }
         if action == "list" {
             let slots: Vec<_> = self
@@ -204,6 +220,7 @@ impl Browsers {
             }
             session.references.clear();
             session.touched = Instant::now();
+            self.files.disclosure(id, false)?;
             if slot.control.snapshot() != (epoch, true) {
                 return Err(Failure::new("browser_control_changed"));
             }
@@ -229,7 +246,16 @@ impl Browsers {
             if params["share_page_with_ai"] != true {
                 return Err(Failure::new("browser_invalid_params"));
             }
-            let epoch = slot.control.resume(epoch)?;
+            let epoch = {
+                let mut state = slot.control.state.lock().unwrap();
+                if *state != (epoch, true) {
+                    return Err(Failure::new("browser_control_changed"));
+                }
+                self.files.disclosure(id, true)?;
+                state.0 += 1;
+                state.1 = false;
+                state.0
+            };
             session.human = None;
             session.references.clear();
             session.touched = Instant::now();
@@ -255,6 +281,9 @@ impl Browsers {
                 })
                 .ok_or_else(|| Failure::new("browser_tab_unavailable"))?
         };
+        if !target.ready {
+            return Err(Failure::new("browser_busy"));
+        }
         if action == "screenshot" && session.active != target.id {
             cdp.call(
                 Some(&target.session),

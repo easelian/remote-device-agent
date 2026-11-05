@@ -14,6 +14,7 @@ pub const OPERATIONS: &[&str] = &[
     "browser_open",
     "browser_sessions",
     "browser_profiles",
+    "browser_files",
     "browser_tabs",
     "browser_observe",
     "browser_screenshot",
@@ -29,6 +30,7 @@ pub const MUTATIONS: &[&str] = &["browser_open", "browser_act", "browser_control
 pub struct Settings {
     pub enabled: bool,
     pub persistent_profiles: bool,
+    pub downloads: bool,
     pub executable: Option<PathBuf>,
 }
 
@@ -105,6 +107,8 @@ type Result<T> = std::result::Result<T, Failure>;
 
 #[cfg(target_os = "linux")]
 mod cdp;
+#[cfg(target_os = "linux")]
+mod files;
 #[cfg(target_os = "linux")]
 mod image;
 #[cfg(target_os = "linux")]

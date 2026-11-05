@@ -20,6 +20,7 @@ struct Pending {
     reply: Option<oneshot::Sender<Result<Value>>>,
     session: Option<String>,
     dialog_blocks: bool,
+    input_barrier: bool,
     _permit: OwnedSemaphorePermit,
 }
 #[derive(Default)]
@@ -257,6 +258,21 @@ impl Cdp {
                     reply: Some(reply),
                     session: session.map(str::to_owned),
                     dialog_blocks,
+                    // Only commands that can emit input or change a page must
+                    // drain before handing control to another actor. Background
+                    // setup, reads and owned file streams retain transport slots.
+                    input_barrier: explicit_effect
+                        || method.starts_with("Input.")
+                        || matches!(
+                            method,
+                            "Page.navigate"
+                                | "Page.bringToFront"
+                                | "DOM.focus"
+                                | "DOM.scrollIntoViewIfNeeded"
+                                | "Target.createTarget"
+                                | "Target.closeTarget"
+                                | "Page.handleJavaScriptDialog"
+                        ),
                     _permit: permit,
                 },
             );
@@ -329,7 +345,14 @@ impl Cdp {
         !self.inner.closed.load(Ordering::Acquire)
     }
     pub fn pending(&self) -> usize {
-        self.inner.pending.lock().unwrap().commands.len()
+        self.inner
+            .pending
+            .lock()
+            .unwrap()
+            .commands
+            .values()
+            .filter(|p| p.input_barrier)
+            .count()
     }
     pub fn stop(&self) {
         self.inner.finish();

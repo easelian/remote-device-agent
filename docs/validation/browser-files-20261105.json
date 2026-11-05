@@ -1,0 +1,158 @@
+{
+  "date": "2026-11-05",
+  "scenario": "bounded HTTP attachments, authenticated user retrieval, cancellation and owned shutdown",
+  "source": {
+    "agent": {
+      "base": "896187fdc038ac5183d292bbf80a0c2617c4e96d",
+      "files": {
+        "src/browser/cdp.rs": "834c813dcd0155257fc49250c41b00495efb24977a5e9a48bd38c02bdccfe5d9",
+        "src/browser/files.rs": "c6c3b9a110a47f5cc8437b7c0ef642259ccb4f9d1b014bd814d30d360a084c45",
+        "src/browser/mod.rs": "fbed1013de3ccd26d30d2cdc16927792696ac48ade527c662ee49e1441ca5345",
+        "src/browser/process.rs": "3996ba42e0153fc7fad78ea66856a612f44a2a6d412a6843498204732fb3f422",
+        "src/browser/runtime.rs": "00bfc3941d462732fc1133766a03c36873d80a87489685676ace0a54526a639e",
+        "src/browser/runtime/human.rs": "ffd761c0f46ef0b2b7cdf00de189485e956a780f578b6f3cc284e97668eb0ae6",
+        "src/policy.rs": "fc47c644d586fd9d153e33becacf2fb82c88a04c3a77fbfde13080bbc32e81c6",
+        "src/receipts.rs": "e5a1ff158d6d6485d0e97e73d673a0230cdfd2e22c5a2c6906bc527c50720ca4",
+        "tests/browser_session.rs": "f491de7116147ec09bb085ce0d0f8424a10611838a3e424adcbe2b3e8fe49bd5"
+      }
+    },
+    "server": {
+      "base": "9d92d322e72193c01faf01f5f8d3c918cb85ebcd",
+      "files": {
+        "apps/business/src/product-path.ts": "56fdb8b29ae6ebba76e360618a77377662ef69ffab39151d01c29a9adfbcaad2",
+        "apps/business/src/rdh.ts": "b9703ebc9929529539a55db0c3951c90ccbf39326df5de1f3fccdef596dd31fd",
+        "apps/business/web/src/Browser.vue": "cd7c7fd27e9d75b073a00228ba254f1ad7b1b5ebac8b90b90fc4537e9db2657e",
+        "apps/business/web/src/BrowserFiles.vue": "aca64f4b34c6f506c3e0420d715d950b218c88d5f754428e565c71e72328f4fe",
+        "apps/business/web/src/api.ts": "c2113ab17f639b8c07b2ce59e8321370630737a972cadec78ae0ccfc87ee57f7",
+        "apps/business/web/src/rdh-copy.ts": "562daaf1048271c1be4a60456110883befbc1b964eb67d0aa8853a59bccbf466",
+        "apps/business/web/src/router.ts": "92f1b262fde7b02671911f4aef708e6cc239c1498a9daea9992fd0301a265414",
+        "apps/core/src/browser.rs": "1966ed27513b2485d8e2cd66745778dbaa3115a0537abcec2a5f7959c519e581",
+        "apps/core/src/mcp_tools.rs": "de941db8373a16a3e136e960b8e602caf9ee5987dec7f8566e43f9356f7e9b88",
+        "apps/core/src/runtime.rs": "73b16cb3e8469c5d88b33bb1b7bb6382d9e2232ae5bc8b44e206aae1a857958a",
+        "apps/gate/src/web/browser.rs": "15c94b721ef28258e3e628299b6c0e1025b049e80e9c81a32da22e5e15b5b4e4",
+        "contracts/mcp/v1/error-messages.json": "3924d8aeab8eca40a25e3a49c31e6ab414bd48f47b93783c8ab2fc0d9b00e025",
+        "contracts/mcp/v1/tools-list.json": "e42441d27e7edc37dbc2262c5b79b40ec2103c3a8fab04b1856c10259916e03d",
+        "crates/runtime/src/types.rs": "77641e770d684439f23342c32c9e60266fedd2cc6ed47818b88952d85618497d",
+        "tests/browser_files_ui.mjs": "ac908b159b27580a07810260f0b5b33c8685dd9e9b81117c13ddc8ed5127ca81",
+        "tests/contracts/test_wire_contracts.py": "9f1fbe431a38b60ccba64e35635ad5766d08c42b9718612272e7019198bdf7c0",
+        "tests/core/test_browser_files.py": "f6c532053c6f9bab1a7c5ca6b42bc27d1f7e644d6e594da5b484c9cc27a91ffc",
+        "tests/core/test_browser_native.py": "023b7702fbd71079afc94050e58c6fc02002d2994ba093644f19583907011fdf",
+        "tests/core/test_rust_mcp_native.py": "4d7541eea620049cad130470641751b264eb4a2eebe44469a6a538a9c80ce31c",
+        "tests/support/remote_device_hub/hub.py": "f72c6021c28cdac0f093e6475439586024f0e07de0a36b99755ba73152484186"
+      }
+    }
+  },
+  "candidate": {
+    "root": "/tmp/rdh-browser-hub-test-1itfba3q",
+    "port": 37729,
+    "production_data": false,
+    "selectors": [
+      "tests/core/test_browser_files.py"
+    ],
+    "binaries": {
+      "RDH_TEST_BROWSER_EXECUTABLE": {
+        "path": "/home/kylin/.cache/puppeteer/chrome-headless-shell/linux-146.0.7680.153/chrome-headless-shell-linux64/chrome-headless-shell",
+        "sha256": "12b3a17b993c9a159f395c9d2b759bab5b91e432e60a11349983c3b99fa20595"
+      },
+      "RDH_TEST_CLUSTER_AGENT": {
+        "path": "/home/kylin/projects/easelian/remote-device-agent.worktrees/work/browser-p0/target/debug/rdh",
+        "sha256": "c1d726f63eebcd3cd9f7d16079263a69268fc3c4e632e478e3e1a419a7191910"
+      },
+      "RDH_TEST_RUST_CORE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-core",
+        "sha256": "7c7528c831a6e1ad648d19949b5a09b49c68ae5b05f9be0e4b9a38634905d9dc"
+      },
+      "RDH_TEST_RUST_GATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-gate",
+        "sha256": "3a6d040d8efb3667f877e4e6cf933f5ebb1ae81a49d8ccb867e920026728cd17"
+      },
+      "RDH_TEST_RUST_AUTH": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-auth",
+        "sha256": "e7c0bfcda0e2fa3266b768f61d3d8758efa6d8bc9664d04b5dc20b146aeee4d7"
+      },
+      "RDH_TEST_RUST_MIGRATE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/rdh-migrate",
+        "sha256": "8f7561a4e1c5066f4d94cebf1b4ed281c13e1b5e586f39cfcaa4abbcd4ca37e8"
+      },
+      "RDH_TEST_RUST_RUNTIME_PROBE": {
+        "path": "/home/kylin/projects/easelian/remote-device-server.worktrees/work/browser-p0/target/debug/examples/authority_probe",
+        "sha256": "8961f294ee6b8cb1014ccbaaa7b8efc2e21f9e3d07fbad0c164da22745323ecb"
+      }
+    }
+  },
+  "results": {
+    "agent_workspace": {
+      "passed": 142,
+      "ignored": 3,
+      "note": "ignored real-browser tests run separately"
+    },
+    "headless146_final": {
+      "passed": 3,
+      "failed": 0,
+      "elapsed_seconds": 10.94
+    },
+    "chromium156_before_final_fault_fixes": {
+      "passed": 3,
+      "failed": 0,
+      "elapsed_seconds": 7.59
+    },
+    "fault_units": {
+      "passed": 4,
+      "note": "three new cancellation/persistence tests and existing settings test"
+    },
+    "hub_regression_before_final_fault_fixes": {
+      "passed": 29,
+      "failed": 0,
+      "elapsed_seconds": 177.97
+    },
+    "hub_files_final": {
+      "passed": 2,
+      "failed": 0,
+      "elapsed_seconds": 31.96
+    },
+    "agent_clippy": "passed --workspace --all-targets --all-features -D warnings",
+    "server_clippy": "passed core/runtime/gate --all-targets -D warnings",
+    "business_and_vue_builds": "passed",
+    "isolated_fixture_cleanup": {
+      "removed": true,
+      "production_data": false
+    }
+  },
+  "verified": [
+    "exact-length HTTP attachment is streamed in <=64KiB chunks and hashed; partial, oversize and missing-length responses rejected",
+    "declared file sizes reserve aggregate space before reception: three stalled 32MiB streams plus completed 240000-byte artifact fit; fourth 32MiB stream rejected",
+    "AI lists metadata only; user reads through current account/device authorization and verifies SHA256 before browser save",
+    "human takeover hides artifact metadata; confirmed handback includes filenames/origins",
+    "normal browser close and new Agent runtime preserve completed artifact; cancellation deletes partial data",
+    "independent UI browser cancels after one in-flight chunk without automatic resend; actual downloaded bytes/hash match; remote deletion preserves local saved copy",
+    "popup initialization does not block Fetch event service and is bounded/owned by the event task",
+    "canceled shutdown waits retain job handles; failed visibility writes leave all in-memory entries hidden"
+  ],
+  "earlier_failures": [
+    "native-05: slow same-tab response held page observation; budget fixture changed to independent popup transfers",
+    "native-06 through native-10: popup initialization blocked event handling needed for initial navigation; added owned bounded initialization tasks and ready state",
+    "clippy-01: unnecessary unwrap and boolean simplification; corrected",
+    "static review found cancellation detaching join handles and incomplete in-memory hide on persistence failure; fixed and covered with focused tests"
+  ],
+  "evidence": [
+    ".build/browser-files-regression-01.log",
+    ".build/browser-files-native-12.log",
+    ".build/browser-files-native-156-01.log",
+    ".build/browser-files-unit-01.log",
+    ".build/browser-files-clippy-03.log",
+    "server .build/browser-validation/files-tests-01",
+    "server .build/browser-validation/files-tests-02",
+    "server .build/browser-validation/files-clippy-01.log",
+    "server .build/browser-validation/files-business-01.log",
+    "server .build/browser-validation/files-web-02.log",
+    "server .build/browser-validation/files-ui-02/browser-files-ready.png"
+  ],
+  "limits": [
+    "downloads opt-in; HTTP Document attachments with status 200, exactly one declared length, identity encoding only",
+    "Blob/data URLs, missing length, compressed and other browser-managed downloads unsupported; upload not implemented in this slice",
+    "32MiB/file,128MiB aggregate,16 artifacts bound artifact content/reservations, not total browser memory/profile/cache storage",
+    "retention is24h; expiry requires active Agent or next startup recovery",
+    "Linux x64 local fixtures only; no production data/deployment or real AI-host rendering acceptance",
+    "metadata hide failures are closed in memory; no claim of multi-file transactional persistence across process crash"
+  ]
+}
