@@ -645,7 +645,13 @@ fn mutation_result(result: Result<Value, String>) -> Result<Value, String> {
     // failed fsync/identity check, and failed temporary cleanup. RPC must not
     // report not_sent/no-effect for errors returned from this phase.
     result.map_err(|error| {
-        format!("File mutation failed; filesystem effects may have occurred: {error}")
+        // This sentinel is emitted only by the pre-write hash checks below.
+        // The target file has not been written on this path.
+        if error == FILE_HASH_CONFLICT {
+            error
+        } else {
+            format!("File mutation failed; filesystem effects may have occurred: {error}")
+        }
     })
 }
 type Control<'a> = Option<(Instant, &'a std::sync::atomic::AtomicBool)>;
@@ -720,10 +726,13 @@ fn write(files: &Files, p: &Value, control: Control<'_>) -> Result<Value, String
         let (parent, name) = Parent::file(root, path, expected.is_empty())?;
         let previous = read_existing(&parent, &name)?;
         match previous.as_ref() {
-            None if !expected.is_empty() => return Err("File no longer exists; read it again before updating".into()),
-            Some(previous) if format!("{:x}",Sha256::digest(&previous.bytes)) != expected =>
-                return Err("Content conflict: supply the SHA-256 from read_file; empty hash means create only".into()),
-            _ => {},
+            None if !expected.is_empty() => {
+                return Err("File no longer exists; read it again before updating".into());
+            }
+            Some(previous) if format!("{:x}", Sha256::digest(&previous.bytes)) != expected => {
+                return Err(FILE_HASH_CONFLICT.into());
+            }
+            _ => {}
         }
         write_atomic(&parent, &name, content.as_bytes(), previous.as_ref())?;
         Ok(written(path, content.as_bytes()))
@@ -756,7 +765,7 @@ fn edit(files: &Files, p: &Value, control: Control<'_>) -> Result<Value, String>
             read_existing(&parent, &name)?.ok_or("File no longer exists; read_file again")?;
         let actual = format!("{:x}", Sha256::digest(&previous.bytes));
         if expected != Some(actual.as_str()) {
-            return Err("Content conflict: read_file again".into());
+            return Err(FILE_HASH_CONFLICT.into());
         }
         // from_utf8 deliberately retains the BOM, matching ignoreBOM:true.
         let text = std::str::from_utf8(&previous.bytes).map_err(|_| "File is not valid UTF-8")?;

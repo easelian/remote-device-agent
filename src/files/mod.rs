@@ -13,6 +13,7 @@ mod macos;
 
 pub const MUTATION_DEADLINE_EXPIRED: &str = "File mutation deadline expired before execution";
 pub const MUTATION_SHUTTING_DOWN: &str = "Agent is shutting down; file mutation was not started";
+pub const FILE_HASH_CONFLICT: &str = "Content conflict: SHA-256 does not match; read_file again before updating (empty hash means create only)";
 
 #[cfg(any(
     target_os = "linux",
@@ -1080,7 +1081,7 @@ mod tests {
                 json!({"path":"file","old_text":"original","new_text":"new","expected_sha256":null}),
             )
             .unwrap_err();
-        assert!(error.ends_with("Content conflict: read_file again"));
+        assert_eq!(error, FILE_HASH_CONFLICT);
         assert_eq!(fs::read_to_string(path).unwrap(), "original");
     }
 }

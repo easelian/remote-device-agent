@@ -12,7 +12,9 @@ use crate::audit::{AuditLog, AuditRecord};
 use crate::browser::{Browsers, OPERATIONS as BROWSER_OPERATIONS, Principal};
 use crate::config::{DeviceConfig, sha256_hex};
 use crate::error::{Error, Result};
-use crate::files::{FILE_OPERATIONS, Files, MUTATION_DEADLINE_EXPIRED, MUTATION_SHUTTING_DOWN};
+use crate::files::{
+    FILE_HASH_CONFLICT, FILE_OPERATIONS, Files, MUTATION_DEADLINE_EXPIRED, MUTATION_SHUTTING_DOWN,
+};
 use crate::policy::Policy;
 use crate::processes::{ExitHook, PROCESS_OPERATIONS, Processes};
 use crate::receipts::{Begin, ReceiptError, Receipts, result_summary};
@@ -728,6 +730,7 @@ impl Runtime {
                 .files
                 .dispatch_controlled(operation, &request.params, request.deadline, &self.closing)
                 .map_err(|message| match message.as_str() {
+                    FILE_HASH_CONFLICT => Failure::new("file_hash_conflict", message, "failed"),
                     MUTATION_DEADLINE_EXPIRED => {
                         Failure::new("operation_timeout", message, "not_sent")
                     }
@@ -1317,6 +1320,48 @@ mod tests {
         })
         .await
         .expect("worker did not finish");
+    }
+
+    #[tokio::test]
+    async fn file_hash_conflicts_are_failed_and_preserve_contents_and_receipts() {
+        let fixture = Fixture::new();
+        let runtime = fixture.runtime(None);
+        let (sender, mut rx, _) = channel();
+        std::fs::write(fixture.0.join("output"), b"current").unwrap();
+        for (index, operation) in ["write_file", "edit_file"].iter().enumerate() {
+            let id = format!("conflict-{index}");
+            let oid = format!("{index:032x}");
+            let mut request = write(&id, 5000, Some((&oid, &runtime.receipts.instance_id)));
+            request["operation"] = json!(operation);
+            request["params"] =
+                json!({"root":"work", "path":"output", "expected_sha256":sha256_hex(b"old")});
+            if *operation == "write_file" {
+                request["params"]["content"] = json!("must not overwrite");
+            } else {
+                request["params"]["old_text"] = json!("current");
+                request["params"]["new_text"] = json!("must not overwrite");
+            }
+            runtime.receive(&request, &sender, &ids()).unwrap();
+            let rejected = result(&mut rx, &id).await;
+            assert_eq!(rejected["error_code"], "file_hash_conflict");
+            assert_eq!(rejected["execution_state"], "failed");
+            assert_eq!(std::fs::read(fixture.0.join("output")).unwrap(), b"current");
+            let receipt = runtime
+                .receipts
+                .status(&json!(oid), &json!(runtime.receipts.instance_id))
+                .unwrap();
+            assert_eq!(receipt["error_code"], "file_hash_conflict");
+            assert_eq!(receipt["execution_state"], "failed");
+        }
+        let mut request = write("valid", 5000, None);
+        request["params"]["expected_sha256"] = json!(sha256_hex(b"current"));
+        runtime.receive(&request, &sender, &ids()).unwrap();
+        assert!(result(&mut rx, "valid").await["result"]["sha256"].is_string());
+        assert_eq!(
+            std::fs::read(fixture.0.join("output")).unwrap(),
+            b"one effect"
+        );
+        assert!(runtime.shutdown().await);
     }
 
     fn cluster_identity(runtime: &Runtime, generation: i64) -> crate::cluster::Identity {
