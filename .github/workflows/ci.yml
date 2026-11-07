@@ -10,7 +10,9 @@ on:
       - 'tests/**'
       - 'xtask/**'
       - 'packaging/**'
+      - '.github/scripts/**'
       - .github/workflows/ci.yml
+      - .github/workflows/release.yml
   pull_request:
     paths:
       - Cargo.toml
@@ -19,7 +21,9 @@ on:
       - 'tests/**'
       - 'xtask/**'
       - 'packaging/**'
+      - '.github/scripts/**'
       - .github/workflows/ci.yml
+      - .github/workflows/release.yml
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -36,8 +40,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Avoid duplicate release checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      native_required: ${{ steps.plan.outputs.native_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check whether this exact commit is already being validated for release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(cargo metadata --locked --no-deps --format-version 1 | node -p "JSON.parse(require('fs').readFileSync(0)).packages.find(p => p.name === 'rdh-agent').version")
+          node .github/scripts/ci-plan.cjs "v$version"
+
   native-target:
     name: Development checks (${{ matrix.target }})
+    needs: plan
+    if: needs.plan.outputs.native_required == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 90 || 60 }}
     strategy:
@@ -64,6 +91,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: 1.93.0
     steps:
       - name: Preserve LF line endings on Windows
         if: runner.os == 'Windows'
@@ -114,6 +143,12 @@ jobs:
       - name: Check formatting
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo +1.93.0 fmt --all -- --check
+      - name: Restore Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: native-${{ matrix.runner }}-${{ matrix.target }}
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install shell startup test tools
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
@@ -121,19 +156,19 @@ jobs:
           sudo apt-get install -y zsh fish
       - name: Check npm platform selection and release assembly
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: node --test packaging/npm/launcher.test.cjs packaging/prepare-release.test.cjs
+        run: node --test packaging/npm/launcher.test.cjs packaging/prepare-release.test.cjs .github/scripts/ci-plan.test.cjs
       - name: Check Windows explicitly disabled features
         if: runner.os == 'Windows'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --lib --no-default-features --target "$RDH_TARGET" windows_default_tests::
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --lib --no-default-features --target "$RDH_TARGET" windows_default_tests::
       - name: Check macOS explicitly disabled features
         if: runner.os == 'macOS'
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --lib --no-default-features --target "$RDH_TARGET" macos_default_tests::
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --lib --no-default-features --target "$RDH_TARGET" macos_default_tests::
       - name: Check implemented paths
         id: native_checks
         env:
@@ -167,7 +202,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
+          cargo +1.93.0 test --profile ci --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
       - name: Exercise npm launcher with the native executable
         if: ${{ !endsWith(matrix.target, '-linux-musl') }}
         env:
@@ -185,7 +220,7 @@ jobs:
         run: |
           for attempt in {1..10}; do
             printf 'Windows binding lifecycle attempt %s/10\n' "$attempt"
-            cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_pairing native_windows_cli_pairs_and_reuses_private_identity_without_node -- --exact --nocapture
+            cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test windows_pairing native_windows_cli_pairs_and_reuses_private_identity_without_node -- --exact --nocapture
           done
       - name: Record Windows process-denial events after the failed tests
         if: ${{ !cancelled() && steps.native_tests.outcome == 'failure' && runner.os == 'Windows' }}
@@ -212,13 +247,13 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" startup::macos::tests::launchagent_plist_executes_exact_native_arguments -- --ignored --test-threads=1
       - name: Check native Windows startup settings and administrator grants
         if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && runner.os == 'Windows' }}
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" native_windows_ -- --ignored --test-threads=1
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --lib --all-features --target "$RDH_TARGET" native_windows_ -- --ignored --test-threads=1
       - name: Build and inspect the development executable
         env:
           RDH_TARGET: ${{ matrix.target }}
@@ -232,7 +267,7 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: |
-          cargo +1.93.0 test --release --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test native_bootstrap native_windows_bootstrap_ -- --ignored --test-threads=1
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test native_bootstrap native_windows_bootstrap_ -- --ignored --test-threads=1
       - name: Retain native development artifacts
         if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' }}
         uses: actions/upload-artifact@v7

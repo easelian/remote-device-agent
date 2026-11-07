@@ -20,6 +20,12 @@ license = "Apache-2.0"
 lto = "thin"
 strip = "debuginfo"
 
+# Test harnesses keep release optimization without linking every test with LTO.
+# CLI integration tests still execute the verified release artifact built by xtask.
+[profile.ci]
+inherits = "release"
+lto = "off"
+
 [[bin]]
 name = "rdh"
 path = "src/main.rs"

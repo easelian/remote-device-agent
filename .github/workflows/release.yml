@@ -37,6 +37,7 @@ jobs:
       release_candidate: true
     permissions:
       contents: read
+      actions: read
   draft:
     needs: [preflight, native]
     runs-on: ubuntu-24.04
