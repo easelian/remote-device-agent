@@ -10,6 +10,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Component, Path, Prefix};
 use std::ptr::{null, null_mut};
+use std::time::{Duration, Instant};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
@@ -19,8 +20,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    LocalFree, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError, UNICODE_STRING,
+    ERROR_FILE_NOT_FOUND, ERROR_SHARING_VIOLATION, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE,
+    RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -902,10 +904,36 @@ pub fn open_private_file(path: &Path, writable: bool) -> Result<File> {
     Ok(file)
 }
 
+fn open_private_snapshot(parent: &File, name: &[u16]) -> Result<File> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let file = loop {
+        match open_child_request(
+            parent,
+            name,
+            false,
+            GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+        ) {
+            // An atomic publication exposes its name just before the exclusive
+            // writer closes. Retry only this read-open, never a write/rename.
+            Err(Error::Io(error))
+                if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => break result?,
+        }
+    };
+    check_file_acl(&file)?;
+    // Readers keep their verified object while a concurrent status update can
+    // replace its name. In-place writes remain excluded by the sharing mode.
+    Ok(file)
+}
+
 pub fn read_private(path: &Path) -> Result<Vec<u8>> {
     let (directories, name) = open_parent(path, false, false)?;
-    let file = open_child(directories.last().expect("root exists"), &name, false, true)?;
-    check_file_acl(&file)?;
+    let file = open_private_snapshot(directories.last().expect("root exists"), &name)?;
     let metadata = file.metadata()?;
     if metadata.len() > MAX_PRIVATE_FILE_BYTES {
         return Err(Error::message(
@@ -1461,15 +1489,18 @@ mod tests {
         write_private_new(&path, b"old-secret").unwrap();
         let (parents, name) = open_parent(&path, false, true).unwrap();
         let parent = parents.last().unwrap();
-        let mut reader = open_child_request(
-            parent,
-            &name,
-            false,
-            GENERIC_READ | READ_CONTROL | SYNCHRONIZE,
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
-        )
-        .unwrap();
+        let mut reader = open_private_snapshot(parent, &name).unwrap();
         let old = file_identity(&reader).unwrap();
+        assert!(matches!(
+            open_child_request(
+                parent,
+                &name,
+                false,
+                GENERIC_WRITE | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ),
+            Err(Error::Io(error)) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
+        ));
         write_private_replace(&path, b"new-secret").unwrap();
         assert_eq!(read_private(&path).unwrap(), b"new-secret");
         let current = open_child(parent, &name, false, true).unwrap();
@@ -1482,6 +1513,47 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         );
+    }
+
+    #[test]
+    fn private_read_waits_for_the_published_writer_to_close() {
+        let fixture = Fixture::new();
+        let path = fixture.private_directory("private").join("device.json");
+        let (parents, name) = open_parent(&path, false, true).unwrap();
+        let parent = parents.last().unwrap();
+        let temporary_name: Vec<u16> = ".published.tmp".encode_utf16().collect();
+        let mut temporary = staged_file(parent, &temporary_name, b"published-secret");
+        temporary.installed_or_deleted = true;
+        rename_file(&temporary.file, parent, &name, false).unwrap();
+        assert!(matches!(
+            open_child(parent, &name, false, true),
+            Err(Error::Io(error)) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
+        ));
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(temporary);
+        });
+        let result = read_private(&path);
+        writer.join().unwrap();
+        assert_eq!(result.unwrap(), b"published-secret");
+    }
+
+    #[test]
+    fn private_read_reports_a_persistent_sharing_conflict() {
+        let fixture = Fixture::new();
+        let path = fixture.private_directory("private").join("device.json");
+        let (parents, name) = open_parent(&path, false, true).unwrap();
+        let parent = parents.last().unwrap();
+        let temporary_name: Vec<u16> = ".published.tmp".encode_utf16().collect();
+        let mut temporary = staged_file(parent, &temporary_name, b"published-secret");
+        temporary.installed_or_deleted = true;
+        rename_file(&temporary.file, parent, &name, false).unwrap();
+        assert!(matches!(
+            read_private(&path),
+            Err(Error::Io(error)) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
+        ));
+        drop(temporary);
+        assert_eq!(read_private(&path).unwrap(), b"published-secret");
     }
 
     #[test]
