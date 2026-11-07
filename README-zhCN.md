@@ -74,7 +74,7 @@ rdh update
 
 ## 浏览器任务
 
-Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页面读取、浏览器内输入、人工登录、截图、命名资料和受限文件传输。[使用指南](docs/browser-zhCN.md)说明本地启用步骤及配套 Hub 要求。当前浏览器改动已完成本地验证，尚未发布或部署。
+Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页面读取、浏览器内输入、人工登录、截图、命名资料和受限文件传输。浏览器能力为预览功能，默认关闭，需要配套的 Hub/MCP 和 Business 网页构建。[使用指南](docs/browser-zhCN.md)说明本地启用步骤、已验证平台和剩余验收范围。
 
 ## 开发与文档
 
@@ -84,7 +84,7 @@ Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页
 - [生命周期](docs/native-lifecycle-zhCN.md)（[English](docs/native-lifecycle.md)）：启动、解绑和程序替换。
 - [架构](docs/architecture.md)：连接、请求和工作生命周期。
 - [分发说明](docs/distribution.md)：产物、安装器和发布准备。
-- [浏览器能力设计与实施计划](docs/browser-plan-zhCN.md)：用户任务、实现规划、基础 Agent/MCP 验证与验收指标；当前为未发布的实验实现。
+- [浏览器能力设计与实施计划](docs/browser-plan-zhCN.md)：用户任务、实现规划、基础 Agent/MCP 验证与验收指标；浏览器能力处于预览阶段。
 
 ## 许可证
 

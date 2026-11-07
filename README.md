@@ -119,8 +119,9 @@ See [Network configuration](docs/network.md) and [Hardening](docs/hardening.md).
 Opt-in Linux, macOS and Windows browser sessions support structured page reads, browser-only input,
 human login, screenshots, named profiles and bounded file transfer. Use the
 [Browser guide](docs/browser.md) to enable the local policy and check the matching
-Hub requirements. These browser changes have local validation and are not yet
-released or deployed.
+Hub requirements. Browser support is a preview feature and is disabled by
+default. It requires matching Hub/MCP and Business web builds; the guide records
+the validated platforms and remaining acceptance limits.
 
 ## Development and documentation
 
