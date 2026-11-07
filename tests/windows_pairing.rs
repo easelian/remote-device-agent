@@ -23,6 +23,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex;
+use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
 
 struct Hub {
     origin: String,
@@ -109,19 +110,28 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
         .stderr(log)
         .spawn()
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !config.exists() {
+    let first = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
             assert!(
                 child.try_wait().unwrap().is_none(),
                 "{}",
                 fs::read_to_string(&log_path).unwrap()
             );
+            // The atomic rename publishes the name before the writer closes
+            // its exclusive Windows handle. Wait for readable bytes, not just
+            // for the directory entry, without masking other I/O failures.
+            match fs::read(&config) {
+                Ok(bytes) => break bytes,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        || error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {}
+                Err(error) => panic!("Cannot read the created binding: {error}"),
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
-    let first = fs::read(&config).unwrap();
     let native = DeviceConfig::read(&config).unwrap();
     assert_eq!(native.device_id, "native-windows-pairing");
     assert_eq!(
