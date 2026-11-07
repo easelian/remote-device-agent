@@ -13,6 +13,7 @@ mod macos;
 
 pub const MUTATION_DEADLINE_EXPIRED: &str = "File mutation deadline expired before execution";
 pub const MUTATION_SHUTTING_DOWN: &str = "Agent is shutting down; file mutation was not started";
+pub const FILE_EXISTS: &str = "File already exists";
 pub const FILE_HASH_CONFLICT: &str = "Content conflict: SHA-256 does not match; read_file again before updating (empty hash means create only)";
 
 #[cfg(any(
@@ -1187,7 +1188,14 @@ mod mutation_tests {
                     json!({"path":"nested/file","content":"bad","expected_sha256":expected}),
                 )
                 .unwrap_err();
-            assert!(error.contains("Content conflict"));
+            assert_eq!(
+                error,
+                if expected.is_empty() {
+                    FILE_EXISTS
+                } else {
+                    FILE_HASH_CONFLICT
+                }
+            );
         }
         assert_eq!(fs::read(&target).unwrap(), b"before");
         fixture.call("write_file",json!({"path":"nested/file","content":"after 世界","expected_sha256":first["sha256"]})).unwrap();

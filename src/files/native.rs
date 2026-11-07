@@ -645,9 +645,9 @@ fn mutation_result(result: Result<Value, String>) -> Result<Value, String> {
     // failed fsync/identity check, and failed temporary cleanup. RPC must not
     // report not_sent/no-effect for errors returned from this phase.
     result.map_err(|error| {
-        // This sentinel is emitted only by the pre-write hash checks below.
+        // These sentinels identify pre-commit existence or hash conflicts.
         // The target file has not been written on this path.
-        if error == FILE_HASH_CONFLICT {
+        if error == FILE_HASH_CONFLICT || error == FILE_EXISTS {
             error
         } else {
             format!("File mutation failed; filesystem effects may have occurred: {error}")
@@ -729,6 +729,7 @@ fn write(files: &Files, p: &Value, control: Control<'_>) -> Result<Value, String
             None if !expected.is_empty() => {
                 return Err("File no longer exists; read it again before updating".into());
             }
+            Some(_) if expected.is_empty() => return Err(FILE_EXISTS.into()),
             Some(previous) if format!("{:x}", Sha256::digest(&previous.bytes)) != expected => {
                 return Err(FILE_HASH_CONFLICT.into());
             }

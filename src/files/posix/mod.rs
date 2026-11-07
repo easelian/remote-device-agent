@@ -517,7 +517,7 @@ pub(super) fn write_atomic(
             // cross-process compare-and-swap against the final rename.
             verify_file(parent, name, &previous.metadata)?;
         } else if stat_at(&parent.directory, name)?.is_some() {
-            return Err("File already exists".into());
+            return Err(super::super::FILE_EXISTS.into());
         }
         let source = cstring(&temporary.name)?;
         let target = cstring(name)?;

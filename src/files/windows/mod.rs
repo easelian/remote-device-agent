@@ -1085,7 +1085,7 @@ pub(super) fn write_atomic(
         if let Some(old) = existing {
             verify_file(parent, name, old.snapshot)?;
         } else if named(parent.file_handle(), name)?.is_some() {
-            return Err("File already exists".into());
+            return Err(super::super::FILE_EXISTS.into());
         }
         // There is no cross-process digest compare-and-swap. As on POSIX,
         // observed changes are rejected before the atomic namespace operation.

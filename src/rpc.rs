@@ -13,7 +13,8 @@ use crate::browser::{Browsers, OPERATIONS as BROWSER_OPERATIONS, Principal};
 use crate::config::{DeviceConfig, sha256_hex};
 use crate::error::{Error, Result};
 use crate::files::{
-    FILE_HASH_CONFLICT, FILE_OPERATIONS, Files, MUTATION_DEADLINE_EXPIRED, MUTATION_SHUTTING_DOWN,
+    FILE_EXISTS, FILE_HASH_CONFLICT, FILE_OPERATIONS, Files, MUTATION_DEADLINE_EXPIRED,
+    MUTATION_SHUTTING_DOWN,
 };
 use crate::policy::Policy;
 use crate::processes::{ExitHook, PROCESS_OPERATIONS, Processes};
@@ -730,6 +731,7 @@ impl Runtime {
                 .files
                 .dispatch_controlled(operation, &request.params, request.deadline, &self.closing)
                 .map_err(|message| match message.as_str() {
+                    FILE_EXISTS => Failure::new("file_exists", message, "failed"),
                     FILE_HASH_CONFLICT => Failure::new("file_hash_conflict", message, "failed"),
                     MUTATION_DEADLINE_EXPIRED => {
                         Failure::new("operation_timeout", message, "not_sent")
@@ -1353,6 +1355,20 @@ mod tests {
             assert_eq!(receipt["error_code"], "file_hash_conflict");
             assert_eq!(receipt["execution_state"], "failed");
         }
+        let oid = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let mut request = write("exists", 5000, Some((oid, &runtime.receipts.instance_id)));
+        request["params"]["expected_sha256"] = json!("");
+        runtime.receive(&request, &sender, &ids()).unwrap();
+        let rejected = result(&mut rx, "exists").await;
+        assert_eq!(rejected["error_code"], "file_exists");
+        assert_eq!(rejected["execution_state"], "failed");
+        assert_eq!(std::fs::read(fixture.0.join("output")).unwrap(), b"current");
+        let receipt = runtime
+            .receipts
+            .status(&json!(oid), &json!(runtime.receipts.instance_id))
+            .unwrap();
+        assert_eq!(receipt["error_code"], "file_exists");
+        assert_eq!(receipt["execution_state"], "failed");
         let mut request = write("valid", 5000, None);
         request["params"]["expected_sha256"] = json!(sha256_hex(b"current"));
         runtime.receive(&request, &sender, &ids()).unwrap();
