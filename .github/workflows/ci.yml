@@ -148,6 +148,7 @@ jobs:
         with:
           shared-key: native-${{ matrix.runner }}-${{ matrix.target }}
           cache-bin: false
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install shell startup test tools
         if: matrix.target == 'x86_64-unknown-linux-gnu'

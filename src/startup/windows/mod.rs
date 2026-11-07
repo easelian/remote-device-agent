@@ -281,6 +281,10 @@ mod tests {
     #[ignore = "registers and removes a uniquely named task and stopped service on an elevated Windows runner"]
     fn native_windows_task_and_service_startup_settings() {
         use crate::storage::windows::{create_child, open_parent};
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{
+            ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_MARKED_FOR_DELETE,
+        };
         use windows_sys::Win32::System::Services::{
             CreateServiceW, DeleteService, QueryServiceStatus, SC_MANAGER_CREATE_SERVICE,
             SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL, SERVICE_QUERY_STATUS, SERVICE_STATUS,
@@ -404,13 +408,21 @@ mod tests {
             "CreateService: {}",
             io::Error::last_os_error()
         );
-        struct Registered(Service);
+        struct Registered {
+            service: Service,
+            deletion_requested: bool,
+        }
         impl Drop for Registered {
             fn drop(&mut self) {
-                unsafe { DeleteService(self.0.0) };
+                if !self.deletion_requested {
+                    unsafe { DeleteService(self.service.0) };
+                }
             }
         }
-        let registered = Registered(Service(raw));
+        let mut registered = Registered {
+            service: Service(raw),
+            deletion_requested: false,
+        };
         let binding = Binding {
             mode: Mode::Service,
             name: service_name,
@@ -419,11 +431,38 @@ mod tests {
             backend.set(&binding, enabled).unwrap();
             assert_eq!(backend.enabled(&binding).unwrap(), enabled);
             let mut state = SERVICE_STATUS::default();
-            assert_ne!(unsafe { QueryServiceStatus(registered.0.0, &mut state) }, 0);
+            assert_ne!(
+                unsafe { QueryServiceStatus(registered.service.0, &mut state) },
+                0
+            );
             assert_eq!(state.dwCurrentState, SERVICE_STOPPED);
         }
+        assert_ne!(
+            unsafe { DeleteService(registered.service.0) },
+            0,
+            "DeleteService: {}",
+            io::Error::last_os_error()
+        );
+        registered.deletion_requested = true;
         drop(registered);
-        assert!(Service::open(&binding.name, false).is_err());
+        // SCM removes the entry after the deletion request and final handle
+        // close. Confirm actual absence rather than assuming immediate removal.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match Service::open(&binding.name, false) {
+                Err(Error::Io(error))
+                    if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) =>
+                {
+                    break;
+                }
+                Err(Error::Io(error))
+                    if error.raw_os_error() == Some(ERROR_SERVICE_MARKED_FOR_DELETE as i32) => {}
+                Ok(service) => drop(service),
+                Err(error) => panic!("Cannot confirm fixture service deletion: {error}"),
+            }
+            assert!(Instant::now() < deadline, "Fixture service was not removed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         drop(task);
         drop(backend);
         std::fs::remove_dir_all(&root).unwrap();
