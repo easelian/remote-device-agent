@@ -61,6 +61,21 @@ pub(super) async fn complete(config: &Path, paths: &[PathBuf]) -> Result<()> {
         _ => None,
     };
     let deadline = Instant::now() + Duration::from_secs(15);
+    // Let the known Agent release its profile lock before attempting recovery.
+    // On Windows, even a failed acquire briefly owns the recovery guard; polling
+    // it while the Agent drains can make the Agent's own release fail.
+    if let Some((pid, started)) = process {
+        while crate::process_identity::running(pid, &started)? && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if crate::process_identity::running(pid, &started)? {
+            errors.push("Agent process exit is not confirmed".into());
+            if let Err(error) = crate::startup::disable_for_unbind(config) {
+                errors.push(format!("automatic startup: {error}"));
+            }
+            return Err(pending_error(&errors));
+        }
+    }
     let mut locks = loop {
         match acquire(paths) {
             Ok(locks) => break locks,
@@ -76,14 +91,6 @@ pub(super) async fn complete(config: &Path, paths: &[PathBuf]) -> Result<()> {
     };
     if let Err(error) = crate::startup::disable_for_unbind(config) {
         errors.push(format!("automatic startup: {error}"));
-    }
-    if let Some((pid, started)) = process {
-        while crate::process_identity::running(pid, &started)? && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        if crate::process_identity::running(pid, &started)? {
-            errors.push("Agent process exit is not confirmed".into());
-        }
     }
     match network {
         Ok(network) => {

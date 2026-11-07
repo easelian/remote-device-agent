@@ -201,8 +201,6 @@ async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
     .unwrap();
     let mut third = start(&base, &config, "reused-pid").await;
     assert_eq!(storage::read_private(&config).unwrap(), original);
-    third.kill().await.unwrap();
-    third.wait().await.unwrap();
     let unbind = tokio::time::timeout(
         Duration::from_secs(8),
         command(&base).arg("unbind").output(),
@@ -211,6 +209,15 @@ async fn crashed_binding_recovers_without_repair_and_unbind_keeps_its_intent() {
     .unwrap()
     .unwrap();
     assert!(!unbind.status.success());
+    let stopped = tokio::time::timeout(Duration::from_secs(8), third.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        stopped.success(),
+        "Agent exited with {stopped} after unbind:\n{}",
+        std::fs::read_to_string(base.join("reused-pid.log")).unwrap()
+    );
     let error = String::from_utf8_lossy(&unbind.stderr);
     assert!(error.contains("Hub revocation"), "{error}");
     assert!(!error.contains("shutdown is not confirmed"), "{error}");
