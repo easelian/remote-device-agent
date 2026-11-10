@@ -109,7 +109,7 @@ async fn input(
     }
     // Once accepted, an uncertain request cannot reuse its sequence to emit input again.
     control.sequence += 1;
-    // Fixture prototype: one request at a time, no retry on lost HTTP reply.
+    // The fixture handles one request at a time and does not retry lost replies.
     let result = match v["type"].as_str() {
         Some("text") => {
             let text = v["text"]

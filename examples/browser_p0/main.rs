@@ -1,4 +1,4 @@
-//! P0 evidence harness. Run explicitly; never adds a production Agent operation.
+//! Explicit Linux browser process-ownership fixture, separate from Agent RPC.
 #[cfg(target_os = "linux")]
 mod bridge;
 #[cfg(target_os = "linux")]

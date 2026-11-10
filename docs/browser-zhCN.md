@@ -2,7 +2,7 @@
 
 [English](browser.md) | 简体中文
 
-通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。浏览器能力为预览功能，默认关闭。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。平台实现与原生验证范围见[方案第 17.14 节](browser-plan-zhCN.md#1714-异常退出恢复启动修正与跨平台联调2026-11-05)，剩余验收范围见本文末尾。
+通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。浏览器能力为预览功能，默认关闭。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。模块职责和源码位置见[浏览器架构](browser-architecture-zhCN.md)。
 
 服务端需将 Core 的 `http.browser_user_url` 设为用户网站的 origin，在 Gate 的网页登录动作列表允许 `browser:control`，并应用包含 `device-browser` 用途的配套 Auth application-access 契约。Server 示例配置已包含这些设置；发布 Agent 不会部署配套服务。
 
@@ -82,4 +82,4 @@ AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，
 - Agent 重启会丢弃未完成下载和全部上传副本，不恢复旧会话或重放网站动作。POSIX 恢复会核验原进程组。Windows 的独立回收子进程会在 Agent 异常退出后终止浏览器 Job，确认其中的活动进程归零并保存完成记录；下一次浏览器请求据此清理旧运行目录，允许重新打开资料。清理尚未完成时返回 `browser_cleanup_pending`。如果 Agent 和回收子进程都被结束，或可靠完成记录缺失，资料仍保持隔离，复用和解绑删除会被拒绝；重启系统本身不能补足这项证明。
 - `.rdh-browser` 是 Agent 私有存储，文件读取、写入、列表、搜索和共享根配置均排除这个目录。名称匹配忽略大小写，Windows 还核对规范目录路径，拒绝短文件名别名。Shell 权限仍代表 Agent 所属操作系统账号的权限，这项排除不是 shell 沙箱，也不能隔离同一系统账号的直接访问。
 
-源码、证据和剩余发布门槛见[浏览器方案与验收计划](browser-plan-zhCN.md)。实际 AI 宿主展示、其余 OS/架构组合、负载性能和人工体验验收仍待完成。首次权限配置和浏览器安装目前需要在远程设备本地完成；网页已提供状态说明和已有会话入口。
+源码职责见[浏览器架构](browser-architecture-zhCN.md)。图片展示、任务续接、性能和人工体验需在目标 AI 客户端、操作系统及浏览器组合中分别验证。首次权限配置和浏览器安装目前需要在远程设备本地完成；网页已提供状态说明和已有会话入口。
