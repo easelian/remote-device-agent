@@ -39,6 +39,10 @@ pub fn channel() -> (Sender, mpsc::Receiver<Frame>, watch::Receiver<bool>) {
 }
 
 impl Sender {
+    pub(crate) fn fail(&self) {
+        let _ = self.failure.send(true);
+    }
+
     /// True only when no frame is queued or being sent by the writer.
     pub fn idle(&self) -> bool {
         !self.tx.is_closed()
@@ -68,7 +72,7 @@ impl Sender {
                 .map_err(|_| Error::message("Connection send budget exceeded"))
         })();
         if result.is_err() {
-            let _ = self.failure.send(true);
+            self.fail();
         }
         result
     }
@@ -80,29 +84,91 @@ impl Sender {
     /// Replay already completed work through the same bounded writer. Waiting
     /// for capacity is cancellation safe: no frame is accepted until send wins.
     pub(crate) async fn json_wait(&self, value: &Value) -> Result<()> {
-        let encoded = serde_json::to_string(value)?;
-        if encoded.len() > MAX_FRAME {
+        self.send_wait(Message::Text(serde_json::to_string(value)?.into()))
+            .await
+    }
+
+    /// A canceled wait accepts no frame and releases any reserved bytes.
+    /// Closing the receiver also wakes byte waiters, including when a frame
+    /// outside the queue still holds the entire byte budget.
+    pub(crate) async fn send_wait(&self, message: Message) -> Result<()> {
+        let bytes = match &message {
+            Message::Text(value) => value.len(),
+            Message::Binary(value) | Message::Ping(value) | Message::Pong(value) => value.len(),
+            _ => 0,
+        };
+        if bytes > MAX_FRAME {
             return Err(Error::message("Result exceeds the transport limit"));
         }
-        let permit = self
-            .bytes
-            .clone()
-            .acquire_many_owned(encoded.len() as u32)
-            .await
-            .map_err(|_| Error::message("Connection writer closed"))?;
-        self.tx
-            .send(Frame {
-                message: Message::Text(encoded.into()),
-                _bytes: permit,
-            })
-            .await
-            .map_err(|_| Error::message("Connection writer closed"))
+        tokio::select! {
+            _ = self.tx.closed() => Err(Error::message("Connection writer closed")),
+            result = async {
+                let permit = self.bytes.clone()
+                    .acquire_many_owned(bytes as u32)
+                    .await
+                    .map_err(|_| Error::message("Connection writer closed"))?;
+                self.tx.send(Frame { message, _bytes: permit })
+                    .await
+                    .map_err(|_| Error::message("Connection writer closed"))
+            } => result,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closing_writer_wakes_byte_waiters_with_frames_still_in_flight() {
+        let (sender, mut rx, _) = channel();
+        for _ in 0..2 {
+            sender
+                .send(Message::Binary(vec![0; MAX_FRAME].into()))
+                .unwrap();
+        }
+        let first = rx.recv().await.unwrap();
+        let second = rx.recv().await.unwrap();
+        let waiting = sender.send_wait(Message::Text("blocked".into()));
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        rx.close();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        drop((first, second));
+        assert_eq!(sender.bytes.available_permits(), MAX_QUEUED_BYTES);
+    }
+
+    #[tokio::test]
+    async fn canceling_message_wait_releases_reserved_bytes() {
+        let (sender, mut rx, failure) = channel();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            sender.send(Message::Text("x".into())).unwrap();
+        }
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                sender.send_wait(Message::Text("canceled".into())),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            sender.bytes.available_permits(),
+            MAX_QUEUED_BYTES - MAX_QUEUED_MESSAGES
+        );
+        assert!(!*failure.borrow());
+        while rx.try_recv().is_ok() {}
+        assert!(sender.idle());
+    }
 
     #[tokio::test]
     async fn replay_waits_for_capacity_without_failing_the_connection() {

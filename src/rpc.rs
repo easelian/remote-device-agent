@@ -27,6 +27,7 @@ use crate::transport::{MAX_FRAME, MAX_QUEUED_BYTES, Sender};
 
 const ORDINARY_LIMIT: usize = 8;
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(20);
+const RESPONSE_SEND_DEADLINE: Duration = Duration::from_secs(5);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(6);
 const OFFLINE_GRACE: Duration = Duration::from_secs(300);
 const NULL: Value = Value::Null;
@@ -997,12 +998,12 @@ impl Runtime {
         active.insert(id.to_owned());
         drop(active);
         self.active.fetch_add(1, Ordering::AcqRel);
-        let flight = Flight {
+        let flight = Arc::new(Flight {
             runtime: Arc::clone(self),
             id: id.to_owned(),
             active_ids: Arc::clone(ids),
             _permit: permit,
-        };
+        });
         let request = Request {
             id: id.to_owned(),
             operation: operation.to_owned(),
@@ -1016,6 +1017,7 @@ impl Runtime {
         let (done, response) = oneshot::channel::<(Outcome, f64)>();
         self.responses.fetch_add(1, Ordering::AcqRel);
         let response_flight = ResponseFlight(Arc::clone(self));
+        let response_operation = Arc::clone(&flight);
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1057,20 +1059,23 @@ impl Runtime {
                 flight.runtime.notify_receipt(id);
             }
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-            drop(flight);
             let _ = done.send((outcome, elapsed_ms));
+            drop(flight);
         });
         tokio::spawn(async move {
             let _response_flight = response_flight;
+            // Execution may outlive the RPC timeout; sending may outlive
+            // execution. Keep admission bounded until both owners finish.
+            let _response_operation = response_operation;
             match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), response).await
             {
                 Ok(Ok((Outcome::Success(value), elapsed))) => {
-                    send_success(&response_sender, &response_id, value, elapsed)
+                    send_success(&response_sender, &response_id, value, elapsed).await
                 }
                 Ok(Ok((Outcome::Failure(error), elapsed))) => {
-                    send_failure(&response_sender, &response_id, &error, Some(elapsed))
+                    send_failure_wait(&response_sender, &response_id, &error, Some(elapsed)).await
                 }
-                Ok(Err(_)) => send_failure(
+                Ok(Err(_)) => send_failure_wait(
                     &response_sender,
                     &response_id,
                     &Failure::new(
@@ -1079,8 +1084,8 @@ impl Runtime {
                         "unknown",
                     ),
                     None,
-                ),
-                Err(_) => send_failure(
+                ).await,
+                Err(_) => send_failure_wait(
                     &response_sender,
                     &response_id,
                     &Failure::new(
@@ -1089,7 +1094,7 @@ impl Runtime {
                         "unknown",
                     ),
                     None,
-                ),
+                ).await,
             }
         });
         Ok(())
@@ -1141,32 +1146,62 @@ fn clipped(value: &str, limit: usize) -> String {
         .collect()
 }
 
-fn send_success(sender: &Sender, id: &str, result: Value, elapsed: f64) {
-    let value = json!({"type":"result", "id":id, "result":result, "execution_ms":elapsed});
-    match serde_json::to_string(&value) {
+async fn send_response(sender: &Sender, message: Message) {
+    if !matches!(
+        tokio::time::timeout(RESPONSE_SEND_DEADLINE, sender.send_wait(message)).await,
+        Ok(Ok(()))
+    ) {
+        sender.fail();
+    }
+}
+
+async fn send_success(sender: &Sender, id: &str, result: Value, elapsed: f64) {
+    let encoded = {
+        let mut value = json!({"type":"result", "id":id, "execution_ms":elapsed});
+        // Move the result into its envelope, then release the JSON tree before
+        // waiting for writer capacity. Keep only one encoded response per slot.
+        value["result"] = result;
+        serde_json::to_string(&value)
+    };
+    match encoded {
         Ok(encoded) if encoded.len() <= MAX_FRAME => {
-            let _ = sender.send(Message::Text(encoded.into()));
+            send_response(sender, Message::Text(encoded.into())).await;
         }
-        _ => send_failure(
-            sender,
-            id,
-            &Failure::new(
-                "result_too_large",
-                "Result exceeds the transport limit",
-                "succeeded",
-            ),
-            None,
-        ),
+        rejected => {
+            drop(rejected);
+            send_failure_wait(
+                sender,
+                id,
+                &Failure::new(
+                    "result_too_large",
+                    "Result exceeds the transport limit",
+                    "succeeded",
+                ),
+                None,
+            )
+            .await
+        }
     }
 }
 
 fn send_failure(sender: &Sender, id: &str, failure: &Failure, elapsed: Option<f64>) {
+    let _ = sender.json(&failure_value(id, failure, elapsed));
+}
+
+async fn send_failure_wait(sender: &Sender, id: &str, failure: &Failure, elapsed: Option<f64>) {
+    match serde_json::to_string(&failure_value(id, failure, elapsed)) {
+        Ok(encoded) => send_response(sender, Message::Text(encoded.into())).await,
+        Err(_) => sender.fail(),
+    }
+}
+
+fn failure_value(id: &str, failure: &Failure, elapsed: Option<f64>) -> Value {
     let mut value = json!({"type":"result", "id":id, "error":clipped(&failure.message, 1000),
         "error_code":failure.code, "execution_state":failure.state, "result_summary":failure.summary});
     if let Some(elapsed) = elapsed {
         value["execution_ms"] = json!(elapsed);
     }
-    let _ = sender.json(&value);
+    value
 }
 
 #[cfg(test)]
@@ -1174,13 +1209,13 @@ mod response_tests {
     use super::*;
     use crate::transport::{MAX_QUEUED_MESSAGES, channel};
 
-    #[test]
-    fn success_frame_preserves_json_and_checks_encoded_byte_limit() {
+    #[tokio::test]
+    async fn success_frame_preserves_json_and_checks_encoded_byte_limit() {
         let id = "reply-😀";
         let result = json!({"content":"\"\\\n😀", "items":[null, true, 42]});
         let expected = json!({"type":"result","id":id,"result":result,"execution_ms":1.5});
         let (sender, mut rx, failure) = channel();
-        send_success(&sender, id, result, 1.5);
+        send_success(&sender, id, result, 1.5).await;
         let frame = rx.try_recv().unwrap();
         assert_eq!(frame.message.to_text().unwrap(), expected.to_string());
         drop(frame);
@@ -1192,7 +1227,7 @@ mod response_tests {
                     .to_string()
                     .len();
             content.push_str(&"x".repeat(MAX_FRAME - overhead + extra));
-            send_success(&sender, id, json!({"content":content}), 1.5);
+            send_success(&sender, id, json!({"content":content}), 1.5).await;
             let frame = rx.try_recv().unwrap();
             let text = frame.message.to_text().unwrap();
             let reply: Value = serde_json::from_str(text).unwrap();
@@ -1212,14 +1247,55 @@ mod response_tests {
         }
     }
 
-    #[test]
-    fn success_frame_still_respects_writer_backpressure() {
-        let (sender, _rx, failure) = channel();
-        for _ in 0..MAX_QUEUED_MESSAGES {
-            send_success(&sender, "reply", json!({"ok":true}), 0.0);
+    #[tokio::test]
+    async fn success_frames_wait_for_temporary_byte_pressure() {
+        let (sender, mut rx, failure) = channel();
+        let content = "x".repeat(1536 * 1024);
+        for id in ["one", "two"] {
+            send_success(&sender, id, json!({"content":content}), 0.0).await;
+        }
+        let third = send_success(&sender, "three", json!({"content":content}), 0.0);
+        tokio::pin!(third);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut third)
+                .await
+                .is_err()
+        );
+        assert!(!*failure.borrow());
+        let first = rx.recv().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(first.message.to_text().unwrap()).unwrap()["id"],
+            "one"
+        );
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), third)
+            .await
+            .unwrap();
+        for id in ["two", "three"] {
+            let frame = rx.recv().await.unwrap();
+            let result: Value = serde_json::from_str(frame.message.to_text().unwrap()).unwrap();
+            assert_eq!(result["id"], id);
+            assert_eq!(result["result"]["content"], content);
         }
         assert!(!*failure.borrow());
-        send_success(&sender, "overflow", json!({"ok":true}), 0.0);
+        assert!(sender.idle());
+    }
+
+    #[tokio::test]
+    async fn success_frame_waits_for_message_capacity_and_fails_on_deadline() {
+        let (sender, _rx, failure) = channel();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            send_success(&sender, "reply", json!({"ok":true}), 0.0).await;
+        }
+        assert!(!*failure.borrow());
+        let started = Instant::now();
+        tokio::time::timeout(
+            RESPONSE_SEND_DEADLINE + Duration::from_secs(1),
+            send_success(&sender, "overflow", json!({"ok":true}), 0.0),
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() >= RESPONSE_SEND_DEADLINE);
         assert!(*failure.borrow());
     }
 }
@@ -1457,6 +1533,71 @@ mod tests {
         assert!(!runtime.begin_control(Some(&second)));
         assert_eq!(runtime.connection.lock().unwrap().as_ref().unwrap().0, 1);
         assert!(runtime.shutdown().await);
+    }
+
+    #[tokio::test]
+    async fn blocked_responses_keep_admission_slots_until_writer_closes() {
+        let fixture = Fixture::new();
+        let runtime = fixture.runtime(None);
+        let (sender, mut rx, failure) = channel();
+        for _ in 0..crate::transport::MAX_QUEUED_MESSAGES {
+            sender.json(&json!({"queued":true})).unwrap();
+        }
+        let active_ids = ids();
+        for index in 0..ORDINARY_LIMIT {
+            runtime
+                .receive(
+                    &json!({"id":format!("info-{index}"),"operation":"device_info"}),
+                    &sender,
+                    &active_ids,
+                )
+                .unwrap();
+        }
+        // Work completes quickly, but completed responses cannot enter the
+        // full queue. No Flight may retire before that queue drains/closes.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), runtime.finished.notified())
+                .await
+                .is_err()
+        );
+        assert_eq!(runtime.ordinary.available_permits(), 0);
+        assert_eq!(active_ids.lock().unwrap().len(), ORDINARY_LIMIT);
+        assert!(!*failure.borrow());
+        rx.close();
+        wait_finished(&runtime).await;
+        assert_eq!(runtime.ordinary.available_permits(), ORDINARY_LIMIT);
+        assert!(active_ids.lock().unwrap().is_empty());
+        assert!(*failure.borrow());
+        assert!(runtime.shutdown().await);
+    }
+
+    #[tokio::test]
+    async fn blocked_response_send_deadline_releases_admission_during_shutdown() {
+        let fixture = Fixture::new();
+        let runtime = fixture.runtime(None);
+        let (sender, _rx, failure) = channel();
+        for _ in 0..crate::transport::MAX_QUEUED_MESSAGES {
+            sender.json(&json!({"queued":true})).unwrap();
+        }
+        runtime
+            .receive(
+                &json!({"id":"info","operation":"device_info"}),
+                &sender,
+                &ids(),
+            )
+            .unwrap();
+        // Keep the writer open but permanently stalled: shutdown must finish
+        // after the five-second send budget, within its six-second deadline.
+        assert!(
+            tokio::time::timeout(
+                SHUTDOWN_DEADLINE + Duration::from_secs(1),
+                runtime.shutdown()
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(runtime.ordinary.available_permits(), ORDINARY_LIMIT);
+        assert!(*failure.borrow());
     }
 
     #[test]
