@@ -177,6 +177,8 @@ pub struct Runtime {
     control_fence: Mutex<crate::cluster::Fence>,
     #[cfg(test)]
     completion_gate: Mutex<Option<Arc<CompletionGate>>>,
+    #[cfg(test)]
+    connection_gate: Mutex<Option<Arc<CompletionGate>>>,
 }
 
 impl Runtime {
@@ -287,6 +289,8 @@ impl Runtime {
             control_fence: Mutex::new(crate::cluster::Fence::default()),
             #[cfg(test)]
             completion_gate: Mutex::new(None),
+            #[cfg(test)]
+            connection_gate: Mutex::new(None),
         }))
     }
 
@@ -301,18 +305,27 @@ impl Runtime {
         if fence.highest.is_some() {
             return false;
         }
-        if !self.install_connection(generation, sender) {
+        if !self.install_connection(generation, sender, None) {
             return false;
         }
         drop(fence);
         true
     }
 
-    fn install_connection(&self, generation: u64, sender: Sender) -> bool {
+    fn install_connection(&self, generation: u64, sender: Sender, first: Option<&Value>) -> bool {
         {
             let Ok(mut connection) = self.connection.lock() else {
                 return false;
             };
+            #[cfg(test)]
+            if let Some(gate) = self.connection_gate.lock().unwrap().clone() {
+                gate.wait();
+            }
+            // Completion notifications acquire this same lock before cloning
+            // the sender. Publish it only after the handshake is queued.
+            if first.is_some_and(|value| sender.json(value).is_err()) {
+                return false;
+            }
             self.offline_epoch.fetch_add(1, Ordering::AcqRel);
             self.processes.mark_online();
             self.browsers.mark_online();
@@ -340,19 +353,14 @@ impl Runtime {
         {
             return false;
         }
-        if !self.install_connection(generation, sender.clone()) {
+        let ready_ack = json!({"type":"ready_ack","cluster":identity});
+        if !self.install_connection(generation, sender, Some(&ready_ack)) {
             return false;
         }
         fence.highest = Some(identity.clone());
         fence.current = Some((generation, identity.clone()));
-        // Switch the control fence before acknowledging. The session replays
-        // receipts only after Core confirms activation.
-        if sender
-            .json(&json!({"type":"ready_ack","cluster":identity}))
-            .is_err()
-        {
-            return false;
-        }
+        // Admission cannot observe the new sender until this fence unlocks.
+        // A failed handshake enqueue leaves the previous control generation.
         drop(fence);
         true
     }
@@ -1389,6 +1397,66 @@ mod tests {
             generation,
             instance_id: runtime.receipts.instance_id.clone(),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cluster_ready_ack_precedes_concurrent_completion_notification() {
+        let fixture = Fixture::new();
+        let runtime = fixture.runtime(None);
+        let id = "d".repeat(32);
+        let instance = json!(runtime.receipts.instance_id);
+        runtime
+            .receipts
+            .begin(&json!(id), &instance, "write_file", &json!({}))
+            .unwrap();
+        runtime
+            .receipts
+            .complete(&id, "succeeded", &json!({}), None);
+        let gate = Arc::new(CompletionGate::default());
+        let _release = GateGuard(gate.clone());
+        *runtime.connection_gate.lock().unwrap() = Some(gate.clone());
+        let (sender, mut rx, _) = channel();
+        let binding = {
+            let runtime = runtime.clone();
+            tokio::task::spawn_blocking(move || {
+                runtime.bind_cluster(1, cluster_identity(&runtime, 1), sender)
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), gate.entered.notified())
+            .await
+            .unwrap();
+        // Publication and the first frame are protected from the completion
+        // path by the connection lock while the handshake is paused here.
+        assert!(runtime.connection.try_lock().is_err());
+        let notification = {
+            let runtime = runtime.clone();
+            tokio::task::spawn_blocking(move || runtime.notify_receipt(&id))
+        };
+        gate.release();
+        assert!(binding.await.unwrap());
+        notification.await.unwrap();
+        assert_eq!(next_frame(&mut rx).await["type"], "ready_ack");
+        assert_eq!(next_frame(&mut rx).await["type"], "operation_result");
+        assert!(runtime.shutdown().await);
+    }
+
+    #[tokio::test]
+    async fn failed_ready_ack_does_not_publish_new_control_connection() {
+        let fixture = Fixture::new();
+        let runtime = fixture.runtime(None);
+        let first = cluster_identity(&runtime, 1);
+        let second = cluster_identity(&runtime, 2);
+        let (old_sender, mut old_rx, _) = channel();
+        assert!(runtime.bind_cluster(1, first.clone(), old_sender));
+        next_frame(&mut old_rx).await;
+        let (closed_sender, closed_rx, _) = channel();
+        drop(closed_rx);
+        assert!(!runtime.bind_cluster(2, second.clone(), closed_sender));
+        assert_eq!(runtime.last_cluster_identity(), Some(first.clone()));
+        assert!(runtime.begin_control(Some(&first)));
+        assert!(!runtime.begin_control(Some(&second)));
+        assert_eq!(runtime.connection.lock().unwrap().as_ref().unwrap().0, 1);
+        assert!(runtime.shutdown().await);
     }
 
     #[test]
