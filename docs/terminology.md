@@ -7,7 +7,7 @@ Remote Device Hub (RDH) is the Easelian product. Remote Device Server is the ser
 | Auth | Customer identity, sign-in, OIDC and MCP OAuth. |
 | Gate | Device pairing, long-lived device credentials, management authorization, assignment and MCP routing. |
 | Core | Agent WSS connections, execution admission, actual consumption and operation receipts. |
-| Business | Product website, website sessions, commerce, support and versioned entitlement exports. Web means this website or service when used in older documentation. |
+| Business | Product website, website sessions, commerce, support and versioned entitlement exports. Web denotes this website or service. |
 | Admin | Staff identity and management, separate from customer identity. |
 | Pairing / binding | Pairing is the approval flow; a binding is the resulting saved device identity and configuration. Unbinding revokes device access. |
 | Authorization / local policy | Account and device access is checked by the services; Agent policy limits operations on the device. Client approval prompts are an additional host control. |
@@ -19,4 +19,4 @@ Clients authorize through Auth and send MCP calls to Gate, which routes authoriz
 
 Browser sessions are an opt-in preview. A browser profile stores browser login state; it is separate from an Agent binding or an RDH account. Human takeover is an explicit handoff within a browser session.
 
-The server owns the [canonical terminology and Chinese equivalents](https://github.com/easelian/remote-device-server/blob/main/docs/terminology.md) and the [five-service architecture](https://github.com/easelian/remote-device-server/blob/main/docs/product-architecture.md). Keep user-facing descriptions at product level; use service names when describing responsibility, credentials or network paths. Preserve API names, configuration keys and historical migration names verbatim.
+The server owns the [canonical terminology and Chinese equivalents](https://github.com/easelian/remote-device-server/blob/main/docs/terminology.md) and the [five-service architecture](https://github.com/easelian/remote-device-server/blob/main/docs/product-architecture.md). Keep user-facing descriptions at product level; use service names when describing responsibility, credentials or network paths. Use the exact names of APIs, configuration keys and operational commands.

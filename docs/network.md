@@ -31,12 +31,12 @@ it does not disable certificate or hostname validation.
 Pairing starts at Gate's `/api/pair/start` endpoint on the configured RDH product
 origin. The browser link must use `/auth/pair` on that same origin and contain
 only the returned pairing code. Business serves the product pairing page and
-uses Auth for customer sign-in; Gate owns the pairing decision and device credential. The Agent rejects the old `/admin/pair` path. After browser approval,
+uses Auth for customer sign-in; Gate owns the pairing decision and device credential. The Agent rejects pairing links outside `/auth/pair`. After browser approval,
 `/api/pair/poll` supplies the configuration, including the Gate's `discovery_url`;
 the Agent saves it with the locally generated device credential.
 
-Gate does not accept WebSocket connections at `/agent/{device_id}`. Old saved
-profiles without `discovery_url` cannot connect directly to Gate. If Gate also
+Gate does not accept WebSocket connections at `/agent/{device_id}`. Saved
+profiles must include `discovery_url` to connect through Gate. If Gate also
 rejects the saved credential, back up that profile and pair again; adding a
 discovery address alone does not renew the credential.
 

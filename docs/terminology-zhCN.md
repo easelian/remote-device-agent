@@ -7,7 +7,7 @@ Remote Device Hub（RDH）是 Easelian 的产品名称。Remote Device Server �
 | Auth | 客户身份、登录、OIDC 与 MCP OAuth。 |
 | Gate | 设备配对、长期设备凭据、管理授权、分配与 MCP 路由。 |
 | Core | Agent WSS 连接、执行准入、实际消费与操作回执。 |
-| Business | 产品网站、网站会话、商业业务、支持与版本化权益导出。旧文档中的 Web 按上下文指网站或 Business 服务。 |
+| Business | 产品网站、网站会话、商业业务、支持与版本化权益导出。Web 按上下文指网站或 Business 服务。 |
 | Admin | 工作人员身份与管理，与客户身份分开。 |
 | 配对 / 绑定 / 解绑 | 配对是批准流程；绑定是配对后保存的设备身份和配置；解绑撤销设备访问。 |
 | 授权 / 本地策略 | 服务端检查账户和设备访问授权；Agent 本地策略限制设备操作；客户端批准提示是宿主额外的控制。 |
@@ -19,4 +19,4 @@ Remote Device Hub（RDH）是 Easelian 的产品名称。Remote Device Server �
 
 浏览器会话为可选择启用的预览功能。浏览器资料保存浏览器登录状态，与 Agent 绑定、RDH 账户不同；人工接管是浏览器会话内明确发起的控制交接。
 
-术语以 Server 的[统一术语](https://github.com/easelian/remote-device-server/blob/main/docs/terminology.md)和[五服务架构](https://github.com/easelian/remote-device-server/blob/main/docs/product-architecture.md)为准。用户说明使用产品名称，职责、凭据和网络路径说明使用具体服务名；API、配置键和历史迁移名称保持原样。
+术语以 Server 的[统一术语](https://github.com/easelian/remote-device-server/blob/main/docs/terminology.md)和[五服务架构](https://github.com/easelian/remote-device-server/blob/main/docs/product-architecture.md)为准。用户说明使用产品名称，职责、凭据和网络路径说明使用具体服务名；API、配置键和运维命令使用实际名称。
