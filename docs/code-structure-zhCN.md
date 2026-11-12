@@ -36,7 +36,7 @@ CLI 接受启动、解绑、更新、帮助和版本查询。运行参数由本�
 
 Agent 崩溃后，启动流程核对原 PID 和进程启动时间；确认原实例已退出后，可以回收实例锁并启动。旧操作不会自动重跑，内存中的任务和输出也不会恢复。崩溃前启动的外部命令可能继续运行，尤其在 POSIX 系统上；重新启动成功不代表这些命令已经停止。
 
-回执补发在连接激活后等待现有发送队列腾出空间，等待期间仍处理收包和关闭。Agent 最多保留 1,024 条回执，满额时只回收已结束且经 Hub 确认的最旧记录。运行中及尚未确认的回执继续保留；Hub 自身的结果保留和请求准入限制仍然适用。
+回执补发在连接激活后等待现有发送队列腾出空间，等待期间仍处理收包和关闭。Agent 最多保留 1,024 条回执，满额时只回收已结束且经 Core 确认的最旧记录。运行中及尚未确认的回执继续保留；Core 自身的结果保留和请求准入限制仍然适用。
 
 浏览器工作从 `browser/runtime.rs` 进入。`cdp.rs` 接受通用异步读写端，管理有界通信及在途输入；`process.rs` 统一启动参数、私有运行目录、启动检查和关闭顺序，并先将已结束的运行目录改为回收状态，再删除内容，使中断清理保留完成依据。`process/posix.rs` 处理继承的描述符和进程组，内部由 Linux 的 `/proc` 与 macOS 的 libproc 观察组成员；`process/windows.rs` 处理受限继承管道及在进程创建时分配的 kill-on-close Job。其 `windows/supervisor.rs` 在独立回收子进程中持有受限 Job 句柄，处理 Agent 异常退出，不接触 CDP 或页面输入。暂存文件共用 `storage/` 的私有流接口，由平台实现 POSIX 权限或 Windows ACL、身份及共享检查。
 
@@ -50,4 +50,4 @@ Windows 私有存储和启动授权操作复用 `storage/windows/` 中的 ACL �
 
 单元测试位于实现模块内。`tests/` 中的集成测试复用 `tests/support/` 的辅助代码。`native_bootstrap` 验证安装器行为，`self_update::tests` 覆盖候选检查和替换失败处理。Windows 运行中程序替换需要在 Windows 执行。命令和验证边界见[维护说明](maintenance.md#build-and-validate)。
 
-调整源码布局时，检查 `lib.rs` 的模块声明、CI 路径过滤器、`xtask` 清单，以及使用 `CARGO_MANIFEST_DIR` 的测试。Hub 仓库的部署默认值生成器也需要与 Agent 源码路径保持一致。
+调整源码布局时，检查 `lib.rs` 的模块声明、CI 路径过滤器、`xtask` 清单，以及使用 `CARGO_MANIFEST_DIR` 的测试。Remote Device Server 仓库的部署默认值生成器也需要与 Agent 源码路径保持一致。

@@ -1,10 +1,13 @@
-# Remote Device Hub Agent
+# Remote Device Agent
 
 English | [简体中文](README-zhCN.md)
 
 Connect a Linux, macOS or Windows device to Remote Device Hub for remote file,
 search and process operations under the device user's authority. The Agent is a
-standalone native executable named `rdh`.
+standalone native executable named `rdh`. Remote Device Hub (RDH) is the product;
+Remote Device Server provides its five backend services: Auth, Gate, Core,
+Business and Admin. The Agent pairs through Gate and opens an outbound WSS
+connection to the assigned Core. See [Terminology](docs/terminology.md).
 
 ## Install and run
 
@@ -120,7 +123,7 @@ Opt-in Linux, macOS and Windows browser sessions support structured page reads, 
 human login, screenshots, named profiles and bounded file transfer. Use the
 [Browser guide](docs/browser.md) to enable the local policy and check the matching
 Hub requirements. Browser support is a preview feature and is disabled by
-default. It requires matching Hub/MCP and Business web builds; the guide records
+default. It requires matching Gate, Core and Business web builds; the guide records
 the validated platforms and remaining acceptance limits.
 
 ## Development and documentation

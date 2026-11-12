@@ -1,8 +1,8 @@
-# Remote Device Hub Agent
+# Remote Device Agent
 
 [English](README.md) | 简体中文
 
-将 Linux、macOS 或 Windows 设备接入 Remote Device Hub，在设备用户的权限范围内执行远程文件、搜索和进程操作。Agent 是名为 `rdh` 的独立原生程序。
+将 Linux、macOS 或 Windows 设备接入 Remote Device Hub，在设备用户的权限范围内执行远程文件、搜索和进程操作。Remote Device Agent（下文简称 Agent）是名为 `rdh` 的独立原生程序。Remote Device Hub（RDH）是产品名称；Remote Device Server 提供 Auth、Gate、Core、Business 和 Admin 五个服务。Agent 通过 Gate 配对和获取分配，再主动通过 WSS 连接目标 Core。概念定义见[统一术语](docs/terminology-zhCN.md)。
 
 ## 安装与运行
 
@@ -74,7 +74,7 @@ rdh update
 
 ## 浏览器任务
 
-Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页面读取、浏览器内输入、人工登录、截图、命名资料和受限文件传输。浏览器能力为预览功能，默认关闭，需要配套的 Hub/MCP 和 Business 网页构建。[使用指南](docs/browser-zhCN.md)说明本地启用步骤、已验证平台和剩余验收范围。
+Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页面读取、浏览器内输入、人工登录、截图、命名资料和受限文件传输。浏览器能力为预览功能，默认关闭，需要配套的 Gate、Core 和 Business 网页构建。[使用指南](docs/browser-zhCN.md)说明本地启用步骤、已验证平台和剩余验收范围。
 
 ## 开发与文档
 

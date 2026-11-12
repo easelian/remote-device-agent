@@ -93,7 +93,7 @@ try {
   fs.copyFileSync(path.join(root, 'LICENSE'), path.join(staging, 'LICENSE'));
   fs.copyFileSync(path.join(__dirname, 'npm', 'rdh.cjs'), path.join(staging, 'rdh.cjs'));
   fs.writeFileSync(path.join(staging, 'package.json'), `${JSON.stringify({
-    name: '@easelian/remote-device-agent', version, description: 'Native Remote Device Hub Agent',
+    name: '@easelian/remote-device-agent', version, description: 'Native Remote Device Agent',
     license: 'Apache-2.0', repository: { type: 'git', url: `https://github.com/${repository}.git` },
     engines: { node: '>=22.14.0' }, bin: { rdh: 'rdh.cjs', 'remote-device-agent': 'rdh.cjs', 'remote-device-hub': 'rdh.cjs' },
     files: ['rdh.cjs', 'native', 'LICENSE'], publishConfig: { access: 'public' },

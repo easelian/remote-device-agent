@@ -28,7 +28,7 @@ pub fn parse(argv: &[String]) -> Result<Action> {
 
 pub fn help() -> String {
     format!(
-        "Remote Device Hub Agent {}\n\n  rdh          Start; open the browser and wait for approval when unbound\n  rdh unbind   Revoke access, disable automatic startup, and stop the Agent\n  rdh update   Update the Agent\n  rdh --help   Show this help\n  rdh --version  Show the version\n",
+        "Remote Device Agent {}\n\n  rdh          Start; open the browser and wait for approval when unbound\n  rdh unbind   Revoke access, disable automatic startup, and stop the Agent\n  rdh update   Update the Agent\n  rdh --help   Show this help\n  rdh --version  Show the version\n",
         env!("CARGO_PKG_VERSION")
     )
 }

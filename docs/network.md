@@ -28,9 +28,10 @@ it does not disable certificate or hostname validation.
 
 ## Pairing
 
-Pairing starts at the selected Gate's `/api/pair/start` endpoint. The browser link
-must use `/auth/pair` on that same Hub origin and contain only the returned pairing
-code. The Agent rejects the old `/admin/pair` path. After browser approval,
+Pairing starts at Gate's `/api/pair/start` endpoint on the configured RDH product
+origin. The browser link must use `/auth/pair` on that same origin and contain
+only the returned pairing code. Business serves the product pairing page and
+uses Auth for customer sign-in; Gate owns the pairing decision and device credential. The Agent rejects the old `/admin/pair` path. After browser approval,
 `/api/pair/poll` supplies the configuration, including the Gate's `discovery_url`;
 the Agent saves it with the locally generated device credential.
 

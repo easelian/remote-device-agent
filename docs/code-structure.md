@@ -50,8 +50,8 @@ successful restart does not establish that those commands stopped.
 
 Receipt replay waits for space in the existing writer after connection activation
 while incoming frames and shutdown continue to be handled. At its 1,024-record
-limit, the Agent evicts only the oldest settled receipt acknowledged by the Hub.
-Running and unacknowledged work stays protected; the Hub's own result-retention
+limit, the Agent evicts only the oldest settled receipt acknowledged by Core.
+Running and unacknowledged work stays protected; Core's own result-retention
 and admission limits still apply.
 
 Browser work starts in `browser/runtime.rs`. `cdp.rs` owns bounded traffic and
@@ -92,5 +92,5 @@ Windows running-image replacement needs execution on Windows. See
 [Maintenance](maintenance.md#build-and-validate) for commands and validation limits.
 
 When changing source layout, inspect imports in `lib.rs`, CI path filters,
-`xtask` inventories and tests using `CARGO_MANIFEST_DIR`. Keep the Hub repository's
+`xtask` inventories and tests using `CARGO_MANIFEST_DIR`. Keep the Remote Device Server repository's
 deployment-default generator aligned with the Agent source path.

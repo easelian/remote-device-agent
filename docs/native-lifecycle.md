@@ -27,14 +27,14 @@ stopping or unbinding a device.
 ## Unbind
 
 `rdh unbind` persists its intent, stops the Agent and managed work, revokes device
-access at the Hub, and cancels recorded automatic startup. Configuration is not
+access at Gate, and cancels recorded automatic startup. Configuration is not
 discarded before the information required to finish revocation is available.
 Shared-directory settings are retained for a later pairing.
 
 | State | Next action |
 | --- | --- |
 | Bound and running | `rdh unbind` requests shutdown and completes cleanup and revocation. |
-| Revocation interrupted or Hub unavailable | Retain the intent and binding data; block ordinary reuse of the old identity. |
+| Revocation interrupted or Gate unavailable | Retain the intent and binding data; block ordinary reuse of the old identity. |
 | Pending unbind, invoked with `rdh unbind` | Resume revocation and cleanup. |
 | Pending unbind, invoked with `rdh` | Finish revocation, then exit and ask the user to run again. |
 | Unbound with no pending cleanup | The next `rdh` starts browser pairing. |

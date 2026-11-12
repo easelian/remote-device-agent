@@ -161,7 +161,7 @@ impl StartupBackend for NativeStartup {
         let mut wrapper_created = Created::write(&wrapper_path, script.as_bytes(), 0o700)?;
         let unit_path = directory.join("rdh.service");
         let unit = format!(
-            "[Unit]\nDescription=Remote Device Hub Agent\n[Service]\nExecStart=\"{}\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=Remote Device Agent\n[Service]\nExecStart=\"{}\"\nRestart=on-failure\nRestartSec=5\n[Install]\nWantedBy=default.target\n",
             unit_quote(wrapper)
         );
         let mut unit_created = Created::write(&unit_path, unit.as_bytes(), 0o600)?;

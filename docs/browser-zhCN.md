@@ -2,7 +2,7 @@
 
 [English](browser.md) | 简体中文
 
-通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。浏览器能力为预览功能，默认关闭。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Rust Hub/MCP 和 Business 网页构建。模块职责和源码位置见[浏览器架构](browser-architecture-zhCN.md)。
+通过已连接 RDH 的 AI 客户端，可以在已绑定的 Linux、macOS 或 Windows 设备上读取和操作网页，在同一个浏览器中人工登录，并取得受支持的文件。浏览器能力为预览功能，默认关闭。本指南适用于报告 `capabilities.browser.version = 1` 的 Agent，以及配套的 Gate、Core 和 Business 网页构建。模块职责和源码位置见[浏览器架构](browser-architecture-zhCN.md)。
 
 服务端需将 Core 的 `http.browser_user_url` 设为用户网站的 origin，在 Gate 的网页登录动作列表允许 `browser:control`，并应用包含 `device-browser` 用途的配套 Auth application-access 契约。Server 示例配置已包含这些设置；发布 Agent 不会部署配套服务。
 

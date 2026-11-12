@@ -2,7 +2,7 @@
 
 English | [简体中文](browser-zhCN.md)
 
-Use a connected AI client to read and interact with websites from a bound Linux, macOS or Windows device, sign in through the same remote browser, and retrieve supported files. This preview feature is disabled by default. This guide applies to Agent builds reporting `capabilities.browser.version = 1` and the matching Rust Hub/MCP and Business web builds. The [architecture guide](browser-architecture-zhCN.md) maps the implementation to its source modules.
+Use a connected AI client to read and interact with websites from a bound Linux, macOS or Windows device, sign in through the same remote browser, and retrieve supported files. This preview feature is disabled by default. This guide applies to Agent builds reporting `capabilities.browser.version = 1` and the matching Gate, Core and Business web builds. The [architecture guide](browser-architecture-zhCN.md) maps the implementation to its source modules.
 
 For Server operators, set Core's `http.browser_user_url` to the user website's
 origin, allow `browser:control` in Gate's web actions, and apply the matching Auth

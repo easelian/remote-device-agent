@@ -1,13 +1,18 @@
 # Agent architecture
 
-The Agent executes file, search, and process operations on one device for a Remote Device Hub. The Hub handles client-facing tool access and routes requests to the selected device. The Agent initiates an authenticated WebSocket connection to the Hub; it does not expose a local HTTP or MCP listener.
+Remote Device Agent executes file, search, process and opt-in browser operations on one device for Remote Device Hub (RDH). Remote Device Server provides Auth, Gate, Core, Business and Admin. Auth owns customer sign-in and MCP OAuth; Gate owns device pairing, credentials, assignment and MCP routing; Core owns Agent connections, execution admission, consumption and receipts. Business serves the product website and exports entitlements; Admin serves staff management. See [Terminology](terminology.md).
+
+The Agent authenticates discovery at Gate with its long-lived device credential, then opens an outbound WSS connection to the assigned Core with a short-lived, single-use admission ticket. The Agent does not expose a local HTTP or MCP listener.
 
 ```mermaid
 flowchart LR
-    Client[Client / MCP host] -->|Tool calls| Hub[Remote Device Hub]
-    Agent[Device Agent] -->|Opens authenticated WebSocket| Hub
-    Hub -->|Operation requests| Agent
-    Agent -->|Results| Hub
+    Client[Client / MCP host] -->|OAuth authorization| Auth[Auth]
+    Client -->|MCP tool calls| Gate[Gate]
+    Gate -->|Authorized requests| Core[Core]
+    Agent[Remote Device Agent] -->|Pairing and discovery| Gate
+    Agent -->|Outbound WSS with admission ticket| Core
+    Core -->|Operation requests| Agent
+    Agent -->|Results and receipts| Core
     Agent -->|File and search operations| Files[Configured file roots]
     Agent -->|Process operations| Shell[Local shell and child processes]
 ```
@@ -35,7 +40,7 @@ Unbound startup persists a locally generated token and reserved device identity 
 
 `rdh unbind` records durable intent before contacting Gate. The running Agent observes intent, stops admitting operations and shuts down its jobs. The command revokes its own credential, cancels pending pairing and disables the recorded startup registration. It removes credentials only after those steps succeed. Failure leaves intent that blocks the old binding; retrying an interrupted unbind finishes cleanup and exits before a subsequent manual launch can pair again.
 
-After configuration and hardening validation, discovery-enabled Agents authenticate to the Gate with their saved device credential and receive a single-use v2 ticket. They connect to the assigned Core at `/agent/<device_id>` using only that ticket, send `hello` with device information, and complete the `ready`/`ready_ack` handshake before the connection becomes active. The ticket binds the device, assignment, Core node and boot, credential version, and Agent process instance. Configurations without discovery send the device credential directly to the configured server; this mode requires a server that accepts direct bearer authentication. Device information includes operations, limits, and effective restrictions. Session heartbeats detect lost connections. See [Hardening configuration](hardening.md) for policy reporting and configuration privacy.
+After configuration and hardening validation, discovery-enabled Agents authenticate to the Gate with their saved device credential and receive a single-use v2 ticket. They connect to the assigned Core at `/agent/<device_id>` using only that ticket, send `hello` with device information, and complete the `ready`/`ready_ack`/`active` handshake before the connection becomes active. The ticket binds the device, assignment, Core node and boot, credential version, and Agent process instance. Legacy configurations without discovery send the device credential directly to the configured server. This requires a compatible legacy server; the current Gate does not accept Agent WebSockets and the current Core does not accept direct device credentials. Device information includes operations, limits, and effective restrictions. Session heartbeats detect lost connections. See [Hardening configuration](hardening.md) for policy reporting and configuration privacy.
 
 ## Request execution
 
@@ -54,8 +59,8 @@ ID does not execute the operation again. See [Cluster discovery](network.md#clus
 the bounded recovery sequence and timing records.
 
 The Agent retains at most 1,024 receipts. At capacity it evicts the oldest settled
-receipt already acknowledged by the Hub; running and unacknowledged receipts
-remain protected. The paired Hub acknowledges durable completion and never
+receipt already acknowledged by Core; running and unacknowledged receipts
+remain protected. Core acknowledges durable completion and never
 dispatches an already claimed operation ID again. Its separate result-retention
 and preparation limits still apply; Agent eviction does not increase those limits.
 
