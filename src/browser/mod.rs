@@ -80,6 +80,7 @@ pub struct Settings {
     pub downloads: bool,
     pub uploads: bool,
     pub executable: Option<PathBuf>,
+    pub sites: sites::Sites,
 }
 
 impl Settings {
@@ -152,6 +153,22 @@ impl std::fmt::Display for Failure {
 }
 impl std::error::Error for Failure {}
 type Result<T> = std::result::Result<T, Failure>;
+
+// The policy is read on every platform. Only a platform that runs browser
+// sessions applies it.
+#[cfg_attr(
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    )),
+    allow(dead_code)
+)]
+pub mod sites;
 
 #[cfg(any(
     target_os = "linux",

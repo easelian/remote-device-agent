@@ -146,6 +146,9 @@ pub async fn launch(
         None => "enabled; launch is checked when a session is opened",
     };
     println!("AI browser sessions: {browser_status}.");
+    if browser["available"] == true {
+        println!("{}", browser_sites(&browser["sites"]));
+    }
     if cfg!(any(
         target_os = "linux",
         target_os = "macos",
@@ -189,4 +192,46 @@ pub async fn launch(
     drop(running);
     locks.release()?;
     Ok(())
+}
+
+/// One line on where browser sessions may go, shown when the Agent starts.
+fn browser_sites(sites: &serde_json::Value) -> String {
+    let public = if sites["public"] == "deny" {
+        "only the public sites in browser.sites.allow"
+    } else {
+        "public sites"
+    };
+    let private = if sites["private_networks"] == "deny" {
+        "private networks and this device only where browser.sites.private_allow lists them"
+    } else {
+        "private networks and this device"
+    };
+    format!(
+        "Browser sites: {public}; {private}. Cloud metadata and link-local addresses are refused unless browser.sites.private_allow lists them."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::browser_sites;
+    use serde_json::json;
+
+    #[test]
+    fn the_start_message_says_where_browser_sessions_may_go() {
+        let open = browser_sites(&json!({"public":"allow","private_networks":"allow"}));
+        assert!(
+            open.starts_with("Browser sites: public sites; private networks and this device."),
+            "{open}"
+        );
+        assert!(
+            open.contains("metadata and link-local addresses are refused"),
+            "{open}"
+        );
+        let closed = browser_sites(&json!({"public":"deny","private_networks":"deny"}));
+        assert!(closed.contains("browser.sites.allow"), "{closed}");
+        assert!(
+            closed.contains("only where browser.sites.private_allow lists them"),
+            "{closed}"
+        );
+    }
 }
