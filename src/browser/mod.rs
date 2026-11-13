@@ -361,6 +361,7 @@ impl Browsers {
         json!({"version":1,"available":false,"reason":"platform_not_supported"})
     }
     pub fn release_stopped_storage(&self) {}
+    pub fn resolve_with(&self, _: sites::Resolver) {}
     pub fn dispatch(
         &self,
         _: &str,

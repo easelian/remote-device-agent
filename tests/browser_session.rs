@@ -2675,6 +2675,26 @@ async fn metadata_addresses_are_refused_however_the_browser_is_led_to_them() {
     let observed = observe_once(&mut peer, &id, epoch).await;
     assert_eq!(observed["page"]["blocked"], "site_policy", "{observed}");
 
+    // A name that leads to such an address is refused once that is known, before
+    // its request is sent. The test says where names lead, in place of the
+    // system's resolver.
+    peer.runtime
+        .browser_resolver(rdh_agent::browser::sites::resolver(
+            |host: String| async move {
+                (host == "metadata.test").then(|| vec!["169.254.169.254".parse().unwrap()])
+            },
+        ));
+    let denied = peer
+        .call(
+            "browser_act",
+            navigate(epoch, "http://metadata.test/".to_owned()),
+        )
+        .await;
+    assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+    assert_eq!(denied["execution_state"], "not_sent", "{denied}");
+    let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+    assert_eq!(tabs["result"]["controller"], "ai", "{tabs}");
+
     assert!(peer.runtime.shutdown().await);
     server.abort();
     let _ = server.await;

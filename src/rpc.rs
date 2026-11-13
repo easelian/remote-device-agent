@@ -457,6 +457,13 @@ impl Runtime {
         Ok(())
     }
 
+    /// Replaces the lookup that the browser's site policy uses for host names.
+    /// Tests use it to say where a name leads.
+    #[doc(hidden)]
+    pub fn browser_resolver(&self, resolver: crate::browser::sites::Resolver) {
+        self.browsers.resolve_with(resolver);
+    }
+
     pub fn info(&self) -> Value {
         let system = system::info();
         let mut operations = vec!["device_info", "get_operation_status"];

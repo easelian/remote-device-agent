@@ -438,11 +438,17 @@ impl Lookup {
         self.known.lock().unwrap().clear();
     }
 
+    /// The answer for a host name, when it was asked about a short while ago.
+    pub fn remembered(&self, host: &str) -> Option<Answer> {
+        match self.known.lock().unwrap().get(host) {
+            Some((at, answer)) if at.elapsed() < Self::KEPT => Some(answer.clone()),
+            _ => None,
+        }
+    }
+
     pub async fn addresses(&self, host: &str) -> Answer {
-        if let Some((at, answer)) = self.known.lock().unwrap().get(host)
-            && at.elapsed() < Self::KEPT
-        {
-            return answer.clone();
+        if let Some(answer) = self.remembered(host) {
+            return answer;
         }
         let resolver = self.resolver.lock().unwrap().clone();
         let answer = resolver(host.to_owned()).await;

@@ -5,7 +5,7 @@ use super::{
     page::{self, Element},
     process::{self, BrowserProcess},
     profiles::{self, Profiles},
-    sites::{Sites, Verdict},
+    sites::{Lookup, Resolver, Sites, Verdict},
 };
 use serde_json::{Value, json};
 use std::{
@@ -133,8 +133,10 @@ pub struct Browsers {
 }
 
 /// The site policy, as the request hook of every session applies it.
+#[derive(Default)]
 struct Gate {
     sites: Sites,
+    lookup: Lookup,
 }
 
 impl Browsers {
@@ -156,8 +158,13 @@ impl Browsers {
             files,
             gate: Arc::new(Gate {
                 sites: settings.sites.clone(),
+                lookup: Lookup::default(),
             }),
         }
+    }
+    /// Replaces the lookup of host names. Tests use it to say where a name leads.
+    pub fn resolve_with(&self, resolver: Resolver) {
+        self.gate.lookup.resolve_with(resolver);
     }
     /// Refuses, before anything is done, an address that the site policy rules
     /// out as it is written.
@@ -987,6 +994,24 @@ fn mark_blocked(result: &mut Value, targets: &Mutex<HashMap<String, Target>>, ta
     }
 }
 
+/// Records on a tab what became of the latest request for its own document:
+/// refused by the site policy, or under way.
+fn note(
+    targets: &Mutex<HashMap<String, Target>>,
+    session: Option<&str>,
+    frame: &str,
+    blocked: Option<bool>,
+) {
+    if let Some(target) = targets
+        .lock()
+        .unwrap()
+        .values_mut()
+        .find(|t| t.kind == "page" && Some(t.session.as_str()) == session && t.id == frame)
+    {
+        target.blocked = blocked;
+    }
+}
+
 /// The failure to report when the site policy refused the tab's own navigation.
 /// Nothing was sent when the first request was refused. After a redirect or a
 /// response, a request has left the browser and the outcome is uncertain.
@@ -1089,9 +1114,16 @@ async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
         blocked: None,
     };
     let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
-    let gate = Arc::new(Gate {
-        sites: Sites::default(),
-    });
+    let gate = Arc::new(Gate::default());
+    // Where the names used below lead. A name without an answer is let through.
+    gate.lookup
+        .resolve_with(super::sites::resolver(|host: String| async move {
+            match host.as_str() {
+                "metadata.example" => Some(vec!["169.254.169.254".parse().unwrap()]),
+                "public.example" => Some(vec!["93.184.216.34".parse().unwrap()]),
+                _ => None,
+            }
+        }));
     let task = guard(cdp.clone(), targets.clone(), None, gate);
     let mut browser = BufReader::new(browser);
     // Sends one paused document request and returns what the hook did with it.
@@ -1147,6 +1179,26 @@ async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
         .await;
         assert_eq!(failed["method"], "Fetch.failRequest");
         assert_eq!(blocked(), Some(true));
+        // A name is judged by where it leads, both when it has to be asked about
+        // and when the answer is remembered.
+        for _ in 0..2 {
+            let failed = paused(
+                &mut browser,
+                json!({"frameId":"tab","request":{"url":"http://metadata.example/"}}),
+            )
+            .await;
+            assert_eq!(failed["method"], "Fetch.failRequest");
+            assert_eq!(blocked(), Some(false));
+            for open in ["http://public.example/", "http://unanswered.example/"] {
+                let continued = paused(
+                    &mut browser,
+                    json!({"frameId":"tab","request":{"url":open}}),
+                )
+                .await;
+                assert_eq!(continued["method"], "Fetch.continueRequest", "{open}");
+                assert_eq!(blocked(), None, "{open}");
+            }
+        }
     };
     let result = tokio::time::timeout(Duration::from_secs(2), scenario).await;
     cdp.stop();
@@ -1171,9 +1223,7 @@ async fn suspended_non_page_target_cannot_block_page_request_progress() {
         cdp.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         None,
-        Arc::new(Gate {
-            sites: Sites::default(),
-        }),
+        Arc::new(Gate::default()),
     );
     let mut browser = BufReader::new(browser);
     let scenario = async {
@@ -1213,12 +1263,18 @@ fn guard(
     let mut events = cdp.events();
     tokio::spawn(async move {
         let mut initializers = tokio::task::JoinSet::new();
+        // Requests that wait for a host name to be looked up.
+        let mut checks = tokio::task::JoinSet::new();
         loop {
             if !cdp.connected() {
                 break;
             }
             let event = tokio::select! {
                 joined=initializers.join_next(), if !initializers.is_empty()=>{
+                    if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
+                    continue;
+                },
+                joined=checks.join_next(), if !checks.is_empty()=>{
                     if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
                     continue;
                 },
@@ -1231,6 +1287,7 @@ fn guard(
                 downloads.as_ref(),
                 &gate,
                 &mut initializers,
+                &mut checks,
                 event,
             )
             .await
@@ -1243,7 +1300,9 @@ fn guard(
             }
         }
         initializers.abort_all();
+        checks.abort_all();
         while initializers.join_next().await.is_some() {}
+        while checks.join_next().await.is_some() {}
     })
 }
 async fn initialize_target(cdp: &Cdp, session: &str, downloads: bool) -> Result<()> {
@@ -1308,6 +1367,7 @@ async fn handle_event(
     downloads: Option<&DownloadContext>,
     gate: &Arc<Gate>,
     initializers: &mut tokio::task::JoinSet<()>,
+    checks: &mut tokio::task::JoinSet<()>,
     event: Value,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -1463,29 +1523,83 @@ async fn handle_event(
             let url = params["request"]["url"].as_str().unwrap_or("");
             let ordinary = page::url_allowed(url);
             // What the address itself and the owner's lists say.
-            let verdict = if url == "about:blank" {
-                Verdict::Allow
-            } else if !ordinary {
-                Verdict::Deny
-            } else {
-                url::Url::parse(url).map_or(Verdict::Deny, |url| gate.sites.judge(&url))
+            let address = url::Url::parse(url).ok();
+            let mut verdict = match &address {
+                _ if url == "about:blank" => Verdict::Allow,
+                Some(address) if ordinary => gate.sites.judge(address),
+                _ => Verdict::Deny,
             };
-            let allowed = verdict != Verdict::Deny;
             let responded = params.get("responseStatusCode").is_some()
                 || params.get("responseErrorReason").is_some();
+            // A request had left the browser when this is a later hop of a
+            // redirect, or a response.
+            let sent = responded || params.get("redirectedRequestId").is_some();
+            let session = event["sessionId"].as_str();
+            let frame = params["frameId"].as_str().unwrap_or("");
+            // A host name is judged by the addresses it leads to, before its request
+            // is sent. The lookup must not hold up the events behind this one, so a
+            // name that has to be asked about is answered from a task of its own.
+            if verdict == Verdict::Resolve
+                && !responded
+                && let Some(host) = address.as_ref().and_then(|address| address.host_str())
+            {
+                let refuses = |found: &[std::net::IpAddr]| !gate.sites.judge_addresses(found);
+                match gate.lookup.remembered(host) {
+                    Some(answer) => {
+                        if answer.is_some_and(|found| refuses(&found)) {
+                            verdict = Verdict::Deny;
+                        }
+                    }
+                    None if checks.len() < 64 => {
+                        note(targets, session, frame, None);
+                        let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
+                        let (host, frame) = (host.to_owned(), frame.to_owned());
+                        let session = session.map(str::to_owned);
+                        let request = params["requestId"].clone();
+                        checks.spawn(async move {
+                            let refused = gate
+                                .lookup
+                                .addresses(&host)
+                                .await
+                                .is_some_and(|found| !gate.sites.judge_addresses(&found));
+                            let mut args = json!({"requestId":request});
+                            if refused {
+                                note(&targets, session.as_deref(), &frame, Some(sent));
+                                args["errorReason"] = "BlockedByClient".into();
+                            }
+                            let method = if refused {
+                                "Fetch.failRequest"
+                            } else {
+                                "Fetch.continueRequest"
+                            };
+                            let answered = Instant::now() + Duration::from_secs(3);
+                            let _ = cdp.call(session.as_deref(), method, args, answered).await;
+                        });
+                        return Ok(());
+                    }
+                    // Too many names are being asked about at once.
+                    None => {
+                        cdp.call(
+                            session,
+                            "Fetch.failRequest",
+                            json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
+                            deadline,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+            }
+            let allowed = verdict != Verdict::Deny;
             if !allowed || !responded {
                 // A refusal by the site policy stays on the tab until its document
-                // sets out again. A request had left the browser when this is a
-                // later hop of a redirect, or a response.
-                let sent = responded || params.get("redirectedRequestId").is_some();
-                let blocked = (!allowed && ordinary).then_some(sent);
-                if let Some(target) = targets.lock().unwrap().values_mut().find(|t| {
-                    t.kind == "page"
-                        && Some(t.session.as_str()) == event["sessionId"].as_str()
-                        && params["frameId"].as_str() == Some(t.id.as_str())
-                }) {
-                    target.blocked = blocked;
-                }
+                // sets out again.
+                note(
+                    targets,
+                    session,
+                    frame,
+                    (!allowed && ordinary).then_some(sent),
+                );
             }
             if let Some(downloads) = downloads
                 && allowed
