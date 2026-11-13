@@ -172,14 +172,20 @@ impl Sandbox {
                     .filter(|value| !value.is_empty())
                     .map(PathBuf::from)
                     .unwrap_or(home.join(".local/state"));
-                let hidden_paths = [
+                let mut hidden_paths = vec![
                     config_dir.join("remote-device-hub"),
                     config_dir.join("remote-device-host"),
                     state_dir.join("remote-device-hub"),
-                ]
-                .iter()
-                .map(|path| canonical_path(path))
-                .collect::<Result<Vec<_>>>()?;
+                ];
+                // Browser sessions keep their profiles, cookies and staged files
+                // beside the config file, wherever that file is.
+                if let Some(directory) = config_path.parent() {
+                    hidden_paths.push(directory.join(".rdh-browser"));
+                }
+                let hidden_paths = hidden_paths
+                    .iter()
+                    .map(|path| canonical_path(path))
+                    .collect::<Result<Vec<_>>>()?;
                 let hidden_files = [config_path.to_path_buf(), sidecar_path(config_path)]
                     .iter()
                     .map(|path| canonical_path(path))
@@ -337,7 +343,12 @@ impl Sandbox {
         }
         let mut masks: Vec<PathBuf> = Vec::new();
         for path in &bwrap.hidden_paths {
-            if !masks.iter().any(|parent| path.starts_with(parent)) {
+            // A path that is not there has nothing to hide. It also cannot be
+            // mounted over where the tree around it is read-only, and trying
+            // would fail the command.
+            if path.symlink_metadata().is_ok()
+                && !masks.iter().any(|parent| path.starts_with(parent))
+            {
                 masks.push(path.clone());
             }
         }
