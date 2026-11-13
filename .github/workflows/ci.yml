@@ -204,6 +204,19 @@ jobs:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --profile ci --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
+      - name: Run browser sessions against the runner's Chrome
+        # The ordinary run ignores these tests because they need a Chromium that
+        # can start with its sandbox. The Linux image provides Google Chrome.
+        # This step reports without failing the job until it has a record on
+        # hosted runners; remove continue-on-error once it does.
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        continue-on-error: true
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RDH_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+        run: |
+          "$RDH_BROWSER_EXECUTABLE" --version
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test browser_session -- --ignored --test-threads=1
       - name: Exercise npm launcher with the native executable
         if: ${{ !endsWith(matrix.target, '-linux-musl') }}
         env:
