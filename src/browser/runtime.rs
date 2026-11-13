@@ -429,14 +429,7 @@ impl Browsers {
                     }
                     "navigate" => {
                         session.references.clear();
-                        let reply = cdp
-                            .call(
-                                Some(&target.session),
-                                "Page.navigate",
-                                json!({"url":action["url"]}),
-                                deadline,
-                            )
-                            .await?;
+                        let reply = navigate(&cdp, &target.session, &action["url"], deadline).await?;
                         if reply.get("errorText").is_some() {
                             Err(Failure::unknown("browser_navigation_failed"))
                         } else {
@@ -656,7 +649,7 @@ impl Browsers {
             };
             session.active=target.id.clone();
             if let Some(url)=params["url"].as_str(){
-                cdp.call(Some(&target.session),"Page.navigate",json!({"url":url}),deadline).await?;
+                navigate(&cdp,&target.session,&json!(url),deadline).await?;
             }
             if slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
             let mut opened=json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))});
@@ -874,6 +867,38 @@ async fn wait_target(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+/// Starts a navigation and waits for the browser's answer, which comes when the
+/// new document commits or the load fails. A host that never answers would keep
+/// the command, and with it the whole session, pending until the browser gives
+/// up minutes later. Stop waiting early, cancel the load and let the command
+/// settle, so that the session can be used again at once.
+async fn navigate(cdp: &Cdp, session: &str, url: &Value, deadline: Instant) -> Result<Value> {
+    let give_up = navigation_deadline(Instant::now(), deadline);
+    match cdp
+        .call(Some(session), "Page.navigate", json!({"url":url}), give_up)
+        .await
+    {
+        Err(error) if error.code == "browser_timeout_unknown" => {
+            let _ = cdp
+                .cleanup()
+                .call(Some(session), "Page.stopLoading", json!({}), deadline)
+                .await;
+            while cdp.pending() != 0 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(Failure::unknown("browser_navigation_failed"))
+        }
+        reply => reply,
+    }
+}
+
+/// When to stop waiting for a navigation: early enough to cancel it and let the
+/// browser settle before the call's own deadline.
+fn navigation_deadline(now: Instant, deadline: Instant) -> Instant {
+    let remaining = deadline.saturating_duration_since(now);
+    deadline - (remaining / 4).min(Duration::from_secs(3))
+}
+
 /// A document that the browser is still parsing has more to come, however much of
 /// it was read. Say so, instead of reporting the part as the complete page.
 fn mark_loading(observation: &mut Value) {
@@ -1644,6 +1669,19 @@ mod tests {
                 "{parsed}"
             );
         }
+    }
+
+    #[test]
+    fn a_navigation_is_given_up_before_the_call_deadline() {
+        let now = Instant::now();
+        let left = |budget: u64| {
+            navigation_deadline(now, now + Duration::from_secs(budget)).duration_since(now)
+        };
+        assert_eq!(left(20), Duration::from_secs(17));
+        assert_eq!(left(4), Duration::from_secs(3));
+        assert_eq!(left(0), Duration::ZERO);
+        // A deadline already behind us leaves nothing to wait for.
+        assert_eq!(navigation_deadline(now + Duration::from_secs(1), now), now);
     }
 
     #[test]

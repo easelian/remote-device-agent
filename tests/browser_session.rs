@@ -196,6 +196,7 @@ struct Peer {
     receiver: tokio::sync::mpsc::Receiver<transport::Frame>,
     ids: Arc<Mutex<HashSet<String>>>,
     counter: u64,
+    budget: u64,
 }
 impl Peer {
     async fn raw(
@@ -222,8 +223,7 @@ impl Peer {
     ) -> Value {
         self.counter += 1;
         let id = format!("browser-test-{}", self.counter);
-        let mut message =
-            json!({"id":id,"operation":operation,"params":params,"execution_budget_ms":15000});
+        let mut message = json!({"id":id,"operation":operation,"params":params,"execution_budget_ms":self.budget});
         if let Some(principal) = principal {
             message["browser_principal"] = principal;
         }
@@ -331,6 +331,7 @@ fn browser_peer(root: &std::path::Path, executable: &str, downloads: bool, uploa
         receiver,
         ids: Arc::new(Mutex::new(HashSet::new())),
         counter: 0,
+        budget: 15000,
     }
 }
 
@@ -853,6 +854,7 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         receiver,
         ids: Arc::new(Mutex::new(HashSet::new())),
         counter: 0,
+        budget: 15000,
     };
     let denied = peer.raw("browser_open", json!({}), None, None).await;
     assert_eq!(denied["error_code"], "browser_unauthorized");
@@ -2101,6 +2103,65 @@ async fn an_observation_says_when_the_document_is_still_loading() {
     assert_eq!(whole["coverage"]["complete_within_scope"], true, "{whole}");
     assert_running(&mut peer, &id).await;
 
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_navigation_that_gets_no_answer_leaves_the_session_usable() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-silent-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route(
+        "/plain",
+        get(|| async { Html("<!doctype html><title>Plain</title><p>Still here</p>") }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    // A host that takes the connection and never answers: bound, never accepted.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unanswered = format!("http://{}/", silent.local_addr().unwrap());
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/plain")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    peer.observe_named(&id, 1, "Still here").await;
+
+    // The Agent gives up within the call and says so itself, instead of leaving
+    // the caller to run into the response deadline.
+    peer.budget = 4000;
+    let failed = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":unanswered}})).await;
+    peer.budget = 15000;
+    assert_eq!(
+        failed["error_code"], "browser_navigation_failed",
+        "{failed}"
+    );
+    assert_eq!(failed["execution_state"], "unknown", "{failed}");
+
+    // The session is paused, as after any uncertain navigation, and nothing is
+    // left pending: the first resume works and the earlier document is intact.
+    let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+    assert_eq!(tabs["result"]["controller"], "paused", "{tabs}");
+    assert_eq!(tabs["result"]["input_pending"], false, "{tabs}");
+    let resumed = peer.call("browser_control", json!({"session_id":id,"control_epoch":tabs["result"]["control_epoch"],"action":"resume"})).await;
+    assert!(resumed.get("error").is_none(), "{resumed}");
+    let epoch = resumed["result"]["control_epoch"].as_u64().unwrap();
+    let observed = peer.observe_named(&id, epoch, "Still here").await;
+    assert_eq!(
+        observed["page"]["url"],
+        format!("{origin}/plain"),
+        "{observed}"
+    );
+
+    drop(silent);
     assert!(peer.runtime.shutdown().await);
     server.abort();
     let _ = server.await;
