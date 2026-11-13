@@ -1894,3 +1894,73 @@ async fn rejections_without_input_keep_the_session_running() {
     server.abort();
     let _ = server.await;
 }
+
+const PAGE_STATE: &str = r##"<!doctype html><meta charset="utf-8"><title>Page state</title>
+<label>Quantity <input type="number" value="3"></label>
+<label>Volume <input type="range" min="0" max="10" value="7"></label>
+<a href="#details">Show details</a><h2 id="details">Details</h2>"##;
+
+fn value_of(observation: &Value, name: &str) -> Value {
+    observation["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n.get("ref").is_some() && n["name"].as_str().is_some_and(|s| s.trim() == name))
+        .unwrap_or_else(|| panic!("{name} is not in {observation}"))["value"]
+        .clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn values_and_addresses_are_reported_as_the_page_holds_them() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-state-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route("/state", get(|| async { Html(PAGE_STATE) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/state")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+
+    // A number field and a slider report the number they hold.
+    let observed = peer.observe_named(&id, 1, "Show details").await;
+    assert_eq!(value_of(&observed, "Quantity"), "3", "{observed}");
+    assert_eq!(value_of(&observed, "Volume"), "7", "{observed}");
+    let filled = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","text":"42","ref":reference(&observed,"Quantity")}})).await;
+    assert_eq!(filled["result"]["input_acknowledged"], true, "{filled}");
+    let observed = peer.observe_named(&id, 1, "Show details").await;
+    let moved = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"press","key":"ArrowRight","ref":reference(&observed,"Volume")}})).await;
+    assert_eq!(moved["result"]["input_acknowledged"], true, "{moved}");
+    let observed = peer.observe_named(&id, 1, "Show details").await;
+    assert_eq!(value_of(&observed, "Quantity"), "42", "{observed}");
+    assert_eq!(value_of(&observed, "Volume"), "8", "{observed}");
+
+    // A link within the page changes only the fragment of the address. A wait sees it.
+    let jumped = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Show details")}})).await;
+    assert_eq!(jumped["result"]["input_acknowledged"], true, "{jumped}");
+    let waited = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"url_contains":"#details"}),
+        )
+        .await;
+    assert_eq!(waited["result"]["condition_observed"], true, "{waited}");
+    assert_eq!(
+        waited["result"]["url"],
+        format!("{origin}/state#details"),
+        "{waited}"
+    );
+    assert_running(&mut peer, &id).await;
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

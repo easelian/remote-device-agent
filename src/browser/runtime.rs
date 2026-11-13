@@ -556,8 +556,10 @@ impl Browsers {
                                 Err(error) if changing(&error) => {},
                                 Err(error) => return Err(error),
                             }
-                        } else if tree.first().is_some_and(|frame| frame.url.contains(expected)) {
-                            break Ok(json!({"condition_observed":true,"url":tree[0].url}));
+                        // The address as the page sees it, with its fragment: a link within
+                        // a page and a hash route change nothing else.
+                        } else if let Some(url) = tree.first().map(|frame| format!("{}{}", frame.url, frame.fragment)).filter(|url| url.contains(expected)) {
+                            break Ok(json!({"condition_observed":true,"url":url}));
                         },
                         Err(error) if changing(&error) => {},
                         Err(error) => return Err(error),

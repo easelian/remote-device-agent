@@ -12,6 +12,8 @@ pub struct Frame {
     pub id: String,
     pub loader: String,
     pub url: String,
+    /// The `#...` part of the address, which the frame tree reports apart from `url`.
+    pub fragment: String,
     pub ancestors: Vec<(String, String)>,
 }
 pub struct Element {
@@ -49,6 +51,7 @@ pub async fn frame_tree(cdp: &Cdp, session: &str, deadline: Instant) -> Result<V
                 id: id.into(),
                 loader: loader.into(),
                 url: frame["url"].as_str().unwrap_or("").into(),
+                fragment: frame["urlFragment"].as_str().unwrap_or("").into(),
                 ancestors: Vec::new(),
             });
         }
@@ -401,7 +404,13 @@ pub async fn observe_next(
                         visible["editable"] = data["editable"].clone();
                         visible["sensitive"] = (data["type"] == "password").into();
                         visible["file_input"] = (data["type"] == "file").into();
-                        if data["type"] != "password" && data["type"] != "file" && let Some(value) = node["value"]["value"].as_str() {
+                        // A number field or a slider holds a number, not a string.
+                        let value = match &node["value"]["value"] {
+                            Value::String(value) => Some(value.clone()),
+                            Value::Number(value) => Some(value.as_f64().filter(|v| v.fract() == 0. && v.abs() < 1e15).map_or_else(|| value.to_string(), |v| format!("{v:.0}"))),
+                            _ => None,
+                        };
+                        if data["type"] != "password" && data["type"] != "file" && let Some(value) = value.as_deref() {
                             let shown = clipped(value, remaining.min(512));
                             remaining = remaining.saturating_sub(shown.chars().count());
                             if shown.len() < value.len() { omitted.push("value_clipped".into()); }
