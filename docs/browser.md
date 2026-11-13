@@ -84,6 +84,24 @@ Know its limits before relying on it:
 - A host name is judged by the addresses the Agent finds for it. The browser looks the name up again, so a name that answers the two differently is not caught. With `private_networks` set to `deny`, the Agent also checks the address the browser really reached and withholds the page; in that mode a page out of the browser's cache takes about 0.3 seconds longer.
 - With the default settings an AI that a page misleads can still reach your private network. If the device has shell permission, the AI can reach it without the browser.
 
+## Decide whether a shell and browser sessions go together
+
+Shell permission and browser sessions are separate switches. When a device has both, text on a web page can mislead the AI into running a command. A command outside a sandbox runs as the Agent's user: it can read the logins that browser sessions have stored, change this policy file, and reach your network without passing the site policy.
+
+`shell_coexistence` in the `browser` object says what you accept:
+
+| Value | Meaning |
+| --- | --- |
+| `allow` (default) | A shell and browser sessions are offered together. Nothing changes for existing devices. |
+| `sandboxed_only` | Browser sessions are offered beside a shell only while shell commands run in the [sandbox](hardening.md#shell-sandbox). The sandbox hides the browser's storage and the policy file from them. |
+| `deny` | Browser sessions are not offered while the device has a shell. |
+
+Where the condition is not met, the shell keeps working and the browser reports itself unavailable, with the reason `shell_not_sandboxed` or `shell_enabled`. A device without a shell is not affected. The sandbox exists on Linux only, so on macOS and Windows `sandboxed_only` has the effect of `deny`.
+
+When the Agent starts with both enabled, it prints what that means. `device_info.capabilities.browser.shell` reports whether a shell is enabled, whether it is sandboxed, and the value in effect.
+
+Know its limits. With `allow`, nothing stops a misled AI from running a command. `sandboxed_only` keeps commands away from the browser's storage and the policy; with `sandbox.network` set to `true`, a command can still reach your network.
+
 ## Start and verify a task
 
 Ask your connected AI client to use the specific device and website, for example: “On my test device, open the development site, read the pending records, and report which pages you covered.” Identify the device first if its name is ambiguous.
