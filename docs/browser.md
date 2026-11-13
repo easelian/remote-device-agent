@@ -49,6 +49,41 @@ On Windows, deeply nested custom configuration directories can exceed the browse
 
 If you use `allowed_operations`, include the browser tools you need. The web pages also require the internal `browser_human` operation. The Agent never installs a browser or enables these permissions automatically. Browser traffic uses the remote device's network; shared file roots do not restrict reachable websites.
 
+## Choose which sites may be opened
+
+By default a browser session opens any public site, sites on your private network and sites on the device itself. Addresses of cloud metadata services and link-local addresses (`169.254.0.0/16`, `fe80::/10`) are refused: a page has no ordinary reason to open them, and some clouds hand out credentials there. To change this, add a `sites` object to `browser` in the policy file:
+
+```json
+"browser": {
+  "enabled": true,
+  "sites": {
+    "public": "allow",
+    "allow": ["*.example.org", "intranet.example.com"],
+    "deny": ["*.bank.example"],
+    "private_networks": "allow",
+    "private_allow": ["localhost:3000", "wiki.corp", "192.168.10.0/24"]
+  }
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `public` | `allow` | What happens to a public site that no list names. With `deny`, only the sites in `allow` open. |
+| `allow` | empty | The public sites that open when `public` is `deny`. It does not open private addresses. |
+| `deny` | empty | Sites that are always refused. It takes precedence over every other field. |
+| `private_networks` | `allow` | What happens to private networks and the device itself. With `deny`, only the hosts in `private_allow` open. |
+| `private_allow` | empty | Hosts that are exempt from `private_networks`, and from the refusal of metadata and link-local addresses. |
+
+An entry is a host name (`example.com`), every host below a name (`*.example.com`, which does not include `example.com` itself), an address (`192.168.1.10`, `[fd00::1]`) or an address range (`10.0.0.0/8`). A range matches addresses written out in a URL, not names that resolve into it; to open a local site by name, list the name. An entry can end in a port (`localhost:3000`); without one it matches every port. Entries carry no scheme and no path. A list holds at most 256 entries, and the Agent does not start with an entry it cannot read. When the Agent starts, it prints the policy in effect.
+
+The policy covers page navigation: the address the AI gives, links, forms, redirects, frames and new tabs. A refused address is reported to the AI as `browser_site_denied`, and a tab whose own navigation was refused shows `blocked: "site_policy"`. People who take over a session are held to the same policy.
+
+Know its limits before relying on it:
+
+- It does not cover the requests a page makes by itself, such as images, scripts and `fetch`. Chrome 142 and later refuse those from a public page to a private address; earlier versions do not.
+- A host name is judged by the addresses the Agent finds for it. The browser looks the name up again, so a name that answers the two differently is not caught. With `private_networks` set to `deny`, the Agent also checks the address the browser really reached and withholds the page; in that mode a page out of the browser's cache takes about 0.3 seconds longer.
+- With the default settings an AI that a page misleads can still reach your private network. If the device has shell permission, the AI can reach it without the browser.
+
 ## Start and verify a task
 
 Ask your connected AI client to use the specific device and website, for example: “On my test device, open the development site, read the pending records, and report which pages you covered.” Identify the device first if its name is ambiguous.

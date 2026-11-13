@@ -136,7 +136,9 @@ Policy denials include a stable `error_code` alongside the `error` string: `poli
 Browser sessions are independent of `allow_shell` and `allow_write`. The local
 `browser` object defaults to disabled, as do its `persistent_profiles`,
 `downloads` and `uploads` options. `executable` optionally selects an absolute
-Chromium path. Restart the Agent after policy changes. See the
+Chromium path. `sites` chooses which sites a session may open; without it,
+public sites and private networks open, and cloud metadata and link-local
+addresses are refused. Restart the Agent after policy changes. See the
 [browser guide](browser.md) for the complete setup and capability checks.
 
 The reserved `.rdh-browser` storage is excluded from Linux file reads, writes,
