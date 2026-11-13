@@ -618,8 +618,12 @@ impl Element {
     }
 
     pub async fn act(&self, cdp: &Cdp, action: &Value, deadline: Instant) -> Result<Value> {
-        let kind = action["kind"].as_str().unwrap_or("");
-        self.checked(cdp, deadline).await?;
+        let data = self.checked(cdp, deadline).await?;
+        // Nothing has been sent yet, so an action that does not suit this
+        // element is a plain rejection instead of an uncertain outcome.
+        if precheck(action, &data, &self.choices)? {
+            return Ok(json!({"changed":false}));
+        }
         cdp.call(
             Some(&self.frame.session),
             "DOM.scrollIntoViewIfNeeded",
@@ -634,16 +638,14 @@ impl Element {
         if data["hit"] != true || first["x"] != point["x"] || first["y"] != point["y"] {
             return Err(Failure::new("browser_not_actionable"));
         }
+        // The element can change while the page settles.
+        if precheck(action, &data, &self.choices)? {
+            return Ok(json!({"changed":false}));
+        }
         let session = Some(self.frame.session.as_str());
-        match kind {
+        match action["kind"].as_str().unwrap_or("") {
             "select" => {
                 let value = action["value"].as_str().unwrap_or("");
-                if data["tag"] != "SELECT"
-                    || data["select"]["multiple"] == true
-                    || !self.choices.iter().any(|v| v == value)
-                {
-                    return Err(Failure::new("browser_invalid_params"));
-                }
                 let object = object(cdp, &self.frame, self.backend, deadline).await?;
                 let result = cdp.call_effect(session,"Runtime.callFunctionOn",json!({"objectId":object,
                     "functionDeclaration":SELECT,"arguments":[{"value":value}],"returnByValue":true}),deadline).await;
@@ -661,20 +663,9 @@ impl Element {
                 }
             }
             "click" | "check" => {
-                if kind == "check" {
-                    if !matches!(data["type"].as_str(), Some("checkbox" | "radio")) {
-                        return Err(Failure::new("browser_invalid_params"));
-                    }
-                    if data["checked"] == action["checked"] {
-                        return Ok(json!({"changed":false}));
-                    }
-                }
                 cdp.input_pair(session,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline).await?;
             }
             "fill" => {
-                if data["editable"] != true || data["type"] == "password" {
-                    return Err(Failure::new("browser_sensitive_input"));
-                }
                 cdp.call(
                     session,
                     "DOM.focus",
@@ -693,6 +684,8 @@ impl Element {
                 .await?;
             }
             "press" => {
+                let key = action["key"].as_str().unwrap_or("");
+                let code = key_code(key).ok_or_else(|| Failure::new("browser_invalid_params"))?;
                 cdp.call(
                     session,
                     "DOM.focus",
@@ -700,24 +693,64 @@ impl Element {
                     deadline,
                 )
                 .await?;
-                let key = action["key"].as_str().unwrap_or("");
-                let code = match key {
-                    "Enter" => 13,
-                    "Tab" => 9,
-                    "Escape" => 27,
-                    "Backspace" => 8,
-                    "ArrowDown" => 40,
-                    "ArrowUp" => 38,
-                    "ArrowLeft" => 37,
-                    "ArrowRight" => 39,
-                    _ => return Err(Failure::new("browser_invalid_params")),
-                };
                 cdp.input_pair(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
             }
             _ => return Err(Failure::new("browser_invalid_params")),
         }
         Ok(json!({"input_acknowledged":true,"business_result_verified":false}))
     }
+}
+
+/// Decides, without any page effect, whether `action` suits the element that
+/// `data` describes. `Ok(true)` means the element already holds the requested
+/// state and needs no input.
+fn precheck(action: &Value, data: &Value, choices: &[String]) -> Result<bool> {
+    let invalid = || Failure::new("browser_invalid_params");
+    match action["kind"].as_str().unwrap_or("") {
+        "click" => {}
+        "press" => {
+            key_code(action["key"].as_str().unwrap_or("")).ok_or_else(invalid)?;
+        }
+        "check" => {
+            if !matches!(data["type"].as_str(), Some("checkbox" | "radio")) {
+                return Err(invalid());
+            }
+            return Ok(data["checked"] == action["checked"]);
+        }
+        "select" => {
+            let value = action["value"].as_str().unwrap_or("");
+            if data["tag"] != "SELECT"
+                || data["select"]["multiple"] == true
+                || !choices.iter().any(|v| v == value)
+            {
+                return Err(invalid());
+            }
+        }
+        "fill" => {
+            if data["type"] == "password" {
+                return Err(Failure::new("browser_sensitive_input"));
+            }
+            if data["editable"] != true {
+                return Err(invalid());
+            }
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(false)
+}
+
+fn key_code(key: &str) -> Option<i64> {
+    Some(match key {
+        "Enter" => 13,
+        "Tab" => 9,
+        "Escape" => 27,
+        "Backspace" => 8,
+        "ArrowDown" => 40,
+        "ArrowUp" => 38,
+        "ArrowLeft" => 37,
+        "ArrowRight" => 39,
+        _ => return None,
+    })
 }
 
 pub fn origin(value: &str) -> Result<String> {
@@ -728,4 +761,83 @@ pub fn origin(value: &str) -> Result<String> {
         .map_err(super::io_error)?
         .origin()
         .ascii_serialization())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejection(
+        action: Value,
+        data: &Value,
+        choices: &[&str],
+    ) -> Option<(&'static str, &'static str)> {
+        let choices: Vec<String> = choices.iter().map(|v| (*v).to_owned()).collect();
+        precheck(&action, data, &choices)
+            .err()
+            .map(|error| (error.code, error.state))
+    }
+
+    #[test]
+    fn unsuitable_actions_are_rejected_without_a_page_effect() {
+        let text = json!({"tag":"INPUT","type":"text","editable":true});
+        let password = json!({"tag":"INPUT","type":"password","editable":true});
+        let button = json!({"tag":"BUTTON","type":"submit","editable":false});
+        let single = json!({"tag":"SELECT","type":"select-one","editable":false,"select":{"multiple":false}});
+        let multiple = json!({"tag":"SELECT","type":"select-multiple","editable":false,"select":{"multiple":true}});
+        let invalid = Some(("browser_invalid_params", "not_sent"));
+
+        assert_eq!(
+            rejection(json!({"kind":"fill","text":"x"}), &text, &[]),
+            None
+        );
+        assert_eq!(
+            rejection(json!({"kind":"fill","text":"x"}), &password, &[]),
+            Some(("browser_sensitive_input", "not_sent"))
+        );
+        assert_eq!(
+            rejection(json!({"kind":"fill","text":"x"}), &button, &[]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"select","value":"red"}), &single, &["red"]),
+            None
+        );
+        assert_eq!(
+            rejection(json!({"kind":"select","value":"blue"}), &single, &["red"]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"select","value":"red"}), &multiple, &["red"]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"select","value":"red"}), &text, &["red"]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"check","checked":true}), &text, &[]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"press","key":"Enter"}), &button, &[]),
+            None
+        );
+        assert_eq!(
+            rejection(json!({"kind":"press","key":"F5"}), &button, &[]),
+            invalid
+        );
+        assert_eq!(rejection(json!({"kind":"click"}), &button, &[]), None);
+        assert_eq!(
+            rejection(json!({"kind":"attach_file"}), &button, &[]),
+            invalid
+        );
+    }
+
+    #[test]
+    fn a_checkbox_that_already_matches_needs_no_input() {
+        let checked = json!({"tag":"INPUT","type":"checkbox","checked":true});
+        assert!(precheck(&json!({"kind":"check","checked":true}), &checked, &[]).unwrap());
+        assert!(!precheck(&json!({"kind":"check","checked":false}), &checked, &[]).unwrap());
+    }
 }

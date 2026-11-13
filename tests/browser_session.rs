@@ -1619,3 +1619,96 @@ async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents(
     server.abort();
     let _ = server.await;
 }
+
+const REJECTIONS: &str = r#"<!doctype html><meta charset="utf-8"><title>Rejection fixture</title>
+<h1>Rejections</h1><label>Name <input id="name" value="old"></label><label>Secret <input type="password"></label>
+<button type="button">Plain button</button>
+<label>Color <select><option value="red">Red</option><option value="green">Green</option></select></label>
+<label><input type="checkbox" checked> Agree</label>"#;
+
+/// The session is still under AI control in its first epoch.
+async fn assert_running(peer: &mut Peer, id: &str) {
+    let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+    assert_eq!(tabs["result"]["controller"], "ai", "{tabs}");
+    assert_eq!(tabs["result"]["control_epoch"], 1, "{tabs}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn rejections_without_input_keep_the_session_running() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-rejection-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route("/form", get(|| async { Html(REJECTIONS) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/form")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+
+    // An action that does not suit its element is rejected before any page effect.
+    for (name, mut action, code) in [
+        (
+            "Secret",
+            json!({"kind":"fill","text":"x"}),
+            "browser_sensitive_input",
+        ),
+        (
+            "Plain button",
+            json!({"kind":"fill","text":"x"}),
+            "browser_invalid_params",
+        ),
+        (
+            "Color",
+            json!({"kind":"select","value":"unobserved"}),
+            "browser_invalid_params",
+        ),
+        (
+            "Plain button",
+            json!({"kind":"check","checked":true}),
+            "browser_invalid_params",
+        ),
+    ] {
+        let observed = peer.observe_named(&id, 1, "Plain button").await;
+        action["ref"] = reference(&observed, name).into();
+        let reply = peer
+            .call(
+                "browser_act",
+                json!({"session_id":id,"control_epoch":1,"action":action}),
+            )
+            .await;
+        assert_eq!(reply["error_code"], code, "{name}: {reply}");
+        assert_eq!(reply["execution_state"], "not_sent", "{name}: {reply}");
+        assert_running(&mut peer, &id).await;
+    }
+    // Later actions run in the same epoch without a resume.
+    let observed = peer.observe_named(&id, 1, "Plain button").await;
+    let unchanged = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"check","checked":true,"ref":reference(&observed,"Agree")}})).await;
+    assert_eq!(unchanged["result"]["changed"], false, "{unchanged}");
+    let observed = peer.observe_named(&id, 1, "Plain button").await;
+    let filled = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","text":"new","ref":reference(&observed,"Name")}})).await;
+    assert_eq!(filled["result"]["input_acknowledged"], true, "{filled}");
+    let observed = peer.observe_named(&id, 1, "Plain button").await;
+    let field = observed["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n.get("ref").is_some() && n["name"].as_str().is_some_and(|s| s.trim() == "Name"))
+        .unwrap();
+    assert_eq!(
+        field["value"], "new",
+        "fill replaces the earlier value: {observed}"
+    );
+    assert_running(&mut peer, &id).await;
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
