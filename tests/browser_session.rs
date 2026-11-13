@@ -315,6 +315,25 @@ fn reference(observation: &Value, name: &str) -> String {
     nodes[0]["ref"].as_str().unwrap().into()
 }
 
+fn names_of(observation: &Value) -> Vec<String> {
+    observation["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+fn node_named<'a>(observation: &'a Value, name: &str) -> &'a Value {
+    let nodes: Vec<_> = observation["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["name"] == name)
+        .collect();
+    assert_eq!(nodes.len(), 1, "{observation}");
+    nodes[0]
+}
+
 fn profile_peer(root: &std::path::Path, executable: &str, downloads: bool) -> Peer {
     browser_peer(root, executable, downloads, false)
 }
@@ -1432,7 +1451,7 @@ async fn human_approved_upload_is_private_bound_and_single_use() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
-async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents() {
+async fn bounded_page_continuation_preserves_text_and_reports_changed_documents() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
     let temp = Temp(std::env::temp_dir().join(format!(
@@ -1459,6 +1478,7 @@ async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents(
         .route("/ready-text",post(move||{let loaded=text_loaded.clone();async move {loaded.store(2,Ordering::Release);"ok"}}))
         .route("/changing",get(||async{Html("<!doctype html><p>Before change</p><p>Second paragraph</p><script>let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;document.querySelector('p').textContent='After change';await fetch('/seen',{method:'POST'});}},20);</script>")}))
         .route("/shadow-changing",get(||async{Html("<!doctype html><div id='host'></div><script>const root=document.querySelector('#host').attachShadow({mode:'open'});root.innerHTML='<p>'+('Shadow before '.repeat(100))+'</p>';let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;root.querySelector('p').firstChild.nodeValue='Shadow after '.repeat(100);await fetch('/seen',{method:'POST'});}},20);</script>")}))
+        .route("/moving",get(||async{Html("<!doctype html><p id='first'>Moved row</p><p>Middle row</p><p>End row</p><script>let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/change')).json())){done=true;document.body.appendChild(document.getElementById('first'));await fetch('/seen',{method:'POST'});}},20);</script>")}))
         .route("/change",get(|State(state):State<Arc<AtomicUsize>>|async move{Json(state.load(Ordering::Acquire)>0)}))
         .route("/seen",post(|State(state):State<Arc<AtomicUsize>>|async move{state.store(2,Ordering::Release);"ok"})).with_state(mutation.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1571,13 +1591,19 @@ async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(mutation.load(Ordering::Acquire), 2);
+    // The page changed what the first segment had read. The sequence goes on
+    // from where it stopped and says so, instead of being refused.
     let changed = peer
         .call(
             "browser_observe",
             json!({"session_id":id,"control_epoch":1,"cursor":token}),
         )
         .await;
-    assert_eq!(changed["error_code"], "browser_stale_reference");
+    assert!(changed.get("error").is_none(), "{changed}");
+    let rest = &changed["result"];
+    assert_eq!(names_of(rest), ["Second paragraph"], "{changed}");
+    assert_eq!(rest["coverage"]["changed_during_read"], true, "{changed}");
+    assert_eq!(rest["coverage"]["sequence_complete"], false, "{changed}");
     let first = peer
         .call(
             "browser_observe",
@@ -1625,13 +1651,60 @@ async fn bounded_page_continuation_preserves_text_and_rejects_changed_documents(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(mutation.load(Ordering::Acquire), 2);
+    // A long text is read as it was when the reader came to it, so the rest of
+    // it still belongs to the part already returned.
     let changed = peer
         .call(
             "browser_observe",
             json!({"session_id":id,"control_epoch":epoch,"cursor":token}),
         )
         .await;
-    assert_eq!(changed["error_code"], "browser_stale_reference");
+    assert!(changed.get("error").is_none(), "{changed}");
+    let rest = &changed["result"];
+    assert_eq!(
+        names_of(&first["result"]).concat() + &names_of(rest).concat(),
+        "Shadow before ".repeat(100),
+        "{changed}"
+    );
+    assert_eq!(rest["coverage"]["changed_during_read"], true, "{changed}");
+    assert_eq!(rest["coverage"]["sequence_complete"], false, "{changed}");
+    // The row a sequence stopped on is moved behind the rows it has not read. It
+    // goes on with the row that followed, and reads the moved one only once.
+    mutation.store(0, Ordering::Release);
+    peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":format!("{origin}/moving")}})).await;
+    peer.observe_named(id, epoch, "End row").await;
+    let first = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":epoch,"max_nodes":1}),
+        )
+        .await;
+    assert_eq!(names_of(&first["result"]), ["Moved row"], "{first}");
+    let token = first["result"]["next_cursor"].clone();
+    mutation.store(1, Ordering::Release);
+    for _ in 0..100 {
+        if mutation.load(Ordering::Acquire) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(mutation.load(Ordering::Acquire), 2);
+    let moved = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":epoch,"cursor":token}),
+        )
+        .await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    assert_eq!(
+        names_of(&moved["result"]),
+        ["Middle row", "End row"],
+        "{moved}"
+    );
+    assert_eq!(
+        moved["result"]["coverage"]["changed_during_read"], true,
+        "{moved}"
+    );
     assert!(peer.runtime.shutdown().await);
     server.abort();
     let _ = server.await;
@@ -2162,6 +2235,243 @@ async fn a_navigation_that_gets_no_answer_leaves_the_session_usable() {
     );
 
     drop(silent);
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+/// `count` buttons, each in its own list item, named `<label> 00` onwards.
+fn buttons(label: &str, count: usize) -> String {
+    (0..count)
+        .map(|i| format!("<li>Entry {i:02} <button type=\"button\">{label} {i:02}</button></li>"))
+        .collect()
+}
+
+/// One observation call, which must succeed as it is.
+async fn observe_once(peer: &mut Peer, id: &str, epoch: u64) -> Value {
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":epoch}),
+        )
+        .await;
+    assert!(reply.get("error").is_none(), "{reply}");
+    reply["result"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn an_observation_reads_a_page_that_keeps_changing() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-changing-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    // A clock and a banner change every few milliseconds, far more often than a read takes.
+    let busy = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Busy</title>
+<h1>Orders</h1><p id="clock">tick 0</p><ul>{}</ul><div id="banner" class="a">Deals</div>
+<button type="button" onclick="document.getElementById('out').textContent='Order saved'">Save order</button><p id="out"></p>
+<script>let n=0;setInterval(()=>{{n++;document.getElementById('clock').textContent='tick '+n;document.getElementById('banner').className=n%2?'a':'b';}},5);</script>"#,
+        buttons("Open", 40)
+    );
+    // The last row of the table shows a new stock figure every few milliseconds.
+    let rows = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Rows</title><h1>Stock</h1>
+<table><tbody>{}<tr><td id="live">Stock 0</td><td><button type="button">Buy live</button></td></tr></tbody></table>
+<button type="button" onclick="clearInterval(feed)">Pause feed</button><p id="out"></p>
+<script>let n=0;const feed=setInterval(()=>{{document.getElementById('live').textContent='Stock '+(++n);}},5);</script>"#,
+        (0..40)
+            .map(|i| format!("<tr><td>Item {i:02}</td><td><button type=\"button\" onclick=\"document.getElementById('out').textContent='Bought item {i:02}'\">Buy {i:02}</button></td></tr>"))
+            .collect::<String>()
+    );
+    // Every text node of the first block and every element of the second is
+    // replaced, by one that reads the same, every few milliseconds.
+    let replacing = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Replacing</title><div id="texts">{}</div><div id="rows">{}</div><p>Tail reached</p>
+<script>setInterval(()=>{{for(const p of document.querySelectorAll('#texts p'))p.textContent=p.textContent;const rows=document.getElementById('rows');rows.innerHTML=rows.innerHTML;}},10);</script>"#,
+        (0..12)
+            .map(|i| format!("<p>Text {i:02}</p>"))
+            .collect::<String>(),
+        (0..12)
+            .map(|i| format!("<p>Row {i:02}</p>"))
+            .collect::<String>()
+    );
+    let app = Router::new()
+        .route("/busy", get(move || async move { Html(busy) }))
+        .route("/rows", get(move || async move { Html(rows) }))
+        .route("/replacing", get(move || async move { Html(replacing) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/busy")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    let wait = |text: &str| json!({"session_id":id,"control_epoch":1,"text_contains":text});
+    let navigate = |path: &str| json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/{path}")}});
+
+    // The whole page is read in one call while it changes, every control gets a
+    // reference, and the coverage says that what was read changed meanwhile.
+    let loaded = peer.call("browser_wait", wait("Save order")).await;
+    assert_eq!(loaded["result"]["condition_observed"], true, "{loaded}");
+    let observed = observe_once(&mut peer, &id, 1).await;
+    let controls = observed["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["role"] == "button" && n["ref"].is_string())
+        .count();
+    assert_eq!(controls, 41, "{observed}");
+    let coverage = &observed["coverage"];
+    assert_eq!(coverage["more"], false, "{observed}");
+    assert_eq!(coverage["changed_during_read"], true, "{observed}");
+    assert_eq!(coverage["complete_within_scope"], false, "{observed}");
+    assert_eq!(coverage["omitted"], json!([]), "{observed}");
+    let saved = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Save order")}})).await;
+    assert_eq!(saved["result"]["input_acknowledged"], true, "{saved}");
+    let shown = peer.call("browser_wait", wait("Order saved")).await;
+    assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
+
+    // A control whose row changed after it was reported gets no reference, since
+    // the reference would be bound to a row other than the reported one. The
+    // other rows are unaffected.
+    let moved = peer.call("browser_act", navigate("rows")).await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    let loaded = peer.call("browser_wait", wait("Pause feed")).await;
+    assert_eq!(loaded["result"]["condition_observed"], true, "{loaded}");
+    let observed = observe_once(&mut peer, &id, 1).await;
+    let live = node_named(&observed, "Buy live");
+    assert!(live.get("ref").is_none(), "{observed}");
+    assert_eq!(live["changed_during_read"], true, "{observed}");
+    let still = node_named(&observed, "Buy 07");
+    assert!(still.get("changed_during_read").is_none(), "{observed}");
+    assert_eq!(
+        observed["coverage"]["changed_during_read"], true,
+        "{observed}"
+    );
+    let bought = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Buy 07")}})).await;
+    assert_eq!(bought["result"]["input_acknowledged"], true, "{bought}");
+    let shown = peer.call("browser_wait", wait("Bought item 07")).await;
+    assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
+    // Once the row holds still, its control has a reference and the read is complete.
+    let observed = observe_once(&mut peer, &id, 1).await;
+    let paused = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Pause feed")}})).await;
+    assert_eq!(paused["result"]["input_acknowledged"], true, "{paused}");
+    let observed = observe_once(&mut peer, &id, 1).await;
+    assert!(
+        node_named(&observed, "Buy live")["ref"].is_string(),
+        "{observed}"
+    );
+    assert_eq!(
+        observed["coverage"]["changed_during_read"], false,
+        "{observed}"
+    );
+    assert_eq!(
+        observed["coverage"]["complete_within_scope"], true,
+        "{observed}"
+    );
+
+    // A sequence read one node at a time stops on a node that the page replaces
+    // before the next call. It goes on from the same place, reads every row once
+    // and reaches the end.
+    let moved = peer.call("browser_act", navigate("replacing")).await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    let loaded = peer.call("browser_wait", wait("Tail reached")).await;
+    assert_eq!(loaded["result"]["condition_observed"], true, "{loaded}");
+    let mut names = Vec::new();
+    let mut cursor = Value::Null;
+    let mut last = Value::Null;
+    for _ in 0..40 {
+        let mut params = json!({"session_id":id,"control_epoch":1,"max_nodes":1});
+        if !cursor.is_null() {
+            params["cursor"] = cursor.clone();
+        }
+        let reply = peer.call("browser_observe", params).await;
+        assert!(reply.get("error").is_none(), "{reply}");
+        names.extend(names_of(&reply["result"]));
+        cursor = reply["result"]["next_cursor"].clone();
+        last = reply["result"].clone();
+        if cursor.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let expected: Vec<String> = (0..12)
+        .map(|i| format!("Text {i:02}"))
+        .chain((0..12).map(|i| format!("Row {i:02}")))
+        .chain(["Tail reached".to_owned()])
+        .collect();
+    assert_eq!(names, expected);
+    assert_eq!(last["coverage"]["more"], false, "{last}");
+    assert_eq!(last["coverage"]["changed_during_read"], true, "{last}");
+    assert_eq!(last["coverage"]["sequence_complete"], false, "{last}");
+    assert_running(&mut peer, &id).await;
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_read_outlasts_a_subframe_that_navigates() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-subframe-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    // Once the page has loaded, it reloads its subframe every few milliseconds.
+    let frames = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Frames</title><h1>Frames</h1><ul>{}</ul><iframe id="inner" src="/inner"></iframe>
+<script>addEventListener('load',()=>setInterval(()=>document.getElementById('inner').contentWindow.location.reload(),15));</script>"#,
+        buttons("Keep", 60)
+    );
+    let app = Router::new()
+        .route("/frames", get(move || async move { Html(frames) }))
+        .route(
+            "/inner",
+            get(|| async { Html("<!doctype html><title>Inner</title><p>Frame body</p>") }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/frames")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+
+    // The subframe is a different document by the time the read comes to it. It
+    // is left out and named; the tab's own document is read in full.
+    let loaded = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Keep 59"}),
+        )
+        .await;
+    assert_eq!(loaded["result"]["condition_observed"], true, "{loaded}");
+    let observed = observe_once(&mut peer, &id, 1).await;
+    assert!(
+        node_named(&observed, "Keep 00")["ref"].is_string(),
+        "{observed}"
+    );
+    assert!(
+        node_named(&observed, "Keep 59")["ref"].is_string(),
+        "{observed}"
+    );
+    let coverage = &observed["coverage"];
+    assert_eq!(coverage["omitted"], json!(["frame_changed"]), "{observed}");
+    assert_eq!(coverage["complete_within_scope"], false, "{observed}");
+    assert_eq!(coverage["changed_during_read"], false, "{observed}");
+    assert_eq!(coverage["more"], false, "{observed}");
+    assert_running(&mut peer, &id).await;
+
     assert!(peer.runtime.shutdown().await);
     server.abort();
     let _ = server.await;

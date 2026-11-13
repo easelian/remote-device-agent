@@ -122,7 +122,10 @@ const DETAILS: &str = r#"function(){
  // text nearby, such as a clock or a progress value beside a button, is not part of it.
  const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),i===0?text(p):'']);}
  const record=e=>/^(TR|LI|ARTICLE|DIALOG)$/.test(e.tagName)||/^(row|listitem|article|treeitem|option|dialog|alertdialog)$/.test(e.getAttribute('role')||'');
- for(let q=this.parentElement||this.getRootNode().host,i=0;q&&i<8;i++,q=q.parentElement||q.getRootNode().host){if(record(q)){a.push(['record',text(q)]);break;}}
+ let owner=null;
+ for(let q=this.parentElement||this.getRootNode().host,i=0;q&&i<8;i++,q=q.parentElement||q.getRootNode().host){if(record(q)){owner=q;a.push(['record',text(q)]);break;}}
+ // While a reader is at work, whether the record still shows what the reader reported of it.
+ const reader=globalThis.__rdhBrowserReader,steady=!owner||!reader||reader.closed||reader.steady(owner);
  const r=this.getBoundingClientRect(),s=getComputedStyle(this),root=this.getRootNode();
  // Input is sent to the first fragment, so the hit test looks there too.
  const f=this.getClientRects()[0]||r,x=f.x+f.width/2,y=f.y+f.height/2,top=root.elementFromPoint(x,y),hit=top===this||this.contains(top);
@@ -144,7 +147,7 @@ const DETAILS: &str = r#"function(){
  if(select)select.complete=select.complete&&select.options.every(o=>o.value!==null&&!o.label_truncated);
  if(select)a.push(select);
  return {connected:true,signature:JSON.stringify(a),tag:this.tagName,type:this.type||'',editable:!readonly&&((this.tagName==='INPUT'&&!['button','submit','checkbox','radio','file','hidden'].includes(this.type))||this.tagName==='TEXTAREA'||this.isContentEditable),readonly,
- enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit,in_view:inView,covered,x,y,checked:!!this.checked,select};}"#;
+ enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit,in_view:inView,covered,x,y,checked:!!this.checked,select,steady};}"#;
 
 const SELECT: &str = r#"function(value){
  if(!this.isConnected||this.ownerDocument!==document||this.tagName!=='SELECT'||this.disabled||this.multiple||this.options.length>1024)return false;
@@ -234,7 +237,23 @@ pub struct Cursor {
     pages: usize,
     scanned: usize,
     omitted: Vec<String>,
+    /// The page changed something that the sequence had already read.
+    changed: bool,
 }
+
+fn same_document(a: &Frame, b: &Frame) -> bool {
+    a.session == b.session && a.id == b.id && a.loader == b.loader && a.url == b.url
+}
+
+/// A failure that means the thing being read is no longer there, as opposed to
+/// the browser being lost or a deadline passing.
+fn gone(error: &Failure) -> bool {
+    matches!(
+        error.code,
+        "browser_stale_reference" | "browser_command_failed"
+    )
+}
+
 impl Cursor {
     pub fn new(frames: &[Frame]) -> Result<Self> {
         if frames.is_empty() || frames.len() > 32 {
@@ -247,24 +266,57 @@ impl Cursor {
             pages: 0,
             scanned: 0,
             omitted: Vec::new(),
+            changed: false,
         })
     }
+    /// A sequence can continue while the tab shows the document it began on.
     pub fn matches(&self, frames: &[Frame]) -> bool {
-        self.frames.len() == frames.len()
-            && self.frames.iter().zip(frames).all(|(a, b)| {
-                a.session == b.session && a.id == b.id && a.loader == b.loader && a.url == b.url
-            })
+        matches!((self.frames.first(), frames.first()), (Some(a), Some(b)) if same_document(a, b))
+    }
+    /// Notes subframes that came, went or navigated since the sequence began.
+    /// It reads the ones it began with for as long as they last, and no others.
+    pub fn compare(&mut self, frames: &[Frame]) {
+        if self.frames.len() != frames.len()
+            || !self
+                .frames
+                .iter()
+                .zip(frames)
+                .all(|(a, b)| same_document(a, b))
+        {
+            self.omit("frame_changed");
+        }
     }
     pub fn more(&self) -> bool {
         self.frame < self.frames.len()
     }
-    async fn check(&self, cdp: &Cdp, deadline: Instant) -> Result<()> {
-        for (frame, reader) in self.frames.iter().zip(&self.readers) {
-            if let Some(reader) = reader {
-                let value=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":reader,"functionDeclaration":"function(){return this.status();}","returnByValue":true}),deadline).await?;
-                if value["result"]["value"]["changed"] != false {
-                    return Err(Failure::new("browser_stale_reference"));
+    fn omit(&mut self, reason: &str) {
+        if !self.omitted.iter().any(|known| known == reason) {
+            self.omitted.push(reason.into());
+        }
+    }
+    /// Asks each reader whether it is still the current one and whether the page
+    /// changed what it had read. A reader that a later observation replaced ends
+    /// the sequence, and so does losing the reader of the tab's own document. A
+    /// subframe's reader goes with its document, and takes only that frame.
+    async fn check(&mut self, cdp: &Cdp, deadline: Instant) -> Result<()> {
+        for index in 0..self.frames.len() {
+            let Some(reader) = &self.readers[index] else {
+                continue;
+            };
+            let status=cdp.call(Some(&self.frames[index].session),"Runtime.callFunctionOn",json!({"objectId":reader,"functionDeclaration":"function(){return this.status();}","returnByValue":true}),deadline).await;
+            match status {
+                Ok(value) if value["result"]["value"]["closed"] == false => {
+                    self.changed |= value["result"]["value"]["changed"] == true;
                 }
+                Ok(_) => return Err(Failure::new("browser_stale_reference")),
+                Err(error) if index > 0 && gone(&error) => {
+                    self.readers[index] = None;
+                    self.omit("frame_changed");
+                    if index == self.frame {
+                        self.frame += 1;
+                    }
+                }
+                Err(error) => return Err(error),
             }
         }
         Ok(())
@@ -300,6 +352,86 @@ pub async fn observe(
     result
 }
 
+/// What the browser reports about one element the reader found.
+struct Found {
+    backend: i64,
+    role: String,
+    name: String,
+    value: Value,
+    /// What a reference is bound to. Only controls have it.
+    data: Option<Value>,
+}
+
+/// Describes the element at `index` of the reader's current batch. `None` means
+/// the accessibility tree has nothing to say about it. An element that left the
+/// page after the reader found it is reported as a stale reference.
+async fn found(
+    cdp: &Cdp,
+    frame: &Frame,
+    reader: &str,
+    index: u64,
+    deadline: Instant,
+) -> Result<Option<Found>> {
+    let session = Some(frame.session.as_str());
+    let remote = cdp
+        .call(
+            session,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId":reader,"functionDeclaration":"function(i){return this.pending[i].node;}",
+                "arguments":[{"value":index}],"objectGroup":"rdh-observe",
+            }),
+            deadline,
+        )
+        .await?;
+    let dom = cdp
+        .call(
+            session,
+            "DOM.describeNode",
+            json!({"objectId":remote["result"]["objectId"],"depth":0}),
+            deadline,
+        )
+        .await?;
+    let Some(backend) = dom["node"]["backendNodeId"].as_i64() else {
+        return Ok(None);
+    };
+    let ax = cdp
+        .call(
+            session,
+            "Accessibility.getPartialAXTree",
+            json!({"backendNodeId":backend,"fetchRelatives":false}),
+            deadline,
+        )
+        .await?;
+    let Some(node) = ax["nodes"].as_array().and_then(|nodes| {
+        nodes
+            .iter()
+            .find(|n| n["backendDOMNodeId"].as_i64() == Some(backend) && n["ignored"] != true)
+    }) else {
+        return Ok(None);
+    };
+    let role = node["role"]["value"].as_str().unwrap_or("").to_owned();
+    let data = if interactive(&role) {
+        let data = details(cdp, frame, backend, deadline).await?;
+        if data["connected"] != true {
+            return Err(Failure::new("browser_stale_reference"));
+        }
+        Some(data)
+    } else {
+        None
+    };
+    Ok(Some(Found {
+        backend,
+        role,
+        name: node["name"]["value"].as_str().unwrap_or("").to_owned(),
+        value: node["value"]["value"].clone(),
+        data,
+    }))
+}
+
+/// Reads the next segment. The page may change while it is read: the read goes
+/// on, and the coverage says so. It fails only when the tab's own document is
+/// replaced or a later observation takes the reader's place.
 pub async fn observe_next(
     cdp: &Cdp,
     cursor: &mut Cursor,
@@ -316,6 +448,7 @@ pub async fn observe_next(
     let mut visited = 0usize;
     let mut omitted = Vec::<String>::new();
     let mut observed = std::collections::HashSet::new();
+    let mut changed = false;
     while cursor.more() {
         if nodes.len() >= max_nodes
             || remaining == 0
@@ -324,120 +457,129 @@ pub async fn observe_next(
         {
             break;
         }
-        let frame = &cursor.frames[cursor.frame];
-        current(cdp, frame, deadline).await?;
-        if cursor.readers[cursor.frame].is_none() {
-            let context=cdp.call(Some(&frame.session),"Page.createIsolatedWorld",json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),deadline).await?;
-            let group = format!("rdh-reader-{}", frame.id);
-            cdp.call(
-                Some(&frame.session),
-                "Runtime.releaseObjectGroup",
-                json!({"objectGroup":group}),
-                deadline,
-            )
-            .await?;
-            let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})()")}),deadline).await?;
-            cursor.readers[cursor.frame] = Some(
-                created["result"]["objectId"]
-                    .as_str()
-                    .ok_or_else(|| Failure::new("browser_stale_reference"))?
-                    .into(),
-            );
-        }
-        let object = cursor.readers[cursor.frame].as_ref().unwrap();
+        let index = cursor.frame;
+        let frame = cursor.frames[index].clone();
         let result:Result<bool>=async {
+            current(cdp, &frame, deadline).await?;
+            if cursor.readers[index].is_none() {
+                let context=cdp.call(Some(&frame.session),"Page.createIsolatedWorld",json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),deadline).await?;
+                let group = format!("rdh-reader-{}", frame.id);
+                cdp.call(
+                    Some(&frame.session),
+                    "Runtime.releaseObjectGroup",
+                    json!({"objectGroup":group}),
+                    deadline,
+                )
+                .await?;
+                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})()")}),deadline).await?;
+                cursor.readers[index] = Some(
+                    created["result"]["objectId"]
+                        .as_str()
+                        .ok_or_else(|| Failure::new("browser_stale_reference"))?
+                        .into(),
+                );
+            }
+            let object = cursor.readers[index].clone().unwrap();
             let summary=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(nodes,scan){return this.collect(nodes,scan);}","arguments":[{"value":(max_nodes-nodes.len()).min(200)},{"value":5000-visited}],"returnByValue":true}),deadline).await?;
             let summary=&summary["result"]["value"];
-            if summary["changed"]!=false {return Err(Failure::new("browser_stale_reference"));}
+            // A reader that a later observation closed returns no nodes.
+            let candidates=summary["nodes"].as_array().ok_or_else(||Failure::new("browser_stale_reference"))?;
+            changed|=summary["changed"]==true;
             visited+=summary["scanned"].as_u64().unwrap_or(0) as usize;
             if let Some(values)=summary["omitted"].as_array(){omitted.extend(values.iter().filter_map(Value::as_str).map(str::to_owned));}
-            let candidates=summary["nodes"].as_array().ok_or_else(||Failure::new("browser_stale_reference"))?;
             let mut processed=0;let mut partial_chars=0;
             for candidate in candidates {
                 if remaining==0 || nodes.len()>=max_nodes || Instant::now()+Duration::from_millis(200)>=work_until {break;}
                 processed+=1;
-                let mut backend = None;
-                let ax;
-                let node = if let Some(index) = candidate["index"].as_u64() {
-                    let remote = cdp.call(Some(&frame.session), "Runtime.callFunctionOn", json!({
-                        "objectId":object,"functionDeclaration":"function(i){return this.pending[i].node;}",
-                        "arguments":[{"value":index}],"objectGroup":"rdh-observe",
-                    }), deadline).await?;
-                    let dom = cdp.call(Some(&frame.session), "DOM.describeNode", json!({
-                        "objectId":remote["result"]["objectId"],"depth":0,
-                    }), deadline).await?;
-                    backend = dom["node"]["backendNodeId"].as_i64();
-                    ax = cdp.call(Some(&frame.session), "Accessibility.getPartialAXTree", json!({
-                        "backendNodeId":backend,"fetchRelatives":false,
-                    }), deadline).await?;
-                    let Some(node) = ax["nodes"].as_array().and_then(|v| v.iter().find(|n| n["backendDOMNodeId"].as_i64() == backend && n["ignored"] != true)) else { continue; };
-                    node
-                } else { candidate };
-                let role = if backend.is_some() { node["role"]["value"].as_str() } else { node["role"].as_str() }.unwrap_or("");
-                let full_name = if backend.is_some() { node["name"]["value"].as_str() } else { node["name"].as_str() }.unwrap_or("");
+                let element = match candidate["index"].as_u64() {
+                    Some(index) => match found(cdp, &frame, &object, index, deadline).await {
+                        Ok(Some(element)) => Some(element),
+                        Ok(None) => continue,
+                        // The element left the page after the reader found it. That is a
+                        // change to report, unless its whole document went with it.
+                        Err(error) if gone(&error) => {
+                            current(cdp, &frame, deadline).await?;
+                            changed = true;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    },
+                    None => None,
+                };
+                let (role, full_name) = match &element {
+                    Some(element) => (element.role.as_str(), element.name.as_str()),
+                    None => (candidate["role"].as_str().unwrap_or(""), candidate["name"].as_str().unwrap_or("")),
+                };
                 let name = clipped(full_name, 512.min(remaining));
-                if backend.is_some() && name.len() < full_name.len() { omitted.push("text_clipped".into()); }
+                if element.is_some() && name.len() < full_name.len() { omitted.push("text_clipped".into()); }
                 if name.is_empty() && !interactive(role) { continue; }
                 remaining = remaining.saturating_sub(name.chars().count() + role.len());
                 let mut visible = json!({"role":role,"name":name,"frame_id":frame.id});
-                if backend.is_none() {
+                if element.is_none() {
                     visible["text_continued"]=candidate["text_continued"].clone();
                     visible["text_remaining"]=(candidate["text_remaining"]==true || name.len()<full_name.len()).into();
                 }
-                if interactive(role) && let Some(backend) = backend {
-                    let data = details(cdp, frame, backend, deadline).await?;
-                    if data["connected"] == true {
-                        let mut choices = Vec::new();
-                        if let Some(options) = data["select"]["options"].as_array() {
-                            let mut shown = Vec::new();
-                            for option in options {
-                                let size = ["value","label"].iter().filter_map(|k|option[*k].as_str()).map(|v|v.chars().count()).sum::<usize>() + 32;
-                                if size > remaining { break; }
-                                remaining -= size;
-                                if option["disabled"] != true && let Some(value) = option["value"].as_str() { choices.push(value.into()); }
-                                shown.push(option.clone());
-                            }
-                            let complete = data["select"]["complete"] == true && shown.len() == options.len();
-                            visible["options"] = shown.into();
-                            visible["options_complete"] = complete.into();
-                            visible["multiple"] = data["select"]["multiple"].clone();
-                            if !complete { omitted.push("select_options_omitted".into()); }
+                if let Some(Found { backend, value, data: Some(data), .. }) = &element {
+                    let mut choices = Vec::new();
+                    if let Some(options) = data["select"]["options"].as_array() {
+                        let mut shown = Vec::new();
+                        for option in options {
+                            let size = ["value","label"].iter().filter_map(|k|option[*k].as_str()).map(|v|v.chars().count()).sum::<usize>() + 32;
+                            if size > remaining { break; }
+                            remaining -= size;
+                            if option["disabled"] != true && let Some(value) = option["value"].as_str() { choices.push(value.into()); }
+                            shown.push(option.clone());
                         }
+                        let complete = data["select"]["complete"] == true && shown.len() == options.len();
+                        visible["options"] = shown.into();
+                        visible["options_complete"] = complete.into();
+                        visible["multiple"] = data["select"]["multiple"].clone();
+                        if !complete { omitted.push("select_options_omitted".into()); }
+                    }
+                    visible["enabled"] = data["enabled"].clone();
+                    visible["editable"] = data["editable"].clone();
+                    visible["sensitive"] = (data["type"] == "password").into();
+                    visible["file_input"] = (data["type"] == "file").into();
+                    // A number field or a slider holds a number, not a string.
+                    let value = match value {
+                        Value::String(value) => Some(value.clone()),
+                        Value::Number(value) => Some(value.as_f64().filter(|v| v.fract() == 0. && v.abs() < 1e15).map_or_else(|| value.to_string(), |v| format!("{v:.0}"))),
+                        _ => None,
+                    };
+                    if data["type"] != "password" && data["type"] != "file" && let Some(value) = value.as_deref() {
+                        let shown = clipped(value, remaining.min(512));
+                        remaining = remaining.saturating_sub(shown.chars().count());
+                        if shown.len() < value.len() { omitted.push("value_clipped".into()); }
+                        visible["value"] = shown.into();
+                    }
+                    if matches!(data["type"].as_str(), Some("checkbox" | "radio")) {
+                        visible["checked"] = data["checked"].clone();
+                    }
+                    if data["steady"] == false {
+                        // A reference is bound to the text of the control's record. That text
+                        // changed after it was reported, so a reference would be bound to
+                        // something other than what the caller was shown.
+                        visible["changed_during_read"] = true.into();
+                        changed = true;
+                    } else {
                         let reference = format!("e_{observation}_{}", refs.len());
                         visible["ref"] = reference.clone().into();
-                        visible["enabled"] = data["enabled"].clone();
-                        visible["editable"] = data["editable"].clone();
-                        visible["sensitive"] = (data["type"] == "password").into();
-                        visible["file_input"] = (data["type"] == "file").into();
-                        // A number field or a slider holds a number, not a string.
-                        let value = match &node["value"]["value"] {
-                            Value::String(value) => Some(value.clone()),
-                            Value::Number(value) => Some(value.as_f64().filter(|v| v.fract() == 0. && v.abs() < 1e15).map_or_else(|| value.to_string(), |v| format!("{v:.0}"))),
-                            _ => None,
-                        };
-                        if data["type"] != "password" && data["type"] != "file" && let Some(value) = value.as_deref() {
-                            let shown = clipped(value, remaining.min(512));
-                            remaining = remaining.saturating_sub(shown.chars().count());
-                            if shown.len() < value.len() { omitted.push("value_clipped".into()); }
-                            visible["value"] = shown.into();
-                        }
-                        if matches!(data["type"].as_str(), Some("checkbox" | "radio")) {
-                            visible["checked"] = data["checked"].clone();
-                        }
                         refs.insert(reference, Element {
-                            frame: frame.clone(), backend,
+                            frame: frame.clone(), backend: *backend,
                             signature: crate::config::sha256_hex(data["signature"].as_str().unwrap_or("").as_bytes()),
                             role: role.into(), name: crate::config::sha256_hex(full_name.as_bytes()), choices,
                         });
                     }
                 }
                 nodes.push(visible);
-                if backend.is_none() && name.len()<full_name.len() { processed-=1; partial_chars=name.chars().count(); break; }
+                if element.is_none() && name.len()<full_name.len() { processed-=1; partial_chars=name.chars().count(); break; }
             }
             let ack=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(count,chars){return this.ack(count,chars);}","arguments":[{"value":processed},{"value":partial_chars}],"returnByValue":true}),deadline).await?;
-            if ack["result"]["value"]["changed"]!=false {return Err(Failure::new("browser_stale_reference"));}
-            current(cdp,frame,deadline).await?;
-            Ok(ack["result"]["value"]["more"]==true)
+            let ack=&ack["result"]["value"];
+            if ack["closed"]!=false {return Err(Failure::new("browser_stale_reference"));}
+            changed|=ack["changed"]==true;
+            current(cdp,&frame,deadline).await?;
+            Ok(ack["more"]==true)
         }.await;
         let _ = cdp
             .cleanup()
@@ -449,11 +591,21 @@ pub async fn observe_next(
             )
             .await;
         observed.insert(frame.id.clone());
-        if !result? {
-            cursor.frame += 1;
+        match result {
+            Ok(true) => {}
+            Ok(false) => cursor.frame += 1,
+            // A subframe that navigated or went away takes only its own content
+            // with it. The tab's own document being replaced ends the read.
+            Err(error) if index > 0 && gone(&error) => {
+                current(cdp, &cursor.frames[0], deadline).await?;
+                cursor.omit("frame_changed");
+                cursor.frame += 1;
+            }
+            Err(error) => return Err(error),
         }
     }
     cursor.check(cdp, deadline).await?;
+    cursor.changed |= changed;
     cursor.scanned += visited;
     cursor.pages += 1;
     cursor.omitted.extend(omitted);
@@ -463,11 +615,12 @@ pub async fn observe_next(
     if cursor.more() {
         omitted.push("observation_budget".into());
     }
-    let complete = !cursor.more() && cursor.omitted.is_empty();
+    let complete = !cursor.more() && cursor.omitted.is_empty() && !cursor.changed;
     Ok((
         json!({"observation_id":observation,"nodes":nodes,"coverage":{
             "scope":"document_text_and_controls_open_shadow","complete_within_scope":complete,
-            "omitted":omitted,"frames_observed":observed.len(),"frames_omitted":cursor.frames.len()-cursor.frame,
+            "omitted":omitted,"changed_during_read":cursor.changed,
+            "frames_observed":observed.len(),"frames_omitted":cursor.frames.len()-cursor.frame,
             "frames_completed":cursor.frame,"nodes_scanned":visited,"total_nodes_scanned":cursor.scanned,
             "page_index":cursor.pages,"more":cursor.more(),"sequence_complete":complete,
         }}),
@@ -900,6 +1053,45 @@ mod tests {
             rejection(json!({"kind":"attach_file"}), &button, &[]),
             invalid
         );
+    }
+
+    fn frame(id: &str, loader: &str, url: &str) -> Frame {
+        Frame {
+            session: "session".into(),
+            id: id.into(),
+            loader: loader.into(),
+            url: url.into(),
+            fragment: String::new(),
+            ancestors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_sequence_continues_while_the_tab_shows_the_document_it_began_on() {
+        let begun = [
+            frame("top", "1", "https://shop.test/orders"),
+            frame("ad", "2", "https://ads.test/first"),
+        ];
+        let mut cursor = Cursor::new(&begun).unwrap();
+        assert!(cursor.matches(&begun));
+        cursor.compare(&begun);
+        assert!(cursor.omitted.is_empty());
+
+        // A subframe that navigated, or one that went away, is named as left out.
+        let rotated = [
+            begun[0].clone(),
+            frame("ad", "3", "https://ads.test/second"),
+        ];
+        assert!(cursor.matches(&rotated));
+        assert!(cursor.matches(&begun[..1]));
+        cursor.compare(&rotated);
+        cursor.compare(&begun[..1]);
+        assert_eq!(cursor.omitted, ["frame_changed"]);
+
+        // The tab's own document being replaced, or its address changing, ends it.
+        assert!(!cursor.matches(&[frame("top", "9", "https://shop.test/orders")]));
+        assert!(!cursor.matches(&[frame("top", "1", "https://shop.test/orders/7")]));
+        assert!(!cursor.matches(&[]));
     }
 
     #[test]

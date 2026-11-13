@@ -371,18 +371,21 @@ impl Browsers {
                 if target.dialog.is_some() {
                     return Err(Failure::new("browser_dialog_open"));
                 }
-                let frames = frames(&cdp, &session, &target, deadline).await?;
+                let tree = frames(&cdp, &session, &target, deadline).await?;
+                let continuing = params["cursor"].is_string();
                 if let Some(token)=params["cursor"].as_str()
-                    && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&frames)) {
+                    && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&tree)) {
                     return Err(Failure::new("browser_stale_cursor"));
                 }
                 let next_token=crate::random::hex_token::<16>().map_err(super::io_error)?;
                 let previous=session.read.take();
-                let mut read=if params["cursor"].is_string() {
-                    previous.unwrap()
+                let mut read=if continuing {
+                    let mut read=previous.unwrap();
+                    read.cursor.compare(&tree);
+                    read
                 } else {
                     if let Some(previous)=previous {previous.cursor.close(&cdp,deadline).await;}
-                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&frames)?}
+                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&tree)?}
                 };
                 let result=async {
                 let (mut value, refs) = page::observe_next(
@@ -393,7 +396,7 @@ impl Browsers {
                     deadline,
                 )
                 .await?;
-                value["page"] = page::metadata(&cdp,frames.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                value["page"] = page::metadata(&cdp,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                 value["page"]["tab_id"] = tab.clone().into();
                 mark_loading(&mut value);
                 Ok::<_,Failure>((value,refs))
