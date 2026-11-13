@@ -3496,12 +3496,13 @@ async fn a_date_a_colour_and_a_slider_are_filled_with_a_value_they_can_hold() {
 }
 
 // A page three screens long. Each screen has a heading, a paragraph and one
-// control. The first also has a region, which is neither text nor a control.
+// control. The first also has a region and an anchor that leads nowhere. Both
+// have a name, and neither is text or a control.
 const SHELVES: &str = r##"<!doctype html><meta charset="utf-8"><title>Shelves</title>
 <style>body{margin:0} section{height:900px}</style>
 <h1>Catalogue</h1>
 <section><h2>First shelf</h2><p>Top paragraph</p><button type="button">Top button</button>
-<div role="region" aria-label="Offers">Offer text</div></section>
+<div role="region" aria-label="Offers">Offer text</div> <a aria-label="Bare anchor">Anchor text</a></section>
 <section><h2>Second shelf</h2><p>Middle paragraph</p><a href="#middle">Middle link</a></section>
 <section><h2>Third shelf</h2><p>Bottom paragraph</p><label>Bottom field <input value="x"></label></section>"##;
 
@@ -3559,8 +3560,9 @@ async fn an_observation_can_be_asked_for_part_of_a_page() {
     assert!(whole["coverage"].get("filter").is_none(), "{whole}");
     let all = shapes(&whole);
 
-    // Only the controls and the headings: no text, and not the region. Every
-    // control of the whole page is there, in the same order.
+    // Only the controls and the headings: no text, not the region, and not the
+    // anchor that leads nowhere. Every control of the whole page is there, in
+    // the same order.
     let reply = peer
         .call(
             "browser_observe",
@@ -3578,6 +3580,7 @@ async fn an_observation_can_be_asked_for_part_of_a_page() {
         .filter(|(role, _, referenced)| *referenced || role == "heading")
         .cloned()
         .collect();
+    assert!(all.contains(&("generic".into(), "Bare anchor".into(), false)));
     assert_eq!(shapes(interactive), expected, "{reply}");
     assert_eq!(
         names(interactive),
@@ -3655,7 +3658,9 @@ async fn an_observation_can_be_asked_for_part_of_a_page() {
             "Top paragraph",
             "Top button",
             "Offers",
-            "Offer text"
+            "Offer text",
+            "Bare anchor",
+            "Anchor text"
         ],
         "{reply}"
     );
