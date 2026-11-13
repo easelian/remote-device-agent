@@ -2017,6 +2017,7 @@ fn scope(params: &Value) -> page::Scope {
             _ => page::Filter::All,
         },
         within: params["within"].as_str().map(str::to_owned),
+        find: params["find"].as_str().map(str::to_owned),
     }
 }
 
@@ -2038,6 +2039,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "cursor",
             "filter",
             "within",
+            "find",
         ],
         "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
         "browser_wait" => &[
@@ -2078,9 +2080,16 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     {
         return Err(Failure::new("browser_invalid_params"));
     }
+    if let Some(find) = map.get("find")
+        && !find
+            .as_str()
+            .is_some_and(|s| s.chars().count() <= 128 && !s.trim().is_empty())
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
     // A sequence keeps what its first call asked for.
     if map.contains_key("cursor")
-        && ["filter", "within"]
+        && ["filter", "within", "find"]
             .iter()
             .any(|key| map.contains_key(*key))
     {
@@ -2376,6 +2385,14 @@ mod tests {
         assert_eq!(observation(json!({"cursor":cursor,"within":"A1"})), invalid);
         assert_eq!(scope(&json!({"within":"A1"})).within.as_deref(), Some("A1"));
         assert_eq!(scope(&json!({})).within, None);
+        // A text to look for has something in it, and is not long.
+        assert_eq!(observation(json!({"find":"Customer 17"})), Ok(()));
+        assert_eq!(observation(json!({"find":"x".repeat(128)})), Ok(()));
+        assert_eq!(observation(json!({"find":"x".repeat(129)})), invalid);
+        assert_eq!(observation(json!({"find":"  "})), invalid);
+        assert_eq!(observation(json!({"find":17})), invalid);
+        assert_eq!(observation(json!({"cursor":cursor,"find":"x"})), invalid);
+        assert_eq!(scope(&json!({"find":"x"})).find.as_deref(), Some("x"));
         assert_eq!(scope(&json!({})).filter, page::Filter::All);
         assert_eq!(
             scope(&json!({"filter":"viewport"})).filter,

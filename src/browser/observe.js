@@ -24,7 +24,8 @@ function(marks, options) {
     reached.set(root, batch);
     return {walker: document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, filter), trail: []};
   };
-  const state = {pending: [], walkers: [walk(document)], text: null, changed: false, closed: false, omitted: new Set(), roots: []};
+  const state = {pending: [], walkers: [walk(document)], text: null, changed: false, closed: false, omitted: new Set(), roots: [],
+    matches: 0, full: false};
   const note = records => {
     for (const record of records) {
       // A change to what the walk has not come to yet is simply read later.
@@ -162,12 +163,91 @@ function(marks, options) {
     }
     this.roots = []; this.pending = []; this.walkers = []; this.text = null; this.closed = true;
   };
-  state.status = function() {return {changed: this.changed, closed: this.closed, more: !!(this.pending.length || this.text || this.walkers.length)};};
+  state.status = function() {
+    return {changed: this.changed, closed: this.closed, matches: this.matches, more: !!(this.pending.length || this.text || this.walkers.length)};
+  };
   // Whether a record, such as a table row, shows what it showed when the walk came to it. A
   // reference is bound to the text of its record, so that must be the text that was reported.
   state.steady = function(record) {
     const last = altered.get(record);
     return last === undefined || last < reached.get(record);
+  };
+  // A read can look for a text. What it finds is returned with its record, so that the row
+  // that names a customer comes with the button that edits that customer. Upper and lower
+  // case are the same, and so is any run of white space.
+  const needle = (options.find || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const holds = text => text.replace(/\s+/g, ' ').toLowerCase().includes(needle);
+  // A little of the text under an element.
+  const excerpt = node => {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    let text = '';
+    for (let count = 0, inner; count < 32 && text.length < 512 && (inner = walker.nextNode()); count++) text += ' ' + inner.nodeValue;
+    return text;
+  };
+  // What names an element or says what it holds, apart from the text under it.
+  const strings = node => {
+    const parts = [node.getAttribute('aria-label'), node.getAttribute('title'), node.getAttribute('alt'), node.getAttribute('placeholder')];
+    // What a field holds now. A password is never searched.
+    if (node.tagName === 'TEXTAREA' || (node.tagName === 'INPUT' && !['password', 'hidden', 'file'].includes(node.type))) parts.push(node.value);
+    if (node.tagName === 'SELECT') for (const option of Array.from(node.selectedOptions).slice(0, 8)) parts.push(option.label);
+    // A field is also found by its label.
+    if (node.labels) for (const label of Array.from(node.labels).slice(0, 4)) parts.push(excerpt(label));
+    return parts.filter(Boolean).join(' ');
+  };
+  // The record that holds an element: the element itself, or the nearest record above it.
+  const homes = new WeakMap();
+  const home = node => {
+    const path = [];
+    let found = null;
+    for (let up = node; up; up = up.parentElement || up.getRootNode().host) {
+      if (homes.has(up)) {found = homes.get(up); break;}
+      path.push(up);
+      if (marks.record(up)) {found = up; break;}
+    }
+    for (const up of path) homes.set(up, found);
+    return found;
+  };
+  // What a record shows: its text and what names its controls, without the records inside
+  // it. A record too large to be taken whole has no such summary, and its nodes are then
+  // looked at one by one.
+  const units = new WeakMap();
+  const survey = record => {
+    const walker = document.createTreeWalker(record, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {acceptNode(inner) {
+      return inner.nodeType === 1 && marks.record(inner) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    }});
+    let text = strings(record);
+    for (let count = 0, inner; (inner = walker.nextNode()); count++) {
+      if (count >= 400 || text.length > 8192) return null;
+      if (inner.nodeType === 1) text += ' ' + strings(inner);
+      else if (inner.parentElement.getClientRects().length && getComputedStyle(inner.parentElement).visibility !== 'hidden') text += ' ' + inner.nodeValue;
+    }
+    return {hit: holds(text), taken: false, nodes: 0};
+  };
+  // Counts what is found: so many places in all, and 30 nodes of one record. Past the last
+  // place the read ends, and says that there was more.
+  const admit = unit => {
+    if (!unit.taken) {
+      if (state.matches >= options.limit) {state.omitted.add('find_match_limit'); state.full = true; return false;}
+      state.matches++;
+      unit.taken = true;
+    }
+    if (++unit.nodes > 30) {state.omitted.add('find_record_clipped'); return false;}
+    return true;
+  };
+  // Whether a node is part of what the read looks for. A read that looks for nothing takes
+  // every node.
+  const sought = node => {
+    if (!needle) return true;
+    const record = home(node.nodeType === 1 ? node : node.parentElement);
+    let unit = null;
+    if (record) {
+      unit = units.get(record);
+      if (unit === undefined) units.set(record, unit = survey(record));
+    }
+    if (unit) return unit.hit && admit(unit);
+    // No record holds the node, so it is found by what it shows itself.
+    const text = node.nodeType === 3 ? node.nodeValue : strings(node) + (worded.has(node) ? ' ' + excerpt(node) : '');
+    return holds(text) && admit({taken: false, nodes: 0});
   };
   state.collect = function(maxNodes, maxScan) {
     let scanned = 0;
@@ -183,6 +263,7 @@ function(marks, options) {
       if (rooted.length !== this.walkers.length) {this.walkers = rooted; this.changed = true;}
       this.walkers.forEach(resume);
       while ((this.walkers.length || this.text) && scanned < maxScan && this.pending.length < maxNodes) {
+        if (this.full) {this.walkers = []; break;}
         if (this.text) {
           // The text is read as it was when the walk came to it, however many segments it takes.
           const {node, value, offset, preserve} = this.text;
@@ -204,7 +285,7 @@ function(marks, options) {
           const parent = node.parentElement;
           if (!parent || options.interactive || within(parent, worded)) continue;
           const style = getComputedStyle(parent);
-          if (style.display === 'none' || style.visibility === 'hidden' || !parent.getClientRects().length || !shows(node)) continue;
+          if (style.display === 'none' || style.visibility === 'hidden' || !parent.getClientRects().length || !shows(node) || !sought(node)) continue;
           const value = node.nodeValue;
           this.text = {node, value, offset: 0, preserve: value.length > 512};
           continue;
@@ -229,7 +310,7 @@ function(marks, options) {
         const role = (node.getAttribute('role') || '').toLowerCase();
         const titled = heading(node) || /(^|\s)heading(\s|$)/.test(role);
         if (!kind && !titled && !(tags.has(node.tagName) && node.type !== 'hidden') && (options.interactive || !role)) continue;
-        if (!shows(node)) continue;
+        if (!shows(node) || !sought(node)) continue;
         let attributeBytes = 0;
         for (const attribute of node.attributes) {attributeBytes += attribute.name.length + attribute.value.length; if (attributeBytes > 8192) break;}
         if (attributeBytes > 8192 || node.childNodes.length > 1024) {this.omitted.add('oversized_control'); continue;}
@@ -238,7 +319,7 @@ function(marks, options) {
       // An empty batch can still have unvisited DOM nodes after the scan budget.
       for (const entry of this.walkers) entry.trail ||= stop(entry.walker);
     }
-    return {scanned, changed: this.changed, omitted: [...this.omitted], nodes: this.pending.slice(0, maxNodes).map((entry, index) => entry.node ? {index, kind: entry.kind} :
+    return {scanned, changed: this.changed, matches: this.matches, omitted: [...this.omitted], nodes: this.pending.slice(0, maxNodes).map((entry, index) => entry.node ? {index, kind: entry.kind} :
       {role: entry.role, name: entry.name, text_continued: entry.text_continued, text_remaining: entry.text_remaining})};
   };
   state.ack = function(count, chars) {

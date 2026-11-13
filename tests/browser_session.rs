@@ -3746,6 +3746,13 @@ async fn an_observation_can_be_asked_for_one_frame() {
     let app = Router::new()
         .route("/first", get(move || async move { inner("first") }))
         .route("/second", get(move || async move { inner("second") }))
+        .route("/lines/{name}", get(|axum::extract::Path(name): axum::extract::Path<String>| async move {
+            Html((1..=15).map(|i| format!("<p>Line {name} {i:02}</p>")).collect::<String>())
+        }))
+        .route("/lined", get(|headers: axum::http::HeaderMap| async move {
+            let host = headers["host"].to_str().unwrap().replace("127.0.0.1", "localhost");
+            Html(format!("<!doctype html><h1>Two frames</h1><iframe width=400 height=300 src='/lines/first'></iframe><iframe width=400 height=300 src='http://{host}/lines/second'></iframe>"))
+        }))
         .route("/outer", get(|headers: axum::http::HeaderMap| async move {
             // A different host puts the second frame in its own process.
             let host = headers["host"].to_str().unwrap().replace("127.0.0.1", "localhost");
@@ -3881,6 +3888,251 @@ async fn an_observation_can_be_asked_for_one_frame() {
         .await;
     assert_eq!(names(&rest["result"]), ["Inner first button"], "{rest}");
     assert_eq!(rest["result"]["coverage"]["within"], first, "{rest}");
+
+    // A search looks in every frame, and counts what it finds across them:
+    // fifteen lines in the first frame, and five of the fifteen in the second.
+    let moved = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/lined")}})).await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    let mut found = Value::Null;
+    for _ in 0..40 {
+        let reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":1,"find":"line"}),
+            )
+            .await;
+        found = reply["result"].clone();
+        if found["coverage"]["matches"] == 20 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(found["coverage"]["matches"], 20, "{found}");
+    assert_eq!(names(&found).len(), 20, "{found}");
+    assert_eq!(names(&found)[14], "Line first 15", "{found}");
+    assert_eq!(names(&found)[19], "Line second 05", "{found}");
+    assert_eq!(
+        found["coverage"]["omitted"],
+        json!(["find_match_limit"]),
+        "{found}"
+    );
+    // In one frame, the search finds all fifteen of that frame.
+    let second = found["nodes"][19]["frame_id"].clone();
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"find":"line","within":second}),
+        )
+        .await;
+    assert_eq!(reply["result"]["coverage"]["matches"], 15, "{reply}");
+    assert_eq!(names(&reply["result"])[14], "Line second 15", "{reply}");
+    assert_eq!(
+        reply["result"]["coverage"]["sequence_complete"], true,
+        "{reply}"
+    );
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_search_returns_what_it_finds_with_its_record() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-ledger-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    // A note, a table of 29 customers with an Edit button each, a few fields,
+    // a list inside a list, and a list item that holds 40 buttons.
+    let ledger = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Ledger</title>
+<h1>Customers</h1>
+<p>Notes about customer 17 are kept here.</p>
+<table><tbody>{}</tbody></table>
+<p><label>Contact <input value="carol@example.test"></label> <label>Secret <input type="password" value="hunter2-secret"></label>
+<button type="button" aria-label="Archive everything">A</button></p>
+<ul><li>Fruits<ul><li>Apple</li><li>Pear</li></ul></li>
+<li>Bulk actions {}</li></ul>
+<p id="out">Nothing yet</p>
+<script>function note(what){{document.getElementById('out').textContent=what;}}</script>"#,
+        (17..=45)
+            .map(|i| format!("<tr><td>Customer <b>{i}</b></td><td>user{i}@example.test</td><td><button type=\"button\" onclick=\"note('Editing {i}')\">Edit</button></td></tr>"))
+            .collect::<String>(),
+        (1..=40)
+            .map(|i| format!("<button type=\"button\">Act {i:02}</button>"))
+            .collect::<String>(),
+    );
+    let app = Router::new().route("/ledger", get(move || async move { Html(ledger) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/ledger")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    peer.observe_named(&id, 1, "Nothing yet").await;
+    fn names(observed: &Value) -> Vec<String> {
+        observed["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["name"].as_str().unwrap().trim().to_owned())
+            .collect()
+    }
+    async fn find(peer: &mut Peer, id: &str, text: &str) -> Value {
+        let reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":1,"find":text}),
+            )
+            .await;
+        assert!(reply.get("error").is_none(), "{text}: {reply}");
+        reply["result"].clone()
+    }
+
+    // The text is in a note and in a table row, where markup splits it. The
+    // row comes whole, with its button. Case and the width of a space do not
+    // matter.
+    let found = find(&mut peer, &id, "CUSTOMER   17").await;
+    assert_eq!(
+        names(&found),
+        [
+            "Notes about customer 17 are kept here.",
+            "Customer",
+            "17",
+            "user17@example.test",
+            "Edit"
+        ],
+        "{found}"
+    );
+    assert_eq!(found["coverage"]["matches"], 2, "{found}");
+    assert_eq!(found["coverage"]["sequence_complete"], true, "{found}");
+    assert!(found.get("next_cursor").is_none(), "{found}");
+    // The button of that row is clicked without another observation.
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&found,"Edit")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let edited = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Editing 17"}),
+        )
+        .await;
+    assert_eq!(edited["result"]["condition_observed"], true, "{edited}");
+
+    // A control is found by its name, by what it holds, and by its label.
+    let found = find(&mut peer, &id, "archive every").await;
+    assert_eq!(names(&found), ["Archive everything"], "{found}");
+    assert!(found["nodes"][0].get("ref").is_some(), "{found}");
+    let found = find(&mut peer, &id, "carol@").await;
+    assert_eq!(names(&found), ["Contact"], "{found}");
+    assert_eq!(found["nodes"][0]["value"], "carol@example.test", "{found}");
+    let found = find(&mut peer, &id, "contact").await;
+    assert_eq!(names(&found), ["Contact", "Contact"], "{found}");
+    assert_eq!(found["nodes"][0]["role"], "StaticText", "{found}");
+    assert!(found["nodes"][1].get("ref").is_some(), "{found}");
+    // What a password field holds is never searched.
+    let found = find(&mut peer, &id, "hunter2").await;
+    assert_eq!(names(&found), Vec::<String>::new(), "{found}");
+    assert_eq!(found["coverage"]["matches"], 0, "{found}");
+    assert_eq!(found["coverage"]["sequence_complete"], true, "{found}");
+
+    // A record is found without the records inside it, and one inside it
+    // without the rest.
+    let found = find(&mut peer, &id, "fruits").await;
+    assert_eq!(names(&found), ["Fruits"], "{found}");
+    let found = find(&mut peer, &id, "apple").await;
+    assert_eq!(names(&found), ["Apple"], "{found}");
+
+    // The text is in 31 places: the heading, the note and 29 rows. The first
+    // 20 are returned, and the read says that there were more.
+    let found = find(&mut peer, &id, "customer").await;
+    assert_eq!(found["coverage"]["matches"], 20, "{found}");
+    assert_eq!(names(&found).len(), 2 + 18 * 4, "{found}");
+    assert_eq!(names(&found)[0], "Customers", "{found}");
+    assert_eq!(
+        names(&found).last().map(String::as_str),
+        Some("Edit"),
+        "{found}"
+    );
+    assert!(names(&found).contains(&"user34@example.test".to_owned()));
+    assert!(!names(&found).contains(&"user35@example.test".to_owned()));
+    assert_eq!(
+        found["coverage"]["omitted"],
+        json!(["find_match_limit"]),
+        "{found}"
+    );
+    assert_eq!(found["coverage"]["sequence_complete"], false, "{found}");
+    // A search is continued like any other read, and counts across its calls.
+    let begun = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"find":"customer","max_nodes":10}),
+        )
+        .await;
+    let mut all = names(&begun["result"]);
+    assert_eq!(all.len(), 10, "{begun}");
+    let mut cursor = begun["result"]["next_cursor"].as_str().map(str::to_owned);
+    let mut last = begun["result"].clone();
+    while let Some(token) = cursor {
+        let reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":1,"cursor":token,"max_nodes":40}),
+            )
+            .await;
+        assert!(reply.get("error").is_none(), "{reply}");
+        last = reply["result"].clone();
+        all.extend(names(&last));
+        cursor = last["next_cursor"].as_str().map(str::to_owned);
+    }
+    assert_eq!(all, names(&found), "{last}");
+    assert_eq!(last["coverage"]["matches"], 20, "{last}");
+
+    // A record with more than 30 nodes is cut there, and the read says so.
+    let found = find(&mut peer, &id, "bulk actions").await;
+    assert_eq!(names(&found).len(), 30, "{found}");
+    assert_eq!(names(&found)[0], "Bulk actions", "{found}");
+    assert_eq!(names(&found)[29], "Act 29", "{found}");
+    assert_eq!(found["coverage"]["matches"], 1, "{found}");
+    assert_eq!(
+        found["coverage"]["omitted"],
+        json!(["find_record_clipped"]),
+        "{found}"
+    );
+
+    // With a filter, a search returns the controls of what it finds.
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"find":"customer 18","filter":"interactive"}),
+        )
+        .await;
+    assert_eq!(names(&reply["result"]), ["Edit"], "{reply}");
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&reply["result"],"Edit")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let edited = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Editing 18"}),
+        )
+        .await;
+    assert_eq!(edited["result"]["condition_observed"], true, "{edited}");
+
+    // A search for nothing is refused.
+    let empty = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"find":"   "}),
+        )
+        .await;
+    assert_eq!(empty["error_code"], "browser_invalid_params", "{empty}");
+    assert_eq!(empty["execution_state"], "not_sent", "{empty}");
+    assert_running(&mut peer, &id).await;
 
     assert!(peer.runtime.shutdown().await);
     server.abort();

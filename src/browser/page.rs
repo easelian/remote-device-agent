@@ -163,7 +163,7 @@ const DETAILS: &str = concat!(
  // three ancestors, and the text of the record it belongs to where the markup marks one. Other
  // text nearby, such as a clock or a progress value beside a button, is not part of it.
  const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),i===0?text(p):'']);}
- const record=e=>/^(TR|LI|ARTICLE|DIALOG)$/.test(e.tagName)||/^(row|listitem|article|treeitem|option|dialog|alertdialog)$/.test(e.getAttribute('role')||'');
+ const record=marks.record;
  let owner=null;
  for(let q=this.parentElement||this.getRootNode().host,i=0;q&&i<8;i++,q=q.parentElement||q.getRootNode().host){if(record(q)){owner=q;a.push(['record',text(q)]);break;}}
  // While a reader is at work, whether the record still shows what the reader reported of it.
@@ -336,21 +336,28 @@ pub struct Scope {
     pub filter: Filter,
     /// The one frame to read, by its id. Without it every frame is read.
     pub within: Option<String>,
+    /// The text to look for. What is found is returned with its record.
+    pub find: Option<String>,
 }
 
+/// How many places one search returns.
+const PLACES: usize = 20;
+
 impl Scope {
-    /// What the page reader is told.
-    fn options(&self) -> Value {
+    /// What the page reader of one frame is told. `limit` is the number of
+    /// places it may still find.
+    fn options(&self, limit: usize) -> Value {
         json!({
             "interactive":self.filter == Filter::Interactive,
             "viewport":self.filter == Filter::Viewport,
+            "find":self.find,"limit":limit,
         })
     }
     /// How many nodes of a page one call looks at. A read that leaves most of
     /// the page out passes over it without asking the browser anything, so it
     /// looks further.
     fn reach(&self) -> usize {
-        if self.filter == Filter::All {
+        if self.filter == Filter::All && self.find.is_none() {
             5000
         } else {
             50_000
@@ -364,6 +371,8 @@ pub struct Cursor {
     top: Frame,
     frames: Vec<Frame>,
     readers: Vec<Option<String>>,
+    /// The places that the reader of each frame has found.
+    places: Vec<usize>,
     frame: usize,
     pages: usize,
     scanned: usize,
@@ -403,6 +412,7 @@ impl Cursor {
             scope,
             top,
             readers: vec![None; frames.len()],
+            places: vec![0; frames.len()],
             frames,
             frame: 0,
             pages: 0,
@@ -691,11 +701,7 @@ pub async fn observe_next(
 ) -> Result<(Value, HashMap<String, Element>)> {
     let work_until = deadline.min(Instant::now() + Duration::from_secs(2));
     cursor.check(cdp, deadline).await?;
-    let (filter, reach, options) = (
-        cursor.scope.filter,
-        cursor.scope.reach(),
-        cursor.scope.options(),
-    );
+    let (filter, reach) = (cursor.scope.filter, cursor.scope.reach());
     let observation = crate::random::hex_token::<12>().map_err(super::io_error)?;
     let mut nodes = Vec::new();
     let mut refs = HashMap::new();
@@ -726,7 +732,7 @@ pub async fn observe_next(
                     deadline,
                 )
                 .await?;
-                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS},{options})")}),deadline).await?;
+                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS},{options})",options=cursor.scope.options(PLACES.saturating_sub(cursor.places.iter().sum::<usize>())))}),deadline).await?;
                 cursor.readers[index] = Some(
                     created["result"]["objectId"]
                         .as_str()
@@ -741,6 +747,7 @@ pub async fn observe_next(
             let candidates=summary["nodes"].as_array().ok_or_else(||Failure::new("browser_stale_reference"))?;
             changed|=summary["changed"]==true;
             visited+=summary["scanned"].as_u64().unwrap_or(0) as usize;
+            cursor.places[index]=summary["matches"].as_u64().unwrap_or(0) as usize;
             if let Some(values)=summary["omitted"].as_array(){omitted.extend(values.iter().filter_map(Value::as_str).map(str::to_owned));}
             let mut processed=0;let mut partial_chars=0;
             // Elements are described a few at a time, this one and the ones after it.
@@ -916,6 +923,9 @@ pub async fn observe_next(
     }
     if let Some(frame) = &cursor.scope.within {
         coverage["within"] = frame.as_str().into();
+    }
+    if cursor.scope.find.is_some() {
+        coverage["matches"] = cursor.places.iter().sum::<usize>().into();
     }
     Ok((
         json!({"observation_id":observation,"nodes":nodes,"coverage":coverage}),

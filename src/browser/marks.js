@@ -19,5 +19,9 @@
   // keys through a handler or a place in the focus order.
   const marked = node => native(node) || role(node) !== '' || node.hasAttribute('onclick')
     || (node.hasAttribute('tabindex') && node.tabIndex >= 0);
-  return {role, native, marked};
+  // A record: a table row, a list item, an article or a dialog. A reference is bound to the
+  // text of its record, and what a search finds is returned with its record.
+  const record = node => /^(TR|LI|ARTICLE|DIALOG)$/.test(node.tagName)
+    || /^(row|listitem|article|treeitem|option|dialog|alertdialog)$/.test(node.getAttribute('role') || '');
+  return {role, native, marked, record};
 })()
