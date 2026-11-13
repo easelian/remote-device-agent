@@ -395,6 +395,7 @@ impl Browsers {
                 .await?;
                 value["page"] = page::metadata(&cdp,frames.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                 value["page"]["tab_id"] = tab.clone().into();
+                mark_loading(&mut value);
                 Ok::<_,Failure>((value,refs))
                 }.await;
                 let (mut value, refs)=match result {
@@ -873,6 +874,20 @@ async fn wait_target(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+/// A document that the browser is still parsing has more to come, however much of
+/// it was read. Say so, instead of reporting the part as the complete page.
+fn mark_loading(observation: &mut Value) {
+    if observation["page"]["ready_state"] != "loading" {
+        return;
+    }
+    observation["coverage"]["complete_within_scope"] = false.into();
+    if let Some(omitted) = observation["coverage"]["omitted"].as_array_mut()
+        && !omitted.iter().any(|reason| reason == "document_loading")
+    {
+        omitted.push("document_loading".into());
+    }
+}
+
 /// Splits the product string a browser reports about itself, such as
 /// `Chrome/122.0.6261.128`, into a bounded name and a dotted version. A string
 /// of any other shape is not reported.
@@ -1609,6 +1624,26 @@ mod tests {
             assert_eq!(product(odd), None, "{odd}");
         }
         assert_eq!(product(&format!("{}/1", "a".repeat(33))), None);
+    }
+
+    #[test]
+    fn a_document_still_being_parsed_is_not_reported_as_complete() {
+        let observed = |state: &str| {
+            let mut value = json!({"page":{"ready_state":state},"coverage":{"complete_within_scope":true,"omitted":[]}});
+            mark_loading(&mut value);
+            value["coverage"].clone()
+        };
+        assert_eq!(
+            observed("loading"),
+            json!({"complete_within_scope":false,"omitted":["document_loading"]})
+        );
+        for parsed in ["interactive", "complete"] {
+            assert_eq!(
+                observed(parsed),
+                json!({"complete_within_scope":true,"omitted":[]}),
+                "{parsed}"
+            );
+        }
     }
 
     #[test]

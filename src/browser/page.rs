@@ -86,7 +86,7 @@ pub async fn metadata(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<Val
         .await?;
     let result = cdp.call(Some(&frame.session), "Runtime.evaluate", json!({
         "contextId":context["executionContextId"],"returnByValue":true,
-        "expression":"({url:location.href.slice(0,4096),title:document.title.slice(0,512)})",
+        "expression":"({url:location.href.slice(0,4096),title:document.title.slice(0,512),ready_state:document.readyState})",
     }),deadline).await?;
     current(cdp, frame, deadline).await?;
     let value = &result["result"]["value"];

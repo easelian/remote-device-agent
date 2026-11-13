@@ -2047,3 +2047,61 @@ async fn a_reference_survives_changes_beside_it_but_not_to_its_record() {
     server.abort();
     let _ = server.await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn an_observation_says_when_the_document_is_still_loading() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-loading-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    // The page's script is withheld, which stops the parser between the two paragraphs.
+    let release = Arc::new(AtomicBool::new(false));
+    let app = Router::new()
+        .route("/held", get(|| async { Html("<!doctype html><meta charset=\"utf-8\"><title>Held</title><p>Before the script</p><script src=\"/hold.js\"></script><p>After the script</p>") }))
+        .route("/hold.js", get(|State(release): State<Arc<AtomicBool>>| async move {
+            while !release.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            ""
+        }))
+        .with_state(release.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/held")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+
+    let partial = peer.observe_named(&id, 1, "Before the script").await;
+    assert_eq!(partial["page"]["ready_state"], "loading", "{partial}");
+    assert_eq!(
+        partial["coverage"]["complete_within_scope"], false,
+        "{partial}"
+    );
+    assert_eq!(
+        partial["coverage"]["omitted"],
+        json!(["document_loading"]),
+        "{partial}"
+    );
+    assert!(
+        !partial.to_string().contains("After the script"),
+        "{partial}"
+    );
+
+    release.store(true, Ordering::Release);
+    let whole = peer.observe_named(&id, 1, "After the script").await;
+    assert_ne!(whole["page"]["ready_state"], "loading", "{whole}");
+    assert_eq!(whole["coverage"]["complete_within_scope"], true, "{whole}");
+    assert_running(&mut peer, &id).await;
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
