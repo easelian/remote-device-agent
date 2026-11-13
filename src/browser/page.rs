@@ -334,6 +334,8 @@ pub enum Filter {
 #[derive(Clone, Debug, Default)]
 pub struct Scope {
     pub filter: Filter,
+    /// The one frame to read, by its id. Without it every frame is read.
+    pub within: Option<String>,
 }
 
 impl Scope {
@@ -358,6 +360,8 @@ impl Scope {
 
 pub struct Cursor {
     scope: Scope,
+    /// The tab's own document, whether or not it is among the frames to read.
+    top: Frame,
     frames: Vec<Frame>,
     readers: Vec<Option<String>>,
     frame: usize,
@@ -386,10 +390,20 @@ impl Cursor {
         if frames.is_empty() || frames.len() > 32 {
             return Err(Failure::new("browser_frame_limit"));
         }
+        let top = frames[0].clone();
+        let frames: Vec<Frame> = match &scope.within {
+            Some(id) => frames.iter().filter(|f| f.id == *id).cloned().collect(),
+            None => frames.to_vec(),
+        };
+        // The frame that was asked for is not in the page, or is there no longer.
+        if frames.is_empty() {
+            return Err(Failure::new("browser_stale_reference"));
+        }
         Ok(Self {
             scope,
-            frames: frames.to_vec(),
+            top,
             readers: vec![None; frames.len()],
+            frames,
             frame: 0,
             pages: 0,
             scanned: 0,
@@ -399,18 +413,29 @@ impl Cursor {
     }
     /// A sequence can continue while the tab shows the document it began on.
     pub fn matches(&self, frames: &[Frame]) -> bool {
-        matches!((self.frames.first(), frames.first()), (Some(a), Some(b)) if same_document(a, b))
+        frames
+            .first()
+            .is_some_and(|now| same_document(&self.top, now))
     }
     /// Notes subframes that came, went or navigated since the sequence began.
     /// It reads the ones it began with for as long as they last, and no others.
+    /// A sequence that reads one frame looks at that frame only.
     pub fn compare(&mut self, frames: &[Frame]) {
-        if self.frames.len() != frames.len()
-            || !self
+        let same = match &self.scope.within {
+            Some(_) => self
                 .frames
                 .iter()
-                .zip(frames)
-                .all(|(a, b)| same_document(a, b))
-        {
+                .all(|mine| frames.iter().any(|now| same_document(mine, now))),
+            None => {
+                self.frames.len() == frames.len()
+                    && self
+                        .frames
+                        .iter()
+                        .zip(frames)
+                        .all(|(a, b)| same_document(a, b))
+            }
+        };
+        if !same {
             self.omit("frame_changed");
         }
     }
@@ -888,6 +913,9 @@ pub async fn observe_next(
         Filter::All => {}
         Filter::Interactive => coverage["filter"] = "interactive".into(),
         Filter::Viewport => coverage["filter"] = "viewport".into(),
+    }
+    if let Some(frame) = &cursor.scope.within {
+        coverage["within"] = frame.as_str().into();
     }
     Ok((
         json!({"observation_id":observation,"nodes":nodes,"coverage":coverage}),
@@ -1583,6 +1611,48 @@ mod tests {
         assert!(!cursor.matches(&[frame("top", "9", "https://shop.test/orders")]));
         assert!(!cursor.matches(&[frame("top", "1", "https://shop.test/orders/7")]));
         assert!(!cursor.matches(&[]));
+    }
+
+    #[test]
+    fn a_sequence_that_reads_one_frame_looks_at_that_frame_only() {
+        let begun = [
+            frame("top", "1", "https://shop.test/orders"),
+            frame("ad", "2", "https://ads.test/first"),
+            frame("pay", "3", "https://pay.test/form"),
+        ];
+        let within = |id: &str| Scope {
+            within: Some(id.into()),
+            ..Scope::default()
+        };
+        let mut cursor = Cursor::new(&begun, within("pay")).unwrap();
+        assert_eq!(cursor.frames.len(), 1);
+        assert_eq!(cursor.frames[0].id, "pay");
+
+        // Another frame that navigates or goes away is none of its business.
+        let rotated = [
+            begun[0].clone(),
+            frame("ad", "9", "https://ads.test/second"),
+            begun[2].clone(),
+        ];
+        assert!(cursor.matches(&rotated));
+        cursor.compare(&rotated);
+        cursor.compare(&[begun[0].clone(), begun[2].clone()]);
+        assert!(cursor.omitted.is_empty());
+        // Its own frame navigating is.
+        cursor.compare(&[begun[0].clone(), frame("pay", "4", "https://pay.test/done")]);
+        assert_eq!(cursor.omitted, ["frame_changed"]);
+        // It still ends with the tab's own document.
+        assert!(!cursor.matches(&[
+            frame("top", "9", "https://shop.test/orders"),
+            begun[2].clone()
+        ]));
+
+        // A frame that the page does not hold cannot be read.
+        let missing = Cursor::new(&begun, within("gone")).err().unwrap();
+        assert_eq!(
+            (missing.code, missing.state),
+            ("browser_stale_reference", "not_sent")
+        );
     }
 
     #[test]

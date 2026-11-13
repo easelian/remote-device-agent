@@ -3728,3 +3728,161 @@ async fn an_observation_can_be_asked_for_part_of_a_page() {
     server.abort();
     let _ = server.await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn an_observation_can_be_asked_for_one_frame() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-frames-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let inner = |name: &'static str| {
+        Html(format!(
+            r#"<!doctype html><p>Inner {name} text</p><button type="button" onclick="this.textContent='Inner {name} clicked'">Inner {name} button</button>"#
+        ))
+    };
+    let app = Router::new()
+        .route("/first", get(move || async move { inner("first") }))
+        .route("/second", get(move || async move { inner("second") }))
+        .route("/outer", get(|headers: axum::http::HeaderMap| async move {
+            // A different host puts the second frame in its own process.
+            let host = headers["host"].to_str().unwrap().replace("127.0.0.1", "localhost");
+            Html(format!("<!doctype html><h1>Outer</h1><p>Outer text</p><iframe width=400 height=120 src='/first'></iframe><iframe width=400 height=120 src='http://{host}/second'></iframe>"))
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/outer")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    let names = |observed: &Value| -> Vec<String> {
+        observed["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["name"].as_str().unwrap().trim().to_owned())
+            .collect()
+    };
+
+    // A whole observation reads the page and both of its frames, and says of
+    // each node which frame holds it.
+    let mut whole = Value::Null;
+    for _ in 0..40 {
+        whole = peer.observe_named(&id, 1, "Outer text").await;
+        if ["Inner first button", "Inner second button"]
+            .iter()
+            .all(|name| names(&whole).contains(&(*name).to_owned()))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let frame_of = |name: &str| {
+        node_named(&whole, name)["frame_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (outer, first, second) = (
+        frame_of("Outer text"),
+        frame_of("Inner first button"),
+        frame_of("Inner second button"),
+    );
+    assert!(
+        outer != first && first != second && outer != second,
+        "{whole}"
+    );
+
+    // One frame: its own content and nothing else, whether or not the frame
+    // runs in the page's process.
+    for (frame, expected) in [
+        (&first, ["Inner first text", "Inner first button"]),
+        (&second, ["Inner second text", "Inner second button"]),
+        (&outer, ["Outer", "Outer text"]),
+    ] {
+        let reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":1,"within":frame}),
+            )
+            .await;
+        let read = &reply["result"];
+        assert_eq!(names(read), expected, "{reply}");
+        assert!(
+            read["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["frame_id"] == **frame),
+            "{reply}"
+        );
+        assert_eq!(read["coverage"]["within"], **frame, "{reply}");
+        assert_eq!(read["coverage"]["sequence_complete"], true, "{reply}");
+        assert!(read.get("next_cursor").is_none(), "{reply}");
+    }
+    // A reference from such a read is used like any other, and a filter narrows
+    // the frame further.
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"within":second,"filter":"interactive"}),
+        )
+        .await;
+    assert_eq!(names(&reply["result"]), ["Inner second button"], "{reply}");
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&reply["result"],"Inner second button")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let shown = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Inner second clicked"}),
+        )
+        .await;
+    assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
+
+    // A frame that the page does not hold is not read, and the session stays.
+    let missing = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"within":"0123456789ABCDEF0123456789ABCDEF"}),
+        )
+        .await;
+    assert_eq!(
+        missing["error_code"], "browser_stale_reference",
+        "{missing}"
+    );
+    assert_eq!(missing["execution_state"], "not_sent", "{missing}");
+    assert_running(&mut peer, &id).await;
+    // A sequence keeps the frame of its first call, and takes no other.
+    let begun = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"within":first,"max_nodes":1}),
+        )
+        .await;
+    assert_eq!(names(&begun["result"]), ["Inner first text"], "{begun}");
+    let cursor = begun["result"]["next_cursor"].as_str().unwrap().to_owned();
+    let mixed = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"cursor":cursor,"within":second}),
+        )
+        .await;
+    assert_eq!(mixed["error_code"], "browser_invalid_params", "{mixed}");
+    let rest = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"cursor":cursor}),
+        )
+        .await;
+    assert_eq!(names(&rest["result"]), ["Inner first button"], "{rest}");
+    assert_eq!(rest["result"]["coverage"]["within"], first, "{rest}");
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

@@ -2016,6 +2016,7 @@ fn scope(params: &Value) -> page::Scope {
             Some("viewport") => page::Filter::Viewport,
             _ => page::Filter::All,
         },
+        within: params["within"].as_str().map(str::to_owned),
     }
 }
 
@@ -2036,6 +2037,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "max_chars",
             "cursor",
             "filter",
+            "within",
         ],
         "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
         "browser_wait" => &[
@@ -2077,10 +2079,14 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         return Err(Failure::new("browser_invalid_params"));
     }
     // A sequence keeps what its first call asked for.
-    if map.contains_key("cursor") && map.contains_key("filter") {
+    if map.contains_key("cursor")
+        && ["filter", "within"]
+            .iter()
+            .any(|key| map.contains_key(*key))
+    {
         return Err(Failure::new("browser_invalid_params"));
     }
-    for key in ["session_id", "tab_id"] {
+    for key in ["session_id", "tab_id", "within"] {
         if let Some(value) = map.get(key)
             && !value.as_str().is_some_and(|s| {
                 !s.is_empty()
@@ -2360,6 +2366,16 @@ mod tests {
             observation(json!({"cursor":cursor,"filter":"interactive"})),
             invalid
         );
+        // One frame is named by its id, as an observation gives it.
+        assert_eq!(
+            observation(json!({"within":"66937997627883EC913DF26FAB27DE65"})),
+            Ok(())
+        );
+        assert_eq!(observation(json!({"within":"a frame"})), invalid);
+        assert_eq!(observation(json!({"within":7})), invalid);
+        assert_eq!(observation(json!({"cursor":cursor,"within":"A1"})), invalid);
+        assert_eq!(scope(&json!({"within":"A1"})).within.as_deref(), Some("A1"));
+        assert_eq!(scope(&json!({})).within, None);
         assert_eq!(scope(&json!({})).filter, page::Filter::All);
         assert_eq!(
             scope(&json!({"filter":"viewport"})).filter,
