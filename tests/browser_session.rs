@@ -338,8 +338,15 @@ fn profile_peer(root: &std::path::Path, executable: &str, downloads: bool) -> Pe
     browser_peer(root, executable, downloads, false)
 }
 fn browser_peer(root: &std::path::Path, executable: &str, downloads: bool, uploads: bool) -> Peer {
+    policy_peer(
+        root,
+        json!({"enabled":true,"persistent_profiles":true,"downloads":downloads,"uploads":uploads,"executable":executable}),
+    )
+}
+/// A peer whose local policy holds the given `browser` settings.
+fn policy_peer(root: &std::path::Path, browser: Value) -> Peer {
     let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":rdh_agent::config::local_roots(&[format!("work={}", root.display())]).unwrap(),"allow_write":false,"allow_shell":false})).unwrap();
-    let policy = Policy::parse(&json!({"version":1,"browser":{"enabled":true,"persistent_profiles":true,"downloads":downloads,"uploads":uploads,"executable":executable}}), &config).unwrap();
+    let policy = Policy::parse(&json!({"version":1,"browser":browser}), &config).unwrap();
     let runtime =
         Runtime::with_config_path(config, policy, None, None, Some(&root.join("device.json")))
             .unwrap();
@@ -2698,4 +2705,192 @@ async fn metadata_addresses_are_refused_however_the_browser_is_led_to_them() {
     assert!(peer.runtime.shutdown().await);
     server.abort();
     let _ = server.await;
+}
+
+/// A server on `address` whose every page shows `title`, and the number of
+/// requests it has received.
+async fn counting_site(
+    address: std::net::IpAddr,
+    title: &'static str,
+) -> (
+    u16,
+    Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let app = Router::new().fallback(move || {
+        counter.fetch_add(1, Ordering::Relaxed);
+        async move {
+            Html(format!(
+                "<!doctype html><title>{title}</title><h1>{title}</h1>"
+            ))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind((address, 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (port, hits, server)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn an_owner_who_refuses_private_networks_names_the_local_sites_that_open() {
+    use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+    use std::sync::atomic::Ordering;
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-strict-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let (refused_port, refused_hits, refused_site) = counting_site(loopback, "Refused page").await;
+    let linked = format!("http://127.0.0.1:{refused_port}/");
+    let (home, framed, redirect) = (
+        format!(
+            r#"<!doctype html><meta charset="utf-8"><title>Allowed</title><h1>Allowed</h1><a href="{linked}">Refused link</a>"#
+        ),
+        format!(
+            r#"<!doctype html><meta charset="utf-8"><title>Framed</title><h1>Framed</h1><iframe src="{linked}"></iframe><p>After frame</p>"#
+        ),
+        linked.clone(),
+    );
+    let app = Router::new()
+        .route("/", get(move || async move { Html(home) }))
+        .route("/framed", get(move || async move { Html(framed) }))
+        .route(
+            "/redirect",
+            get(move || async move { axum::response::Redirect::temporary(&redirect) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let allowed_port = listener.local_addr().unwrap().port();
+    let origin = format!("http://127.0.0.1:{allowed_port}");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    // This machine's own name leads to an address of its own, which is not public.
+    // Two sites answer under that name: one the owner lists, one the owner does not.
+    let name = String::from_utf8(
+        std::process::Command::new("hostname")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_ascii_lowercase();
+    let own = (name.as_str(), 0)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut found| found.find(|address| address.is_ipv4()))
+        .map(|address| address.ip());
+    let named = match own {
+        Some(address) => Some((
+            counting_site(address, "Listed page").await,
+            counting_site(address, "Unlisted page").await,
+        )),
+        None => None,
+    };
+    let mut listed = vec![format!("127.0.0.1:{allowed_port}")];
+    if let Some(((port, ..), _)) = &named {
+        listed.push(format!("{name}:{port}"));
+    }
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"downloads":true,"executable":executable,
+            "sites":{"private_networks":"deny","private_allow":listed}}),
+    );
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    let mut epoch = 1;
+    let navigate = |epoch: u64, url: String| json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":url}});
+    // The session pauses after an uncertain outcome; this takes control back.
+    async fn resume(peer: &mut Peer, id: &str) -> u64 {
+        let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+        assert_eq!(tabs["result"]["controller"], "paused", "{tabs}");
+        let resumed = peer.call("browser_control", json!({"session_id":id,"control_epoch":tabs["result"]["control_epoch"],"action":"resume"})).await;
+        assert!(resumed.get("error").is_none(), "{resumed}");
+        resumed["result"]["control_epoch"].as_u64().unwrap()
+    }
+
+    // The listed local site opens. Another site on this device does not, whether
+    // the caller names it, a link leads to it, a frame points at it or a listed
+    // page redirects to it. No request reaches it.
+    let observed = peer.observe_named(&id, epoch, "Allowed").await;
+    let denied = peer
+        .call("browser_act", navigate(epoch, linked.clone()))
+        .await;
+    assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+    assert_eq!(denied["execution_state"], "not_sent", "{denied}");
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"click","ref":reference(&observed,"Refused link")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    tabs_until(&mut peer, &id, |tab| tab["blocked"] == "site_policy").await;
+    let moved = peer
+        .call("browser_act", navigate(epoch, format!("{origin}/framed")))
+        .await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    let observed = peer.observe_named(&id, epoch, "After frame").await;
+    assert!(!observed.to_string().contains("Refused page"), "{observed}");
+    let denied = peer
+        .call("browser_act", navigate(epoch, format!("{origin}/redirect")))
+        .await;
+    assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+    assert_eq!(denied["execution_state"], "unknown", "{denied}");
+    epoch = resume(&mut peer, &id).await;
+    assert_eq!(refused_hits.load(Ordering::Relaxed), 0);
+
+    if let Some(((listed_port, ..), (unlisted_port, unlisted_hits, _))) = &named {
+        // A local site listed by name opens.
+        let moved = peer
+            .call(
+                "browser_act",
+                navigate(epoch, format!("http://{name}:{listed_port}/")),
+            )
+            .await;
+        assert!(moved.get("error").is_none(), "{moved}");
+        peer.observe_named(&id, epoch, "Listed page").await;
+        // An unlisted name is looked up before its request is sent. The lookup
+        // finds an address that is not public, and nothing is sent.
+        let unlisted = format!("http://{name}:{unlisted_port}/");
+        let denied = peer
+            .call("browser_act", navigate(epoch, unlisted.clone()))
+            .await;
+        assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+        assert_eq!(denied["execution_state"], "not_sent", "{denied}");
+        assert_eq!(unlisted_hits.load(Ordering::Relaxed), 0);
+        // Now the lookup is told that every name is public, as it would see a name
+        // that answers the Agent and the browser differently. The request is sent,
+        // the browser reaches an address that is not public, and the page never
+        // gets the response.
+        peer.runtime
+            .browser_resolver(rdh_agent::browser::sites::resolver(|_| async {
+                Some(vec!["93.184.216.34".parse().unwrap()])
+            }));
+        let denied = peer.call("browser_act", navigate(epoch, unlisted)).await;
+        assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+        assert_eq!(denied["execution_state"], "unknown", "{denied}");
+        assert_eq!(unlisted_hits.load(Ordering::Relaxed), 1);
+        epoch = resume(&mut peer, &id).await;
+        let observed = observe_once(&mut peer, &id, epoch).await;
+        assert_eq!(observed["page"]["blocked"], "site_policy", "{observed}");
+        assert!(
+            !observed.to_string().contains("Unlisted page"),
+            "{observed}"
+        );
+    } else {
+        eprintln!("this machine's name does not resolve: the checks by name were skipped");
+    }
+
+    assert!(peer.runtime.shutdown().await);
+    for site in [server, refused_site] {
+        site.abort();
+        let _ = site.await;
+    }
+    if let Some(((_, _, listed), (_, _, unlisted))) = named {
+        listed.abort();
+        unlisted.abort();
+    }
 }

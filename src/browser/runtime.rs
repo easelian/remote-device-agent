@@ -994,6 +994,86 @@ fn mark_blocked(result: &mut Value, targets: &Mutex<HashMap<String, Target>>, ta
     }
 }
 
+/// Fails a paused request the way a content blocker would.
+async fn refuse(cdp: &Cdp, session: Option<&str>, params: &Value, deadline: Instant) -> Result<()> {
+    cdp.call(
+        session,
+        "Fetch.failRequest",
+        json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
+        deadline,
+    )
+    .await
+    .map(drop)
+}
+
+/// Lets a paused document go on, or takes it over as a download.
+async fn release(
+    cdp: &Cdp,
+    targets: &Mutex<HashMap<String, Target>>,
+    downloads: Option<&DownloadContext>,
+    session: Option<&str>,
+    params: &Value,
+    deadline: Instant,
+) -> Result<()> {
+    if let Some(downloads) = downloads
+        && params["responseHeaders"].as_array().is_some_and(|headers| {
+            headers.iter().any(|h| {
+                h["name"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))
+                    && h["value"].as_str().is_some_and(|v| {
+                        v.split(';')
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .eq_ignore_ascii_case("attachment")
+                    })
+            })
+        })
+    {
+        let target = targets
+            .lock()
+            .unwrap()
+            .values()
+            .find(|t| Some(t.session.as_str()) == session)
+            .cloned()
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+        let origin = url::Url::parse(params["request"]["url"].as_str().unwrap_or(""))
+            .map_err(|_| Failure::new("browser_url_denied"))?
+            .origin()
+            .ascii_serialization();
+        let owner = files::Owner {
+            principal: downloads.principal.clone(),
+            session: downloads.session.clone(),
+            tab: target.id,
+            origin,
+            control: downloads.control.clone(),
+        };
+        if downloads
+            .files
+            .intercept(cdp.cleanup(), target.session, params, owner)
+            .is_err()
+        {
+            cdp.call(
+                session,
+                "Fetch.failRequest",
+                json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
+                deadline,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    cdp.call(
+        session,
+        "Fetch.continueRequest",
+        json!({"requestId":params["requestId"]}),
+        deadline,
+    )
+    .await
+    .map(drop)
+}
+
 /// Records on a tab what became of the latest request for its own document:
 /// refused by the site policy, or under way.
 fn note(
@@ -1206,6 +1286,174 @@ async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
     result.expect("the hook must answer every paused request");
 }
 
+#[tokio::test]
+async fn where_private_networks_are_refused_the_address_reached_decides() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+    let (client, browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let cdp = Cdp::new(read, write);
+    let tab = Target {
+        id: "tab".into(),
+        session: "page".into(),
+        kind: "page".into(),
+        url: String::new(),
+        title: String::new(),
+        dialog: None,
+        parent: None,
+        ready: true,
+        blocked: None,
+    };
+    let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
+    let gate = Arc::new(Gate {
+        sites: serde_json::from_value(json!({"private_networks":"deny"})).unwrap(),
+        lookup: Lookup::default(),
+    });
+    // Every name looks public when it is asked about.
+    gate.lookup.resolve_with(super::sites::resolver(|_| async {
+        Some(vec!["93.184.216.34".parse().unwrap()])
+    }));
+    let task = guard(cdp.clone(), targets.clone(), None, gate);
+    let mut browser = BufReader::new(browser);
+    async fn event(browser: &mut BufReader<DuplexStream>, method: &str, params: Value) {
+        let mut event =
+            serde_json::to_vec(&json!({"sessionId":"page","method":method,"params":params}))
+                .unwrap();
+        event.push(0);
+        browser.get_mut().write_all(&event).await.unwrap();
+    }
+    // Reads the hook's next command and acknowledges it.
+    async fn command(browser: &mut BufReader<DuplexStream>) -> Value {
+        let mut frame = Vec::new();
+        browser.read_until(0, &mut frame).await.unwrap();
+        let command: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        let mut reply = serde_json::to_vec(&json!({"id":command["id"],"result":{}})).unwrap();
+        reply.push(0);
+        browser.get_mut().write_all(&reply).await.unwrap();
+        command
+    }
+    let blocked = || targets.lock().unwrap()["tab"].blocked;
+    let request = |network: &str| json!({"requestId":network,"networkId":network,"frameId":"tab","request":{"url":"http://named.example/"}});
+    let response = |network: &str| {
+        let mut paused = request(network);
+        paused["responseStatusCode"] = 200.into();
+        paused
+    };
+    let said =
+        |network: &str, space: &str| json!({"requestId":network,"resourceIPAddressSpace":space});
+    let scenario = async {
+        // The name passes its lookup, and the request is sent.
+        event(&mut browser, "Fetch.requestPaused", request("a")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        // The browser reached a private address: the page does not get the response.
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("a", "Local"),
+        )
+        .await;
+        event(&mut browser, "Fetch.requestPaused", response("a")).await;
+        let failed = command(&mut browser).await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(failed["params"]["errorReason"], "BlockedByClient");
+        assert_eq!(blocked(), Some(true));
+        // The same when the browser's word arrives after the response is paused.
+        event(&mut browser, "Fetch.requestPaused", request("b")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        assert_eq!(blocked(), None);
+        event(&mut browser, "Fetch.requestPaused", response("b")).await;
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("b", "Loopback"),
+        )
+        .await;
+        assert_eq!(command(&mut browser).await["method"], "Fetch.failRequest");
+        assert_eq!(blocked(), Some(true));
+        // A public address is let through.
+        event(&mut browser, "Fetch.requestPaused", request("c")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("c", "Public"),
+        )
+        .await;
+        event(&mut browser, "Fetch.requestPaused", response("c")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        assert_eq!(blocked(), None);
+        // What was said about an earlier hop does not count for the next one, and a
+        // response the browser says nothing about goes by the name's lookup.
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("d", "Local"),
+        )
+        .await;
+        event(&mut browser, "Fetch.requestPaused", request("d")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        event(&mut browser, "Fetch.requestPaused", response("d")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        assert_eq!(blocked(), None);
+    };
+    let result = tokio::time::timeout(Duration::from_secs(3), scenario).await;
+    cdp.stop();
+    task.await.unwrap();
+    result.expect("the hook must answer every paused request");
+}
+
+/// What the browser said about the address behind recent responses, one entry
+/// for a request, kept until it is asked for. The oldest give way to new ones.
+#[derive(Default)]
+struct Spaces {
+    known: HashMap<(String, String), String>,
+    order: std::collections::VecDeque<(String, String)>,
+}
+impl Spaces {
+    fn record(&mut self, session: &str, request: &str, space: &str) {
+        let key = (session.to_owned(), request.to_owned());
+        if self.known.insert(key.clone(), space.to_owned()).is_none() {
+            self.order.push_back(key);
+            if self.order.len() > 1024
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.known.remove(&oldest);
+            }
+        }
+    }
+    fn take(&mut self, session: &str, request: &str) -> Option<String> {
+        self.known.remove(&(session.to_owned(), request.to_owned()))
+    }
+}
+
+/// What one session's event task has under way.
+#[derive(Default)]
+struct Work {
+    initializers: tokio::task::JoinSet<()>,
+    /// Requests that wait for a host name to be looked up, or for the browser's
+    /// word on a connection.
+    checks: tokio::task::JoinSet<()>,
+    spaces: Arc<Mutex<Spaces>>,
+}
+
+#[derive(Clone)]
 struct DownloadContext {
     files: Arc<Files>,
     principal: Principal,
@@ -1262,36 +1510,26 @@ fn guard(
 ) -> tokio::task::JoinHandle<()> {
     let mut events = cdp.events();
     tokio::spawn(async move {
-        let mut initializers = tokio::task::JoinSet::new();
-        // Requests that wait for a host name to be looked up.
-        let mut checks = tokio::task::JoinSet::new();
+        let mut work = Work::default();
         loop {
             if !cdp.connected() {
                 break;
             }
             let event = tokio::select! {
-                joined=initializers.join_next(), if !initializers.is_empty()=>{
+                joined=work.initializers.join_next(), if !work.initializers.is_empty()=>{
                     if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
                     continue;
                 },
-                joined=checks.join_next(), if !checks.is_empty()=>{
+                joined=work.checks.join_next(), if !work.checks.is_empty()=>{
                     if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
                     continue;
                 },
                 event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{cdp.stop();break;}},
                 _=tokio::time::sleep(Duration::from_millis(500))=>{if !cdp.connected(){break;}else{continue;}},
             };
-            if handle_event(
-                &cdp,
-                &targets,
-                downloads.as_ref(),
-                &gate,
-                &mut initializers,
-                &mut checks,
-                event,
-            )
-            .await
-            .is_err()
+            if handle_event(&cdp, &targets, downloads.as_ref(), &gate, &mut work, event)
+                .await
+                .is_err()
             {
                 if cdp.connected() {
                     cdp.stop();
@@ -1299,17 +1537,25 @@ fn guard(
                 break;
             }
         }
-        initializers.abort_all();
-        checks.abort_all();
-        while initializers.join_next().await.is_some() {}
-        while checks.join_next().await.is_some() {}
+        work.initializers.abort_all();
+        work.checks.abort_all();
+        while work.initializers.join_next().await.is_some() {}
+        while work.checks.join_next().await.is_some() {}
     })
 }
-async fn initialize_target(cdp: &Cdp, session: &str, downloads: bool) -> Result<()> {
+/// Prepares a target. `responses` also pauses each document when its response
+/// arrives: downloads are taken over there, and so is the check of the address a
+/// connection really reached.
+async fn initialize_target(
+    cdp: &Cdp,
+    session: &str,
+    downloads: bool,
+    responses: bool,
+) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(125);
     let mut patterns =
         vec![json!({"urlPattern":"*","resourceType":"Document","requestStage":"Request"})];
-    if downloads {
+    if responses {
         patterns
             .push(json!({"urlPattern":"*","resourceType":"Document","requestStage":"Response"}));
     }
@@ -1366,8 +1612,7 @@ async fn handle_event(
     targets: &Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<&DownloadContext>,
     gate: &Arc<Gate>,
-    initializers: &mut tokio::task::JoinSet<()>,
-    checks: &mut tokio::task::JoinSet<()>,
+    work: &mut Work,
     event: Value,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -1381,11 +1626,11 @@ async fn handle_event(
             let id = info["targetId"].as_str().unwrap_or("");
             let kind = info["type"].as_str().unwrap_or("");
             if !matches!(kind, "page" | "iframe") {
-                if initializers.len() >= 40 {
+                if work.initializers.len() >= 40 {
                     return Err(Failure::new("browser_busy"));
                 }
                 let (cdp, session) = (cdp.clone(), session.to_owned());
-                initializers.spawn(async move {
+                work.initializers.spawn(async move {
                     // Resuming a worker can itself wait for a page request.
                     // Keep Fetch processing available to resolve that dependency,
                     // just as for page/iframe initialization below.
@@ -1413,7 +1658,7 @@ async fn handle_event(
                     .count()
                     >= MAX_TABS)
                 || targets.lock().unwrap().len() >= 40
-                || initializers.len() >= 40
+                || work.initializers.len() >= 40
             {
                 cdp.call(None, "Target.closeTarget", json!({"targetId":id}), deadline)
                     .await?;
@@ -1450,10 +1695,11 @@ async fn handle_event(
                 session.to_owned(),
             );
             let downloads = downloads.is_some();
-            initializers.spawn(async move {
+            let responses = downloads || gate.sites.strict();
+            work.initializers.spawn(async move {
                 // A popup can have no renderer document until its attachment
                 // finishes. The event pump must keep serving Fetch meanwhile.
-                let result = initialize_target(&cdp, &session, downloads).await;
+                let result = initialize_target(&cdp, &session, downloads, responses).await;
                 if result.is_ok() {
                     if let Some(target) = targets
                         .lock()
@@ -1536,6 +1782,15 @@ async fn handle_event(
             let sent = responded || params.get("redirectedRequestId").is_some();
             let session = event["sessionId"].as_str();
             let frame = params["frameId"].as_str().unwrap_or("");
+            let request = params["networkId"].as_str().unwrap_or("");
+            // What the browser said about this request before it set out is about an
+            // earlier hop of a redirect.
+            if gate.sites.strict() && !responded {
+                work.spaces
+                    .lock()
+                    .unwrap()
+                    .take(session.unwrap_or(""), request);
+            }
             // A host name is judged by the addresses it leads to, before its request
             // is sent. The lookup must not hold up the events behind this one, so a
             // name that has to be asked about is answered from a task of its own.
@@ -1550,13 +1805,13 @@ async fn handle_event(
                             verdict = Verdict::Deny;
                         }
                     }
-                    None if checks.len() < 64 => {
+                    None if work.checks.len() < 64 => {
                         note(targets, session, frame, None);
                         let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
                         let (host, frame) = (host.to_owned(), frame.to_owned());
                         let session = session.map(str::to_owned);
                         let request = params["requestId"].clone();
-                        checks.spawn(async move {
+                        work.checks.spawn(async move {
                             let refused = gate
                                 .lookup
                                 .addresses(&host)
@@ -1590,6 +1845,73 @@ async fn handle_event(
                     }
                 }
             }
+            // Where the owner refuses private networks, the address the browser really
+            // reached decides, whatever the name's lookup said.
+            if gate.sites.strict()
+                && verdict == Verdict::Resolve
+                && params.get("responseStatusCode").is_some()
+            {
+                let reported = work
+                    .spaces
+                    .lock()
+                    .unwrap()
+                    .take(session.unwrap_or(""), request);
+                match reported {
+                    Some(space) => {
+                        if !gate.sites.judge_connection(&space) {
+                            verdict = Verdict::Deny;
+                        }
+                    }
+                    None if work.checks.len() < 64 => {
+                        let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
+                        let (spaces, downloads) = (work.spaces.clone(), downloads.cloned());
+                        let host = address
+                            .as_ref()
+                            .and_then(|address| address.host_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let (session, frame) = (session.map(str::to_owned), frame.to_owned());
+                        let (request, params) = (request.to_owned(), params.clone());
+                        work.checks.spawn(async move {
+                            let session = session.as_deref();
+                            // The browser's word on this connection has not arrived yet.
+                            let mut reported = None;
+                            for _ in 0..15 {
+                                reported =
+                                    spaces.lock().unwrap().take(session.unwrap_or(""), &request);
+                                if reported.is_some() {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                            let refused = match reported {
+                                Some(space) => !gate.sites.judge_connection(&space),
+                                // Nothing was said, as for a page out of the browser's
+                                // cache: what the name's lookup says stands.
+                                None => gate
+                                    .lookup
+                                    .addresses(&host)
+                                    .await
+                                    .is_some_and(|found| !gate.sites.judge_addresses(&found)),
+                            };
+                            let deadline = Instant::now() + Duration::from_secs(3);
+                            let done = if refused {
+                                note(&targets, session, &frame, Some(true));
+                                refuse(&cdp, session, &params, deadline).await
+                            } else {
+                                let downloads = downloads.as_ref();
+                                release(&cdp, &targets, downloads, session, &params, deadline).await
+                            };
+                            if done.is_err() && cdp.connected() {
+                                cdp.stop();
+                            }
+                        });
+                        return Ok(());
+                    }
+                    // Too many requests are waiting to be judged.
+                    None => verdict = Verdict::Deny,
+                }
+            }
             let allowed = verdict != Verdict::Deny;
             if !allowed || !responded {
                 // A refusal by the site policy stays on the tab until its document
@@ -1601,67 +1923,20 @@ async fn handle_event(
                     (!allowed && ordinary).then_some(sent),
                 );
             }
-            if let Some(downloads) = downloads
-                && allowed
-                && params["responseHeaders"].as_array().is_some_and(|headers| {
-                    headers.iter().any(|h| {
-                        h["name"]
-                            .as_str()
-                            .is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))
-                            && h["value"].as_str().is_some_and(|v| {
-                                v.split(';')
-                                    .next()
-                                    .unwrap_or("")
-                                    .trim()
-                                    .eq_ignore_ascii_case("attachment")
-                            })
-                    })
-                })
-            {
-                let target = targets
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
-                    .cloned()
-                    .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
-                let origin = url::Url::parse(url)
-                    .map_err(|_| Failure::new("browser_url_denied"))?
-                    .origin()
-                    .ascii_serialization();
-                let owner = files::Owner {
-                    principal: downloads.principal.clone(),
-                    session: downloads.session.clone(),
-                    tab: target.id,
-                    origin,
-                    control: downloads.control.clone(),
-                };
-                if downloads
-                    .files
-                    .intercept(cdp.cleanup(), target.session, params, owner)
-                    .is_err()
-                {
-                    cdp.call(
-                        event["sessionId"].as_str(),
-                        "Fetch.failRequest",
-                        json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
-                        deadline,
-                    )
-                    .await?;
-                }
-                return Ok(());
-            }
-            let method = if allowed {
-                "Fetch.continueRequest"
+            if allowed {
+                release(cdp, targets, downloads, session, params, deadline).await?;
             } else {
-                "Fetch.failRequest"
-            };
-            let mut args = json!({"requestId":params["requestId"]});
-            if !allowed {
-                args["errorReason"] = "BlockedByClient".into();
+                refuse(cdp, session, params, deadline).await?;
             }
-            cdp.call(event["sessionId"].as_str(), method, args, deadline)
-                .await?;
+        }
+        "Network.responseReceivedExtraInfo" if gate.sites.strict() => {
+            if let (Some(session), Some(request), Some(space)) = (
+                event["sessionId"].as_str(),
+                params["requestId"].as_str(),
+                params["resourceIPAddressSpace"].as_str(),
+            ) {
+                work.spaces.lock().unwrap().record(session, request, space);
+            }
         }
         "Page.javascriptDialogOpening" => {
             let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
