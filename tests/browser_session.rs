@@ -1064,13 +1064,28 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     let epoch = tabs["result"]["control_epoch"].as_u64().unwrap();
     let dialog=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"dialog","accept":false,"dialog_id":tabs["result"]["tabs"][0]["dialog"]["dialog_id"]}})).await;
     assert!(dialog.get("error").is_none(), "dialog handling: {dialog}");
-    let resumed = peer
-        .call(
-            "browser_control",
-            json!({"session_id":id,"control_epoch":epoch,"action":"resume"}),
-        )
-        .await;
-    assert!(resumed.get("error").is_none(), "after dialog: {resumed}");
+    // The click that opened the dialog is answered only after the dialog closes,
+    // and some browser versions answer it a moment later. Until then a control
+    // change reports pending input, so wait for it to settle as a client would.
+    let mut resumed = Value::Null;
+    let mut waits = 0;
+    for _ in 0..100 {
+        resumed = peer
+            .call(
+                "browser_control",
+                json!({"session_id":id,"control_epoch":epoch,"action":"resume"}),
+            )
+            .await;
+        if resumed["error_code"] != "browser_input_pending" {
+            break;
+        }
+        waits += 1;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        resumed.get("error").is_none(),
+        "after dialog ({waits} waits): {resumed}"
+    );
     let epoch = resumed["result"]["control_epoch"].as_u64().unwrap();
     let navigate=peer.call("browser_act",json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":format!("{url}human")}})).await;
     assert!(navigate.get("error").is_none(), "{navigate}");
