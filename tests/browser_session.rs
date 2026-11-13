@@ -1682,6 +1682,18 @@ async fn rejections_without_input_keep_the_session_running() {
         .await;
     assert!(opened.get("error").is_none(), "{opened}");
     let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    // The session names the browser build it runs on.
+    let browser = &opened["result"]["browser"];
+    assert!(
+        browser["product"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty()),
+        "{opened}"
+    );
+    let major = browser["version"]
+        .as_str()
+        .and_then(|v| v.split('.').next()?.parse::<u32>().ok());
+    assert!(major.is_some_and(|major| major >= 100), "{opened}");
 
     // An action that does not suit its element is rejected before any page effect.
     for (name, mut action, code) in [

@@ -643,6 +643,8 @@ impl Browsers {
             cdp.call(None,"Browser.setDownloadBehavior",json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
             cdp.call(None,"Target.setDiscoverTargets",json!({"discover":true}),deadline).await?;
             cdp.call(None,"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
+            // Reported with the session so a result can be tied to the browser build behind it.
+            let browser=cdp.call(None,"Browser.getVersion",json!({}),deadline).await.ok().and_then(|v|v["product"].as_str().and_then(product));
             let target=loop {
                 if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page"&&t.ready).cloned(){break target;}
                 if !cdp.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
@@ -654,7 +656,9 @@ impl Browsers {
                 cdp.call(Some(&target.session),"Page.navigate",json!({"url":url}),deadline).await?;
             }
             if slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
-            Ok(json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))}))
+            let mut opened=json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))});
+            if let Some(browser)=browser { opened["browser"]=browser; }
+            Ok(opened)
         }.await;
         if result.is_err() {
             let _ = session.close().await;
@@ -867,6 +871,20 @@ async fn wait_target(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+/// Splits the product string a browser reports about itself, such as
+/// `Chrome/122.0.6261.128`, into a bounded name and a dotted version. A string
+/// of any other shape is not reported.
+fn product(value: &str) -> Option<Value> {
+    let (name, version) = value.split_once('/')?;
+    let named =
+        !name.is_empty() && name.len() <= 32 && name.bytes().all(|b| b.is_ascii_alphanumeric());
+    let versioned = version.len() <= 32
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    (named && versioned).then(|| json!({"product":name,"version":version}))
+}
+
 /// Chooses the execution state reported for a failed call. Once an effect
 /// command has left, any `browser_act` failure is uncertain. A command that the
 /// browser rejected has changed nothing when no effect command left during the
@@ -1564,6 +1582,31 @@ mod tests {
             );
         }
         assert_eq!(state("browser_act", true, rejected()), "unknown");
+    }
+
+    #[test]
+    fn only_a_plain_product_and_version_are_reported() {
+        assert_eq!(
+            product("HeadlessChrome/122.0.6261.128"),
+            Some(json!({"product":"HeadlessChrome","version":"122.0.6261.128"}))
+        );
+        assert_eq!(
+            product("Chrome/157"),
+            Some(json!({"product":"Chrome","version":"157"}))
+        );
+        for odd in [
+            "",
+            "Chrome",
+            "/1.2",
+            "Chrome/",
+            "Chrome/1..2",
+            "Chrome/1.2 beta",
+            "My Browser/1.2",
+            "Chrome/1/2",
+        ] {
+            assert_eq!(product(odd), None, "{odd}");
+        }
+        assert_eq!(product(&format!("{}/1", "a".repeat(33))), None);
     }
 
     #[test]
