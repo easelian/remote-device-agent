@@ -59,15 +59,17 @@ pub async fn frame_tree(cdp: &Cdp, session: &str, deadline: Instant) -> Result<V
     Ok(frames)
 }
 
-async fn current(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<()> {
-    if !frame_tree(cdp, &frame.session, deadline)
-        .await?
+/// Confirms the frame still holds the observed document. Returns whether it is
+/// the root frame of its target.
+async fn current(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<bool> {
+    let frames = frame_tree(cdp, &frame.session, deadline).await?;
+    if !frames
         .iter()
         .any(|f| f.id == frame.id && f.loader == frame.loader)
     {
         return Err(Failure::new("browser_stale_reference"));
     }
-    Ok(())
+    Ok(frames.first().is_some_and(|f| f.id == frame.id))
 }
 
 pub async fn metadata(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<Value> {
@@ -115,13 +117,26 @@ const DETAILS: &str = r#"function(){
  const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),text(p)]);}
  const r=this.getBoundingClientRect(),s=getComputedStyle(this),root=this.getRootNode();
  // Input is sent to the first fragment, so the hit test looks there too.
- const f=this.getClientRects()[0]||r,x=f.x+f.width/2,y=f.y+f.height/2,hit=root.elementFromPoint(x,y);
+ const f=this.getClientRects()[0]||r,x=f.x+f.width/2,y=f.y+f.height/2,top=root.elementFromPoint(x,y),hit=top===this||this.contains(top);
+ // Scrolling into view does nothing when the box is already fully visible in
+ // the viewport and in every scrolling ancestor.
+ const html=document.documentElement,clips=e=>{const o=getComputedStyle(e);return o.overflowX!=='visible'||o.overflowY!=='visible';};
+ let inView=r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,up=this,depth=0;
+ while(inView&&(up=up.assignedSlot||up.parentElement||up.getRootNode().host)){
+  if(++depth>64){inView=false;break;}
+  // The viewport test covers the root, and a body whose overflow the viewport took over.
+  if(up===html||(up===document.body&&!clips(html))||!clips(up))continue;
+  const c=up.getBoundingClientRect(),l=c.left+up.clientLeft,t=c.top+up.clientTop;
+  inView=r.left>=l&&r.top>=t&&r.right<=l+up.clientWidth&&r.bottom<=t+up.clientHeight;
+ }
+ // Painted at the click point without being the top element there: something covers it.
+ const covered=!hit&&root.elementsFromPoint(x,y).some(e=>e===this||this.contains(e));
  const readonly=(this.tagName==='INPUT'||this.tagName==='TEXTAREA')&&this.readOnly;
  const select=this.tagName==='SELECT'?{multiple:this.multiple,complete:this.options.length<=32,options:Array.from({length:Math.min(32,this.options.length)},(_,i)=>{const o=this.options[i];return {value:o.value.length<=256?o.value:null,label:o.label.slice(0,256),label_truncated:o.label.length>256,selected:o.selected,disabled:o.disabled||!!o.closest('optgroup')?.disabled};})}:null;
  if(select)select.complete=select.complete&&select.options.every(o=>o.value!==null&&!o.label_truncated);
  if(select)a.push(select);
  return {connected:true,signature:JSON.stringify(a),tag:this.tagName,type:this.type||'',editable:!readonly&&((this.tagName==='INPUT'&&!['button','submit','checkbox','radio','file','hidden'].includes(this.type))||this.tagName==='TEXTAREA'||this.isContentEditable),readonly,
- enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit:hit===this||this.contains(hit),x,y,checked:!!this.checked,select};}"#;
+ enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit,in_view:inView,covered,x,y,checked:!!this.checked,select};}"#;
 
 const SELECT: &str = r#"function(value){
  if(!this.isConnected||this.ownerDocument!==document||this.tagName!=='SELECT'||this.disabled||this.multiple||this.options.length>1024)return false;
@@ -602,8 +617,8 @@ impl Element {
         Ok(json!({"x":x,"y":y}))
     }
     async fn checked(&self, cdp: &Cdp, deadline: Instant) -> Result<Value> {
-        current(cdp, &self.frame, deadline).await?;
-        let data = details(cdp, &self.frame, self.backend, deadline).await?;
+        let root = current(cdp, &self.frame, deadline).await?;
+        let mut data = details(cdp, &self.frame, self.backend, deadline).await?;
         if data["connected"] != true
             || crate::config::sha256_hex(data["signature"].as_str().unwrap_or("").as_bytes())
                 != self.signature
@@ -632,6 +647,8 @@ impl Element {
         if data["enabled"] != true || data["visible"] != true {
             return Err(Failure::new("browser_not_actionable"));
         }
+        // The tab's top document: the root frame of a target that has no parent.
+        data["top"] = (root && self.frame.ancestors.is_empty()).into();
         Ok(data)
     }
 
@@ -642,13 +659,28 @@ impl Element {
         if precheck(action, &data, &self.choices)? {
             return Ok(json!({"changed":false}));
         }
-        cdp.call(
-            Some(&self.frame.session),
-            "DOM.scrollIntoViewIfNeeded",
-            json!({"backendNodeId":self.backend}),
-            deadline,
-        )
-        .await?;
+        // Scrolling into view is an effect command, and it does nothing for an
+        // element that is already fully in view. Skip it there, so that a
+        // target which something covers is refused before any effect. Only the
+        // top document can tell: a subframe sees just its own viewport. An
+        // element that is neither hit nor painted at its click point is clipped
+        // by something the page function cannot see, and still scrolls.
+        if data["top"] == true
+            && data["in_view"] == true
+            && (data["hit"] == true || data["covered"] == true)
+        {
+            if data["covered"] == true {
+                return Err(Failure::new("browser_not_actionable"));
+            }
+        } else {
+            cdp.call(
+                Some(&self.frame.session),
+                "DOM.scrollIntoViewIfNeeded",
+                json!({"backendNodeId":self.backend}),
+                deadline,
+            )
+            .await?;
+        }
         let first = self.point(cdp, deadline).await?;
         tokio::time::sleep(Duration::from_millis(50)).await;
         let data = self.checked(cdp, deadline).await?;

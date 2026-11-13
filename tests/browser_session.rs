@@ -1627,6 +1627,11 @@ const REJECTIONS: &str = r#"<!doctype html><meta charset="utf-8"><title>Rejectio
 <label><input type="checkbox" checked> Agree</label>
 <input readonly value="2026-01-01" aria-label="Pick date" onclick="document.getElementById('picked').textContent='Date picker opened'"><p id="picked"></p>"#;
 
+// A fixed banner lies over the whole page until its own button removes it.
+const BANNER: &str = r#"<!doctype html><meta charset="utf-8"><title>Banner</title>
+<button type="button" onclick="document.getElementById('out').textContent='Record saved'">Save record</button><p id="out"></p>
+<div id="banner" style="position:fixed;inset:0;background:#ffffffcc"><button type="button" onclick="document.getElementById('banner').remove()">Accept cookies</button></div>"#;
+
 // One button is scrolled out of an inner container, the other lies below the viewport.
 const BELOW: &str = r#"<!doctype html><meta charset="utf-8"><title>Below</title>
 <div style="height:120px;overflow:auto"><div style="height:600px"></div><button type="button" onclick="document.getElementById('out').textContent+=' inner'">Inner button</button></div>
@@ -1655,6 +1660,7 @@ async fn rejections_without_input_keep_the_session_running() {
     let app = Router::new()
         .route("/form", get(|| async { Html(REJECTIONS) }))
         .route("/wrapped", get(|| async { Html(WRAPPED) }))
+        .route("/banner", get(|| async { Html(BANNER) }))
         .route("/below", get(|| async { Html(BELOW) }))
         .route("/framed", get(|| async { Html(r#"<!doctype html><button type="button" onclick="this.textContent='Framed clicked'">Framed button</button>"#) }))
         .route("/below-frame", get(|headers: axum::http::HeaderMap| async move {
@@ -1770,6 +1776,28 @@ async fn rejections_without_input_keep_the_session_running() {
         .await;
     assert_eq!(landed["result"]["condition_observed"], true, "{landed}");
     assert_running(&mut peer, &id).await;
+
+    // A covered target in the top document is refused before any page effect.
+    let navigate = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/banner")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    let observed = peer.observe_named(&id, 1, "Save record").await;
+    let covered = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Save record")}})).await;
+    assert_eq!(covered["error_code"], "browser_not_actionable", "{covered}");
+    assert_eq!(covered["execution_state"], "not_sent", "{covered}");
+    assert_running(&mut peer, &id).await;
+    let observed = peer.observe_named(&id, 1, "Save record").await;
+    let accepted = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Accept cookies")}})).await;
+    assert_eq!(accepted["result"]["input_acknowledged"], true, "{accepted}");
+    let observed = peer.observe_named(&id, 1, "Save record").await;
+    let saved = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Save record")}})).await;
+    assert_eq!(saved["result"]["input_acknowledged"], true, "{saved}");
+    let shown = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Record saved"}),
+        )
+        .await;
+    assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
 
     // Targets on a scrolled page: inside a container, below the viewport, and
     // in a frame below the viewport.
