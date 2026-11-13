@@ -2535,3 +2535,147 @@ async fn a_first_read_follows_a_document_that_is_replaced_under_it() {
     server.abort();
     let _ = server.await;
 }
+
+/// Polls `browser_tabs` until a tab matches, and returns the tabs reply.
+async fn tabs_until(peer: &mut Peer, id: &str, found: impl Fn(&Value) -> bool) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..60 {
+        last = peer.call("browser_tabs", json!({"session_id":id})).await;
+        if last["result"]["tabs"]
+            .as_array()
+            .is_some_and(|tabs| tabs.iter().any(&found))
+        {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no such tab: {last}");
+}
+
+const METADATA: &str = "http://169.254.169.254/latest/meta-data/";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn metadata_addresses_are_refused_however_the_browser_is_led_to_them() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-sites-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let home = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Home</title><h1>Home</h1>
+<a href="{METADATA}">Metadata link</a> <a href="{METADATA}" target="_blank">Popup link</a>"#
+    );
+    let framed = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Framed</title><h1>Framed</h1><iframe src="{METADATA}"></iframe><p>After frame</p>"#
+    );
+    let app = Router::new()
+        .route("/", get(move || async move { Html(home) }))
+        .route("/framed", get(move || async move { Html(framed) }))
+        .route(
+            "/redirect",
+            get(|| async { axum::response::Redirect::temporary(METADATA) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    // The policy says nothing about sites: this device and private networks are open.
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    peer.observe_named(&id, 1, "Home").await;
+    let navigate = |epoch: u64, url: String| json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":url}});
+
+    // An address the caller gives is refused before the browser does anything:
+    // nothing is sent, the session keeps running and the tab keeps its page.
+    for refused in [
+        METADATA,
+        "http://2852039166/",
+        "http://100.100.100.200/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+    ] {
+        let denied = peer
+            .call("browser_act", navigate(1, refused.to_owned()))
+            .await;
+        assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+        assert_eq!(denied["execution_state"], "not_sent", "{denied}");
+    }
+    assert_running(&mut peer, &id).await;
+    let observed = observe_once(&mut peer, &id, 1).await;
+    assert_eq!(
+        node_named(&observed, "Home")["role"],
+        "heading",
+        "{observed}"
+    );
+    assert!(observed["page"].get("blocked").is_none(), "{observed}");
+    // No session is started for such an address either.
+    let denied = peer.call("browser_open", json!({"url":METADATA})).await;
+    assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+    assert_eq!(denied["execution_state"], "not_sent", "{denied}");
+    let sessions = peer.call("browser_sessions", json!({})).await;
+    assert_eq!(
+        sessions["result"]["sessions"].as_array().unwrap().len(),
+        1,
+        "{sessions}"
+    );
+
+    // A link leads there. The click itself succeeds; the navigation is refused,
+    // and the tab says why it shows nothing.
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Metadata link")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let tabs = tabs_until(&mut peer, &id, |tab| tab["blocked"] == "site_policy").await;
+    assert_eq!(tabs["result"]["controller"], "ai", "{tabs}");
+    let observed = observe_once(&mut peer, &id, 1).await;
+    assert_eq!(observed["page"]["blocked"], "site_policy", "{observed}");
+    assert!(!observed.to_string().contains("Home"), "{observed}");
+
+    // Setting out for a page that may be opened clears the note.
+    let moved = peer
+        .call("browser_act", navigate(1, format!("{origin}/framed")))
+        .await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    // A frame that points there is refused; the page around it is read as usual.
+    let observed = peer.observe_named(&id, 1, "After frame").await;
+    assert!(observed["page"].get("blocked").is_none(), "{observed}");
+
+    // A link that opens a new tab: the new tab is refused, not the one clicked in.
+    let moved = peer
+        .call("browser_act", navigate(1, format!("{origin}/")))
+        .await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    let observed = peer.observe_named(&id, 1, "Home").await;
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Popup link")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let tabs = tabs_until(&mut peer, &id, |tab| tab["blocked"] == "site_policy").await;
+    let listed = tabs["result"]["tabs"].as_array().unwrap();
+    assert_eq!(listed.len(), 2, "{tabs}");
+    let first = listed
+        .iter()
+        .find(|tab| tab["tab_id"] == opened["result"]["tab_id"])
+        .unwrap();
+    assert!(first.get("blocked").is_none(), "{tabs}");
+
+    // A page the caller may open redirects there. A request has left the browser
+    // by then, so the outcome is uncertain and the session pauses, as after any
+    // navigation that fails part of the way.
+    let denied = peer
+        .call("browser_act", navigate(1, format!("{origin}/redirect")))
+        .await;
+    assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+    assert_eq!(denied["execution_state"], "unknown", "{denied}");
+    let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+    assert_eq!(tabs["result"]["controller"], "paused", "{tabs}");
+    let resumed = peer.call("browser_control", json!({"session_id":id,"control_epoch":tabs["result"]["control_epoch"],"action":"resume"})).await;
+    assert!(resumed.get("error").is_none(), "{resumed}");
+    let epoch = resumed["result"]["control_epoch"].as_u64().unwrap();
+    let observed = observe_once(&mut peer, &id, epoch).await;
+    assert_eq!(observed["page"]["blocked"], "site_policy", "{observed}");
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

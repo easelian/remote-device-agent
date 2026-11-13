@@ -5,6 +5,7 @@ use super::{
     page::{self, Element},
     process::{self, BrowserProcess},
     profiles::{self, Profiles},
+    sites::{Sites, Verdict},
 };
 use serde_json::{Value, json};
 use std::{
@@ -34,6 +35,10 @@ struct Target {
     dialog: Option<Value>,
     parent: Option<String>,
     ready: bool,
+    /// Set while the tab shows the outcome of a navigation of its own document
+    /// that the site policy refused. The value says whether a request had left
+    /// the browser before the refusal.
+    blocked: Option<bool>,
 }
 struct Slot {
     owner: String,
@@ -124,6 +129,12 @@ pub struct Browsers {
     profiles: Profiles,
     root_lock: Mutex<Option<Arc<crate::profile_lock::ProfileLocks>>>,
     files: Arc<Files>,
+    gate: Arc<Gate>,
+}
+
+/// The site policy, as the request hook of every session applies it.
+struct Gate {
+    sites: Sites,
 }
 
 impl Browsers {
@@ -143,6 +154,19 @@ impl Browsers {
             profiles: Profiles::default(),
             root_lock: Mutex::new(None),
             files,
+            gate: Arc::new(Gate {
+                sites: settings.sites.clone(),
+            }),
+        }
+    }
+    /// Refuses, before anything is done, an address that the site policy rules
+    /// out as it is written.
+    fn admit(&self, address: &Value) -> Result<()> {
+        match address.as_str().map(url::Url::parse) {
+            Some(Ok(address)) if self.gate.sites.judge(&address) == Verdict::Deny => {
+                Err(Failure::new("browser_site_denied"))
+            }
+            _ => Ok(()),
         }
     }
     pub fn info(&self) -> Value {
@@ -329,7 +353,13 @@ impl Browsers {
                 .unwrap()
                 .values()
                 .filter(|t| t.kind == "page")
-                .map(|t| json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog,"ready":t.ready}))
+                .map(|t| {
+                    let mut tab = json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog,"ready":t.ready});
+                    if t.blocked.is_some() {
+                        tab["blocked"] = "site_policy".into();
+                    }
+                    tab
+                })
                 .collect();
             return Ok(
                 json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}),
@@ -365,6 +395,7 @@ impl Browsers {
                 }
                 value["page"] = page::metadata(&cdp,after.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                 value["page"]["tab_id"] = tab.clone().into();
+                mark_blocked(&mut value, &session.targets, &tab);
                 Ok(value)
             }
             "browser_observe" => {
@@ -405,6 +436,7 @@ impl Browsers {
                         value["page"] = page::metadata(&cdp,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                         value["page"]["tab_id"] = tab.clone().into();
                         mark_loading(&mut value);
+                        mark_blocked(&mut value, &session.targets, &tab);
                         Ok::<_,Failure>((value,refs))
                     }.await;
                     let error = match result {
@@ -448,10 +480,14 @@ impl Browsers {
                         page::scroll(&cdp, frame, &action["delta_y"], deadline).await
                     }
                     "navigate" => {
+                        self.admit(&action["url"])?;
                         session.references.clear();
+                        if let Some(target) = session.targets.lock().unwrap().get_mut(&tab) {
+                            target.blocked = None;
+                        }
                         let reply = navigate(&cdp, &target.session, &action["url"], deadline).await?;
                         if reply.get("errorText").is_some() {
-                            Err(Failure::unknown("browser_navigation_failed"))
+                            Err(refusal(&session.targets, &tab).unwrap_or_else(|| Failure::unknown("browser_navigation_failed")))
                         } else {
                             Ok(json!({"navigation_started":true,"business_result_verified":false}))
                         }
@@ -613,6 +649,7 @@ impl Browsers {
         if profile_name.is_some() && !self.settings.persistent_profiles {
             return Err(Failure::new("browser_profile_disabled"));
         }
+        self.admit(&params["url"])?;
         let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
         let slot = Arc::new(Slot {
             owner: principal.owner.clone(),
@@ -655,7 +692,7 @@ impl Browsers {
                 cdp.stop();
                 return Err(Failure::new("browser_control_changed"));
             }
-            session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})));
+            session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()}),self.gate.clone()));
             cdp.call(None,"Browser.setDownloadBehavior",json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
             cdp.call(None,"Target.setDiscoverTargets",json!({"discover":true}),deadline).await?;
             cdp.call(None,"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
@@ -669,7 +706,11 @@ impl Browsers {
             };
             session.active=target.id.clone();
             if let Some(url)=params["url"].as_str(){
-                navigate(&cdp,&target.session,&json!(url),deadline).await?;
+                let reply=navigate(&cdp,&target.session,&json!(url),deadline).await?;
+                // A session whose first page the site policy refused has nothing to show.
+                if reply.get("errorText").is_some() && let Some(refused)=refusal(&session.targets,&target.id) {
+                    return Err(refused);
+                }
             }
             if slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
             let mut opened=json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))});
@@ -933,6 +974,31 @@ fn mark_loading(observation: &mut Value) {
     }
 }
 
+/// Says on a result's page that the tab shows the outcome of a navigation the
+/// site policy refused, so that an empty page explains itself.
+fn mark_blocked(result: &mut Value, targets: &Mutex<HashMap<String, Target>>, tab: &str) {
+    if targets
+        .lock()
+        .unwrap()
+        .get(tab)
+        .is_some_and(|target| target.blocked.is_some())
+    {
+        result["page"]["blocked"] = "site_policy".into();
+    }
+}
+
+/// The failure to report when the site policy refused the tab's own navigation.
+/// Nothing was sent when the first request was refused. After a redirect or a
+/// response, a request has left the browser and the outcome is uncertain.
+fn refusal(targets: &Mutex<HashMap<String, Target>>, tab: &str) -> Option<Failure> {
+    let sent = targets.lock().unwrap().get(tab)?.blocked?;
+    Some(if sent {
+        Failure::unknown("browser_site_denied")
+    } else {
+        Failure::new("browser_site_denied")
+    })
+}
+
 /// Splits the product string a browser reports about itself, such as
 /// `Chrome/122.0.6261.128`, into a bounded name and a dotted version. A string
 /// of any other shape is not reported.
@@ -952,6 +1018,10 @@ fn product(value: &str) -> Option<Value> {
 /// browser rejected has changed nothing when no effect command left during the
 /// call, so it is reported as not sent and does not pause the session.
 fn settle(operation: &str, effects: bool, mut error: Failure) -> Failure {
+    // A refusal by the site policy says for itself whether anything left the browser.
+    if error.code == "browser_site_denied" {
+        return error;
+    }
     if operation == "browser_act" && effects {
         error.state = "unknown";
     } else if !effects && error.code == "browser_command_failed" {
@@ -1001,6 +1071,89 @@ async fn frames(
     Ok(frames)
 }
 
+#[tokio::test]
+async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+    let (client, browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let cdp = Cdp::new(read, write);
+    let tab = Target {
+        id: "tab".into(),
+        session: "page".into(),
+        kind: "page".into(),
+        url: String::new(),
+        title: String::new(),
+        dialog: None,
+        parent: None,
+        ready: true,
+        blocked: None,
+    };
+    let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
+    let gate = Arc::new(Gate {
+        sites: Sites::default(),
+    });
+    let task = guard(cdp.clone(), targets.clone(), None, gate);
+    let mut browser = BufReader::new(browser);
+    // Sends one paused document request and returns what the hook did with it.
+    async fn paused(browser: &mut BufReader<DuplexStream>, mut request: Value) -> Value {
+        request["requestId"] = "document".into();
+        let mut event = serde_json::to_vec(
+            &json!({"sessionId":"page","method":"Fetch.requestPaused","params":request}),
+        )
+        .unwrap();
+        event.push(0);
+        browser.get_mut().write_all(&event).await.unwrap();
+        let mut frame = Vec::new();
+        browser.read_until(0, &mut frame).await.unwrap();
+        let command: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        let mut reply = serde_json::to_vec(&json!({"id":command["id"],"result":{}})).unwrap();
+        reply.push(0);
+        browser.get_mut().write_all(&reply).await.unwrap();
+        command
+    }
+    let blocked = || targets.lock().unwrap()["tab"].blocked;
+    let metadata = "http://169.254.169.254/latest/meta-data/";
+    let scenario = async {
+        // The tab's own document, refused before anything was sent.
+        let failed = paused(
+            &mut browser,
+            json!({"frameId":"tab","request":{"url":metadata}}),
+        )
+        .await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(failed["params"]["errorReason"], "BlockedByClient");
+        assert_eq!(blocked(), Some(false));
+        // A frame inside it is refused too, and does not change what the tab says.
+        let failed = paused(
+            &mut browser,
+            json!({"frameId":"child","request":{"url":metadata}}),
+        )
+        .await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(blocked(), Some(false));
+        // The tab sets out for a page it may open.
+        let continued = paused(
+            &mut browser,
+            json!({"frameId":"tab","request":{"url":"http://127.0.0.1:8080/"}}),
+        )
+        .await;
+        assert_eq!(continued["method"], "Fetch.continueRequest");
+        assert_eq!(blocked(), None);
+        // That page redirects to the refused address: a request has left by now.
+        let failed = paused(
+            &mut browser,
+            json!({"frameId":"tab","redirectedRequestId":"document","request":{"url":metadata}}),
+        )
+        .await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(blocked(), Some(true));
+    };
+    let result = tokio::time::timeout(Duration::from_secs(2), scenario).await;
+    cdp.stop();
+    task.await.unwrap();
+    result.expect("the hook must answer every paused request");
+}
+
 struct DownloadContext {
     files: Arc<Files>,
     principal: Principal,
@@ -1014,7 +1167,14 @@ async fn suspended_non_page_target_cannot_block_page_request_progress() {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let cdp = Cdp::new(read, write);
-    let task = guard(cdp.clone(), Arc::new(Mutex::new(HashMap::new())), None);
+    let task = guard(
+        cdp.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        None,
+        Arc::new(Gate {
+            sites: Sites::default(),
+        }),
+    );
     let mut browser = BufReader::new(browser);
     let scenario = async {
         browser.get_mut().write_all(br#"{"method":"Target.attachedToTarget","params":{"sessionId":"worker","targetInfo":{"targetId":"worker-target","type":"service_worker"}}}"#).await.unwrap();
@@ -1048,6 +1208,7 @@ fn guard(
     cdp: Cdp,
     targets: Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<DownloadContext>,
+    gate: Arc<Gate>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = cdp.events();
     tokio::spawn(async move {
@@ -1064,9 +1225,16 @@ fn guard(
                 event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{cdp.stop();break;}},
                 _=tokio::time::sleep(Duration::from_millis(500))=>{if !cdp.connected(){break;}else{continue;}},
             };
-            if handle_event(&cdp, &targets, downloads.as_ref(), &mut initializers, event)
-                .await
-                .is_err()
+            if handle_event(
+                &cdp,
+                &targets,
+                downloads.as_ref(),
+                &gate,
+                &mut initializers,
+                event,
+            )
+            .await
+            .is_err()
             {
                 if cdp.connected() {
                     cdp.stop();
@@ -1138,6 +1306,7 @@ async fn handle_event(
     cdp: &Cdp,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<&DownloadContext>,
+    gate: &Arc<Gate>,
     initializers: &mut tokio::task::JoinSet<()>,
     event: Value,
 ) -> Result<()> {
@@ -1211,6 +1380,7 @@ async fn handle_event(
                     dialog: None,
                     parent: event["sessionId"].as_str().map(str::to_owned),
                     ready: false,
+                    blocked: None,
                 },
             );
             let (cdp, targets, id, session) = (
@@ -1283,11 +1453,40 @@ async fn handle_event(
                     .chars()
                     .take(512)
                     .collect();
+                // An empty page is not the outcome of a refused navigation.
+                if target.url == "about:blank" {
+                    target.blocked = None;
+                }
             }
         }
         "Fetch.requestPaused" => {
             let url = params["request"]["url"].as_str().unwrap_or("");
-            let allowed = page::url_allowed(url) || url == "about:blank";
+            let ordinary = page::url_allowed(url);
+            // What the address itself and the owner's lists say.
+            let verdict = if url == "about:blank" {
+                Verdict::Allow
+            } else if !ordinary {
+                Verdict::Deny
+            } else {
+                url::Url::parse(url).map_or(Verdict::Deny, |url| gate.sites.judge(&url))
+            };
+            let allowed = verdict != Verdict::Deny;
+            let responded = params.get("responseStatusCode").is_some()
+                || params.get("responseErrorReason").is_some();
+            if !allowed || !responded {
+                // A refusal by the site policy stays on the tab until its document
+                // sets out again. A request had left the browser when this is a
+                // later hop of a redirect, or a response.
+                let sent = responded || params.get("redirectedRequestId").is_some();
+                let blocked = (!allowed && ordinary).then_some(sent);
+                if let Some(target) = targets.lock().unwrap().values_mut().find(|t| {
+                    t.kind == "page"
+                        && Some(t.session.as_str()) == event["sessionId"].as_str()
+                        && params["frameId"].as_str() == Some(t.id.as_str())
+                }) {
+                    target.blocked = blocked;
+                }
+            }
             if let Some(downloads) = downloads
                 && allowed
                 && params["responseHeaders"].as_array().is_some_and(|headers| {
@@ -1626,6 +1825,24 @@ mod tests {
 
     fn state(operation: &str, effects: bool, error: Failure) -> &'static str {
         settle(operation, effects, error).state
+    }
+
+    #[test]
+    fn a_refusal_by_the_site_policy_keeps_the_state_it_was_given() {
+        // Refused before any request: nothing was sent, whatever else the call did.
+        assert_eq!(
+            state("browser_act", true, Failure::new("browser_site_denied")),
+            "not_sent"
+        );
+        // Refused after a redirect or a response: a request has left.
+        assert_eq!(
+            state(
+                "browser_open",
+                false,
+                Failure::unknown("browser_site_denied")
+            ),
+            "unknown"
+        );
     }
 
     #[test]
