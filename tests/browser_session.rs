@@ -1661,6 +1661,7 @@ async fn rejections_without_input_keep_the_session_running() {
         .route("/form", get(|| async { Html(REJECTIONS) }))
         .route("/wrapped", get(|| async { Html(WRAPPED) }))
         .route("/banner", get(|| async { Html(BANNER) }))
+        .route("/reloading", get(|| async { Html("<!doctype html><title>Reloading</title><h1>Reloading</h1><script>setTimeout(()=>location.reload(),20)</script>") }))
         .route("/below", get(|| async { Html(BELOW) }))
         .route("/framed", get(|| async { Html(r#"<!doctype html><button type="button" onclick="this.textContent='Framed clicked'">Framed button</button>"#) }))
         .route("/below-frame", get(|headers: axum::http::HeaderMap| async move {
@@ -1833,6 +1834,33 @@ async fn rejections_without_input_keep_the_session_running() {
         )
         .await;
     assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
+    assert_running(&mut peer, &id).await;
+
+    // Reading a page that keeps reloading can be refused, but it sends no input,
+    // so it never reports an uncertain outcome and never pauses the session.
+    let navigate = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/reloading")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    let mut outcomes = std::collections::BTreeMap::<String, u32>::new();
+    for _ in 0..60 {
+        let reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":1}),
+            )
+            .await;
+        assert_ne!(reply["execution_state"], "unknown", "{reply}");
+        *outcomes
+            .entry(reply["error_code"].as_str().unwrap_or("ok").to_owned())
+            .or_default() += 1;
+    }
+    assert!(outcomes.get("ok").is_some_and(|n| *n > 0), "{outcomes:?}");
+    let waited = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Reloading"}),
+        )
+        .await;
+    assert_ne!(waited["execution_state"], "unknown", "{waited}");
     assert_running(&mut peer, &id).await;
 
     assert!(peer.runtime.shutdown().await);

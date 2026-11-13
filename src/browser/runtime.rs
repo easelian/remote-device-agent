@@ -543,19 +543,24 @@ impl Browsers {
                 let expected = params["url_contains"].as_str().unwrap_or("");
                 let text = params["text_contains"].as_str();
                 loop {
-                    let tree = frames(&cdp, &session, &target, deadline).await?;
-                    if let Some(text) = text {
-                        match page::observe(&cdp, &tree, 200, 20000, deadline).await {
-                            Ok((value,_)) => if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
-                                break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
-                            },
-                            // A changing document is normal while waiting for a postcondition.
-                            // Retry observation only; never replay the preceding action.
-                            Err(error) if error.code=="browser_stale_reference" => {},
-                            Err(error) => return Err(error),
-                        }
-                    } else if tree.first().is_some_and(|frame| frame.url.contains(expected)) {
-                        break Ok(json!({"condition_observed":true,"url":tree[0].url}));
+                    // A changing document is normal while waiting for a postcondition, and a
+                    // read that the browser rejects during navigation has sent nothing.
+                    // Retry observation only; never replay the preceding action.
+                    let changing = |error: &Failure| matches!(error.code, "browser_stale_reference" | "browser_command_failed");
+                    match frames(&cdp, &session, &target, deadline).await {
+                        Ok(tree) => if let Some(text) = text {
+                            match page::observe(&cdp, &tree, 200, 20000, deadline).await {
+                                Ok((value,_)) => if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
+                                    break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
+                                },
+                                Err(error) if changing(&error) => {},
+                                Err(error) => return Err(error),
+                            }
+                        } else if tree.first().is_some_and(|frame| frame.url.contains(expected)) {
+                            break Ok(json!({"condition_observed":true,"url":tree[0].url}));
+                        },
+                        Err(error) if changing(&error) => {},
+                        Err(error) => return Err(error),
                     }
                     if Instant::now() + Duration::from_millis(100) >= deadline {
                         break Err(Failure::new("browser_condition_timeout"));
@@ -566,12 +571,8 @@ impl Browsers {
             _ => Err(Failure::new("browser_invalid_params")),
         }
         }.await;
-        let outcome = outcome.map_err(|mut error| {
-            if operation == "browser_act" && effects.load(Ordering::Acquire) {
-                error.state = "unknown";
-            }
-            error
-        });
+        let outcome =
+            outcome.map_err(|error| settle(operation, effects.load(Ordering::Acquire), error));
         if outcome.as_ref().is_err_and(|e| e.state == "unknown") {
             slot.control.change(true);
             session.references.clear();
@@ -866,6 +867,19 @@ async fn wait_target(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+/// Chooses the execution state reported for a failed call. Once an effect
+/// command has left, any `browser_act` failure is uncertain. A command that the
+/// browser rejected has changed nothing when no effect command left during the
+/// call, so it is reported as not sent and does not pause the session.
+fn settle(operation: &str, effects: bool, mut error: Failure) -> Failure {
+    if operation == "browser_act" && effects {
+        error.state = "unknown";
+    } else if !effects && error.code == "browser_command_failed" {
+        error.state = "not_sent";
+    }
+    error
+}
+
 async fn frames(
     cdp: &Cdp,
     session: &Session,
@@ -1524,4 +1538,45 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(operation: &str, effects: bool, error: Failure) -> &'static str {
+        settle(operation, effects, error).state
+    }
+
+    #[test]
+    fn a_rejected_command_is_uncertain_only_after_an_effect() {
+        let rejected = || Failure::unknown("browser_command_failed");
+        for operation in [
+            "browser_observe",
+            "browser_screenshot",
+            "browser_wait",
+            "browser_act",
+        ] {
+            assert_eq!(
+                state(operation, false, rejected()),
+                "not_sent",
+                "{operation}"
+            );
+        }
+        assert_eq!(state("browser_act", true, rejected()), "unknown");
+    }
+
+    #[test]
+    fn other_failures_keep_their_meaning() {
+        let refused = || Failure::new("browser_not_actionable");
+        assert_eq!(state("browser_act", false, refused()), "not_sent");
+        assert_eq!(state("browser_act", true, refused()), "unknown");
+        for code in ["browser_timeout_unknown", "browser_lost"] {
+            assert_eq!(
+                state("browser_observe", false, Failure::unknown(code)),
+                "unknown",
+                "{code}"
+            );
+        }
+    }
 }
