@@ -1,4 +1,4 @@
-function(marks) {
+function(marks, options) {
   // One bounded reader in this isolated world. A fresh observation closes the old one.
   globalThis.__rdhBrowserReader?.close();
   // Elements with these tags are shown to the browser even where the page does not make them
@@ -49,6 +49,15 @@ function(marks) {
     return false;
   };
   const heading = node => /^H[1-6]$/.test(node.tagName);
+  // Whether a node lies in the part of the page that shows now, wholly or in part. A read
+  // that is not limited to that part takes every node.
+  const range = document.createRange();
+  const shows = node => {
+    if (!options.viewport) return true;
+    if (node.nodeType === 3) range.selectNodeContents(node);
+    const box = (node.nodeType === 3 ? range : node).getBoundingClientRect();
+    return box.bottom > 0 && box.right > 0 && box.top < innerHeight && box.left < innerWidth && (box.width > 0 || box.height > 0);
+  };
   // Whether a name can hold all that an element shows: a little text, and nothing below it
   // that is reported on its own account.
   const small = node => {
@@ -193,9 +202,9 @@ function(marks) {
         reached.set(node, batch);
         if (node.nodeType === 3) {
           const parent = node.parentElement;
-          if (!parent || within(parent, worded)) continue;
+          if (!parent || options.interactive || within(parent, worded)) continue;
           const style = getComputedStyle(parent);
-          if (style.display === 'none' || style.visibility === 'hidden' || !parent.getClientRects().length) continue;
+          if (style.display === 'none' || style.visibility === 'hidden' || !parent.getClientRects().length || !shows(node)) continue;
           const value = node.nodeValue;
           this.text = {node, value, offset: 0, preserve: value.length > 512};
           continue;
@@ -214,7 +223,13 @@ function(marks) {
           worded.add(node);
           sealed.add(node);
         } else if (heading(node)) worded.add(node);
-        if (!kind && !heading(node) && !node.hasAttribute('role') && !(tags.has(node.tagName) && node.type !== 'hidden')) continue;
+        // An element that is not a control is still asked about where it is a heading,
+        // where it has one of the tags above, or, unless only controls and headings are
+        // wanted, where it has a role.
+        const role = (node.getAttribute('role') || '').toLowerCase();
+        const titled = heading(node) || /(^|\s)heading(\s|$)/.test(role);
+        if (!kind && !titled && !(tags.has(node.tagName) && node.type !== 'hidden') && (options.interactive || !role)) continue;
+        if (!shows(node)) continue;
         let attributeBytes = 0;
         for (const attribute of node.attributes) {attributeBytes += attribute.name.length + attribute.value.length; if (attributeBytes > 8192) break;}
         if (attributeBytes > 8192 || node.childNodes.length > 1024) {this.omitted.add('oversized_control'); continue;}

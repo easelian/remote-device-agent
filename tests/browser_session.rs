@@ -3494,3 +3494,237 @@ async fn a_date_a_colour_and_a_slider_are_filled_with_a_value_they_can_hold() {
     server.abort();
     let _ = server.await;
 }
+
+// A page three screens long. Each screen has a heading, a paragraph and one
+// control. The first also has a region, which is neither text nor a control.
+const SHELVES: &str = r##"<!doctype html><meta charset="utf-8"><title>Shelves</title>
+<style>body{margin:0} section{height:900px}</style>
+<h1>Catalogue</h1>
+<section><h2>First shelf</h2><p>Top paragraph</p><button type="button">Top button</button>
+<div role="region" aria-label="Offers">Offer text</div></section>
+<section><h2>Second shelf</h2><p>Middle paragraph</p><a href="#middle">Middle link</a></section>
+<section><h2>Third shelf</h2><p>Bottom paragraph</p><label>Bottom field <input value="x"></label></section>"##;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn an_observation_can_be_asked_for_part_of_a_page() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-shelves-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    // Three thousand lines above one button. The page opens scrolled to its end.
+    let tall = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Tall</title><h1>Tall</h1>{}
+<button type="button">Last button</button><p id="at"></p>
+<script>addEventListener('load',()=>{{scrollTo(0,document.documentElement.scrollHeight);document.getElementById('at').textContent='At the end';}});</script>"#,
+        (0..3000)
+            .map(|i| format!("<p>Line {i:04}</p>"))
+            .collect::<String>()
+    );
+    let app = Router::new()
+        .route("/shelves", get(|| async { Html(SHELVES) }))
+        .route("/tall", get(move || async move { Html(tall) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/shelves")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    // What a node is, apart from its reference: every observation gives new ones.
+    fn shape(node: &Value) -> (String, String, bool) {
+        (
+            node["role"].as_str().unwrap().to_owned(),
+            node["name"].as_str().unwrap().trim().to_owned(),
+            node.get("ref").is_some(),
+        )
+    }
+    fn shapes(observed: &Value) -> Vec<(String, String, bool)> {
+        observed["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(shape)
+            .collect()
+    }
+    let names = |observed: &Value| -> Vec<String> {
+        shapes(observed).into_iter().map(|shape| shape.1).collect()
+    };
+
+    let whole = peer.observe_named(&id, 1, "Bottom paragraph").await;
+    assert!(whole["coverage"].get("filter").is_none(), "{whole}");
+    let all = shapes(&whole);
+
+    // Only the controls and the headings: no text, and not the region. Every
+    // control of the whole page is there, in the same order.
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"filter":"interactive"}),
+        )
+        .await;
+    let interactive = &reply["result"];
+    assert_eq!(interactive["coverage"]["filter"], "interactive", "{reply}");
+    assert_eq!(
+        interactive["coverage"]["sequence_complete"], true,
+        "{reply}"
+    );
+    let expected: Vec<_> = all
+        .iter()
+        .filter(|(role, _, referenced)| *referenced || role == "heading")
+        .cloned()
+        .collect();
+    assert_eq!(shapes(interactive), expected, "{reply}");
+    assert_eq!(
+        names(interactive),
+        [
+            "Catalogue",
+            "First shelf",
+            "Top button",
+            "Second shelf",
+            "Middle link",
+            "Third shelf",
+            "Bottom field"
+        ],
+        "{reply}"
+    );
+
+    // A sequence keeps what its first call asked for, and takes no other.
+    let first = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"filter":"interactive","max_nodes":3}),
+        )
+        .await;
+    assert_eq!(
+        names(&first["result"]),
+        ["Catalogue", "First shelf", "Top button"],
+        "{first}"
+    );
+    let cursor = first["result"]["next_cursor"].as_str().unwrap().to_owned();
+    let mixed = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"cursor":cursor,"filter":"all"}),
+        )
+        .await;
+    assert_eq!(mixed["error_code"], "browser_invalid_params", "{mixed}");
+    assert_eq!(mixed["execution_state"], "not_sent", "{mixed}");
+    let rest = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"cursor":cursor}),
+        )
+        .await;
+    assert_eq!(
+        names(&rest["result"]),
+        ["Second shelf", "Middle link", "Third shelf", "Bottom field"],
+        "{rest}"
+    );
+    assert_eq!(
+        rest["result"]["coverage"]["filter"], "interactive",
+        "{rest}"
+    );
+    let unknown = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"filter":"text"}),
+        )
+        .await;
+    assert_eq!(unknown["error_code"], "browser_invalid_params", "{unknown}");
+    assert_running(&mut peer, &id).await;
+
+    // Only what shows now: the first screen, with its text and its region.
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"filter":"viewport"}),
+        )
+        .await;
+    let viewport = &reply["result"];
+    assert_eq!(viewport["coverage"]["filter"], "viewport", "{reply}");
+    assert_eq!(
+        names(viewport),
+        [
+            "Catalogue",
+            "First shelf",
+            "Top paragraph",
+            "Top button",
+            "Offers",
+            "Offer text"
+        ],
+        "{reply}"
+    );
+    assert!(shapes(viewport).iter().all(|shape| all.contains(shape)));
+    // A reference from such a read is used like any other.
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(viewport,"Top button")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+
+    // After scrolling one screen down, the second screen shows and the first does not.
+    let scrolled = peer
+        .call(
+            "browser_act",
+            json!({"session_id":id,"control_epoch":1,"action":{"kind":"scroll","delta_y":960}}),
+        )
+        .await;
+    assert_eq!(scrolled["result"]["input_acknowledged"], true, "{scrolled}");
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"filter":"viewport"}),
+        )
+        .await;
+    assert_eq!(
+        names(&reply["result"]),
+        ["Second shelf", "Middle paragraph", "Middle link"],
+        "{reply}"
+    );
+
+    // What shows can lie far down a long page. One call passes over the six
+    // thousand nodes above it, which is more than a whole read looks at in a
+    // call, and returns the end of the page.
+    let moved = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/tall")}})).await;
+    assert!(moved.get("error").is_none(), "{moved}");
+    let mut reply = Value::Null;
+    for _ in 0..40 {
+        reply = peer
+            .call(
+                "browser_observe",
+                json!({"session_id":id,"control_epoch":1,"filter":"viewport"}),
+            )
+            .await;
+        if names(&reply["result"]).contains(&"At the end".to_owned()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let end = &reply["result"];
+    assert!(names(end).contains(&"Last button".to_owned()), "{reply}");
+    assert!(!names(end).contains(&"Line 0000".to_owned()), "{reply}");
+    assert!(names(end).len() < 60, "{reply}");
+    assert_eq!(end["coverage"]["more"], false, "{reply}");
+    assert!(end.get("next_cursor").is_none(), "{reply}");
+    assert!(
+        end["coverage"]["nodes_scanned"].as_u64().unwrap() > 6000,
+        "{reply}"
+    );
+    let reply = peer
+        .call(
+            "browser_observe",
+            json!({"session_id":id,"control_epoch":1,"filter":"interactive"}),
+        )
+        .await;
+    assert_eq!(names(&reply["result"]), ["Tall", "Last button"], "{reply}");
+    assert_eq!(
+        reply["result"]["coverage"]["sequence_complete"], true,
+        "{reply}"
+    );
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

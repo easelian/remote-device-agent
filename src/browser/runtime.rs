@@ -427,7 +427,7 @@ impl Browsers {
                     read
                 } else {
                     if let Some(previous)=previous {previous.cursor.close(&cdp,deadline).await;}
-                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&tree)?}
+                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&tree, scope(params))?}
                 };
                 // A first read that finds the document replaced under it starts once more,
                 // on the document that is there now. Reading sends the page nothing, so
@@ -459,7 +459,7 @@ impl Browsers {
                         && matches!(error.code, "browser_stale_reference" | "browser_command_failed")
                         && Instant::now() + Duration::from_secs(3) < deadline
                         && let Ok(fresh) = frames(&cdp, &session, &target, deadline).await
-                        && let Ok(cursor) = page::Cursor::new(&fresh)
+                        && let Ok(cursor) = page::Cursor::new(&fresh, scope(params))
                     {
                         again = false;
                         tree = fresh;
@@ -2008,6 +2008,17 @@ async fn handle_dialog(
     result.map(|_| ())
 }
 
+/// What an observation is asked for, from parameters that passed `validate`.
+fn scope(params: &Value) -> page::Scope {
+    page::Scope {
+        filter: match params["filter"].as_str() {
+            Some("interactive") => page::Filter::Interactive,
+            Some("viewport") => page::Filter::Viewport,
+            _ => page::Filter::All,
+        },
+    }
+}
+
 fn validate(operation: &str, params: &Value) -> Result<()> {
     let map = params
         .as_object()
@@ -2024,6 +2035,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "max_nodes",
             "max_chars",
             "cursor",
+            "filter",
         ],
         "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
         "browser_wait" => &[
@@ -2057,6 +2069,15 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
     {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if let Some(filter) = map.get("filter")
+        && !matches!(filter.as_str(), Some("all" | "interactive" | "viewport"))
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    // A sequence keeps what its first call asked for.
+    if map.contains_key("cursor") && map.contains_key("filter") {
         return Err(Failure::new("browser_invalid_params"));
     }
     for key in ["session_id", "tab_id"] {
@@ -2312,6 +2333,38 @@ mod tests {
         assert_eq!(left(0), Duration::ZERO);
         // A deadline already behind us leaves nothing to wait for.
         assert_eq!(navigation_deadline(now + Duration::from_secs(1), now), now);
+    }
+
+    /// Checks the parameters of an observation of session `s`, with `extra` added.
+    fn observation(extra: Value) -> std::result::Result<(), &'static str> {
+        let mut params = json!({"session_id":"s","control_epoch":1});
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        validate("browser_observe", &params).map_err(|error| error.code)
+    }
+
+    #[test]
+    fn an_observation_is_asked_for_part_of_a_page_only_where_it_starts() {
+        let invalid = Err("browser_invalid_params");
+        assert_eq!(observation(json!({})), Ok(()));
+        for filter in ["all", "interactive", "viewport"] {
+            assert_eq!(observation(json!({"filter":filter})), Ok(()), "{filter}");
+        }
+        assert_eq!(observation(json!({"filter":"text"})), invalid);
+        assert_eq!(observation(json!({"filter":true})), invalid);
+        // A continuation keeps what its sequence began with.
+        let cursor = "0123456789abcdef0123456789abcdef";
+        assert_eq!(observation(json!({"cursor":cursor})), Ok(()));
+        assert_eq!(
+            observation(json!({"cursor":cursor,"filter":"interactive"})),
+            invalid
+        );
+        assert_eq!(scope(&json!({})).filter, page::Filter::All);
+        assert_eq!(
+            scope(&json!({"filter":"viewport"})).filter,
+            page::Filter::Viewport
+        );
     }
 
     #[test]

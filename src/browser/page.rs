@@ -317,7 +317,47 @@ pub async fn scroll(cdp: &Cdp, frame: &Frame, delta: &Value, deadline: Instant) 
     Ok(value)
 }
 
+/// Which part of a page a read is asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Filter {
+    /// Text and controls, in the order of the document.
+    #[default]
+    All,
+    /// Controls and headings, without the text between them.
+    Interactive,
+    /// What lies in the part of the page that shows now.
+    Viewport,
+}
+
+/// What a read is asked for. A sequence keeps it from its first call to its
+/// last.
+#[derive(Clone, Debug, Default)]
+pub struct Scope {
+    pub filter: Filter,
+}
+
+impl Scope {
+    /// What the page reader is told.
+    fn options(&self) -> Value {
+        json!({
+            "interactive":self.filter == Filter::Interactive,
+            "viewport":self.filter == Filter::Viewport,
+        })
+    }
+    /// How many nodes of a page one call looks at. A read that leaves most of
+    /// the page out passes over it without asking the browser anything, so it
+    /// looks further.
+    fn reach(&self) -> usize {
+        if self.filter == Filter::All {
+            5000
+        } else {
+            50_000
+        }
+    }
+}
+
 pub struct Cursor {
+    scope: Scope,
     frames: Vec<Frame>,
     readers: Vec<Option<String>>,
     frame: usize,
@@ -342,11 +382,12 @@ fn gone(error: &Failure) -> bool {
 }
 
 impl Cursor {
-    pub fn new(frames: &[Frame]) -> Result<Self> {
+    pub fn new(frames: &[Frame], scope: Scope) -> Result<Self> {
         if frames.is_empty() || frames.len() > 32 {
             return Err(Failure::new("browser_frame_limit"));
         }
         Ok(Self {
+            scope,
             frames: frames.to_vec(),
             readers: vec![None; frames.len()],
             frame: 0,
@@ -433,7 +474,7 @@ pub async fn observe(
     max_chars: usize,
     deadline: Instant,
 ) -> Result<(Value, HashMap<String, Element>)> {
-    let mut cursor = Cursor::new(frames)?;
+    let mut cursor = Cursor::new(frames, Scope::default())?;
     let result = observe_next(cdp, &mut cursor, max_nodes, max_chars, deadline).await;
     cursor.close(cdp, deadline).await;
     result
@@ -625,6 +666,11 @@ pub async fn observe_next(
 ) -> Result<(Value, HashMap<String, Element>)> {
     let work_until = deadline.min(Instant::now() + Duration::from_secs(2));
     cursor.check(cdp, deadline).await?;
+    let (filter, reach, options) = (
+        cursor.scope.filter,
+        cursor.scope.reach(),
+        cursor.scope.options(),
+    );
     let observation = crate::random::hex_token::<12>().map_err(super::io_error)?;
     let mut nodes = Vec::new();
     let mut refs = HashMap::new();
@@ -636,7 +682,7 @@ pub async fn observe_next(
     while cursor.more() {
         if nodes.len() >= max_nodes
             || remaining == 0
-            || visited >= 5000
+            || visited >= reach
             || Instant::now() + Duration::from_millis(200) >= work_until
         {
             break;
@@ -655,7 +701,7 @@ pub async fn observe_next(
                     deadline,
                 )
                 .await?;
-                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS})")}),deadline).await?;
+                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS},{options})")}),deadline).await?;
                 cursor.readers[index] = Some(
                     created["result"]["objectId"]
                         .as_str()
@@ -664,7 +710,7 @@ pub async fn observe_next(
                 );
             }
             let object = cursor.readers[index].clone().unwrap();
-            let summary=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(nodes,scan){return this.collect(nodes,scan);}","arguments":[{"value":(max_nodes-nodes.len()).min(200)},{"value":5000-visited}],"returnByValue":true}),deadline).await?;
+            let summary=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(nodes,scan){return this.collect(nodes,scan);}","arguments":[{"value":(max_nodes-nodes.len()).min(200)},{"value":(reach-visited).min(5000)}],"returnByValue":true}),deadline).await?;
             let summary=&summary["result"]["value"];
             // A reader that a later observation closed returns no nodes.
             let candidates=summary["nodes"].as_array().ok_or_else(||Failure::new("browser_stale_reference"))?;
@@ -721,6 +767,9 @@ pub async fn observe_next(
                 let name = clipped(full_name, 512.min(remaining));
                 if element.is_some() && name.len() < full_name.len() { omitted.push("text_clipped".into()); }
                 if name.is_empty() && kind.is_none() { continue; }
+                // The page reader leaves the text out. What the browser alone names, such
+                // as a region, is left out here.
+                if filter == Filter::Interactive && kind.is_none() && role != "heading" { continue; }
                 remaining = remaining.saturating_sub(name.chars().count() + role.len());
                 let mut visible = json!({"role":role,"name":name,"frame_id":frame.id});
                 if element.is_none() {
@@ -826,14 +875,22 @@ pub async fn observe_next(
         omitted.push("observation_budget".into());
     }
     let complete = !cursor.more() && cursor.omitted.is_empty() && !cursor.changed;
+    let mut coverage = json!({
+        "scope":"document_text_and_controls_open_shadow","complete_within_scope":complete,
+        "omitted":omitted,"changed_during_read":cursor.changed,
+        "frames_observed":observed.len(),"frames_omitted":cursor.frames.len()-cursor.frame,
+        "frames_completed":cursor.frame,"nodes_scanned":visited,"total_nodes_scanned":cursor.scanned,
+        "page_index":cursor.pages,"more":cursor.more(),"sequence_complete":complete,
+    });
+    // A read that was asked for part of the page says which part. It is complete
+    // when it holds all of that part.
+    match filter {
+        Filter::All => {}
+        Filter::Interactive => coverage["filter"] = "interactive".into(),
+        Filter::Viewport => coverage["filter"] = "viewport".into(),
+    }
     Ok((
-        json!({"observation_id":observation,"nodes":nodes,"coverage":{
-            "scope":"document_text_and_controls_open_shadow","complete_within_scope":complete,
-            "omitted":omitted,"changed_during_read":cursor.changed,
-            "frames_observed":observed.len(),"frames_omitted":cursor.frames.len()-cursor.frame,
-            "frames_completed":cursor.frame,"nodes_scanned":visited,"total_nodes_scanned":cursor.scanned,
-            "page_index":cursor.pages,"more":cursor.more(),"sequence_complete":complete,
-        }}),
+        json!({"observation_id":observation,"nodes":nodes,"coverage":coverage}),
         refs,
     ))
 }
@@ -1506,7 +1563,7 @@ mod tests {
             frame("top", "1", "https://shop.test/orders"),
             frame("ad", "2", "https://ads.test/first"),
         ];
-        let mut cursor = Cursor::new(&begun).unwrap();
+        let mut cursor = Cursor::new(&begun, Scope::default()).unwrap();
         assert!(cursor.matches(&begun));
         cursor.compare(&begun);
         assert!(cursor.omitted.is_empty());
