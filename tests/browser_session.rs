@@ -2894,3 +2894,76 @@ async fn an_owner_who_refuses_private_networks_names_the_local_sites_that_open()
         unlisted.abort();
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn only_the_public_sites_an_owner_lists_open_when_the_rest_are_refused() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-listed-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route(
+        "/",
+        get(|| async {
+            Html(r#"<!doctype html><meta charset="utf-8"><title>Local</title><h1>Local</h1><a href="http://unlisted.test/">Unlisted link</a>"#)
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"executable":executable,
+            "sites":{"public":"deny","allow":["listed.test","*.listed.test"],"deny":["no.listed.test"]}}),
+    );
+    // Every name is public as far as the lookup knows.
+    peer.runtime
+        .browser_resolver(rdh_agent::browser::sites::resolver(|_| async {
+            Some(vec!["93.184.216.34".parse().unwrap()])
+        }));
+    // The list of public sites does not close this device's own.
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    let observed = peer.observe_named(&id, 1, "Local").await;
+    let navigate = |url: &str| json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":url}});
+
+    for refused in [
+        "https://unlisted.test/",
+        "https://notlisted.test/",
+        "https://no.listed.test/",
+        "https://93.184.216.34/",
+    ] {
+        let denied = peer.call("browser_act", navigate(refused)).await;
+        assert_eq!(denied["error_code"], "browser_site_denied", "{denied}");
+        assert_eq!(denied["execution_state"], "not_sent", "{denied}");
+    }
+    assert_running(&mut peer, &id).await;
+    // A link to an unlisted site is refused as well.
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Unlisted link")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    tabs_until(&mut peer, &id, |tab| tab["blocked"] == "site_policy").await;
+    // A listed site passes the policy. These names do not exist, so the browser
+    // then fails to find them, which is a different failure and pauses the session.
+    let mut epoch = 1;
+    for listed in ["http://listed.test/", "http://docs.listed.test/"] {
+        let failed = peer.call("browser_act", json!({"session_id":id,"control_epoch":epoch,"action":{"kind":"navigate","url":listed}})).await;
+        assert_eq!(
+            failed["error_code"], "browser_navigation_failed",
+            "{failed}"
+        );
+        let tabs = peer.call("browser_tabs", json!({"session_id":id})).await;
+        assert!(tabs["result"]["tabs"][0].get("blocked").is_none(), "{tabs}");
+        let resumed = peer.call("browser_control", json!({"session_id":id,"control_epoch":tabs["result"]["control_epoch"],"action":"resume"})).await;
+        assert!(resumed.get("error").is_none(), "{resumed}");
+        epoch = resumed["result"]["control_epoch"].as_u64().unwrap();
+    }
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
