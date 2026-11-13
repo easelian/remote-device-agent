@@ -1964,3 +1964,86 @@ async fn values_and_addresses_are_reported_as_the_page_holds_them() {
     server.abort();
     let _ = server.await;
 }
+
+// A clock ticks beside one button; another button sits in a list row whose
+// text the page replaces on request.
+const LIVE: &str = r#"<!doctype html><meta charset="utf-8"><title>Live</title>
+<div><button type="button" onclick="document.getElementById('out').textContent='Stopped'">Stop</button><span id="clock">0</span></div>
+<ul><li><span id="who">Customer A</span> <button type="button" onclick="document.getElementById('out').textContent='Deleted '+document.getElementById('who').textContent">Delete</button></li></ul>
+<p id="out"></p>
+<script>let n=0;setInterval(()=>{document.getElementById('clock').textContent=String(++n)},20);
+let done=false;setInterval(async()=>{if(!done&&(await(await fetch('/swap')).json())){done=true;document.getElementById('who').textContent='Customer B';await fetch('/swapped',{method:'POST'});}},20);</script>"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_reference_survives_changes_beside_it_but_not_to_its_record() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-live-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let swap = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/live", get(|| async { Html(LIVE) }))
+        .route(
+            "/swap",
+            get(|State(state): State<Arc<AtomicUsize>>| async move {
+                Json(state.load(Ordering::Acquire) > 0)
+            }),
+        )
+        .route(
+            "/swapped",
+            post(|State(state): State<Arc<AtomicUsize>>| async move {
+                state.store(2, Ordering::Release);
+                "ok"
+            }),
+        )
+        .with_state(swap.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/live")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+
+    // The clock beside the button ticks several times before the click arrives.
+    let observed = peer.observe_named(&id, 1, "Stop").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let stopped = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Stop")}})).await;
+    assert_eq!(stopped["result"]["input_acknowledged"], true, "{stopped}");
+    let shown = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Stopped"}),
+        )
+        .await;
+    assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
+
+    // The row a control belongs to is part of what its reference means.
+    let observed = peer.observe_named(&id, 1, "Delete").await;
+    assert!(observed.to_string().contains("Customer A"), "{observed}");
+    swap.store(1, Ordering::Release);
+    for _ in 0..200 {
+        if swap.load(Ordering::Acquire) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(swap.load(Ordering::Acquire), 2);
+    let stale = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Delete")}})).await;
+    assert_eq!(stale["error_code"], "browser_stale_reference", "{stale}");
+    assert_eq!(stale["execution_state"], "not_sent", "{stale}");
+    let observed = peer.observe_named(&id, 1, "Delete").await;
+    assert!(observed.to_string().contains("Customer B"), "{observed}");
+    assert!(!observed.to_string().contains("Deleted"), "{observed}");
+    assert_running(&mut peer, &id).await;
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

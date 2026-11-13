@@ -117,7 +117,12 @@ const DETAILS: &str = r#"function(){
  if(!this.isConnected||this.nodeType!==1)return {connected:false};
  const text=e=>{const w=document.createTreeWalker(e,NodeFilter.SHOW_TEXT);let s='',n;for(let i=0;i<32&&s.length<512&&(n=w.nextNode());i++)s+=n.nodeValue.slice(0,512-s.length);return s;};
  const attr=(e,n)=>(e.getAttribute(n)||'').slice(0,512);
- const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),text(p)]);}
+ // What a reference means: the element with its own text, the tags and naming attributes of
+ // three ancestors, and the text of the record it belongs to where the markup marks one. Other
+ // text nearby, such as a clock or a progress value beside a button, is not part of it.
+ const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),i===0?text(p):'']);}
+ const record=e=>/^(TR|LI|ARTICLE|DIALOG)$/.test(e.tagName)||/^(row|listitem|article|treeitem|option|dialog|alertdialog)$/.test(e.getAttribute('role')||'');
+ for(let q=this.parentElement||this.getRootNode().host,i=0;q&&i<8;i++,q=q.parentElement||q.getRootNode().host){if(record(q)){a.push(['record',text(q)]);break;}}
  const r=this.getBoundingClientRect(),s=getComputedStyle(this),root=this.getRootNode();
  // Input is sent to the first fragment, so the hit test looks there too.
  const f=this.getClientRects()[0]||r,x=f.x+f.width/2,y=f.y+f.height/2,top=root.elementFromPoint(x,y),hit=top===this||this.contains(top);
