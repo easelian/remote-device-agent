@@ -3076,3 +3076,325 @@ async fn a_device_with_a_shell_offers_browser_sessions_as_its_owner_decided() {
     server.abort();
     let _ = server.await;
 }
+
+// Every sort of control a page can hold: the ones HTML defines, the ones a role
+// attribute declares, and elements that only their handler, their cursor or
+// their place in the focus order mark as taking clicks. The last part holds
+// what must not be taken for a control.
+const CONTROLS: &str = r##"<!doctype html><meta charset="utf-8"><title>Controls</title>
+<style>.hand{cursor:pointer} table{table-layout:fixed;width:600px}</style>
+<h1>Controls</h1>
+<p><a href="#here">Plain link</a> <a>Anchor without address</a> <button type="button">Plain button</button></p>
+<p><label>Name <input value="Ada"></label> <label>Tint <input type="color" value="#336699"></label>
+<label>Day <input type="date" value="2026-01-02"></label> <label>Level <input type="range" min="0" max="10" value="4"></label>
+<input type="hidden" name="token" value="t"></p>
+<p><label>Notes <textarea>draft</textarea></label> <label>Size <select><option>Small</option><option>Large</option></select></label>
+<label>Tags <select multiple size="2"><option>Red</option><option>Blue</option></select></label></p>
+<details><summary>More options</summary><p>Shown when opened</p></details>
+<div contenteditable="true">Edit me <b>boldly</b></div>
+<div contenteditable="true" role="textbox" aria-label="Labelled editor">Type here</div>
+<div role="button" tabindex="0">Role button</div>
+<div role="grid" aria-label="Sheet"><div role="row"><div role="gridcell" tabindex="-1">Grid cell</div></div></div>
+<ul role="tree" aria-label="Files"><li role="treeitem" tabindex="0">Tree item</li></ul>
+<ul role="menu" aria-label="View"><li role="menuitemcheckbox" aria-checked="true" tabindex="0">Show grid</li><li role="menuitemradio" aria-checked="false" tabindex="-1">Compact</li><li role="menuitem" tabindex="-1">Reset view</li></ul>
+<div role="tablist"><div role="tab" aria-selected="true" tabindex="0">First tab</div></div>
+<p onclick="note('paragraph')">Paragraph with handler</p>
+<p id="scripted">Paragraph with listener</p>
+<div class="hand">Hand cursor block <span>with inner text</span></div>
+<div tabindex="0">Focusable block</div>
+<table><thead><tr><th class="hand" onclick="note('header')">Sortable header</th><th>Plain header</th></tr></thead>
+<tbody><tr><td>Plain cell</td><td class="hand">Clickable cell</td></tr></tbody></table>
+<svg class="hand" width="20" height="20" viewBox="0 0 20 20"><title>Icon button</title><circle cx="10" cy="10" r="8"/></svg>
+<img class="hand" alt="Picture button" width="20" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+<a class="hand" onclick="note('anchor')">Anchor with handler</a>
+<a id="wired">Anchor with listener</a>
+<i class="hand" aria-hidden="true" style="display:inline-block;width:16px;height:16px"></i>
+<pre tabindex="0" style="overflow:auto;max-height:40px">Scrollable code</pre>
+<div role="tabpanel" tabindex="0">Panel text</div>
+<div role="region" aria-label="Notes">Region text</div>
+<p>Plain paragraph</p>
+<a href="#inner" class="hand"><span class="hand">Link with inner span</span></a>
+<button type="button"><span style="cursor:pointer">Button with inner span</span></button>
+<div class="hand"><a href="#only">Wrapped link</a></div>
+<p id="out"></p>
+<script>function note(what){document.getElementById('out').textContent='Noted '+what;}
+for(const id of ['scripted','wired'])document.getElementById(id).addEventListener('click',()=>note(id));</script>"##;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn controls_have_references_by_what_the_page_makes_of_them() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-controls-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route("/controls", get(|| async { Html(CONTROLS) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/controls")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    let observed = peer.observe_named(&id, 1, "Plain paragraph").await;
+    let nodes = observed["nodes"].as_array().unwrap();
+    // The browser names a field after its label, and keeps the space around it.
+    let named = |name: &str| -> Vec<&Value> {
+        nodes
+            .iter()
+            .filter(|n| n["name"].as_str().is_some_and(|s| s.trim() == name))
+            .collect()
+    };
+    let referenced = |name: &str| -> &Value {
+        let found: Vec<&Value> = named(name)
+            .into_iter()
+            .filter(|n| n.get("ref").is_some())
+            .collect();
+        assert_eq!(found.len(), 1, "{name}: {observed}");
+        found[0]
+    };
+
+    // Each control has one reference, and says which kind of control it is. The
+    // kind is the same on every browser version, whatever the browser calls the
+    // element.
+    for (kind, names) in [
+        (
+            "native",
+            &[
+                "Plain link",
+                "Plain button",
+                "Name",
+                "Tint",
+                "Day",
+                "Level",
+                "Notes",
+                "Size",
+                "Tags",
+                "Red",
+                "More options",
+                "Labelled editor",
+                "Link with inner span",
+                "Button with inner span",
+                "Wrapped link",
+                // The markup does not make a control of this anchor. The browser
+                // knows of the click handler that a script gave it, and calls it
+                // a link.
+                "Anchor with listener",
+            ][..],
+        ),
+        (
+            "aria",
+            &[
+                "Role button",
+                "Grid cell",
+                "Tree item",
+                "Show grid",
+                "Compact",
+                "Reset view",
+                "First tab",
+            ][..],
+        ),
+        (
+            "inferred",
+            &[
+                "Paragraph with handler",
+                "Hand cursor block with inner text",
+                "Focusable block",
+                "Sortable header",
+                "Clickable cell",
+                "Icon button",
+                "Picture button",
+                "Anchor with handler",
+            ][..],
+        ),
+    ] {
+        for name in names {
+            assert_eq!(referenced(name)["kind"], kind, "{name}: {observed}");
+        }
+    }
+    // An editable region without a role has no name. It is a field all the same.
+    let editors: Vec<&Value> = nodes
+        .iter()
+        .filter(|n| n["kind"] == "native" && n["name"] == "")
+        .collect();
+    assert_eq!(editors.len(), 1, "{observed}");
+    assert_eq!(editors[0]["editable"], true, "{observed}");
+    assert!(editors[0].get("ref").is_some(), "{observed}");
+    // A colour and a date are read like the value of any other field.
+    assert_eq!(referenced("Tint")["value"], "#336699", "{observed}");
+    assert_eq!(referenced("Day")["value"], "2026-01-02", "{observed}");
+
+    // What the page does not mark is text, without a reference: an anchor that
+    // leads nowhere, plain cells, a block that is in the focus order so that it
+    // can scroll, a panel. So is a paragraph whose click handler only a script
+    // attaches, which the markup does not show.
+    for name in [
+        "Anchor without address",
+        "Paragraph with listener",
+        "Plain header",
+        "Plain cell",
+        "Scrollable code",
+        "Panel text",
+        "Region text",
+        "Plain paragraph",
+        "Shown when opened",
+    ] {
+        let found = named(name);
+        assert_eq!(found.len(), 1, "{name}: {observed}");
+        assert!(
+            found[0].get("ref").is_none() && found[0].get("kind").is_none(),
+            "{name}: {observed}"
+        );
+    }
+    // Nothing else looks like a control. A block that only wraps a link is not
+    // one, and neither is anything inside a link or a button.
+    // The ninth is an icon with a hand cursor that shows no text and is hidden
+    // from assistive technology, as icon fonts usually are. It has no name, and
+    // the accessibility tree leaves it out. It shows and the page marks it, so
+    // it has a reference all the same.
+    let inferred: Vec<&Value> = nodes.iter().filter(|n| n["kind"] == "inferred").collect();
+    assert_eq!(inferred.len(), 9, "{observed}");
+    let unnamed: Vec<&&Value> = inferred.iter().filter(|n| n["name"] == "").collect();
+    assert_eq!(unnamed.len(), 1, "{observed}");
+    assert_eq!(unnamed[0]["role"], "generic", "{observed}");
+    assert!(unnamed[0].get("ref").is_some(), "{observed}");
+
+    // A control that is named by what it contains is reported once, and its
+    // text is not reported again beside it.
+    for name in [
+        "Role button",
+        "Tree item",
+        "Show grid",
+        "Compact",
+        "Reset view",
+        "First tab",
+        "More options",
+        "Paragraph with handler",
+        "Hand cursor block with inner text",
+        "Focusable block",
+        "Sortable header",
+        "Clickable cell",
+        "Anchor with handler",
+    ] {
+        assert_eq!(named(name).len(), 1, "{name}: {observed}");
+    }
+    assert!(named("Hand cursor block").is_empty(), "{observed}");
+    assert!(named("with inner text").is_empty(), "{observed}");
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+// Two order cards that take a click anywhere on them, each with a button of its
+// own, and a chip that takes keys. Nothing but a handler, a cursor or a place in
+// the focus order makes controls of the cards and the chip. The middle of the
+// first card is its text, and the middle of the second is its button.
+const CARDS: &str = r#"<!doctype html><meta charset="utf-8"><title>Cards</title>
+<style>.card{cursor:pointer;position:relative;width:300px;height:100px;margin:8px;border:1px solid #888}
+.card *{position:absolute;margin:0} .chip{width:120px;border:1px solid #888}</style>
+<h1>Orders</h1>
+<div class="card" onclick="note('Opened order 12')"><h3 style="top:0;left:4px">Order 12</h3>
+<p style="top:40px;left:0;width:300px;height:20px">Shipped to Ada</p>
+<button type="button" style="right:4px;bottom:4px;width:90px;height:20px" onclick="event.stopPropagation();note('Removed order 12')">Remove 12</button></div>
+<div class="card" onclick="note('Opened order 13')"><span style="top:0;left:4px">Order 13</span>
+<button type="button" style="top:30px;left:100px;width:100px;height:40px" onclick="event.stopPropagation();note('Removed order 13')">Remove 13</button></div>
+<div class="chip" tabindex="0" onkeydown="if(event.key==='Enter')note('Chip chosen')">Chip</div>
+<p id="out">Nothing yet</p><p id="count">0 actions</p>
+<script>let n=0;function note(what){document.getElementById('out').textContent=what;document.getElementById('count').textContent=++n+' actions';}</script>"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn an_element_that_only_looks_like_a_control_takes_clicks_and_keys() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-cards-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route("/cards", get(|| async { Html(CARDS) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/cards")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    let shows =
+        |text: &'static str| json!({"session_id":id,"control_epoch":1,"text_contains":text});
+
+    // A card is named by its own text, without the button it holds. The button
+    // and the text inside the card are reported as well.
+    let observed = peer.observe_named(&id, 1, "Chip").await;
+    let card = node_named(&observed, "Order 12 Shipped to Ada");
+    assert_eq!(card["kind"], "inferred", "{observed}");
+    assert_eq!(node_named(&observed, "Remove 12")["kind"], "native");
+    assert_eq!(
+        node_named(&observed, "Shipped to Ada")["role"],
+        "StaticText"
+    );
+    let clicked = peer
+        .call(
+            "browser_act",
+            json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":card["ref"]}}),
+        )
+        .await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let opened = peer.call("browser_wait", shows("Opened order 12")).await;
+    assert_eq!(opened["result"]["condition_observed"], true, "{opened}");
+
+    // It takes nothing that needs a real field, box or list. Nothing is sent.
+    for mut action in [
+        json!({"kind":"fill","text":"x"}),
+        json!({"kind":"check","checked":true}),
+        json!({"kind":"select","value":"x"}),
+    ] {
+        let observed = peer.observe_named(&id, 1, "Chip").await;
+        action["ref"] = reference(&observed, "Order 12 Shipped to Ada").into();
+        let refused = peer
+            .call(
+                "browser_act",
+                json!({"session_id":id,"control_epoch":1,"action":action}),
+            )
+            .await;
+        assert_eq!(
+            refused["error_code"], "browser_invalid_params",
+            "{action}: {refused}"
+        );
+        assert_eq!(refused["execution_state"], "not_sent", "{refused}");
+        assert_running(&mut peer, &id).await;
+    }
+
+    // A click in the middle of the second card would be taken by its Remove
+    // button. It is refused instead, and the order stays.
+    let observed = peer.observe_named(&id, 1, "Chip").await;
+    let refused = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Order 13")}})).await;
+    assert_eq!(refused["error_code"], "browser_not_actionable", "{refused}");
+    assert_eq!(refused["execution_state"], "not_sent", "{refused}");
+    assert_running(&mut peer, &id).await;
+    let observed = peer.observe_named(&id, 1, "Chip").await;
+    assert!(names_of(&observed).contains(&"Opened order 12".to_owned()));
+    assert!(names_of(&observed).contains(&"1 actions".to_owned()));
+    // The button is clicked by its own reference.
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Remove 13")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let removed = peer.call("browser_wait", shows("Removed order 13")).await;
+    assert_eq!(removed["result"]["condition_observed"], true, "{removed}");
+
+    // An element in the focus order takes keys.
+    let observed = peer.observe_named(&id, 1, "Chip").await;
+    assert_eq!(node_named(&observed, "Chip")["kind"], "inferred");
+    let pressed = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"press","key":"Enter","ref":reference(&observed,"Chip")}})).await;
+    assert_eq!(pressed["result"]["input_acknowledged"], true, "{pressed}");
+    let chosen = peer.call("browser_wait", shows("Chip chosen")).await;
+    assert_eq!(chosen["result"]["condition_observed"], true, "{chosen}");
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

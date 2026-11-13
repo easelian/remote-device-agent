@@ -23,6 +23,41 @@ pub struct Element {
     role: String,
     name: String,
     choices: Vec<String>,
+    /// The element only looks like a control. The page vouches for it and names
+    /// it, and it takes clicks and keys only.
+    inferred: bool,
+}
+
+/// Why an element has a reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// A control that HTML defines.
+    Native,
+    /// An element whose role attribute names a control.
+    Aria,
+    /// An element that only looks like a control: its markup holds a click
+    /// handler, the pointer turns into a hand over it, or it is in the focus
+    /// order.
+    Inferred,
+}
+
+impl Kind {
+    /// The kind that the page reader gave a candidate, if it gave one.
+    fn of(candidate: &Value) -> Option<Self> {
+        match candidate["kind"].as_str()? {
+            "native" => Some(Self::Native),
+            "aria" => Some(Self::Aria),
+            "inferred" => Some(Self::Inferred),
+            _ => None,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Aria => "aria",
+            Self::Inferred => "inferred",
+        }
+    }
 }
 
 fn clipped(value: &str, max: usize) -> String {
@@ -112,9 +147,16 @@ async fn object(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> Re
         .ok_or_else(|| Failure::new("browser_stale_reference"))
 }
 
+/// What marks an element as a control on the page itself. The reader and the
+/// details of an element decide it with the same code.
+const MARKS: &str = include_str!("marks.js");
+
 // Runs only in the isolated world. No caller-supplied code, selectors or method names.
-const DETAILS: &str = r#"function(){
- if(!this.isConnected||this.nodeType!==1)return {connected:false};
+const DETAILS: &str = concat!(
+    "function(){\n const marks=",
+    include_str!("marks.js"),
+    ";\n",
+    r#" if(!this.isConnected||this.nodeType!==1)return {connected:false};
  const text=e=>{const w=document.createTreeWalker(e,NodeFilter.SHOW_TEXT);let s='',n;for(let i=0;i<32&&s.length<512&&(n=w.nextNode());i++)s+=n.nodeValue.slice(0,512-s.length);return s;};
  const attr=(e,n)=>(e.getAttribute(n)||'').slice(0,512);
  // What a reference means: the element with its own text, the tags and naming attributes of
@@ -142,12 +184,22 @@ const DETAILS: &str = r#"function(){
  }
  // Painted at the click point without being the top element there: something covers it.
  const covered=!hit&&root.elementsFromPoint(x,y).some(e=>e===this||this.contains(e));
+ // A click at that point would be taken by another control inside this element.
+ let inner=false;for(let q=top;hit&&q&&q!==this;q=q.parentElement||q.getRootNode().host){if(marks.marked(q)||q.tagName==='LABEL'){inner=true;break;}}
+ // An element that only looks like a control is named by the page: by the text it shows
+ // outside the controls it holds, or else by a label in its markup.
+ const words=()=>{const w=document.createTreeWalker(this,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT,{acceptNode:n=>n.nodeType===1&&marks.marked(n)?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT});let s='',n;
+  for(let i=0;i<128&&s.length<=80&&(n=w.nextNode());i++){if(n.nodeType!==3)continue;const t=n.nodeValue.replace(/\s+/g,' ').trim(),p=n.parentElement;if(t&&p&&p.getClientRects().length&&getComputedStyle(p).visibility!=='hidden')s+=(s?' ':'')+t;}
+  if(!s){const q=this.querySelector('img[alt],title');s=(attr(this,'aria-label')||attr(this,'title')||attr(this,'alt')||(q&&(q.getAttribute('alt')||q.textContent))||'').replace(/\s+/g,' ').trim();}
+  return Array.from(s).slice(0,80).join('');};
  const readonly=(this.tagName==='INPUT'||this.tagName==='TEXTAREA')&&this.readOnly;
  const select=this.tagName==='SELECT'?{multiple:this.multiple,complete:this.options.length<=32,options:Array.from({length:Math.min(32,this.options.length)},(_,i)=>{const o=this.options[i];return {value:o.value.length<=256?o.value:null,label:o.label.slice(0,256),label_truncated:o.label.length>256,selected:o.selected,disabled:o.disabled||!!o.closest('optgroup')?.disabled};})}:null;
  if(select)select.complete=select.complete&&select.options.every(o=>o.value!==null&&!o.label_truncated);
  if(select)a.push(select);
  return {connected:true,signature:JSON.stringify(a),tag:this.tagName,type:this.type||'',editable:!readonly&&((this.tagName==='INPUT'&&!['button','submit','checkbox','radio','file','hidden'].includes(this.type))||this.tagName==='TEXTAREA'||this.isContentEditable),readonly,
- enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit,in_view:inView,covered,x,y,checked:!!this.checked,select,steady};}"#;
+ enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit,in_view:inView,covered,inner,x,y,checked:!!this.checked,select,steady,
+ words:marks.native(this)||marks.role(this)?'':words()};}"#
+);
 
 const SELECT: &str = r#"function(value){
  if(!this.isConnected||this.ownerDocument!==document||this.tagName!=='SELECT'||this.disabled||this.multiple||this.options.length>1024)return false;
@@ -184,6 +236,9 @@ async fn details(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> R
     Ok(reply["result"]["value"].clone())
 }
 
+/// The roles by which the browser itself calls an element a control. It knows
+/// of click handlers that the markup does not show, so what it calls a control
+/// is one even where the page does not mark it.
 fn interactive(role: &str) -> bool {
     matches!(
         role,
@@ -355,6 +410,8 @@ pub async fn observe(
 /// What the browser reports about one element the reader found.
 struct Found {
     backend: i64,
+    /// Whether the accessibility tree has anything to say about the element.
+    exposed: bool,
     role: String,
     name: String,
     value: Value,
@@ -366,7 +423,7 @@ struct Found {
 const TOGETHER: usize = 16;
 
 /// Finds what the browser calls the element at `index` of the reader's current
-/// batch. `None` means the accessibility tree has nothing to say about it.
+/// batch. `None` means the browser no longer knows the element.
 async fn located(
     cdp: &Cdp,
     frame: &Frame,
@@ -405,67 +462,61 @@ async fn located(
             deadline,
         )
         .await?;
-    let Some(node) = ax["nodes"].as_array().and_then(|nodes| {
+    let node = ax["nodes"].as_array().and_then(|nodes| {
         nodes
             .iter()
             .find(|n| n["backendDOMNodeId"].as_i64() == Some(backend) && n["ignored"] != true)
-    }) else {
-        return Ok(None);
+    });
+    let text = |field: &str| {
+        node.and_then(|n| n[field]["value"].as_str())
+            .unwrap_or("")
+            .to_owned()
     };
     Ok(Some(Found {
         backend,
-        role: node["role"]["value"].as_str().unwrap_or("").to_owned(),
-        name: node["name"]["value"].as_str().unwrap_or("").to_owned(),
-        value: node["value"]["value"].clone(),
+        exposed: node.is_some(),
+        role: text("role"),
+        name: text("name"),
+        value: node.map_or(Value::Null, |n| n["value"]["value"].clone()),
         data: None,
     }))
 }
 
-/// Describes several elements of the reader's current batch, by their indexes.
-/// The browser is asked about all of them at once, and the page is asked for
-/// the details of the controls among them in one call: on a slow or busy
-/// device every call that is waited for alone costs a turn of waiting.
-///
-/// Each element has its own outcome. `None` means the accessibility tree has
-/// nothing to say about it. An element that left the page after the reader
-/// found it is reported as a stale reference.
-async fn found(
+/// Asks the page, in one call, for the details of the elements at `indexes` of
+/// the reader's current batch. The reader holds them in the world where the
+/// details are read.
+async fn details_of(
     cdp: &Cdp,
     frame: &Frame,
     reader: &str,
     indexes: &[u64],
     deadline: Instant,
-) -> HashMap<u64, Result<Option<Found>>> {
-    let located = futures_util::future::join_all(
-        indexes
-            .iter()
-            .map(|index| located(cdp, frame, reader, *index, deadline)),
-    )
-    .await;
-    let mut described: HashMap<u64, Result<Option<Found>>> =
-        indexes.iter().copied().zip(located).collect();
-    let controls: Vec<u64> = indexes
-        .iter()
-        .copied()
-        .filter(|index| matches!(&described[index], Ok(Some(found)) if interactive(&found.role)))
-        .collect();
-    if controls.is_empty() {
-        return described;
+) -> Result<Value> {
+    if indexes.is_empty() {
+        return Ok(Value::Null);
     }
-    // The reader holds these elements in the world where the details are read.
-    let details = cdp
-        .call(
-            Some(&frame.session),
-            "Runtime.callFunctionOn",
-            json!({
-                "objectId":reader,
-                "functionDeclaration":format!("function(indexes){{const details={DETAILS};return indexes.map(i=>{{try{{return details.call(this.pending[i].node);}}catch(error){{return null;}}}});}}"),
-                "arguments":[{"value":controls}],"returnByValue":true,
-            }),
-            deadline,
-        )
-        .await;
-    for (position, index) in controls.iter().enumerate() {
+    cdp.call(
+        Some(&frame.session),
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId":reader,
+            "functionDeclaration":format!("function(indexes){{const details={DETAILS};return indexes.map(i=>{{try{{return details.call(this.pending[i].node);}}catch(error){{return null;}}}});}}"),
+            "arguments":[{"value":indexes}],"returnByValue":true,
+        }),
+        deadline,
+    )
+    .await
+}
+
+/// Adds the details that the page gave for the elements at `indexes`. An
+/// element that left the page after the reader found it is reported as a stale
+/// reference.
+fn detailed(
+    described: &mut HashMap<u64, Result<Option<Found>>>,
+    indexes: &[u64],
+    details: Result<Value>,
+) {
+    for (position, index) in indexes.iter().enumerate() {
         let data = match &details {
             Ok(reply) => &reply["result"]["value"][position],
             Err(error) => {
@@ -479,11 +530,54 @@ async fn found(
         };
         match described.get_mut(index) {
             Some(Ok(Some(found))) if data["connected"] == true => found.data = Some(data.clone()),
-            _ => {
+            Some(Ok(_)) => {
                 described.insert(*index, Err(Failure::new("browser_stale_reference")));
             }
+            // What went wrong while asking the browser stands.
+            _ => {}
         }
     }
+}
+
+/// Describes several elements of the reader's current batch, by their indexes.
+/// `controls` are the ones among them that the page marks as controls. The
+/// browser is asked about all of the elements at once, and at the same time
+/// the page is asked for the details of the controls in one call: on a slow or
+/// busy device every call that is waited for alone costs a turn of waiting.
+///
+/// Each element has its own outcome. `None` means the browser no longer knows
+/// it. An element that left the page after the reader found it is reported as
+/// a stale reference.
+async fn found(
+    cdp: &Cdp,
+    frame: &Frame,
+    reader: &str,
+    indexes: &[u64],
+    controls: &[u64],
+    deadline: Instant,
+) -> HashMap<u64, Result<Option<Found>>> {
+    let (located, details) = tokio::join!(
+        futures_util::future::join_all(
+            indexes
+                .iter()
+                .map(|index| located(cdp, frame, reader, *index, deadline)),
+        ),
+        details_of(cdp, frame, reader, controls, deadline),
+    );
+    let mut described: HashMap<u64, Result<Option<Found>>> =
+        indexes.iter().copied().zip(located).collect();
+    detailed(&mut described, controls, details);
+    // What the browser alone calls a control has a reference as well.
+    let more: Vec<u64> = indexes
+        .iter()
+        .copied()
+        .filter(|index| {
+            !controls.contains(index)
+                && matches!(&described[index], Ok(Some(found)) if found.exposed && interactive(&found.role))
+        })
+        .collect();
+    let details = details_of(cdp, frame, reader, &more, deadline).await;
+    detailed(&mut described, &more, details);
     described
 }
 
@@ -529,7 +623,7 @@ pub async fn observe_next(
                     deadline,
                 )
                 .await?;
-                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})()")}),deadline).await?;
+                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS})")}),deadline).await?;
                 cursor.readers[index] = Some(
                     created["result"]["objectId"]
                         .as_str()
@@ -551,15 +645,22 @@ pub async fn observe_next(
             for (position, candidate) in candidates.iter().enumerate() {
                 if remaining==0 || nodes.len()>=max_nodes || Instant::now()+Duration::from_millis(200)>=work_until {break;}
                 processed+=1;
+                // The kind of control that the page makes of the element, if any.
+                let marked = Kind::of(candidate);
                 let element = match candidate["index"].as_u64() {
                     Some(index) => {
                         if !described.contains_key(&index) {
-                            let ahead: Vec<u64> = candidates[position..].iter().filter_map(|c| c["index"].as_u64()).take(TOGETHER).collect();
-                            described = found(cdp, &frame, &object, &ahead, deadline).await;
+                            let ahead: Vec<&Value> = candidates[position..].iter().filter(|c| c["index"].is_u64()).take(TOGETHER).collect();
+                            let indexes: Vec<u64> = ahead.iter().filter_map(|c| c["index"].as_u64()).collect();
+                            let controls: Vec<u64> = ahead.iter().filter(|c| Kind::of(c).is_some()).filter_map(|c| c["index"].as_u64()).collect();
+                            described = found(cdp, &frame, &object, &indexes, &controls, deadline).await;
                         }
                         match described.remove(&index).expect("described with the elements after it") {
-                        Ok(Some(element)) => Some(element),
-                        Ok(None) => continue,
+                        // The accessibility tree leaves out what is hidden. It also leaves out
+                        // much of what only looks like a control, and there the page has
+                        // already seen that the element shows.
+                        Ok(Some(element)) if element.exposed || marked == Some(Kind::Inferred) => Some(element),
+                        Ok(_) => continue,
                         // The element left the page after the reader found it. That is a
                         // change to report, unless its whole document went with it.
                         Err(error) if gone(&error) => {
@@ -572,20 +673,30 @@ pub async fn observe_next(
                     }
                     None => None,
                 };
+                // An element with details is a control: by what the page says of it, or
+                // else by what the browser calls it.
+                let kind = element.as_ref().and_then(|found| found.data.as_ref()).map(|_| marked.unwrap_or(Kind::Native));
                 let (role, full_name) = match &element {
-                    Some(element) => (element.role.as_str(), element.name.as_str()),
+                    // The browser's names for such an element differ between versions, and
+                    // are often empty. The page names it.
+                    Some(found) if kind == Some(Kind::Inferred) => (
+                        if found.exposed && !found.role.is_empty() { found.role.as_str() } else { "generic" },
+                        found.data.as_ref().and_then(|data| data["words"].as_str()).unwrap_or(""),
+                    ),
+                    Some(found) => (found.role.as_str(), found.name.as_str()),
                     None => (candidate["role"].as_str().unwrap_or(""), candidate["name"].as_str().unwrap_or("")),
                 };
                 let name = clipped(full_name, 512.min(remaining));
                 if element.is_some() && name.len() < full_name.len() { omitted.push("text_clipped".into()); }
-                if name.is_empty() && !interactive(role) { continue; }
+                if name.is_empty() && kind.is_none() { continue; }
                 remaining = remaining.saturating_sub(name.chars().count() + role.len());
                 let mut visible = json!({"role":role,"name":name,"frame_id":frame.id});
                 if element.is_none() {
                     visible["text_continued"]=candidate["text_continued"].clone();
                     visible["text_remaining"]=(candidate["text_remaining"]==true || name.len()<full_name.len()).into();
                 }
-                if let Some(Found { backend, value, data: Some(data), .. }) = &element {
+                if let (Some(Found { backend, value, data: Some(data), .. }), Some(kind)) = (&element, kind) {
+                    visible["kind"] = kind.name().into();
                     let mut choices = Vec::new();
                     if let Some(options) = data["select"]["options"].as_array() {
                         let mut shown = Vec::new();
@@ -634,6 +745,7 @@ pub async fn observe_next(
                             frame: frame.clone(), backend: *backend,
                             signature: crate::config::sha256_hex(data["signature"].as_str().unwrap_or("").as_bytes()),
                             role: role.into(), name: crate::config::sha256_hex(full_name.as_bytes()), choices,
+                            inferred: kind == Kind::Inferred,
                         });
                     }
                 }
@@ -858,30 +970,40 @@ impl Element {
         {
             return Err(Failure::new("browser_stale_reference"));
         }
-        let ax = cdp
-            .call(
-                Some(&self.frame.session),
-                "Accessibility.getPartialAXTree",
-                json!({"backendNodeId":self.backend,"fetchRelatives":false}),
-                deadline,
-            )
-            .await?;
-        if !ax["nodes"].as_array().is_some_and(|nodes| {
-            nodes.iter().any(|n| {
-                n["backendDOMNodeId"] == self.backend
-                    && n["role"]["value"] == self.role
-                    && crate::config::sha256_hex(
-                        n["name"]["value"].as_str().unwrap_or("").as_bytes(),
-                    ) == self.name
-            })
-        }) {
-            return Err(Failure::new("browser_stale_reference"));
+        if self.inferred {
+            // The page named this element, so the page says whether the name stands.
+            if crate::config::sha256_hex(data["words"].as_str().unwrap_or("").as_bytes())
+                != self.name
+            {
+                return Err(Failure::new("browser_stale_reference"));
+            }
+        } else {
+            let ax = cdp
+                .call(
+                    Some(&self.frame.session),
+                    "Accessibility.getPartialAXTree",
+                    json!({"backendNodeId":self.backend,"fetchRelatives":false}),
+                    deadline,
+                )
+                .await?;
+            if !ax["nodes"].as_array().is_some_and(|nodes| {
+                nodes.iter().any(|n| {
+                    n["backendDOMNodeId"] == self.backend
+                        && n["role"]["value"] == self.role
+                        && crate::config::sha256_hex(
+                            n["name"]["value"].as_str().unwrap_or("").as_bytes(),
+                        ) == self.name
+                })
+            }) {
+                return Err(Failure::new("browser_stale_reference"));
+            }
         }
         if data["enabled"] != true || data["visible"] != true {
             return Err(Failure::new("browser_not_actionable"));
         }
         // The tab's top document: the root frame of a target that has no parent.
         data["top"] = (root && self.frame.ancestors.is_empty()).into();
+        data["inferred"] = self.inferred.into();
         Ok(data)
     }
 
@@ -892,6 +1014,12 @@ impl Element {
         if precheck(action, &data, &self.choices)? {
             return Ok(json!({"changed":false}));
         }
+        // An element that only looks like a control can hold real ones, as a card
+        // holds its delete button. A click meant for the card must not be taken
+        // by one of them.
+        let taken = |data: &Value| {
+            action["kind"] == "click" && data["inferred"] == true && data["inner"] == true
+        };
         // Scrolling into view is an effect command, and it does nothing for an
         // element that is already fully in view. Skip it there, so that a
         // target which something covers is refused before any effect. Only the
@@ -902,7 +1030,7 @@ impl Element {
             && data["in_view"] == true
             && (data["hit"] == true || data["covered"] == true)
         {
-            if data["covered"] == true {
+            if data["covered"] == true || taken(&data) {
                 return Err(Failure::new("browser_not_actionable"));
             }
         } else {
@@ -918,7 +1046,11 @@ impl Element {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let data = self.checked(cdp, deadline).await?;
         let point = self.point(cdp, deadline).await?;
-        if data["hit"] != true || first["x"] != point["x"] || first["y"] != point["y"] {
+        if data["hit"] != true
+            || first["x"] != point["x"]
+            || first["y"] != point["y"]
+            || taken(&data)
+        {
             return Err(Failure::new("browser_not_actionable"));
         }
         // The element can change while the page settles.
@@ -989,7 +1121,13 @@ impl Element {
 /// state and needs no input.
 fn precheck(action: &Value, data: &Value, choices: &[String]) -> Result<bool> {
     let invalid = || Failure::new("browser_invalid_params");
-    match action["kind"].as_str().unwrap_or("") {
+    let kind = action["kind"].as_str().unwrap_or("");
+    // An element that only looks like a control takes clicks and keys, and
+    // nothing that needs a real field, box or list.
+    if data["inferred"] == true && !matches!(kind, "click" | "press") {
+        return Err(invalid());
+    }
+    match kind {
         "click" => {}
         "press" => {
             key_code(action["key"].as_str().unwrap_or("")).ok_or_else(invalid)?;
@@ -1121,6 +1259,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_element_that_only_looks_like_a_control_takes_clicks_and_keys_only() {
+        // The page would let this one be edited and checked. It is still not a field.
+        let card = json!({"tag":"DIV","type":"checkbox","editable":true,"inferred":true,
+            "select":{"multiple":false}});
+        let invalid = Some(("browser_invalid_params", "not_sent"));
+        assert_eq!(rejection(json!({"kind":"click"}), &card, &[]), None);
+        assert_eq!(
+            rejection(json!({"kind":"press","key":"Enter"}), &card, &[]),
+            None
+        );
+        assert_eq!(
+            rejection(json!({"kind":"fill","text":"x"}), &card, &[]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"check","checked":true}), &card, &[]),
+            invalid
+        );
+        assert_eq!(
+            rejection(json!({"kind":"select","value":"red"}), &card, &["red"]),
+            invalid
+        );
+    }
+
     fn frame(id: &str, loader: &str, url: &str) -> Frame {
         Frame {
             session: "session".into(),
@@ -1151,13 +1314,24 @@ mod tests {
             reply.push(0);
             browser.get_mut().write_all(&reply).await.unwrap();
         }
-        // The pretend browser answers nothing until it has all four requests of a
-        // kind. Asked one at a time, it would never get the second.
+        // The page marks the first and the last of four elements as controls. The
+        // pretend browser answers nothing until it has the four requests for the
+        // elements and the one for the details of those two. Asked one at a time,
+        // it would never get the second.
         let pretend = async {
             let mut asked = Vec::new();
-            for _ in 0..4 {
+            for _ in 0..5 {
                 asked.push(request(&mut browser).await);
             }
+            let details = asked.pop().unwrap();
+            assert_eq!(details["params"]["arguments"][0]["value"], json!([0, 3]));
+            // The last element left the page before its details were read.
+            answer(
+                &mut browser,
+                &details,
+                json!({"result":{"value":[{"connected":true,"signature":"s"},null]}}),
+            )
+            .await;
             for handle in &asked {
                 assert_eq!(handle["method"], "Runtime.callFunctionOn", "{handle}");
                 let index = handle["params"]["arguments"][0]["value"].as_u64().unwrap();
@@ -1194,8 +1368,9 @@ mod tests {
                     10 => {
                         json!({"backendDOMNodeId":10,"role":{"value":"button"},"name":{"value":"Save"}})
                     }
+                    // The page does not mark the second, and the browser calls it a link.
                     11 => {
-                        json!({"backendDOMNodeId":11,"role":{"value":"heading"},"name":{"value":"Orders"}})
+                        json!({"backendDOMNodeId":11,"role":{"value":"link"},"name":{"value":"Open"}})
                     }
                     12 => json!({"backendDOMNodeId":12,"ignored":true}),
                     _ => {
@@ -1204,15 +1379,15 @@ mod tests {
                 };
                 answer(&mut browser, tree, json!({"nodes":[node]})).await;
             }
-            // The page is asked once, for the two controls only.
+            // The page is then asked for the details of what the browser alone calls
+            // a control.
             let details = request(&mut browser).await;
             assert_eq!(details["method"], "Runtime.callFunctionOn", "{details}");
-            assert_eq!(details["params"]["arguments"][0]["value"], json!([0, 3]));
-            // The second control left the page before its details were read.
+            assert_eq!(details["params"]["arguments"][0]["value"], json!([1]));
             answer(
                 &mut browser,
                 &details,
-                json!({"result":{"value":[{"connected":true,"signature":"s"},null]}}),
+                json!({"result":{"value":[{"connected":true,"signature":"t"}]}}),
             )
             .await;
         };
@@ -1221,6 +1396,7 @@ mod tests {
             &frame,
             "reader",
             &[0, 1, 2, 3],
+            &[0, 3],
             Instant::now() + Duration::from_secs(2),
         );
         let (mut described, ()) = tokio::time::timeout(Duration::from_secs(2), async {
@@ -1236,12 +1412,13 @@ mod tests {
             (10, "button", "Save")
         );
         assert_eq!(button.data.unwrap()["signature"], "s");
-        // An element that is not a control has no details.
-        let heading = described.remove(&1).unwrap().unwrap().unwrap();
-        assert_eq!(heading.role, "heading");
-        assert!(heading.data.is_none());
-        // The accessibility tree ignores the third.
-        assert!(described.remove(&2).unwrap().unwrap().is_none());
+        let link = described.remove(&1).unwrap().unwrap().unwrap();
+        assert_eq!(link.role, "link");
+        assert_eq!(link.data.unwrap()["signature"], "t");
+        // The accessibility tree ignores the third, which the page does not mark.
+        let ignored = described.remove(&2).unwrap().unwrap().unwrap();
+        assert!(!ignored.exposed);
+        assert!(ignored.data.is_none());
         let gone = described.remove(&3).unwrap().err().unwrap();
         assert_eq!(
             (gone.code, gone.state),

@@ -1,7 +1,13 @@
-function() {
+function(marks) {
   // One bounded reader in this isolated world. A fresh observation closes the old one.
   globalThis.__rdhBrowserReader?.close();
-  const interactive = new Set(['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'SUMMARY']);
+  // Elements with these tags are shown to the browser even where the page does not make them
+  // controls: the browser knows of click handlers that the markup does not show.
+  const tags = new Set(['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'SUMMARY']);
+  // Controls that are named by what they contain, by tag and by role.
+  const wordedTags = new Set(['A', 'BUTTON', 'SELECT', 'TEXTAREA', 'SUMMARY']);
+  const wordedRoles = new Set(['button', 'link', 'checkbox', 'radio', 'switch', 'menuitem', 'tab', 'option', 'gridcell', 'treeitem',
+    'menuitemcheckbox', 'menuitemradio']);
   const excluded = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'HEAD']);
   const filter = {acceptNode(node) {
     return node.nodeType === 1 && excluded.has(node.tagName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
@@ -35,6 +41,69 @@ function() {
     root.addEventListener('change', edited, true);
   };
   watch(document);
+  // Elements whose name holds their text, which is therefore not reported a second time, and
+  // the controls among them.
+  const worded = new WeakSet(), sealed = new WeakSet();
+  const within = (node, set) => {
+    for (; node; node = node.parentElement || node.getRootNode().host) if (set.has(node)) return true;
+    return false;
+  };
+  const heading = node => /^H[1-6]$/.test(node.tagName);
+  // Whether a name can hold all that an element shows: a little text, and nothing below it
+  // that is reported on its own account.
+  const small = node => {
+    if (node.shadowRoot) return false;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    let text = '';
+    for (let count = 0, inner; (inner = walker.nextNode()); count++) {
+      if (count >= 48) return false;
+      if (inner.nodeType === 1) {
+        if (inner.shadowRoot || tags.has(inner.tagName) || heading(inner) || inner.hasAttribute('role') || marks.marked(inner)) return false;
+        continue;
+      }
+      const words = inner.nodeValue.replace(/\s+/g, ' ').trim();
+      if (words) text += (text ? ' ' : '') + words;
+      if (text.length > 80) return false;
+    }
+    return true;
+  };
+  // Whether an element only wraps controls: it holds some, and no text outside them.
+  const wraps = node => {
+    let held = false;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {acceptNode(inner) {
+      if (inner.nodeType === 3 || !marks.marked(inner)) return NodeFilter.FILTER_ACCEPT;
+      held = true;
+      return NodeFilter.FILTER_REJECT;
+    }});
+    for (let count = 0, inner; (inner = walker.nextNode()); count++) {
+      if (count >= 256 || (inner.nodeType === 3 && inner.nodeValue.trim())) return false;
+    }
+    return held;
+  };
+  // Whether the pointer turns into a hand over an element. Asked once for each element in a
+  // batch, since the answer is wanted for an element and again for its children.
+  const hands = new Map();
+  const hand = node => {
+    let known = hands.get(node);
+    if (known === undefined) hands.set(node, known = getComputedStyle(node).cursor === 'pointer');
+    return known;
+  };
+  // An element that neither its tag nor its role makes a control, and that looks like one all
+  // the same: its markup holds a click handler, the pointer turns into a hand over it and not
+  // over what is around it, or it is in the focus order.
+  const inferred = node => {
+    if (node === document.body || node === document.documentElement || node.ownerSVGElement) return false;
+    const parent = node.parentElement || node.getRootNode().host;
+    let looks = node.hasAttribute('onclick') || (hand(node) && !(parent && hand(parent)));
+    const style = getComputedStyle(node);
+    // An element that has a role, or that scrolls, is in the focus order for another reason.
+    if (!looks && node.hasAttribute('tabindex') && node.tabIndex >= 0 && !node.hasAttribute('role')) {
+      looks = !/auto|scroll/.test(style.overflowX + style.overflowY);
+    }
+    if (!looks || style.visibility === 'hidden' || !node.getClientRects().length) return false;
+    // Nothing inside a control that is named by what it contains is a control of its own.
+    return !within(parent, sealed) && !wraps(node);
+  };
   // The last node under `node` in document order.
   const last = node => {
     while (node.lastChild) node = node.lastChild;
@@ -95,6 +164,7 @@ function() {
     let scanned = 0;
     if (this.closed) return {closed: true};
     batch++;
+    hands.clear();
     // What was read and not yet returned is dropped once the page no longer holds it.
     const held = this.pending.filter(entry => (entry.node || entry.source).isConnected);
     if (held.length !== this.pending.length) {this.pending = held; this.changed = true;}
@@ -123,7 +193,7 @@ function() {
         reached.set(node, batch);
         if (node.nodeType === 3) {
           const parent = node.parentElement;
-          if (!parent || parent.closest('button,a,select,textarea,script,style,h1,h2,h3,h4,h5,h6')) continue;
+          if (!parent || within(parent, worded)) continue;
           const style = getComputedStyle(parent);
           if (style.display === 'none' || style.visibility === 'hidden' || !parent.getClientRects().length) continue;
           const value = node.nodeValue;
@@ -138,16 +208,22 @@ function() {
           }
           else this.omitted.add('shadow_scope_limit');
         } else if (node.tagName.includes('-')) this.omitted.add('custom_element_internals_unverified');
-        if (!interactive.has(node.tagName) && !/^H[1-6]$/.test(node.tagName) && !node.hasAttribute('role') && !node.isContentEditable) continue;
+        // The page says which elements are controls, and of which kind.
+        const kind = marks.native(node) ? 'native' : marks.role(node) ? 'aria' : inferred(node) ? 'inferred' : null;
+        if (kind === 'native' ? wordedTags.has(node.tagName) : kind === 'aria' ? wordedRoles.has(marks.role(node)) : kind && small(node)) {
+          worded.add(node);
+          sealed.add(node);
+        } else if (heading(node)) worded.add(node);
+        if (!kind && !heading(node) && !node.hasAttribute('role') && !(tags.has(node.tagName) && node.type !== 'hidden')) continue;
         let attributeBytes = 0;
         for (const attribute of node.attributes) {attributeBytes += attribute.name.length + attribute.value.length; if (attributeBytes > 8192) break;}
         if (attributeBytes > 8192 || node.childNodes.length > 1024) {this.omitted.add('oversized_control'); continue;}
-        this.pending.push({node});
+        this.pending.push({node, kind});
       }
       // An empty batch can still have unvisited DOM nodes after the scan budget.
       for (const entry of this.walkers) entry.trail ||= stop(entry.walker);
     }
-    return {scanned, changed: this.changed, omitted: [...this.omitted], nodes: this.pending.slice(0, maxNodes).map((entry, index) => entry.node ? {index} :
+    return {scanned, changed: this.changed, omitted: [...this.omitted], nodes: this.pending.slice(0, maxNodes).map((entry, index) => entry.node ? {index, kind: entry.kind} :
       {role: entry.role, name: entry.name, text_continued: entry.text_continued, text_remaining: entry.text_remaining})};
   };
   state.ack = function(count, chars) {
