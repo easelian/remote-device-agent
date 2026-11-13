@@ -19,4 +19,4 @@ Clients authorize through Auth and send MCP calls to Gate, which routes authoriz
 
 Browser sessions are an opt-in preview. A browser profile stores browser login state; it is separate from an Agent binding or an RDH account. Human takeover is an explicit handoff within a browser session.
 
-The server owns the [canonical terminology and Chinese equivalents](https://github.com/easelian/remote-device-server/blob/main/docs/terminology.md) and the [five-service architecture](https://github.com/easelian/remote-device-server/blob/main/docs/product-architecture.md). Keep user-facing descriptions at product level; use service names when describing responsibility, credentials or network paths. Use the exact names of APIs, configuration keys and operational commands.
+Keep user-facing descriptions at product level; use service names when describing responsibility, credentials or network paths. Use the exact names of APIs, configuration keys and operational commands.

@@ -19,4 +19,4 @@ Remote Device Hub（RDH）是 Easelian 的产品名称。Remote Device Server �
 
 浏览器会话为可选择启用的预览功能。浏览器资料保存浏览器登录状态，与 Agent 绑定、RDH 账户不同；人工接管是浏览器会话内明确发起的控制交接。
 
-术语以 Server 的[统一术语](https://github.com/easelian/remote-device-server/blob/main/docs/terminology.md)和[五服务架构](https://github.com/easelian/remote-device-server/blob/main/docs/product-architecture.md)为准。用户说明使用产品名称，职责、凭据和网络路径说明使用具体服务名；API、配置键和运维命令使用实际名称。
+用户说明使用产品名称，职责、凭据和网络路径说明使用具体服务名；API、配置键和运维命令使用实际名称。

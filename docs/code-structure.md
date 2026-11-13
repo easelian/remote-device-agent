@@ -92,5 +92,5 @@ Windows running-image replacement needs execution on Windows. See
 [Maintenance](maintenance.md#build-and-validate) for commands and validation limits.
 
 When changing source layout, inspect imports in `lib.rs`, CI path filters,
-`xtask` inventories and tests using `CARGO_MANIFEST_DIR`. Keep the Remote Device Server repository's
+`xtask` inventories and tests using `CARGO_MANIFEST_DIR`. Keep Easelian's
 deployment-default generator aligned with the Agent source path.

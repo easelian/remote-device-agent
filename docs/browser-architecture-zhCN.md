@@ -9,12 +9,12 @@
 | 本地策略显式启用浏览器；Linux、macOS 与启用原生进程/私有存储功能的 Windows 构建共用运行时 | [browser/mod.rs](../src/browser/mod.rs)、[policy.rs](../src/policy.rs) | 默认关闭；预检发现可执行文件后，仍需在创建会话时验证启动结果 |
 | 浏览器工作、控制和普通文件/进程操作分别受限，关闭等待实际工作结束 | [rpc.rs](../src/rpc.rs)、[browser/runtime.rs](../src/browser/runtime.rs) | 响应期限不等于动作取消；只有完成停止后才释放私有存储排他锁 |
 | 原生所有权确认后再回收目录；Windows 独立子进程在 Agent 退出后保存 Job 完成记录 | [browser/process.rs](../src/browser/process.rs)、[windows/supervisor.rs](../src/browser/process/windows/supervisor.rs) | 不以 PID 消失或固定等待代替完成；可靠记录缺失时继续隔离，不重放页面操作 |
-| Core 从已验证请求构造 AI 主体，人工通路使用独立的 Auth application grant | Server `apps/core/src/runtime.rs`、`apps/core/src/browser.rs`、`crates/runtime/src/application.rs` | 模型参数不能指定用户或所有者；接纳和内容披露都核对权限 |
+| Core 从已验证请求构造 AI 主体，人工通路使用独立的 Auth application grant | RDH 服务端（不在本仓库） | 模型参数不能指定用户或所有者；接纳和内容披露都核对权限 |
 | 会话保存控制代次、frame 身份与当前段元素引用；观察支持有界续读 | [browser/runtime.rs](../src/browser/runtime.rs)、[browser/page.rs](../src/browser/page.rs)、[observe.js](../src/browser/observe.js) | 旧引用和游标不能用于控制变化后的页面；观察不是网站原子快照 |
 | 页面动作使用有限 CDP 命令与固定隔离执行函数 | [browser/cdp.rs](../src/browser/cdp.rs)、[browser/page.rs](../src/browser/page.rs) | 不开放任意脚本、原始 CDP 或系统桌面输入；已发送未知输入仍保留在途记录 |
-| Web 提供同会话接管、会话找回与文件交付 | Server `apps/business/web/src/Browser.vue`、`BrowserSessions.vue`、`BrowserFiles.vue`、`BrowserUpload.vue` | 只有明确接管才开放人工输入；交回前由用户确认内容分享范围 |
-| `browser_open`、`browser_act`、`browser_control` 复用操作回执和安全摘要 | [receipts.rs](../src/receipts.rs)；Server `apps/core/src/mcp_tools.rs`、`crates/runtime/src/types.rs` | 去重与恢复不等于网站事务恰好一次；摘要不保存页面或输入正文 |
-| 截图通过 MCP image 块交付；文件字节通过逐块重新授权的人工通路交付 | Server `apps/core/src/mcp_tools.rs`、`apps/core/src/browser.rs`；[browser/files.rs](../src/browser/files.rs) | 图片和文件有各自预算；实际 AI 宿主渲染仍待验证 |
+| Web 提供同会话接管、会话找回与文件交付 | RDH 服务端（不在本仓库） | 只有明确接管才开放人工输入；交回前由用户确认内容分享范围 |
+| `browser_open`、`browser_act`、`browser_control` 复用操作回执和安全摘要 | [receipts.rs](../src/receipts.rs)；RDH 服务端（不在本仓库） | 去重与恢复不等于网站事务恰好一次；摘要不保存页面或输入正文 |
+| 截图通过 MCP image 块交付；文件字节通过逐块重新授权的人工通路交付 | RDH 服务端（不在本仓库）；[browser/files.rs](../src/browser/files.rs) | 图片和文件有各自预算；实际 AI 宿主渲染仍待验证 |
 | 登录资料、文件暂存和运行目录属于设备凭据的私有命名空间 | [browser/profiles.rs](../src/browser/profiles.rs)、[browser/files.rs](../src/browser/files.rs)、[files/native.rs](../src/files/native.rs) | 文件工具排除私有目录；shell 权限和同一 OS 账号不受这项排除约束 |
 
 ## 控制和恢复

@@ -50,4 +50,4 @@ Windows 私有存储和启动授权操作复用 `storage/windows/` 中的 ACL �
 
 单元测试位于实现模块内。`tests/` 中的集成测试复用 `tests/support/` 的辅助代码。`native_bootstrap` 验证安装器行为，`self_update::tests` 覆盖候选检查和替换失败处理。Windows 运行中程序替换需要在 Windows 执行。命令和验证边界见[维护说明](maintenance.md#build-and-validate)。
 
-调整源码布局时，检查 `lib.rs` 的模块声明、CI 路径过滤器、`xtask` 清单，以及使用 `CARGO_MANIFEST_DIR` 的测试。Remote Device Server 仓库的部署默认值生成器也需要与 Agent 源码路径保持一致。
+调整源码布局时，检查 `lib.rs` 的模块声明、CI 路径过滤器、`xtask` 清单，以及使用 `CARGO_MANIFEST_DIR` 的测试。Easelian 发布工具中的部署默认值生成器也需要与 Agent 源码路径保持一致。
