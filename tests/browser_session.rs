@@ -1624,7 +1624,12 @@ const REJECTIONS: &str = r#"<!doctype html><meta charset="utf-8"><title>Rejectio
 <h1>Rejections</h1><label>Name <input id="name" value="old"></label><label>Secret <input type="password"></label>
 <button type="button">Plain button</button>
 <label>Color <select><option value="red">Red</option><option value="green">Green</option></select></label>
-<label><input type="checkbox" checked> Agree</label>"#;
+<label><input type="checkbox" checked> Agree</label>
+<input readonly value="2026-01-01" aria-label="Pick date" onclick="document.getElementById('picked').textContent='Date picker opened'"><p id="picked"></p>"#;
+
+// The link's bounding box spans both lines, so its center lies on plain text.
+const WRAPPED: &str = r#"<!doctype html><meta charset="utf-8"><title>Wrapped link</title>
+<div style="width:400px;font:16px/60px monospace">Lead text before the <a href="/landed" aria-label="Wrapped link">Wrapped<br>link</a> and trailing words</div>"#;
 
 /// The session is still under AI control in its first epoch.
 async fn assert_running(peer: &mut Peer, id: &str) {
@@ -1642,7 +1647,13 @@ async fn rejections_without_input_keep_the_session_running() {
         random::hex_token::<8>().unwrap()
     )));
     rdh_agent::storage::create_private_dir(&temp.0).unwrap();
-    let app = Router::new().route("/form", get(|| async { Html(REJECTIONS) }));
+    let app = Router::new()
+        .route("/form", get(|| async { Html(REJECTIONS) }))
+        .route("/wrapped", get(|| async { Html(WRAPPED) }))
+        .route(
+            "/landed",
+            get(|| async { Html("<!doctype html><h1>Landed</h1>") }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -1706,6 +1717,46 @@ async fn rejections_without_input_keep_the_session_running() {
         field["value"], "new",
         "fill replaces the earlier value: {observed}"
     );
+    assert_running(&mut peer, &id).await;
+
+    // A read-only field takes a click, but not text.
+    let observed = peer.observe_named(&id, 1, "Plain button").await;
+    let date = observed["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "Pick date")
+        .unwrap();
+    assert_eq!(date["enabled"], true, "{observed}");
+    assert_eq!(date["editable"], false, "{observed}");
+    let refused = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","text":"x","ref":reference(&observed,"Pick date")}})).await;
+    assert_eq!(refused["error_code"], "browser_not_actionable", "{refused}");
+    assert_eq!(refused["execution_state"], "not_sent", "{refused}");
+    let observed = peer.observe_named(&id, 1, "Plain button").await;
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Pick date")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let picked = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Date picker opened"}),
+        )
+        .await;
+    assert_eq!(picked["result"]["condition_observed"], true, "{picked}");
+
+    // A link wrapped over two lines is hit where the click lands: on its first
+    // fragment, not at the center of a box that also covers other text.
+    let navigate = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/wrapped")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    let observed = peer.observe_named(&id, 1, "Wrapped link").await;
+    let followed = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Wrapped link")}})).await;
+    assert_eq!(followed["result"]["input_acknowledged"], true, "{followed}");
+    let landed = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"url_contains":"/landed"}),
+        )
+        .await;
+    assert_eq!(landed["result"]["condition_observed"], true, "{landed}");
     assert_running(&mut peer, &id).await;
 
     assert!(peer.runtime.shutdown().await);

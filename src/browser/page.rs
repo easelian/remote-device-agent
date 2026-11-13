@@ -113,12 +113,15 @@ const DETAILS: &str = r#"function(){
  const text=e=>{const w=document.createTreeWalker(e,NodeFilter.SHOW_TEXT);let s='',n;for(let i=0;i<32&&s.length<512&&(n=w.nextNode());i++)s+=n.nodeValue.slice(0,512-s.length);return s;};
  const attr=(e,n)=>(e.getAttribute(n)||'').slice(0,512);
  const a=[];let p=this;for(let i=0;p&&i<4;i++,p=p.parentElement){a.push([p.tagName,attr(p,'id'),attr(p,'name'),attr(p,'role'),attr(p,'data-id'),attr(p,'aria-label'),text(p)]);}
- const r=this.getBoundingClientRect(),s=getComputedStyle(this),root=this.getRootNode(),hit=root.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+ const r=this.getBoundingClientRect(),s=getComputedStyle(this),root=this.getRootNode();
+ // Input is sent to the first fragment, so the hit test looks there too.
+ const f=this.getClientRects()[0]||r,x=f.x+f.width/2,y=f.y+f.height/2,hit=root.elementFromPoint(x,y);
+ const readonly=(this.tagName==='INPUT'||this.tagName==='TEXTAREA')&&this.readOnly;
  const select=this.tagName==='SELECT'?{multiple:this.multiple,complete:this.options.length<=32,options:Array.from({length:Math.min(32,this.options.length)},(_,i)=>{const o=this.options[i];return {value:o.value.length<=256?o.value:null,label:o.label.slice(0,256),label_truncated:o.label.length>256,selected:o.selected,disabled:o.disabled||!!o.closest('optgroup')?.disabled};})}:null;
  if(select)select.complete=select.complete&&select.options.every(o=>o.value!==null&&!o.label_truncated);
  if(select)a.push(select);
- return {connected:true,signature:JSON.stringify(a),tag:this.tagName,type:this.type||'',editable:(this.tagName==='INPUT'&&!['button','submit','checkbox','radio','file','hidden'].includes(this.type))||this.tagName==='TEXTAREA'||this.isContentEditable,
- enabled:!this.disabled&&!this.readOnly&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit:hit===this||this.contains(hit),x:r.x+r.width/2,y:r.y+r.height/2,checked:!!this.checked,select};}"#;
+ return {connected:true,signature:JSON.stringify(a),tag:this.tagName,type:this.type||'',editable:!readonly&&((this.tagName==='INPUT'&&!['button','submit','checkbox','radio','file','hidden'].includes(this.type))||this.tagName==='TEXTAREA'||this.isContentEditable),readonly,
+ enabled:!this.disabled&&this.getAttribute('aria-disabled')!=='true',visible:r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none',hit:hit===this||this.contains(hit),x,y,checked:!!this.checked,select};}"#;
 
 const SELECT: &str = r#"function(value){
  if(!this.isConnected||this.ownerDocument!==document||this.tagName!=='SELECT'||this.disabled||this.multiple||this.options.length>1024)return false;
@@ -730,6 +733,10 @@ fn precheck(action: &Value, data: &Value, choices: &[String]) -> Result<bool> {
             if data["type"] == "password" {
                 return Err(Failure::new("browser_sensitive_input"));
             }
+            // A read-only field still takes clicks and keys, only not text.
+            if data["readonly"] == true {
+                return Err(Failure::new("browser_not_actionable"));
+            }
             if data["editable"] != true {
                 return Err(invalid());
             }
@@ -839,5 +846,25 @@ mod tests {
         let checked = json!({"tag":"INPUT","type":"checkbox","checked":true});
         assert!(precheck(&json!({"kind":"check","checked":true}), &checked, &[]).unwrap());
         assert!(!precheck(&json!({"kind":"check","checked":false}), &checked, &[]).unwrap());
+    }
+
+    #[test]
+    fn a_read_only_field_takes_clicks_and_keys_but_not_text() {
+        let field = json!({"tag":"INPUT","type":"text","editable":false,"readonly":true});
+        let secret = json!({"tag":"INPUT","type":"password","editable":false,"readonly":true});
+        let fill = || json!({"kind":"fill","text":"x"});
+        assert_eq!(rejection(json!({"kind":"click"}), &field, &[]), None);
+        assert_eq!(
+            rejection(json!({"kind":"press","key":"Enter"}), &field, &[]),
+            None
+        );
+        assert_eq!(
+            rejection(fill(), &field, &[]),
+            Some(("browser_not_actionable", "not_sent"))
+        );
+        assert_eq!(
+            rejection(fill(), &secret, &[]),
+            Some(("browser_sensitive_input", "not_sent"))
+        );
     }
 }
