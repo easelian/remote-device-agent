@@ -59,6 +59,8 @@ An action that cannot be carried out is refused before any input is sent: an act
 
 Long observations return `next_cursor`. Continue until no cursor remains and inspect `coverage.sequence_complete` and `omitted`; an incomplete page is not evidence that a record does not exist. Every segment replaces earlier action references. Detected document changes, navigation, an action, control changes, a fresh observation or five minutes without continuation invalidate the cursor. The reader does not create an atomic snapshot of a changing website.
 
+Each observation reports the document's `ready_state` with the page address. While it is `loading`, the browser has not finished reading the page: the coverage is not complete and names `document_loading`, so wait and observe again before concluding that something is missing. An element reference stays valid while unrelated text near it changes. It stops being valid when the element's own text changes, or when the table row, list item, article or dialog it belongs to shows different text. A navigation that receives no answer is cancelled before the call's deadline and reported as a failed navigation. The session pauses as after any uncertain navigation, keeps the earlier page, and can be resumed at once.
+
 For integrations, `browser_open`, `browser_act` and `browser_control` require an operation ID from `prepare_operation`. Reuse that ID only to recover the same request. An acknowledged input says that browser input completed; verify the website's actual result separately. A timeout can leave an effect unknown, so query operation/session state instead of repeating a submission.
 
 ## Sign in and return to the AI
