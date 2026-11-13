@@ -1627,6 +1627,11 @@ const REJECTIONS: &str = r#"<!doctype html><meta charset="utf-8"><title>Rejectio
 <label><input type="checkbox" checked> Agree</label>
 <input readonly value="2026-01-01" aria-label="Pick date" onclick="document.getElementById('picked').textContent='Date picker opened'"><p id="picked"></p>"#;
 
+// One button is scrolled out of an inner container, the other lies below the viewport.
+const BELOW: &str = r#"<!doctype html><meta charset="utf-8"><title>Below</title>
+<div style="height:120px;overflow:auto"><div style="height:600px"></div><button type="button" onclick="document.getElementById('out').textContent+=' inner'">Inner button</button></div>
+<div style="height:3000px"></div><button type="button" onclick="document.getElementById('out').textContent+=' far'">Far button</button><p id="out">Clicked:</p>"#;
+
 // The link's bounding box spans both lines, so its center lies on plain text.
 const WRAPPED: &str = r#"<!doctype html><meta charset="utf-8"><title>Wrapped link</title>
 <div style="width:400px;font:16px/60px monospace">Lead text before the <a href="/landed" aria-label="Wrapped link">Wrapped<br>link</a> and trailing words</div>"#;
@@ -1650,6 +1655,13 @@ async fn rejections_without_input_keep_the_session_running() {
     let app = Router::new()
         .route("/form", get(|| async { Html(REJECTIONS) }))
         .route("/wrapped", get(|| async { Html(WRAPPED) }))
+        .route("/below", get(|| async { Html(BELOW) }))
+        .route("/framed", get(|| async { Html(r#"<!doctype html><button type="button" onclick="this.textContent='Framed clicked'">Framed button</button>"#) }))
+        .route("/below-frame", get(|headers: axum::http::HeaderMap| async move {
+            // A different host puts the frame in its own process.
+            let host = headers["host"].to_str().unwrap().replace("127.0.0.1", "localhost");
+            Html(format!("<!doctype html><div style='height:3000px'></div><iframe width=400 height=200 src='http://{host}/framed'></iframe>"))
+        }))
         .route(
             "/landed",
             get(|| async { Html("<!doctype html><h1>Landed</h1>") }),
@@ -1757,6 +1769,42 @@ async fn rejections_without_input_keep_the_session_running() {
         )
         .await;
     assert_eq!(landed["result"]["condition_observed"], true, "{landed}");
+    assert_running(&mut peer, &id).await;
+
+    // Targets on a scrolled page: inside a container, below the viewport, and
+    // in a frame below the viewport.
+    let navigate = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/below")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    for (button, text) in [("Inner button", "inner"), ("Far button", "far")] {
+        let observed = peer.observe_named(&id, 1, "Far button").await;
+        let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,button)}})).await;
+        assert_eq!(
+            clicked["result"]["input_acknowledged"], true,
+            "{button}: {clicked}"
+        );
+        let shown = peer
+            .call(
+                "browser_wait",
+                json!({"session_id":id,"control_epoch":1,"text_contains":text}),
+            )
+            .await;
+        assert_eq!(
+            shown["result"]["condition_observed"], true,
+            "{button}: {shown}"
+        );
+    }
+    let navigate = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"navigate","url":format!("{origin}/below-frame")}})).await;
+    assert!(navigate.get("error").is_none(), "{navigate}");
+    let observed = peer.observe_named(&id, 1, "Framed button").await;
+    let clicked = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"click","ref":reference(&observed,"Framed button")}})).await;
+    assert_eq!(clicked["result"]["input_acknowledged"], true, "{clicked}");
+    let shown = peer
+        .call(
+            "browser_wait",
+            json!({"session_id":id,"control_epoch":1,"text_contains":"Framed clicked"}),
+        )
+        .await;
+    assert_eq!(shown["result"]["condition_observed"], true, "{shown}");
     assert_running(&mut peer, &id).await;
 
     assert!(peer.runtime.shutdown().await);

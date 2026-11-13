@@ -446,6 +446,35 @@ pub async fn observe_next(
     ))
 }
 
+/// Hit-tests a point given in the viewport of a target's root document, which
+/// is where content quads and input events are measured.
+/// `DOM.getNodeForLocation` takes document coordinates instead, so the scroll
+/// offset is added. A point outside the viewport cannot receive input.
+async fn node_at(cdp: &Cdp, session: &str, x: f64, y: f64, deadline: Instant) -> Result<Value> {
+    let metrics = cdp
+        .call(Some(session), "Page.getLayoutMetrics", json!({}), deadline)
+        .await?;
+    let view = &metrics["cssLayoutViewport"];
+    let (Some(left), Some(top), Some(width), Some(height)) = (
+        view["pageX"].as_f64(),
+        view["pageY"].as_f64(),
+        view["clientWidth"].as_f64(),
+        view["clientHeight"].as_f64(),
+    ) else {
+        return Err(Failure::new("browser_not_actionable"));
+    };
+    if x < 0. || y < 0. || x >= width || y >= height {
+        return Err(Failure::new("browser_not_actionable"));
+    }
+    cdp.call(
+        Some(session),
+        "DOM.getNodeForLocation",
+        json!({"x":(x + left).round() as i64,"y":(y + top).round() as i64}),
+        deadline,
+    )
+    .await
+}
+
 impl Element {
     pub async fn prepare_file(&self, cdp: &Cdp, top: &Frame, deadline: Instant) -> Result<String> {
         // The consent UI names the top-level site. Cross-origin/nested frames
@@ -530,14 +559,7 @@ impl Element {
                 + q[3] * u * (1. - v)
                 + q[5] * u * v
                 + q[7] * (1. - u) * v;
-            let hit = cdp
-                .call(
-                    Some(parent_session),
-                    "DOM.getNodeForLocation",
-                    json!({"x":x.round() as i64,"y":y.round() as i64}),
-                    deadline,
-                )
-                .await?;
+            let hit = node_at(cdp, parent_session, x, y, deadline).await?;
             if hit["frameId"] != *child_frame && hit["backendNodeId"] != owner["backendNodeId"] {
                 return Err(Failure::new("browser_not_actionable"));
             }
@@ -572,14 +594,7 @@ impl Element {
         if !x.is_finite() || !y.is_finite() || x < 0. || y < 0. {
             return Err(Failure::new("browser_not_actionable"));
         }
-        let hit = cdp
-            .call(
-                Some(&self.frame.session),
-                "DOM.getNodeForLocation",
-                json!({"x":x.round() as i64,"y":y.round() as i64}),
-                deadline,
-            )
-            .await?;
+        let hit = node_at(cdp, &self.frame.session, x, y, deadline).await?;
         if hit["frameId"] != self.frame.id {
             return Err(Failure::new("browser_not_actionable"));
         }
