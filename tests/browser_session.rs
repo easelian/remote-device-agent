@@ -2280,20 +2280,24 @@ async fn an_observation_reads_a_page_that_keeps_changing() {
         random::hex_token::<8>().unwrap()
     )));
     rdh_agent::storage::create_private_dir(&temp.0).unwrap();
-    // A clock and a banner change every few milliseconds, far more often than a read takes.
+    // A clock and a banner change as often as the page gets a turn: each change
+    // posts itself the message that causes the next one. That is far more often
+    // than a timer allows, and more often than the calls of a read follow each
+    // other, however fast a page is read.
     let busy = format!(
         r#"<!doctype html><meta charset="utf-8"><title>Busy</title>
 <h1>Orders</h1><p id="clock">tick 0</p><ul>{}</ul><div id="banner" class="a">Deals</div>
 <button type="button" onclick="document.getElementById('out').textContent='Order saved'">Save order</button><p id="out"></p>
-<script>let n=0;setInterval(()=>{{n++;document.getElementById('clock').textContent='tick '+n;document.getElementById('banner').className=n%2?'a':'b';}},5);</script>"#,
+<script>let n=0;const turn=new MessageChannel();turn.port1.onmessage=()=>{{n++;document.getElementById('clock').textContent='tick '+n;document.getElementById('banner').className=n%2?'a':'b';turn.port2.postMessage(0);}};turn.port2.postMessage(0);</script>"#,
         buttons("Open", 40)
     );
-    // The last row of the table shows a new stock figure every few milliseconds.
+    // The last row of the table shows a new stock figure in the same way, until
+    // the feed is paused. The columns keep their width, so no row moves.
     let rows = format!(
         r#"<!doctype html><meta charset="utf-8"><title>Rows</title><h1>Stock</h1>
-<table><tbody>{}<tr><td id="live">Stock 0</td><td><button type="button">Buy live</button></td></tr></tbody></table>
-<button type="button" onclick="clearInterval(feed)">Pause feed</button><p id="out"></p>
-<script>let n=0;const feed=setInterval(()=>{{document.getElementById('live').textContent='Stock '+(++n);}},5);</script>"#,
+<table style="table-layout:fixed;width:480px"><tbody>{}<tr><td id="live">Stock 0</td><td><button type="button">Buy live</button></td></tr></tbody></table>
+<button type="button" onclick="feeding=false">Pause feed</button><p id="out"></p>
+<script>let n=0,feeding=true;const turn=new MessageChannel();turn.port1.onmessage=()=>{{if(!feeding)return;document.getElementById('live').textContent='Stock '+(++n);turn.port2.postMessage(0);}};turn.port2.postMessage(0);</script>"#,
         (0..40)
             .map(|i| format!("<tr><td>Item {i:02}</td><td><button type=\"button\" onclick=\"document.getElementById('out').textContent='Bought item {i:02}'\">Buy {i:02}</button></td></tr>"))
             .collect::<String>()
