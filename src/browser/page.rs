@@ -362,10 +362,12 @@ struct Found {
     data: Option<Value>,
 }
 
-/// Describes the element at `index` of the reader's current batch. `None` means
-/// the accessibility tree has nothing to say about it. An element that left the
-/// page after the reader found it is reported as a stale reference.
-async fn found(
+/// How many elements are described together.
+const TOGETHER: usize = 16;
+
+/// Finds what the browser calls the element at `index` of the reader's current
+/// batch. `None` means the accessibility tree has nothing to say about it.
+async fn located(
     cdp: &Cdp,
     frame: &Frame,
     reader: &str,
@@ -410,23 +412,79 @@ async fn found(
     }) else {
         return Ok(None);
     };
-    let role = node["role"]["value"].as_str().unwrap_or("").to_owned();
-    let data = if interactive(&role) {
-        let data = details(cdp, frame, backend, deadline).await?;
-        if data["connected"] != true {
-            return Err(Failure::new("browser_stale_reference"));
-        }
-        Some(data)
-    } else {
-        None
-    };
     Ok(Some(Found {
         backend,
-        role,
+        role: node["role"]["value"].as_str().unwrap_or("").to_owned(),
         name: node["name"]["value"].as_str().unwrap_or("").to_owned(),
         value: node["value"]["value"].clone(),
-        data,
+        data: None,
     }))
+}
+
+/// Describes several elements of the reader's current batch, by their indexes.
+/// The browser is asked about all of them at once, and the page is asked for
+/// the details of the controls among them in one call: on a slow or busy
+/// device every call that is waited for alone costs a turn of waiting.
+///
+/// Each element has its own outcome. `None` means the accessibility tree has
+/// nothing to say about it. An element that left the page after the reader
+/// found it is reported as a stale reference.
+async fn found(
+    cdp: &Cdp,
+    frame: &Frame,
+    reader: &str,
+    indexes: &[u64],
+    deadline: Instant,
+) -> HashMap<u64, Result<Option<Found>>> {
+    let located = futures_util::future::join_all(
+        indexes
+            .iter()
+            .map(|index| located(cdp, frame, reader, *index, deadline)),
+    )
+    .await;
+    let mut described: HashMap<u64, Result<Option<Found>>> =
+        indexes.iter().copied().zip(located).collect();
+    let controls: Vec<u64> = indexes
+        .iter()
+        .copied()
+        .filter(|index| matches!(&described[index], Ok(Some(found)) if interactive(&found.role)))
+        .collect();
+    if controls.is_empty() {
+        return described;
+    }
+    // The reader holds these elements in the world where the details are read.
+    let details = cdp
+        .call(
+            Some(&frame.session),
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId":reader,
+                "functionDeclaration":format!("function(indexes){{const details={DETAILS};return indexes.map(i=>{{try{{return details.call(this.pending[i].node);}}catch(error){{return null;}}}});}}"),
+                "arguments":[{"value":controls}],"returnByValue":true,
+            }),
+            deadline,
+        )
+        .await;
+    for (position, index) in controls.iter().enumerate() {
+        let data = match &details {
+            Ok(reply) => &reply["result"]["value"][position],
+            Err(error) => {
+                let error = Failure {
+                    code: error.code,
+                    state: error.state,
+                };
+                described.insert(*index, Err(error));
+                continue;
+            }
+        };
+        match described.get_mut(index) {
+            Some(Ok(Some(found))) if data["connected"] == true => found.data = Some(data.clone()),
+            _ => {
+                described.insert(*index, Err(Failure::new("browser_stale_reference")));
+            }
+        }
+    }
+    described
 }
 
 /// Reads the next segment. The page may change while it is read: the read goes
@@ -488,11 +546,18 @@ pub async fn observe_next(
             visited+=summary["scanned"].as_u64().unwrap_or(0) as usize;
             if let Some(values)=summary["omitted"].as_array(){omitted.extend(values.iter().filter_map(Value::as_str).map(str::to_owned));}
             let mut processed=0;let mut partial_chars=0;
-            for candidate in candidates {
+            // Elements are described a few at a time, this one and the ones after it.
+            let mut described: HashMap<u64, Result<Option<Found>>> = HashMap::new();
+            for (position, candidate) in candidates.iter().enumerate() {
                 if remaining==0 || nodes.len()>=max_nodes || Instant::now()+Duration::from_millis(200)>=work_until {break;}
                 processed+=1;
                 let element = match candidate["index"].as_u64() {
-                    Some(index) => match found(cdp, &frame, &object, index, deadline).await {
+                    Some(index) => {
+                        if !described.contains_key(&index) {
+                            let ahead: Vec<u64> = candidates[position..].iter().filter_map(|c| c["index"].as_u64()).take(TOGETHER).collect();
+                            described = found(cdp, &frame, &object, &ahead, deadline).await;
+                        }
+                        match described.remove(&index).expect("described with the elements after it") {
                         Ok(Some(element)) => Some(element),
                         Ok(None) => continue,
                         // The element left the page after the reader found it. That is a
@@ -503,7 +568,8 @@ pub async fn observe_next(
                             continue;
                         }
                         Err(error) => return Err(error),
-                    },
+                        }
+                    }
                     None => None,
                 };
                 let (role, full_name) = match &element {
@@ -1064,6 +1130,123 @@ mod tests {
             fragment: String::new(),
             ancestors: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn elements_are_described_together_and_each_has_its_own_outcome() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+        let (client, browser) = tokio::io::duplex(65536);
+        let (read, write) = tokio::io::split(client);
+        let cdp = Cdp::new(read, write);
+        let frame = frame("top", "1", "https://shop.test/orders");
+        let mut browser = BufReader::new(browser);
+        async fn request(browser: &mut BufReader<DuplexStream>) -> Value {
+            let mut frame = Vec::new();
+            browser.read_until(0, &mut frame).await.unwrap();
+            serde_json::from_slice(&frame[..frame.len() - 1]).unwrap()
+        }
+        async fn answer(browser: &mut BufReader<DuplexStream>, request: &Value, result: Value) {
+            let mut reply =
+                serde_json::to_vec(&json!({"id":request["id"],"result":result})).unwrap();
+            reply.push(0);
+            browser.get_mut().write_all(&reply).await.unwrap();
+        }
+        // The pretend browser answers nothing until it has all four requests of a
+        // kind. Asked one at a time, it would never get the second.
+        let pretend = async {
+            let mut asked = Vec::new();
+            for _ in 0..4 {
+                asked.push(request(&mut browser).await);
+            }
+            for handle in &asked {
+                assert_eq!(handle["method"], "Runtime.callFunctionOn", "{handle}");
+                let index = handle["params"]["arguments"][0]["value"].as_u64().unwrap();
+                answer(
+                    &mut browser,
+                    handle,
+                    json!({"result":{"objectId":format!("node-{index}")}}),
+                )
+                .await;
+            }
+            asked.clear();
+            for _ in 0..4 {
+                asked.push(request(&mut browser).await);
+            }
+            for describe in &asked {
+                assert_eq!(describe["method"], "DOM.describeNode", "{describe}");
+                let object = describe["params"]["objectId"].as_str().unwrap();
+                let index: i64 = object.trim_start_matches("node-").parse().unwrap();
+                answer(
+                    &mut browser,
+                    describe,
+                    json!({"node":{"backendNodeId":10 + index}}),
+                )
+                .await;
+            }
+            asked.clear();
+            for _ in 0..4 {
+                asked.push(request(&mut browser).await);
+            }
+            for tree in &asked {
+                assert_eq!(tree["method"], "Accessibility.getPartialAXTree", "{tree}");
+                let backend = tree["params"]["backendNodeId"].as_i64().unwrap();
+                let node = match backend {
+                    10 => {
+                        json!({"backendDOMNodeId":10,"role":{"value":"button"},"name":{"value":"Save"}})
+                    }
+                    11 => {
+                        json!({"backendDOMNodeId":11,"role":{"value":"heading"},"name":{"value":"Orders"}})
+                    }
+                    12 => json!({"backendDOMNodeId":12,"ignored":true}),
+                    _ => {
+                        json!({"backendDOMNodeId":13,"role":{"value":"textbox"},"name":{"value":"Name"}})
+                    }
+                };
+                answer(&mut browser, tree, json!({"nodes":[node]})).await;
+            }
+            // The page is asked once, for the two controls only.
+            let details = request(&mut browser).await;
+            assert_eq!(details["method"], "Runtime.callFunctionOn", "{details}");
+            assert_eq!(details["params"]["arguments"][0]["value"], json!([0, 3]));
+            // The second control left the page before its details were read.
+            answer(
+                &mut browser,
+                &details,
+                json!({"result":{"value":[{"connected":true,"signature":"s"},null]}}),
+            )
+            .await;
+        };
+        let described = found(
+            &cdp,
+            &frame,
+            "reader",
+            &[0, 1, 2, 3],
+            Instant::now() + Duration::from_secs(2),
+        );
+        let (mut described, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(described, pretend)
+        })
+        .await
+        .expect("the browser must be asked about all four elements at once");
+        cdp.stop();
+
+        let button = described.remove(&0).unwrap().unwrap().unwrap();
+        assert_eq!(
+            (button.backend, button.role.as_str(), button.name.as_str()),
+            (10, "button", "Save")
+        );
+        assert_eq!(button.data.unwrap()["signature"], "s");
+        // An element that is not a control has no details.
+        let heading = described.remove(&1).unwrap().unwrap().unwrap();
+        assert_eq!(heading.role, "heading");
+        assert!(heading.data.is_none());
+        // The accessibility tree ignores the third.
+        assert!(described.remove(&2).unwrap().unwrap().is_none());
+        let gone = described.remove(&3).unwrap().err().unwrap();
+        assert_eq!(
+            (gone.code, gone.state),
+            ("browser_stale_reference", "not_sent")
+        );
     }
 
     #[test]
