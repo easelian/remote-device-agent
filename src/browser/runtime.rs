@@ -371,7 +371,7 @@ impl Browsers {
                 if target.dialog.is_some() {
                     return Err(Failure::new("browser_dialog_open"));
                 }
-                let tree = frames(&cdp, &session, &target, deadline).await?;
+                let mut tree = frames(&cdp, &session, &target, deadline).await?;
                 let continuing = params["cursor"].is_string();
                 if let Some(token)=params["cursor"].as_str()
                     && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&tree)) {
@@ -387,27 +387,44 @@ impl Browsers {
                     if let Some(previous)=previous {previous.cursor.close(&cdp,deadline).await;}
                     PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&tree)?}
                 };
-                let result=async {
-                let (mut value, refs) = page::observe_next(
-                    &cdp,
-                    &mut read.cursor,
-                    params["max_nodes"].as_u64().unwrap_or(200) as usize,
-                    params["max_chars"].as_u64().unwrap_or(20000) as usize,
-                    deadline,
-                )
-                .await?;
-                value["page"] = page::metadata(&cdp,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
-                value["page"]["tab_id"] = tab.clone().into();
-                mark_loading(&mut value);
-                Ok::<_,Failure>((value,refs))
-                }.await;
-                let (mut value, refs)=match result {
-                    Ok(value)=>value,
-                    Err(error)=>{
-                        read.cursor.close(&cdp,Instant::now()+Duration::from_millis(500)).await;
-                        session.references.clear();
-                        return Err(error);
+                // A first read that finds the document replaced under it starts once more,
+                // on the document that is there now. Reading sends the page nothing, so
+                // nothing is repeated. A continuation has no earlier part that would go
+                // with a new document, so it is not started again.
+                let mut again = !continuing;
+                let (mut value, refs) = loop {
+                    let result=async {
+                        let (mut value, refs) = page::observe_next(
+                            &cdp,
+                            &mut read.cursor,
+                            params["max_nodes"].as_u64().unwrap_or(200) as usize,
+                            params["max_chars"].as_u64().unwrap_or(20000) as usize,
+                            deadline,
+                        )
+                        .await?;
+                        value["page"] = page::metadata(&cdp,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                        value["page"]["tab_id"] = tab.clone().into();
+                        mark_loading(&mut value);
+                        Ok::<_,Failure>((value,refs))
+                    }.await;
+                    let error = match result {
+                        Ok(value) => break value,
+                        Err(error) => error,
+                    };
+                    read.cursor.close(&cdp,Instant::now()+Duration::from_millis(500)).await;
+                    if again
+                        && matches!(error.code, "browser_stale_reference" | "browser_command_failed")
+                        && Instant::now() + Duration::from_secs(3) < deadline
+                        && let Ok(fresh) = frames(&cdp, &session, &target, deadline).await
+                        && let Ok(cursor) = page::Cursor::new(&fresh)
+                    {
+                        again = false;
+                        tree = fresh;
+                        read.cursor = cursor;
+                        continue;
                     }
+                    session.references.clear();
+                    return Err(error);
                 };
                 session.references = refs;
                 session.observed_tab = tab.clone();

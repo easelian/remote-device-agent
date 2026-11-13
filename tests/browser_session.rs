@@ -2476,3 +2476,62 @@ async fn a_read_outlasts_a_subframe_that_navigates() {
     server.abort();
     let _ = server.await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_first_read_follows_a_document_that_is_replaced_under_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-replaced-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    // The page leaves for another one as soon as the test says so.
+    let leaving = format!(
+        r#"<!doctype html><meta charset="utf-8"><title>Leaving</title><h1>Leaving</h1><ul>{}</ul>
+<script>const poll=setInterval(async()=>{{if(await(await fetch('/go')).json()){{clearInterval(poll);location.href='/arrived';}}}},5);</script>"#,
+        buttons("Stay", 150)
+    );
+    let go = Arc::new(AtomicBool::new(false));
+    let app = Router::new()
+        .route("/leaving", get(move || async move { Html(leaving) }))
+        .route(
+            "/arrived",
+            get(|| async { Html("<!doctype html><title>Arrived</title><h1>Arrived</h1>") }),
+        )
+        .route(
+            "/go",
+            get(
+                |State(go): State<Arc<AtomicBool>>| async move { Json(go.load(Ordering::Acquire)) },
+            ),
+        )
+        .with_state(go.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/leaving")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    peer.observe_named(&id, 1, "Stay 00").await;
+
+    // Reading this page takes far longer than the page takes to leave, so the
+    // document is replaced while the read is under way. The same call reads the
+    // document that took its place.
+    go.store(true, Ordering::Release);
+    let observed = observe_once(&mut peer, &id, 1).await;
+    assert_eq!(
+        observed["page"]["url"],
+        format!("{origin}/arrived"),
+        "{observed}"
+    );
+    assert!(!observed.to_string().contains("Stay"), "{observed}");
+    assert_running(&mut peer, &id).await;
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
