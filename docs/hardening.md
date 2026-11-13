@@ -27,7 +27,7 @@ The file has the same privacy requirements as the main configuration: current-us
     "mode": "bwrap",
     "network": false,
     "hide_home": true,
-    "expose": ["/home/kylin/.nvm"],
+    "expose": ["/home/user/.nvm"],
     "limits": { "cpu_seconds": 600, "memory_kb": 4194304, "open_files": 1024, "file_size_blocks": 2097152 }
   },
   "audit": { "enabled": true, "max_bytes": 5242880, "max_files": 3, "required": false }
