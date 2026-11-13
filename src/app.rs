@@ -142,12 +142,21 @@ pub async fn launch(
         Some("disabled_by_local_policy") => "disabled in local policy",
         Some("browser_not_installed") => "no configured Chromium executable was found",
         Some("platform_not_supported") => "not supported on this platform",
+        Some("shell_enabled") => {
+            "not offered while shell access is enabled (browser.shell_coexistence is \"deny\")"
+        }
+        Some("shell_not_sandboxed") => {
+            "not offered while shell commands run outside a sandbox (browser.shell_coexistence is \"sandboxed_only\")"
+        }
         Some(_) => "private browser storage is unavailable",
         None => "enabled; launch is checked when a session is opened",
     };
     println!("AI browser sessions: {browser_status}.");
     if browser["available"] == true {
         println!("{}", browser_sites(&browser["sites"]));
+        if let Some(line) = browser_shell(&browser["shell"]) {
+            println!("{line}");
+        }
     }
     if cfg!(any(
         target_os = "linux",
@@ -211,10 +220,40 @@ fn browser_sites(sites: &serde_json::Value) -> String {
     )
 }
 
+/// What it means that the AI has both a shell and browser sessions on this
+/// device, when it has both.
+fn browser_shell(shell: &serde_json::Value) -> Option<String> {
+    if shell["enabled"] != true {
+        return None;
+    }
+    Some(if shell["sandboxed"] == true {
+        "Shell access and browser sessions are both enabled. Shell commands run in the sandbox, which hides the browser's stored logins and this policy from them.".into()
+    } else {
+        "Shell access and browser sessions are both enabled. A web page can mislead the AI into running a command, and a command can read the browser's stored logins and change this policy. To prevent that, set browser.shell_coexistence to \"sandboxed_only\" or \"deny\".".into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::browser_sites;
+    use super::{browser_shell, browser_sites};
     use serde_json::json;
+
+    #[test]
+    fn the_start_message_says_what_a_shell_beside_the_browser_means() {
+        assert_eq!(
+            browser_shell(&json!({"enabled":false,"sandboxed":false})),
+            None
+        );
+        let plain = browser_shell(&json!({"enabled":true,"sandboxed":false})).unwrap();
+        assert!(plain.contains("can mislead the AI"), "{plain}");
+        assert!(plain.contains("sandboxed_only"), "{plain}");
+        let sandboxed = browser_shell(&json!({"enabled":true,"sandboxed":true})).unwrap();
+        assert!(
+            sandboxed.contains("hides the browser's stored logins"),
+            "{sandboxed}"
+        );
+        assert!(!sandboxed.contains("mislead"), "{sandboxed}");
+    }
 
     #[test]
     fn the_start_message_says_where_browser_sessions_may_go() {

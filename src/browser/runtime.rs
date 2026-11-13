@@ -1,5 +1,5 @@
 use super::{
-    Failure, Principal, Result, Settings,
+    Failure, Principal, Result, Settings, Shell,
     cdp::{Cdp, Control},
     files::{self, Files},
     page::{self, Element},
@@ -130,6 +130,7 @@ pub struct Browsers {
     root_lock: Mutex<Option<Arc<crate::profile_lock::ProfileLocks>>>,
     files: Arc<Files>,
     gate: Arc<Gate>,
+    shell: Shell,
 }
 
 /// The site policy, as the request hook of every session applies it.
@@ -140,7 +141,7 @@ struct Gate {
 }
 
 impl Browsers {
-    pub fn new(settings: &Settings, config_path: Option<&Path>, token: &str) -> Self {
+    pub fn new(settings: &Settings, config_path: Option<&Path>, token: &str, shell: Shell) -> Self {
         let root = config_path.and_then(|config| super::storage_root(config, token));
         let files = Files::new(root.as_deref());
         Self {
@@ -160,6 +161,7 @@ impl Browsers {
                 sites: settings.sites.clone(),
                 lookup: Lookup::default(),
             }),
+            shell,
         }
     }
     /// Replaces the lookup of host names. Tests use it to say where a name leads.
@@ -179,6 +181,8 @@ impl Browsers {
     pub fn info(&self) -> Value {
         let reason = if !self.settings.enabled {
             Some("disabled_by_local_policy")
+        } else if let Some(reason) = self.settings.shell_coexistence.refuses(self.shell) {
+            Some(reason)
         } else if self.root.is_none() {
             Some("private_storage_unavailable")
         } else if self.executable.is_none() {
@@ -186,7 +190,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"sites":self.settings.sites.summary(),"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"sites":self.settings.sites.summary(),"shell":{"enabled":self.shell.enabled,"sandboxed":self.shell.sandboxed,"coexistence":self.settings.shell_coexistence},"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {

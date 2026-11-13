@@ -345,20 +345,25 @@ fn browser_peer(root: &std::path::Path, executable: &str, downloads: bool, uploa
 }
 /// A peer whose local policy holds the given `browser` settings.
 fn policy_peer(root: &std::path::Path, browser: Value) -> Peer {
-    let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":rdh_agent::config::local_roots(&[format!("work={}", root.display())]).unwrap(),"allow_write":false,"allow_shell":false})).unwrap();
-    let policy = Policy::parse(&json!({"version":1,"browser":browser}), &config).unwrap();
+    device_peer(root, json!({"version":1,"browser":browser}), false).unwrap()
+}
+/// A peer for a device with the given local policy, with or without a shell.
+/// Fails where the device could not start with that policy.
+fn device_peer(root: &std::path::Path, policy: Value, shell: bool) -> Result<Peer, String> {
+    let config = DeviceConfig::parse(json!({"gateway_url":"http://127.0.0.1:8123","device_id":"profile-test","token":"x".repeat(48),"roots":rdh_agent::config::local_roots(&[format!("work={}", root.display())]).unwrap(),"allow_write":false,"allow_shell":shell})).unwrap();
+    let policy = Policy::parse(&policy, &config).map_err(|error| error.to_string())?;
     let runtime =
         Runtime::with_config_path(config, policy, None, None, Some(&root.join("device.json")))
-            .unwrap();
+            .map_err(|error| error.to_string())?;
     let (sender, receiver, _) = transport::channel();
-    Peer {
+    Ok(Peer {
         runtime,
         sender,
         receiver,
         ids: Arc::new(Mutex::new(HashSet::new())),
         counter: 0,
         budget: 15000,
-    }
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2964,6 +2969,106 @@ async fn only_the_public_sites_an_owner_lists_open_when_the_rest_are_refused() {
     }
 
     assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_device_with_a_shell_offers_browser_sessions_as_its_owner_decided() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-shell-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route(
+        "/",
+        get(|| async {
+            Html("<!doctype html><title>Beside a shell</title><h1>Beside a shell</h1>")
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let policy = |coexistence: Option<&str>, sandbox: bool| {
+        let mut policy = json!({"version":1,"browser":{"enabled":true,"executable":executable}});
+        if let Some(coexistence) = coexistence {
+            policy["browser"]["shell_coexistence"] = coexistence.into();
+        }
+        if sandbox {
+            policy["sandbox"] = json!({"mode":"bwrap","network":true,"hide_home":false});
+        }
+        policy
+    };
+    let browser = |peer: &Peer| peer.runtime.info()["capabilities"]["browser"].clone();
+
+    // Nothing said: a shell and browser sessions go together, as they did before.
+    let mut peer = device_peer(&temp.0, policy(None, false), true).unwrap();
+    let report = browser(&peer);
+    assert_eq!(report["available"], true, "{report}");
+    assert_eq!(
+        report["shell"],
+        json!({"enabled":true,"sandboxed":false,"coexistence":"allow"}),
+        "{report}"
+    );
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    peer.observe_named(&id, 1, "Beside a shell").await;
+    assert!(peer.runtime.shutdown().await);
+
+    // Refused together: the shell stays, and no browser session is opened.
+    for (coexistence, reason) in [
+        ("deny", "shell_enabled"),
+        ("sandboxed_only", "shell_not_sandboxed"),
+    ] {
+        let mut peer = device_peer(&temp.0, policy(Some(coexistence), false), true).unwrap();
+        let report = browser(&peer);
+        assert_eq!(report["available"], false, "{report}");
+        assert_eq!(report["reason"], reason, "{report}");
+        assert_eq!(peer.runtime.info()["allow_shell"], true);
+        let refused = peer
+            .call("browser_open", json!({"url":format!("{origin}/")}))
+            .await;
+        assert_eq!(refused["error_code"], "browser_unavailable", "{refused}");
+        assert_eq!(refused["execution_state"], "not_sent", "{refused}");
+        assert!(peer.runtime.shutdown().await);
+        // The same policy on a device without a shell leaves browser sessions alone.
+        let peer = device_peer(&temp.0, policy(Some(coexistence), false), false).unwrap();
+        let report = browser(&peer);
+        assert_eq!(report["available"], true, "{report}");
+        assert_eq!(report["shell"]["enabled"], false, "{report}");
+        assert!(peer.runtime.shutdown().await);
+    }
+
+    // With the shell inside the sandbox, the stricter of the two that allow both
+    // is met. A device without bubblewrap cannot start with that policy at all.
+    match device_peer(&temp.0, policy(Some("sandboxed_only"), true), true) {
+        Ok(mut peer) => {
+            let report = browser(&peer);
+            assert_eq!(report["available"], true, "{report}");
+            assert_eq!(
+                report["shell"],
+                json!({"enabled":true,"sandboxed":true,"coexistence":"sandboxed_only"}),
+                "{report}"
+            );
+            let opened = peer
+                .call("browser_open", json!({"url":format!("{origin}/")}))
+                .await;
+            assert!(opened.get("error").is_none(), "{opened}");
+            let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+            peer.observe_named(&id, 1, "Beside a shell").await;
+            assert!(peer.runtime.shutdown().await);
+        }
+        Err(error) if error.contains("bubblewrap") => {
+            eprintln!("bubblewrap is unavailable: the sandboxed case was skipped");
+        }
+        Err(error) => panic!("{error}"),
+    }
+
     server.abort();
     let _ = server.await;
 }
