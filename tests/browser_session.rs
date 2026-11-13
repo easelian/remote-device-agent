@@ -3398,3 +3398,99 @@ async fn an_element_that_only_looks_like_a_control_takes_clicks_and_keys() {
     server.abort();
     let _ = server.await;
 }
+
+// Fields whose value is picked: typing into them does nothing.
+const PICKED: &str = r##"<!doctype html><meta charset="utf-8"><title>Picked</title>
+<h1>Booking</h1>
+<p><label>Day <input type="date" value="2026-01-02" onchange="note('day '+this.value)"></label>
+<label>Hour <input type="time" value="08:00" onchange="note('hour '+this.value)"></label>
+<label>Tint <input type="color" value="#336699" onchange="note('tint '+this.value)"></label>
+<label>Level <input type="range" min="0" max="10" value="4" onchange="note('level '+this.value)"></label></p>
+<p id="out">Nothing yet</p>
+<script>function note(what){document.getElementById('out').textContent='Changed '+what;}</script>"##;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn a_date_a_colour_and_a_slider_are_filled_with_a_value_they_can_hold() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-picked-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let app = Router::new().route("/picked", get(|| async { Html(PICKED) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut peer = profile_peer(&temp.0, &executable, false);
+    let opened = peer
+        .call("browser_open", json!({"url":format!("{origin}/picked")}))
+        .await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["result"]["session_id"].as_str().unwrap().to_owned();
+    // The field as the latest observation shows it. The browser names it after
+    // its label, and keeps the space around the label.
+    fn field<'a>(observed: &'a Value, name: &str) -> &'a Value {
+        observed["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| {
+                n.get("ref").is_some() && n["name"].as_str().is_some_and(|s| s.trim() == name)
+            })
+            .unwrap_or_else(|| panic!("{name}: {observed}"))
+    }
+
+    // The value is set as a picker would set it, and the page hears of it.
+    for (name, text, held, said) in [
+        ("Day", "2026-03-04", "2026-03-04", "Changed day 2026-03-04"),
+        ("Hour", "09:30", "09:30", "Changed hour 09:30"),
+        ("Tint", "#FF8800", "#ff8800", "Changed tint #ff8800"),
+        ("Level", "7", "7", "Changed level 7"),
+    ] {
+        let observed = peer.observe_named(&id, 1, "Booking").await;
+        assert_eq!(field(&observed, name)["editable"], true, "{observed}");
+        let filled = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","text":text,"ref":field(&observed,name)["ref"]}})).await;
+        assert_eq!(
+            filled["result"]["input_acknowledged"], true,
+            "{name}: {filled}"
+        );
+        let heard = peer
+            .call(
+                "browser_wait",
+                json!({"session_id":id,"control_epoch":1,"text_contains":said}),
+            )
+            .await;
+        assert_eq!(heard["result"]["condition_observed"], true, "{heard}");
+        let observed = peer.observe_named(&id, 1, "Booking").await;
+        assert_eq!(field(&observed, name)["value"], held, "{observed}");
+    }
+
+    // A value that the field cannot hold is refused, and the field keeps what
+    // it held. The page hears nothing.
+    for (name, text, held) in [
+        ("Day", "next Tuesday", "2026-03-04"),
+        ("Hour", "half past nine", "09:30"),
+        ("Tint", "orange", "#ff8800"),
+        ("Level", "99", "7"),
+    ] {
+        let observed = peer.observe_named(&id, 1, "Booking").await;
+        let refused = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","text":text,"ref":field(&observed,name)["ref"]}})).await;
+        assert_eq!(
+            refused["error_code"], "browser_invalid_params",
+            "{name}: {refused}"
+        );
+        assert_eq!(refused["execution_state"], "not_sent", "{refused}");
+        assert_running(&mut peer, &id).await;
+        let observed = peer.observe_named(&id, 1, "Booking").await;
+        assert_eq!(field(&observed, name)["value"], held, "{observed}");
+        assert!(
+            names_of(&observed).contains(&"Changed level 7".to_owned()),
+            "{observed}"
+        );
+    }
+
+    assert!(peer.runtime.shutdown().await);
+    server.abort();
+    let _ = server.await;
+}

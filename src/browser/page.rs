@@ -211,6 +211,38 @@ const SELECT: &str = r#"function(value){
  return true;
 }"#;
 
+// A date, a time, a colour and a slider hold a value that is picked, not typed.
+// It is set the way a picker sets it. The field keeps only a value that it can
+// hold, and a field of the same type and range that is not part of the page
+// shows what that is. Without `apply` the function only says whether the value
+// fits, and leaves the page as it was.
+const SET: &str = r#"function(value,apply){
+ if(!this.isConnected||this.ownerDocument!==document||this.tagName!=='INPUT'||this.disabled)return false;
+ const probe=document.createElement('input');probe.type=this.type;
+ for(const name of ['min','max','step'])if(this.hasAttribute(name))probe.setAttribute(name,this.getAttribute(name));
+ probe.value=value;
+ // The browser writes a colour in lower case, and a number in its shortest form.
+ const fits=this.type==='range'?value.trim()!==''&&Number(probe.value)===Number(value):probe.value.toLowerCase()===value.toLowerCase();
+ if(!fits||!apply)return fits;
+ const before=this.value;
+ Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(this,value);
+ if(this.value!==before){
+  this.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+  this.dispatchEvent(new Event('change',{bubbles:true}));
+ }
+ return true;
+}"#;
+
+/// Whether the element that `data` describes holds a value that is picked: a
+/// date, a time, a colour or a slider. Typed text does nothing to such a field.
+fn picked(data: &Value) -> bool {
+    data["tag"] == "INPUT"
+        && matches!(
+            data["type"].as_str(),
+            Some("date" | "time" | "datetime-local" | "month" | "week" | "color" | "range")
+        )
+}
+
 async fn details(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> Result<Value> {
     let object = object(cdp, frame, backend, deadline).await?;
     let reply = cdp
@@ -1007,6 +1039,38 @@ impl Element {
         Ok(data)
     }
 
+    /// Sets the value of a field whose value is picked. Without `apply` it only
+    /// asks whether the field can hold `value`, which changes nothing.
+    async fn set(
+        &self,
+        cdp: &Cdp,
+        value: &Value,
+        apply: bool,
+        deadline: Instant,
+    ) -> Result<Option<bool>> {
+        let session = Some(self.frame.session.as_str());
+        let object = object(cdp, &self.frame, self.backend, deadline).await?;
+        let params = json!({"objectId":object,"functionDeclaration":SET,
+            "arguments":[{"value":value},{"value":apply}],"returnByValue":true});
+        let result = if apply {
+            cdp.call_effect(session, "Runtime.callFunctionOn", params, deadline)
+                .await
+        } else {
+            cdp.call(session, "Runtime.callFunctionOn", params, deadline)
+                .await
+        };
+        let _ = cdp
+            .cleanup()
+            .call(
+                session,
+                "Runtime.releaseObject",
+                json!({"objectId":object}),
+                deadline,
+            )
+            .await;
+        Ok(result?["result"]["value"].as_bool())
+    }
+
     pub async fn act(&self, cdp: &Cdp, action: &Value, deadline: Instant) -> Result<Value> {
         let data = self.checked(cdp, deadline).await?;
         // Nothing has been sent yet, so an action that does not suit this
@@ -1079,6 +1143,16 @@ impl Element {
             }
             "click" | "check" => {
                 cdp.input_pair(session,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline).await?;
+            }
+            "fill" if picked(&data) => {
+                // Asked before anything is sent, so that a value the field cannot
+                // hold is a plain rejection.
+                if self.set(cdp, &action["text"], false, deadline).await? != Some(true) {
+                    return Err(Failure::new("browser_invalid_params"));
+                }
+                if self.set(cdp, &action["text"], true, deadline).await? != Some(true) {
+                    return Err(Failure::unknown("browser_not_actionable"));
+                }
             }
             "fill" => {
                 cdp.call(
