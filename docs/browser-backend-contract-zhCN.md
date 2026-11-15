@@ -117,6 +117,19 @@ close(CloseContext) -> ChannelCloseReport
 
 `AuthorizedInput` 只能由公共协调器构造，并携带当前主体许可、会话代次、文档预期和 EffectTicket。后端每个可能产生副作用的子命令仍须经过公共提交门；得到一次授权不意味着整个序列以后可以跳过控制权检查。清理权限单独限制为释放已按下按键、取消已持有拦截和释放本次租约，不能恢复普通输入权限。
 
+### 4.1 协议差异如何收敛到公共操作
+
+| 差异 | adapter 必须处理的部分 | 公共层可以依赖的结果 |
+| --- | --- | --- |
+| CDP target/flattened session/frame 与 BiDi browsing context | OOPIF 路由、父子关系、附加/订阅就绪和身份映射 | 完整或明确受限的上下文树，不暴露路由 ID |
+| CDP isolated world/Runtime object 与 BiDi sandbox realm/handle | 执行环境选择、对象所有权及释放；禁止在错误 realm 重用句柄 | 固定程序在期望文档中执行，返回有界的已校验数据 |
+| CDP RemoteObject 与 BiDi RemoteValue | 解析各自值类型、节点引用、序列化深度及缺失字段 | 具体 DomChunk/ElementFacts；不把原生 JSON 直接透传成公共结构 |
+| CDP exceptionDetails 与 BiDi evaluation exception result | 区分协议命令错误、脚本异常、合法空值和数据解码失败 | 脚本异常不能成为成功的空观察或可重试输入；副作用进展仍保留 |
+| CDP loader/lifecycle 与 BiDi navigation/realm/context 事件 | 同文档导航、BFCache、重定向及事件/响应顺序 | 第 5、8 节的文档代次与导航阶段，不能互相替代 |
+| CDP 原生输入与 BiDi actions | 文本路径、按键来源、坐标/DPR、按下状态和释放 | 第 7.2 节的意图及禁止效果，不要求协议命令或事件数量一致 |
+
+上述差异在 D1b/c 提取 CDP 端口时建立替身用例，在 D2/D3 用真实 BiDi 补齐。异常与远程值语料至少包括 exception、undefined/null、非有限数、嵌套对象截断、无效/过期节点句柄；不符合固定程序结果类型时明确失败，不用缺省值掩盖。[CDP Runtime](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/)、[BiDi Script](https://w3c.github.io/webdriver-bidi/#module-script)
+
 ## 5. 身份与资源生命周期
 
 原生 ID 只在所属 adapter 内解释。公共类型不能包含名为 `cdp_session`、`loader_id`、`backend_node_id` 或 `bidi_shared_id` 的字段。
