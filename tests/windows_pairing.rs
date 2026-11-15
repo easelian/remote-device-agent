@@ -58,15 +58,21 @@ impl Drop for Directory {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
-    pair_and_reuse(false).await;
+    pair_and_reuse(false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_windows_cli_pairs_under_inherited_localappdata() {
-    pair_and_reuse(true).await;
+    pair_and_reuse(true, false).await;
 }
 
-async fn pair_and_reuse(inherited_localappdata: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a disposable exFAT volume provided by native CI"]
+async fn native_windows_cli_pairs_with_exfat_shared_root() {
+    pair_and_reuse(true, true).await;
+}
+
+async fn pair_and_reuse(inherited_localappdata: bool, exfat_root: bool) {
     let directory = std::env::temp_dir().join(format!(
         "rdh pairing '😀-{}",
         random::hex_token::<12>().unwrap()
@@ -84,7 +90,14 @@ async fn pair_and_reuse(inherited_localappdata: bool) {
     } else {
         fixture.0.clone()
     };
-    let root = fixture.0.join("work");
+    let root = if exfat_root {
+        PathBuf::from(std::env::var_os("RDH_TEST_EXFAT_ROOT").expect("exFAT fixture volume")).join(
+            format!("rdh-pairing-{}", random::hex_token::<12>().unwrap()),
+        )
+    } else {
+        fixture.0.join("work")
+    };
+    let _root_cleanup = Directory(root.clone());
     fs::create_dir(&root).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -150,6 +163,22 @@ async fn pair_and_reuse(inherited_localappdata: bool) {
                     if error.kind() == std::io::ErrorKind::NotFound
                         || error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {}
                 Err(error) => panic!("Cannot read the created binding: {error}"),
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Binding persistence alone does not prove that runtime initialization passed.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let log = fs::read_to_string(&log_path).unwrap();
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "Agent exited after binding: {log}"
+            );
+            if log.contains("Connecting to the Hub.") {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

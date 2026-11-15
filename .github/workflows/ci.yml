@@ -204,6 +204,12 @@ jobs:
           RDH_TARGET: ${{ matrix.target }}
         run: |
           cargo +1.93.0 test --profile ci --locked --workspace --all-targets --all-features --no-fail-fast --target "$RDH_TARGET"
+      - name: Check exFAT roots after native Windows pairing
+        if: ${{ !cancelled() && steps.native_artifacts.outcome == 'success' && runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+        run: .github/scripts/test-windows-exfat.ps1
       - name: Exercise npm launcher with the native executable
         if: ${{ !endsWith(matrix.target, '-linux-musl') }}
         env:
