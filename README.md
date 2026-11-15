@@ -146,6 +146,7 @@ not establish native runtime behavior or power-loss durability.
 - [Code navigation](docs/code-structure.md) ([简体中文](docs/code-structure-zhCN.md)): source ownership and reading order.
 - [Lifecycle](docs/native-lifecycle.md) ([简体中文](docs/native-lifecycle-zhCN.md)): startup, unbinding and executable replacement.
 - [Architecture](docs/architecture.md): connections, requests and work lifetimes.
+- [Native browser backend contract](docs/browser-backend-contract-zhCN.md) and [acceptance criteria](docs/browser-backend-acceptance-zhCN.md): Chinese design drafts for CDP/BiDi semantics and implementation gates.
 - [Distribution](docs/distribution.md): artifacts, installers and release preparation.
 
 ## License
