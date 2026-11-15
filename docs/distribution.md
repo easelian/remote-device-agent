@@ -118,3 +118,17 @@ The separate [npm workflow](../.github/workflows/npm-publish.yml) consumes a
 published release tag and verifies the selected tarball before registry
 publication. Artifact generation, attestation and draft creation do not establish
 that a release was published, deployed, platform-signed or notarized.
+
+### Windows installer repair option
+
+The default installer refuses to overwrite an existing command. `-Update`, its
+`-Force` alias, or `RDH_UPDATE=1` explicitly enables executable replacement,
+including a same-version reinstall. These options do not skip checksum or version
+validation. Stop the Agent before updating. The previous executable is retained
+under a unique `.rdh-previous-*.exe` name in the installation directory; binding
+and configuration files remain in place. See [maintenance](maintenance.md#recover-a-windows-installation-when-the-old-updater-fails)
+for the online recovery command. Offline recovery uses the same checks:
+
+```powershell
+.\packaging\install.ps1 -Offline 'C:\Artifacts\rdh-VERSION-win32-x64.exe' -Update -NoStart
+```

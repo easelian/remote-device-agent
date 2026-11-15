@@ -35,9 +35,19 @@ The installer saves the command directory in your user PATH and launches `rdh`.
 Without a terminal, the POSIX installer finishes installation and asks you to run
 `rdh` interactively.
 New POSIX terminals load the saved PATH; Windows also updates the current
-PowerShell session. Existing command files are preserved. Use `RDH_NO_START=1`
+PowerShell session. Existing command files are preserved by default. Use `RDH_NO_START=1`
 for installation only or `RDH_NO_MODIFY_PATH=1` to leave PATH unchanged.
 `RDH_INSTALL_DIR` selects another absolute installation directory.
+If an older Windows `rdh update` fails, stop the Agent and run the installer with
+`-Update` (`-Force` is an alias). This verifies the download, replaces only the
+executable and retains a backup; binding and settings are preserved:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1))) -Update -NoStart
+rdh --version
+rdh
+```
+
 See [Distribution](docs/distribution.md#bootstrap-installation) for offline
 artifacts, mirrors and installer options.
 
