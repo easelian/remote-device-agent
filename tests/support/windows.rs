@@ -65,10 +65,17 @@ pub fn current_sid() -> String {
 
 pub fn private_directory(path: &Path) {
     let sid = current_sid();
-    let sddl: Vec<u16> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+    directory(path, &format!("O:{sid}D:P(A;OICI;FA;;;{sid})"));
+}
+
+/// Inherit the parent DACL, as an ordinary user-created directory would.
+/// Specify only the owner so elevated CI tokens do not substitute Administrators.
+pub fn inherited_directory(path: &Path) {
+    directory(path, &format!("O:{}", current_sid()));
+}
+
+fn directory(path: &Path, sddl: &str) {
+    let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let mut descriptor = null_mut();
     assert_ne!(
         unsafe {
@@ -92,7 +99,7 @@ pub fn private_directory(path: &Path) {
     unsafe {
         LocalFree(descriptor);
     }
-    assert_ne!(created, 0, "Create private fixture: {error}");
+    assert_ne!(created, 0, "Create directory fixture: {error}");
 }
 
 pub fn command(binary: impl AsRef<OsStr>, directory: &Path) -> tokio::process::Command {

@@ -58,12 +58,32 @@ impl Drop for Directory {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
+    pair_and_reuse(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_windows_cli_pairs_under_inherited_localappdata() {
+    pair_and_reuse(true).await;
+}
+
+async fn pair_and_reuse(inherited_localappdata: bool) {
     let directory = std::env::temp_dir().join(format!(
         "rdh pairing '😀-{}",
         random::hex_token::<12>().unwrap()
     ));
     support::private_directory(&directory);
     let fixture = Directory(directory);
+    let local = if inherited_localappdata {
+        // Model a user profile whose ordinary AppData/Local directory inherits
+        // its permissions. Do not pre-create or harden the RDH state directory.
+        let local = fixture.0.join("AppData").join("Local");
+        support::inherited_directory(local.parent().unwrap());
+        support::inherited_directory(&local);
+        assert!(rdh_agent::storage::private_metadata(&local, true).is_err());
+        local
+    } else {
+        fixture.0.clone()
+    };
     let root = fixture.0.join("work");
     fs::create_dir(&root).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -97,9 +117,13 @@ async fn native_windows_cli_pairs_and_reuses_private_identity_without_node() {
         .json::<Value>()
         .await
         .unwrap();
-    let config = binding::seed(&fixture.0, &origin, hub.roots.clone(), &token, pending);
+    assert!(!local.join("remote-device-hub").exists());
+    // This uses the same private-storage initialization as first startup. The
+    // pending pairing is seeded only to avoid an interactive browser in CI.
+    let config = binding::seed(&local, &origin, hub.roots.clone(), &token, pending);
+    rdh_agent::storage::private_metadata(&local.join("remote-device-hub"), true).unwrap();
     let run = || {
-        let mut command = support::command(initial_binary::path(), &fixture.0);
+        let mut command = support::command(initial_binary::path(), &local);
         command.env("SSH_CONNECTION", "fixture");
         command
     };
