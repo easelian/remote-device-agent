@@ -49,13 +49,93 @@ On Windows, deeply nested custom configuration directories can exceed the browse
 
 If you use `allowed_operations`, include the browser tools you need. The web pages also require the internal `browser_human` operation. The Agent never installs a browser or enables these permissions automatically. Browser traffic uses the remote device's network; shared file roots do not restrict reachable websites.
 
+## Choose which sites may be opened
+
+By default a browser session opens any public site, sites on your private network and sites on the device itself. Addresses of cloud metadata services and link-local addresses (`169.254.0.0/16`, `fe80::/10`) are refused: a page has no ordinary reason to open them, and some clouds hand out credentials there. To change this, add a `sites` object to `browser` in the policy file:
+
+```json
+"browser": {
+  "enabled": true,
+  "sites": {
+    "public": "allow",
+    "allow": ["*.example.org", "intranet.example.com"],
+    "deny": ["*.bank.example"],
+    "private_networks": "allow",
+    "private_allow": ["localhost:3000", "wiki.corp", "192.168.10.0/24"]
+  }
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `public` | `allow` | What happens to a public site that no list names. With `deny`, only the sites in `allow` open. |
+| `allow` | empty | The public sites that open when `public` is `deny`. It does not open private addresses. |
+| `deny` | empty | Sites that are always refused. It takes precedence over every other field. |
+| `private_networks` | `allow` | What happens to private networks and the device itself. With `deny`, only the hosts in `private_allow` open. |
+| `private_allow` | empty | Hosts that are exempt from `private_networks`, and from the refusal of metadata and link-local addresses. |
+
+An entry is a host name (`example.com`), every host below a name (`*.example.com`, which does not include `example.com` itself), an address (`192.168.1.10`, `[fd00::1]`) or an address range (`10.0.0.0/8`). A range matches addresses written out in a URL, not names that resolve into it; to open a local site by name, list the name. An entry can end in a port (`localhost:3000`); without one it matches every port. Entries carry no scheme and no path. A list holds at most 256 entries, and the Agent does not start with an entry it cannot read. When the Agent starts, it prints the policy in effect.
+
+The policy covers page navigation: the address the AI gives, links, forms, redirects, frames and new tabs. A refused address is reported to the AI as `browser_site_denied`, and a tab whose own navigation was refused shows `blocked: "site_policy"`. People who take over a session are held to the same policy.
+
+Know its limits before relying on it:
+
+- It does not cover the requests a page makes by itself, such as images, scripts and `fetch`. Chrome 142 and later refuse those from a public page to a private address; earlier versions do not.
+- A host name is judged by the addresses the Agent finds for it. The browser looks the name up again, so a name that answers the two differently is not caught. With `private_networks` set to `deny`, the Agent also checks the address the browser really reached and withholds the page; in that mode a page out of the browser's cache takes about 0.3 seconds longer.
+- With the default settings an AI that a page misleads can still reach your private network. If the device has shell permission, the AI can reach it without the browser.
+
+## Decide whether a shell and browser sessions go together
+
+Shell permission and browser sessions are separate switches. When a device has both, text on a web page can mislead the AI into running a command. A command outside a sandbox runs as the Agent's user: it can read the logins that browser sessions have stored, change this policy file, and reach your network without passing the site policy.
+
+`shell_coexistence` in the `browser` object says what you accept:
+
+| Value | Meaning |
+| --- | --- |
+| `allow` (default) | A shell and browser sessions are offered together. Nothing changes for existing devices. |
+| `sandboxed_only` | Browser sessions are offered beside a shell only while shell commands run in the [sandbox](hardening.md#shell-sandbox). The sandbox hides the browser's storage and the policy file from them. |
+| `deny` | Browser sessions are not offered while the device has a shell. |
+
+Where the condition is not met, the shell keeps working and the browser reports itself unavailable, with the reason `shell_not_sandboxed` or `shell_enabled`. A device without a shell is not affected. The sandbox exists on Linux only, so on macOS and Windows `sandboxed_only` has the effect of `deny`.
+
+When the Agent starts with both enabled, it prints what that means. `device_info.capabilities.browser.shell` reports whether a shell is enabled, whether it is sandboxed, and the value in effect.
+
+Know its limits. With `allow`, nothing stops a misled AI from running a command. `sandboxed_only` keeps commands away from the browser's storage and the policy; with `sandbox.network` set to `true`, a command can still reach your network.
+
 ## Start and verify a task
 
 Ask your connected AI client to use the specific device and website, for example: “On my test device, open the development site, read the pending records, and report which pages you covered.” Identify the device first if its name is ambiguous.
 
-The AI uses `browser_open`, then `browser_observe`. It acts on returned element references using `browser_act`, waits for the expected page state with `browser_wait`, and observes the result again. Normal text fields, native single-select controls, checkboxes, links, buttons, page scrolling, tabs and supported frames are available. Passwords and verification codes belong in the human page, not AI tool arguments.
+The AI uses `browser_open`, then `browser_observe`. It acts on returned element references using `browser_act`, waits for the expected page state with `browser_wait`, and observes the result again. Normal text fields, native single-select controls, checkboxes, links, buttons, page scrolling, tabs and supported frames are available. A date, a time, a colour or a slider is filled with a value in the field's own format, such as `2026-03-04`, `09:30`, `#ff8800` or `7`. Passwords and verification codes belong in the human page, not AI tool arguments.
 
-Long observations return `next_cursor`. Continue until no cursor remains and inspect `coverage.sequence_complete` and `omitted`; an incomplete page is not evidence that a record does not exist. Every segment replaces earlier action references. Detected document changes, navigation, an action, control changes, a fresh observation or five minutes without continuation invalidate the cursor. The reader does not create an atomic snapshot of a changing website.
+Each element that the AI can act on has a reference, and the observation names its `kind`:
+
+| Kind | Which elements |
+| --- | --- |
+| `native` | Controls that HTML defines: links, buttons, inputs of every type including colour and date, text areas, lists, the summary of a `details` element, and editable regions. |
+| `aria` | Elements whose `role` attribute declares a control, such as a button, a tab, a menu item, a grid cell or a tree item. |
+| `inferred` | Elements that only look like a control: the markup holds a click handler, the pointer turns into a hand over the element and not over what surrounds it, or the element is in the focus order. |
+
+The page decides the kind, so it is the same on every browser version. An element that the page does not mark, and that the browser itself treats as a control, still has a reference of kind `native`. An inferred element is named by its own text and takes clicks and keys only. Its reference is a guess: a click can do nothing. No reference is given to an element that only a script makes clickable, that shows a hand only while the pointer is over it, that appears only on hover, or that is drawn on a canvas.
+
+An action that cannot be carried out is refused before any input is sent: an action that does not suit the element, text for a password field, an element that is disabled or hidden, an element in view in the top document that another element covers, a click on an inferred element that a control inside it would take, as the delete button of a card would, or a value that a date, colour or slider field cannot hold. The session keeps running, and the AI observes the page again to resolve the cause. A read-only field accepts clicks and keys but not text. After the browser has scrolled an element into view or received input, a failure has an unknown outcome and pauses the session; inspect it with `browser_tabs`, resume with `browser_control`, and observe again. A read that the browser rejects while the page navigates does not pause the session.
+
+An observation can be narrowed to part of a page:
+
+| Parameter | What it returns |
+| --- | --- |
+| `filter: "interactive"` | The controls and the headings, without the text between them. |
+| `filter: "viewport"` | What lies in the part of the page that shows now. |
+| `find` | The places that hold a text of up to 128 characters, each with its record: the table row, list item, article or dialog around it, without the records inside it. A row that names a customer comes with the button that edits that customer. |
+| `within` | One frame, named by the `frame_id` of a node from an earlier observation. |
+
+The parameters combine, references are given as usual, and a continuation keeps what its first call asked for. A search ignores case and the width of spaces. It looks at the text a page shows, at the names and labels of controls and at what fields hold, and never at what a password field holds. It returns at most 20 places, counted across frames, and 30 nodes of one record; `coverage.matches` counts the places, and `coverage.omitted` names `find_match_limit` or `find_record_clipped` when there was more. Text that markup splits is found within a record, and not outside one. `viewport` is judged in each frame by that frame's own window, and takes no account of content that a scrolling element inside the page hides.
+
+Long observations return `next_cursor`. Continue until no cursor remains and inspect `coverage.sequence_complete` and `omitted`; an incomplete page is not evidence that a record does not exist. Every segment replaces earlier action references. Navigation, a change of the page address, an action, control changes, a fresh observation or five minutes without continuation invalidate the cursor.
+
+A page can change while it is read, and the read goes on. When the page changed something that had already been read, `coverage.changed_during_read` is true and the coverage is not complete: the result can hold text that is no longer on the page. That alone is no reason to observe again, because every reference is checked against the page again when it is used. A control in a table row, list item, article or dialog that changed after it was reported gets no reference in that observation and carries `changed_during_read` itself; observe again to act on it. A subframe that navigated or went away during the read is left out, and `omitted` names `frame_changed`. An observation fails only when the tab's own document is replaced. A first read then starts once more on the new document within the same call; a continuation is refused. The reader does not create an atomic snapshot of a changing website.
+
+Each observation reports the document's `ready_state` with the page address. While it is `loading`, the browser has not finished reading the page: the coverage is not complete and names `document_loading`, so wait and observe again before concluding that something is missing. An element reference stays valid while unrelated text near it changes. It stops being valid when the element's own text changes, or when the table row, list item, article or dialog it belongs to shows different text. A navigation that receives no answer is cancelled before the call's deadline and reported as a failed navigation. The session pauses as after any uncertain navigation, keeps the earlier page, and can be resumed at once.
 
 For integrations, `browser_open`, `browser_act` and `browser_control` require an operation ID from `prepare_operation`. Reuse that ID only to recover the same request. An acknowledged input says that browser input completed; verify the website's actual result separately. A timeout can leave an effect unknown, so query operation/session state instead of repeating a submission.
 
@@ -86,4 +166,4 @@ With `uploads` enabled, take human control, choose a local file and explicitly a
 - Agent restart discards unfinished downloads and all uploads and does not resume old sessions or replay website actions. POSIX recovery checks the original process group. On Windows, an independent cleanup child terminates the browser Job after Agent death, confirms that its active process count is zero, and records completion. The next browser request uses that record to clean up the old run and permit reopening the profile. Cleanup in progress returns `browser_cleanup_pending`. If both the Agent and cleanup child are killed, or reliable completion evidence is missing, the data remains quarantined and cannot be reused or deleted by unbinding. An OS restart alone does not supply that proof.
 - `.rdh-browser` is private Agent storage, excluded from file reads, writes, listings, searches and configured roots. Matching ignores case; Windows also checks normalized directory paths to reject short-name aliases. Shell permission still grants the Agent OS user's authority; this exclusion is not a shell sandbox or a boundary against that same OS account.
 
-See the [architecture guide](browser-architecture-zhCN.md) for source ownership. Validate image rendering, task continuation, performance and usability with the intended AI host, operating system and browser. First-use permission configuration and browser installation are currently local steps; the web page reports readiness and recovers existing sessions.
+See the [architecture guide](browser-architecture-zhCN.md) for source ownership. Validate image rendering, task continuation, performance and usability with the intended AI host, operating system and browser. The result of `browser_open` names the browser product and version that the session runs on. First-use permission configuration and browser installation are currently local steps; the web page reports readiness and recovers existing sessions.

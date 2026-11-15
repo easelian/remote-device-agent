@@ -31,6 +31,18 @@ cargo +1.93.0 test --locked --lib self_update::tests
 cargo +1.93.0 test --locked --test native_bootstrap
 ```
 
+Browser session tests drive a real Chromium and are ignored by an ordinary run.
+Name a browser that can start with its sandbox under your account:
+
+```sh
+RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome \
+  cargo +1.93.0 test --locked --test browser_session -- --ignored --test-threads=1
+```
+
+Results depend on the browser build; `browser_open` reports the product and
+version in use. A browser confined by its packaging, such as a snap, may not
+reach the test's private profile and upload directories.
+
 The Windows updater tests include a copied test executable that replaces its own
 running image. Run that test on Windows; Linux tests cannot validate the Windows
 replacement operation. Tests using real startup registrations or user PATH

@@ -58,7 +58,7 @@ In `bwrap` mode, each command runs with:
 - Separate PID, IPC, and UTS namespaces; commands terminate when the Agent process exits.
 - No network access except loopback when `network: false`. `network` must be set explicitly and has no default.
 - An empty tmpfs over `$HOME` when `hide_home` is enabled (the default). Absolute paths in `expose` are mounted back read-only, for example to expose toolchains. Missing paths are skipped.
-- Hidden Agent configuration and audit directories after work-root mounts are applied. Custom main and sidecar configuration files are also hidden, including an audit directory created for the first time.
+- Hidden Agent configuration and audit directories after work-root mounts are applied. Custom main and sidecar configuration files are also hidden, including an audit directory created for the first time. Browser storage, which is kept in `.rdh-browser` beside the config file, is hidden wherever that file is. A hidden directory that does not exist is left alone.
 - File roots mounted according to `allow_write` and `readonly_roots`. Read-only restrictions take precedence when directories overlap or multiple roots resolve to the same path. A writable child root within a read-only directory remains read-only. Directories in `expose` also remain read-only.
 
 Windows does not support these bubblewrap or POSIX resource-limit settings and refuses to start if they are configured. macOS does not support bubblewrap.
@@ -136,7 +136,11 @@ Policy denials include a stable `error_code` alongside the `error` string: `poli
 Browser sessions are independent of `allow_shell` and `allow_write`. The local
 `browser` object defaults to disabled, as do its `persistent_profiles`,
 `downloads` and `uploads` options. `executable` optionally selects an absolute
-Chromium path. Restart the Agent after policy changes. See the
+Chromium path. `sites` chooses which sites a session may open; without it,
+public sites and private networks open, and cloud metadata and link-local
+addresses are refused. `shell_coexistence` decides whether browser sessions
+are offered on a device that also has a shell: `allow` (the default),
+`sandboxed_only` or `deny`. Restart the Agent after policy changes. See the
 [browser guide](browser.md) for the complete setup and capability checks.
 
 The reserved `.rdh-browser` storage is excluded from Linux file reads, writes,

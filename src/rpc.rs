@@ -262,7 +262,21 @@ impl Runtime {
             )
             .map_err(Error::message)?,
         );
-        let browsers = Arc::new(Browsers::new(&policy.browser, config_path, &config.token));
+        // Browser sessions are offered beside a shell only as the owner decided.
+        let shell = crate::browser::Shell {
+            enabled: !PROCESS_OPERATIONS.is_empty()
+                && policy
+                    .effective_operations(&["start_process"], &config)
+                    .iter()
+                    .any(|operation| operation == "start_process"),
+            sandboxed: sandbox.is_isolated(),
+        };
+        let browsers = Arc::new(Browsers::new(
+            &policy.browser,
+            config_path,
+            &config.token,
+            shell,
+        ));
         let receipts = Receipts::new(&config.token)?;
         Ok(Arc::new(Self {
             config,
@@ -455,6 +469,13 @@ impl Runtime {
             sender.json_wait(&status).await?;
         }
         Ok(())
+    }
+
+    /// Replaces the lookup that the browser's site policy uses for host names.
+    /// Tests use it to say where a name leads.
+    #[doc(hidden)]
+    pub fn browser_resolver(&self, resolver: crate::browser::sites::Resolver) {
+        self.browsers.resolve_with(resolver);
     }
 
     pub fn info(&self) -> Value {
