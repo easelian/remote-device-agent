@@ -288,12 +288,16 @@ impl Peer {
                 ),
                 "{reply}"
             );
+            // A response can arrive before its RPC admission permit retires.
+            // This bounded read can wait when admission says it was not sent.
             assert!(
                 reply.get("error").is_none()
                     || matches!(
                         reply["error_code"].as_str(),
                         Some("browser_input_pending" | "browser_stale_reference")
-                    ),
+                    )
+                    || (reply["error_code"] == "operation_busy"
+                        && reply["execution_state"] == "not_sent"),
                 "{reply}"
             );
             last = reply;
