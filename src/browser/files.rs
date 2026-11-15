@@ -1,9 +1,5 @@
 //! Private, bounded browser artifacts. Chromium's own download writer stays disabled.
-use super::{
-    Failure, Principal, Result,
-    cdp::{Cdp, Control},
-    io_error,
-};
+use super::{Failure, Principal, Result, cdp::Cdp, control::Control, io_error};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

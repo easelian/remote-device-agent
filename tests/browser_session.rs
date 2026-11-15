@@ -221,9 +221,8 @@ impl Peer {
         principal: Option<Value>,
         receipt: Option<&str>,
     ) -> Value {
-        self.counter += 1;
-        let id = format!("browser-test-{}", self.counter);
-        let mut message = json!({"id":id,"operation":operation,"params":params,"execution_budget_ms":self.budget});
+        let mut message =
+            json!({"operation":operation,"params":params,"execution_budget_ms":self.budget});
         if let Some(principal) = principal {
             message["browser_principal"] = principal;
         }
@@ -231,18 +230,41 @@ impl Peer {
             message["operation_receipt"] =
                 json!({"operation_id":receipt,"instance_id":self.runtime.receipts.instance_id});
         }
-        self.runtime
-            .receive(&message, &self.sender, &self.ids)
-            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut retries = 0;
         loop {
-            let frame = tokio::time::timeout(Duration::from_secs(20), self.receiver.recv())
-                .await
-                .expect("RPC response deadline")
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "RPC response deadline"
+            );
+            self.counter += 1;
+            let id = format!("browser-test-{}", self.counter);
+            message["id"] = id.clone().into();
+            self.runtime
+                .receive(&message, &self.sender, &self.ids)
                 .unwrap();
-            let value: Value = serde_json::from_str(frame.message.to_text().unwrap()).unwrap();
-            if value["id"] == id {
-                return value;
+            loop {
+                let frame = tokio::time::timeout_at(deadline, self.receiver.recv())
+                    .await
+                    .expect("RPC response deadline")
+                    .unwrap();
+                let value: Value = serde_json::from_str(frame.message.to_text().unwrap()).unwrap();
+                if value["id"] == id {
+                    // A reply can arrive before the prior RPC releases its slot.
+                    // Only retry an explicit pre-admission refusal, preserving
+                    // the operation receipt; accepted or unknown work is never replayed.
+                    if retries < 40
+                        && value["error_code"] == "operation_busy"
+                        && value["execution_state"] == "not_sent"
+                        && value.get("execution_ms").is_none()
+                    {
+                        retries += 1;
+                        break;
+                    }
+                    return value;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
     async fn human(&mut self, params: Value) -> Value {

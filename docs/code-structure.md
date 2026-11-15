@@ -54,8 +54,10 @@ limit, the Agent evicts only the oldest settled receipt acknowledged by Core.
 Running and unacknowledged work stays protected; Core's own result-retention
 and admission limits still apply.
 
-Browser work starts in `browser/runtime.rs`. `cdp.rs` owns bounded traffic and
-in-flight input over generic asynchronous readers and writers. `process.rs` owns
+Browser work starts in `browser/runtime.rs`. `control.rs` owns session control
+epochs and the pause/resume gate shared by the transport and file transfers.
+`cdp.rs` owns bounded traffic and in-flight input over generic asynchronous
+readers and writers. `process.rs` owns
 launch arguments, the private run directory, startup checks and close ordering.
 It renames completed runs into a retirement state before removing their contents,
 so interrupted cleanup retains the completion evidence.

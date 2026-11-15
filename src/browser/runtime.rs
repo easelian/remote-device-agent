@@ -1,6 +1,7 @@
 use super::{
     Failure, Principal, Result, Settings, Shell,
-    cdp::{Cdp, Control},
+    cdp::Cdp,
+    control::Control,
     files::{self, Files},
     page::{self, Element},
     process::{self, BrowserProcess},

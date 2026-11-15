@@ -227,6 +227,16 @@ mod cdp;
         feature = "experimental-windows-processes"
     )
 ))]
+mod control;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
 mod files;
 #[cfg(any(
     target_os = "linux",
