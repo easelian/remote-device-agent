@@ -210,6 +210,16 @@ jobs:
         env:
           RDH_TARGET: ${{ matrix.target }}
         run: .github/scripts/test-windows-exfat.ps1
+      - name: Run browser sessions against the runner's Chrome
+        # The ordinary run ignores these tests because they need a Chromium that
+        # can start with its sandbox. The Linux image provides Google Chrome.
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RDH_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+        run: |
+          "$RDH_BROWSER_EXECUTABLE" --version
+          cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test browser_session -- --ignored --test-threads=1
       - name: Exercise npm launcher with the native executable
         if: ${{ !endsWith(matrix.target, '-linux-musl') }}
         env:

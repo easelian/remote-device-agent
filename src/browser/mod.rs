@@ -80,6 +80,45 @@ pub struct Settings {
     pub downloads: bool,
     pub uploads: bool,
     pub executable: Option<PathBuf>,
+    pub sites: sites::Sites,
+    pub shell_coexistence: Coexistence,
+}
+
+/// Whether browser sessions are offered on a device that also gives the AI a
+/// shell. Text on a web page can mislead the AI into running a command, and a
+/// command outside a sandbox can read the browser's stored logins and change
+/// the local policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Coexistence {
+    /// The owner accepts both together.
+    #[default]
+    Allow,
+    /// Only while shell commands run inside the sandbox.
+    SandboxedOnly,
+    /// Never together: the shell stays, browser sessions are not offered.
+    Deny,
+}
+
+/// The shell that the device gives the AI, as far as browser sessions care.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Shell {
+    pub enabled: bool,
+    /// Its commands run inside the sandbox.
+    pub sandboxed: bool,
+}
+
+impl Coexistence {
+    /// Why browser sessions are not offered beside this shell, when they are not.
+    pub fn refuses(self, shell: Shell) -> Option<&'static str> {
+        match self {
+            _ if !shell.enabled => None,
+            Self::Allow => None,
+            Self::SandboxedOnly if shell.sandboxed => None,
+            Self::SandboxedOnly => Some("shell_not_sandboxed"),
+            Self::Deny => Some("shell_enabled"),
+        }
+    }
 }
 
 impl Settings {
@@ -152,6 +191,22 @@ impl std::fmt::Display for Failure {
 }
 impl std::error::Error for Failure {}
 type Result<T> = std::result::Result<T, Failure>;
+
+// The policy is read on every platform. Only a platform that runs browser
+// sessions applies it.
+#[cfg_attr(
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    )),
+    allow(dead_code)
+)]
+pub mod sites;
 
 #[cfg(any(
     target_os = "linux",
@@ -337,13 +392,14 @@ pub struct Browsers;
     )
 )))]
 impl Browsers {
-    pub fn new(_: &Settings, _: Option<&Path>, _: &str) -> Self {
+    pub fn new(_: &Settings, _: Option<&Path>, _: &str, _: Shell) -> Self {
         Self
     }
     pub fn info(&self) -> Value {
         json!({"version":1,"available":false,"reason":"platform_not_supported"})
     }
     pub fn release_stopped_storage(&self) {}
+    pub fn resolve_with(&self, _: sites::Resolver) {}
     pub fn dispatch(
         &self,
         _: &str,
@@ -380,6 +436,55 @@ fn io_error(_: impl std::fmt::Display) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_owner_decides_whether_a_shell_and_browser_sessions_go_together() {
+        let none = Shell::default();
+        let plain = Shell {
+            enabled: true,
+            sandboxed: false,
+        };
+        let sandboxed = Shell {
+            enabled: true,
+            sandboxed: true,
+        };
+        // Without a shell there is nothing to decide.
+        for coexistence in [
+            Coexistence::Allow,
+            Coexistence::SandboxedOnly,
+            Coexistence::Deny,
+        ] {
+            assert_eq!(coexistence.refuses(none), None);
+        }
+        assert_eq!(Coexistence::Allow.refuses(plain), None);
+        assert_eq!(Coexistence::Allow.refuses(sandboxed), None);
+        assert_eq!(
+            Coexistence::SandboxedOnly.refuses(plain),
+            Some("shell_not_sandboxed")
+        );
+        assert_eq!(Coexistence::SandboxedOnly.refuses(sandboxed), None);
+        assert_eq!(Coexistence::Deny.refuses(plain), Some("shell_enabled"));
+        assert_eq!(Coexistence::Deny.refuses(sandboxed), Some("shell_enabled"));
+
+        // The policy says nothing: both together are accepted, as before.
+        let parse = |value: Value| Settings::parse(Some(&value));
+        assert_eq!(
+            parse(serde_json::json!({"enabled":true}))
+                .unwrap()
+                .shell_coexistence,
+            Coexistence::Allow
+        );
+        for (written, expected) in [
+            ("allow", Coexistence::Allow),
+            ("sandboxed_only", Coexistence::SandboxedOnly),
+            ("deny", Coexistence::Deny),
+        ] {
+            let settings = parse(serde_json::json!({"shell_coexistence":written})).unwrap();
+            assert_eq!(settings.shell_coexistence, expected);
+        }
+        assert!(parse(serde_json::json!({"shell_coexistence":"sandbox"})).is_err());
+        assert!(parse(serde_json::json!({"shell_coexistence":true})).is_err());
+    }
     #[cfg(any(
         target_os = "linux",
         target_os = "macos",

@@ -66,7 +66,7 @@ kill-on-close Job. Its `windows/supervisor.rs` holds a restricted Job handle in 
 independent cleanup child to handle Agent death; it owns no CDP or page input.
 Shared private stream APIs in `storage/` apply POSIX permissions
 or Windows ACL, identity and sharing rules to staged files.
-`page.rs` and `observe.js` bind semantic segments and action references to frames.
+`page.rs` and `observe.js` bind semantic segments and action references to frames. `sites.rs` holds the site policy: the owner's lists, and the judgement of the addresses a session is led to.
 `runtime/human.rs` owns control leases. `profiles.rs`, `files.rs` and
 `files/upload.rs` own persistent login state and file lifetimes. Runtime shutdown
 joins workers before releasing the namespace lock; confirmed unbinding removes

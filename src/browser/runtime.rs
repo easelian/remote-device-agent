@@ -1,10 +1,11 @@
 use super::{
-    Failure, Principal, Result, Settings,
+    Failure, Principal, Result, Settings, Shell,
     cdp::{Cdp, Control},
     files::{self, Files},
     page::{self, Element},
     process::{self, BrowserProcess},
     profiles::{self, Profiles},
+    sites::{Lookup, Resolver, Sites, Verdict},
 };
 use serde_json::{Value, json};
 use std::{
@@ -34,6 +35,10 @@ struct Target {
     dialog: Option<Value>,
     parent: Option<String>,
     ready: bool,
+    /// Set while the tab shows the outcome of a navigation of its own document
+    /// that the site policy refused. The value says whether a request had left
+    /// the browser before the refusal.
+    blocked: Option<bool>,
 }
 struct Slot {
     owner: String,
@@ -124,10 +129,19 @@ pub struct Browsers {
     profiles: Profiles,
     root_lock: Mutex<Option<Arc<crate::profile_lock::ProfileLocks>>>,
     files: Arc<Files>,
+    gate: Arc<Gate>,
+    shell: Shell,
+}
+
+/// The site policy, as the request hook of every session applies it.
+#[derive(Default)]
+struct Gate {
+    sites: Sites,
+    lookup: Lookup,
 }
 
 impl Browsers {
-    pub fn new(settings: &Settings, config_path: Option<&Path>, token: &str) -> Self {
+    pub fn new(settings: &Settings, config_path: Option<&Path>, token: &str, shell: Shell) -> Self {
         let root = config_path.and_then(|config| super::storage_root(config, token));
         let files = Files::new(root.as_deref());
         Self {
@@ -143,11 +157,32 @@ impl Browsers {
             profiles: Profiles::default(),
             root_lock: Mutex::new(None),
             files,
+            gate: Arc::new(Gate {
+                sites: settings.sites.clone(),
+                lookup: Lookup::default(),
+            }),
+            shell,
+        }
+    }
+    /// Replaces the lookup of host names. Tests use it to say where a name leads.
+    pub fn resolve_with(&self, resolver: Resolver) {
+        self.gate.lookup.resolve_with(resolver);
+    }
+    /// Refuses, before anything is done, an address that the site policy rules
+    /// out as it is written.
+    fn admit(&self, address: &Value) -> Result<()> {
+        match address.as_str().map(url::Url::parse) {
+            Some(Ok(address)) if self.gate.sites.judge(&address) == Verdict::Deny => {
+                Err(Failure::new("browser_site_denied"))
+            }
+            _ => Ok(()),
         }
     }
     pub fn info(&self) -> Value {
         let reason = if !self.settings.enabled {
             Some("disabled_by_local_policy")
+        } else if let Some(reason) = self.settings.shell_coexistence.refuses(self.shell) {
+            Some(reason)
         } else if self.root.is_none() {
             Some("private_storage_unavailable")
         } else if self.executable.is_none() {
@@ -155,7 +190,7 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}})
+        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"sites":self.settings.sites.summary(),"shell":{"enabled":self.shell.enabled,"sandboxed":self.shell.sandboxed,"coexistence":self.settings.shell_coexistence},"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}})
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
@@ -329,7 +364,13 @@ impl Browsers {
                 .unwrap()
                 .values()
                 .filter(|t| t.kind == "page")
-                .map(|t| json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog,"ready":t.ready}))
+                .map(|t| {
+                    let mut tab = json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog,"ready":t.ready});
+                    if t.blocked.is_some() {
+                        tab["blocked"] = "site_policy".into();
+                    }
+                    tab
+                })
                 .collect();
             return Ok(
                 json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}),
@@ -365,45 +406,68 @@ impl Browsers {
                 }
                 value["page"] = page::metadata(&cdp,after.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                 value["page"]["tab_id"] = tab.clone().into();
+                mark_blocked(&mut value, &session.targets, &tab);
                 Ok(value)
             }
             "browser_observe" => {
                 if target.dialog.is_some() {
                     return Err(Failure::new("browser_dialog_open"));
                 }
-                let frames = frames(&cdp, &session, &target, deadline).await?;
+                let mut tree = frames(&cdp, &session, &target, deadline).await?;
+                let continuing = params["cursor"].is_string();
                 if let Some(token)=params["cursor"].as_str()
-                    && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&frames)) {
+                    && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&tree)) {
                     return Err(Failure::new("browser_stale_cursor"));
                 }
                 let next_token=crate::random::hex_token::<16>().map_err(super::io_error)?;
                 let previous=session.read.take();
-                let mut read=if params["cursor"].is_string() {
-                    previous.unwrap()
+                let mut read=if continuing {
+                    let mut read=previous.unwrap();
+                    read.cursor.compare(&tree);
+                    read
                 } else {
                     if let Some(previous)=previous {previous.cursor.close(&cdp,deadline).await;}
-                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&frames)?}
+                    PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&tree, scope(params))?}
                 };
-                let result=async {
-                let (mut value, refs) = page::observe_next(
-                    &cdp,
-                    &mut read.cursor,
-                    params["max_nodes"].as_u64().unwrap_or(200) as usize,
-                    params["max_chars"].as_u64().unwrap_or(20000) as usize,
-                    deadline,
-                )
-                .await?;
-                value["page"] = page::metadata(&cdp,frames.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
-                value["page"]["tab_id"] = tab.clone().into();
-                Ok::<_,Failure>((value,refs))
-                }.await;
-                let (mut value, refs)=match result {
-                    Ok(value)=>value,
-                    Err(error)=>{
-                        read.cursor.close(&cdp,Instant::now()+Duration::from_millis(500)).await;
-                        session.references.clear();
-                        return Err(error);
+                // A first read that finds the document replaced under it starts once more,
+                // on the document that is there now. Reading sends the page nothing, so
+                // nothing is repeated. A continuation has no earlier part that would go
+                // with a new document, so it is not started again.
+                let mut again = !continuing;
+                let (mut value, refs) = loop {
+                    let result=async {
+                        let (mut value, refs) = page::observe_next(
+                            &cdp,
+                            &mut read.cursor,
+                            params["max_nodes"].as_u64().unwrap_or(200) as usize,
+                            params["max_chars"].as_u64().unwrap_or(20000) as usize,
+                            deadline,
+                        )
+                        .await?;
+                        value["page"] = page::metadata(&cdp,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                        value["page"]["tab_id"] = tab.clone().into();
+                        mark_loading(&mut value);
+                        mark_blocked(&mut value, &session.targets, &tab);
+                        Ok::<_,Failure>((value,refs))
+                    }.await;
+                    let error = match result {
+                        Ok(value) => break value,
+                        Err(error) => error,
+                    };
+                    read.cursor.close(&cdp,Instant::now()+Duration::from_millis(500)).await;
+                    if again
+                        && matches!(error.code, "browser_stale_reference" | "browser_command_failed")
+                        && Instant::now() + Duration::from_secs(3) < deadline
+                        && let Ok(fresh) = frames(&cdp, &session, &target, deadline).await
+                        && let Ok(cursor) = page::Cursor::new(&fresh, scope(params))
+                    {
+                        again = false;
+                        tree = fresh;
+                        read.cursor = cursor;
+                        continue;
                     }
+                    session.references.clear();
+                    return Err(error);
                 };
                 session.references = refs;
                 session.observed_tab = tab.clone();
@@ -427,17 +491,14 @@ impl Browsers {
                         page::scroll(&cdp, frame, &action["delta_y"], deadline).await
                     }
                     "navigate" => {
+                        self.admit(&action["url"])?;
                         session.references.clear();
-                        let reply = cdp
-                            .call(
-                                Some(&target.session),
-                                "Page.navigate",
-                                json!({"url":action["url"]}),
-                                deadline,
-                            )
-                            .await?;
+                        if let Some(target) = session.targets.lock().unwrap().get_mut(&tab) {
+                            target.blocked = None;
+                        }
+                        let reply = navigate(&cdp, &target.session, &action["url"], deadline).await?;
                         if reply.get("errorText").is_some() {
-                            Err(Failure::unknown("browser_navigation_failed"))
+                            Err(refusal(&session.targets, &tab).unwrap_or_else(|| Failure::unknown("browser_navigation_failed")))
                         } else {
                             Ok(json!({"navigation_started":true,"business_result_verified":false}))
                         }
@@ -543,19 +604,26 @@ impl Browsers {
                 let expected = params["url_contains"].as_str().unwrap_or("");
                 let text = params["text_contains"].as_str();
                 loop {
-                    let tree = frames(&cdp, &session, &target, deadline).await?;
-                    if let Some(text) = text {
-                        match page::observe(&cdp, &tree, 200, 20000, deadline).await {
-                            Ok((value,_)) => if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
-                                break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
-                            },
-                            // A changing document is normal while waiting for a postcondition.
-                            // Retry observation only; never replay the preceding action.
-                            Err(error) if error.code=="browser_stale_reference" => {},
-                            Err(error) => return Err(error),
-                        }
-                    } else if tree.first().is_some_and(|frame| frame.url.contains(expected)) {
-                        break Ok(json!({"condition_observed":true,"url":tree[0].url}));
+                    // A changing document is normal while waiting for a postcondition, and a
+                    // read that the browser rejects during navigation has sent nothing.
+                    // Retry observation only; never replay the preceding action.
+                    let changing = |error: &Failure| matches!(error.code, "browser_stale_reference" | "browser_command_failed");
+                    match frames(&cdp, &session, &target, deadline).await {
+                        Ok(tree) => if let Some(text) = text {
+                            match page::observe(&cdp, &tree, 200, 20000, deadline).await {
+                                Ok((value,_)) => if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
+                                    break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
+                                },
+                                Err(error) if changing(&error) => {},
+                                Err(error) => return Err(error),
+                            }
+                        // The address as the page sees it, with its fragment: a link within
+                        // a page and a hash route change nothing else.
+                        } else if let Some(url) = tree.first().map(|frame| format!("{}{}", frame.url, frame.fragment)).filter(|url| url.contains(expected)) {
+                            break Ok(json!({"condition_observed":true,"url":url}));
+                        },
+                        Err(error) if changing(&error) => {},
+                        Err(error) => return Err(error),
                     }
                     if Instant::now() + Duration::from_millis(100) >= deadline {
                         break Err(Failure::new("browser_condition_timeout"));
@@ -566,12 +634,8 @@ impl Browsers {
             _ => Err(Failure::new("browser_invalid_params")),
         }
         }.await;
-        let outcome = outcome.map_err(|mut error| {
-            if operation == "browser_act" && effects.load(Ordering::Acquire) {
-                error.state = "unknown";
-            }
-            error
-        });
+        let outcome =
+            outcome.map_err(|error| settle(operation, effects.load(Ordering::Acquire), error));
         if outcome.as_ref().is_err_and(|e| e.state == "unknown") {
             slot.control.change(true);
             session.references.clear();
@@ -596,6 +660,7 @@ impl Browsers {
         if profile_name.is_some() && !self.settings.persistent_profiles {
             return Err(Failure::new("browser_profile_disabled"));
         }
+        self.admit(&params["url"])?;
         let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
         let slot = Arc::new(Slot {
             owner: principal.owner.clone(),
@@ -638,10 +703,12 @@ impl Browsers {
                 cdp.stop();
                 return Err(Failure::new("browser_control_changed"));
             }
-            session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})));
+            session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()}),self.gate.clone()));
             cdp.call(None,"Browser.setDownloadBehavior",json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
             cdp.call(None,"Target.setDiscoverTargets",json!({"discover":true}),deadline).await?;
             cdp.call(None,"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
+            // Reported with the session so a result can be tied to the browser build behind it.
+            let browser=cdp.call(None,"Browser.getVersion",json!({}),deadline).await.ok().and_then(|v|v["product"].as_str().and_then(product));
             let target=loop {
                 if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page"&&t.ready).cloned(){break target;}
                 if !cdp.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
@@ -650,10 +717,16 @@ impl Browsers {
             };
             session.active=target.id.clone();
             if let Some(url)=params["url"].as_str(){
-                cdp.call(Some(&target.session),"Page.navigate",json!({"url":url}),deadline).await?;
+                let reply=navigate(&cdp,&target.session,&json!(url),deadline).await?;
+                // A session whose first page the site policy refused has nothing to show.
+                if reply.get("errorText").is_some() && let Some(refused)=refusal(&session.targets,&target.id) {
+                    return Err(refused);
+                }
             }
             if slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
-            Ok(json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))}))
+            let mut opened=json!({"session_id":id,"tab_id":target.id,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|name|profiles::id(principal,name))});
+            if let Some(browser)=browser { opened["browser"]=browser; }
+            Ok(opened)
         }.await;
         if result.is_err() {
             let _ = session.close().await;
@@ -866,6 +939,206 @@ async fn wait_target(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+/// Starts a navigation and waits for the browser's answer, which comes when the
+/// new document commits or the load fails. A host that never answers would keep
+/// the command, and with it the whole session, pending until the browser gives
+/// up minutes later. Stop waiting early, cancel the load and let the command
+/// settle, so that the session can be used again at once.
+async fn navigate(cdp: &Cdp, session: &str, url: &Value, deadline: Instant) -> Result<Value> {
+    let give_up = navigation_deadline(Instant::now(), deadline);
+    match cdp
+        .call(Some(session), "Page.navigate", json!({"url":url}), give_up)
+        .await
+    {
+        Err(error) if error.code == "browser_timeout_unknown" => {
+            let _ = cdp
+                .cleanup()
+                .call(Some(session), "Page.stopLoading", json!({}), deadline)
+                .await;
+            while cdp.pending() != 0 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(Failure::unknown("browser_navigation_failed"))
+        }
+        reply => reply,
+    }
+}
+
+/// When to stop waiting for a navigation: early enough to cancel it and let the
+/// browser settle before the call's own deadline.
+fn navigation_deadline(now: Instant, deadline: Instant) -> Instant {
+    let remaining = deadline.saturating_duration_since(now);
+    deadline - (remaining / 4).min(Duration::from_secs(3))
+}
+
+/// A document that the browser is still parsing has more to come, however much of
+/// it was read. Say so, instead of reporting the part as the complete page.
+fn mark_loading(observation: &mut Value) {
+    if observation["page"]["ready_state"] != "loading" {
+        return;
+    }
+    observation["coverage"]["complete_within_scope"] = false.into();
+    if let Some(omitted) = observation["coverage"]["omitted"].as_array_mut()
+        && !omitted.iter().any(|reason| reason == "document_loading")
+    {
+        omitted.push("document_loading".into());
+    }
+}
+
+/// Says on a result's page that the tab shows the outcome of a navigation the
+/// site policy refused, so that an empty page explains itself.
+fn mark_blocked(result: &mut Value, targets: &Mutex<HashMap<String, Target>>, tab: &str) {
+    if targets
+        .lock()
+        .unwrap()
+        .get(tab)
+        .is_some_and(|target| target.blocked.is_some())
+    {
+        result["page"]["blocked"] = "site_policy".into();
+    }
+}
+
+/// Fails a paused request the way a content blocker would.
+async fn refuse(cdp: &Cdp, session: Option<&str>, params: &Value, deadline: Instant) -> Result<()> {
+    cdp.call(
+        session,
+        "Fetch.failRequest",
+        json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
+        deadline,
+    )
+    .await
+    .map(drop)
+}
+
+/// Lets a paused document go on, or takes it over as a download.
+async fn release(
+    cdp: &Cdp,
+    targets: &Mutex<HashMap<String, Target>>,
+    downloads: Option<&DownloadContext>,
+    session: Option<&str>,
+    params: &Value,
+    deadline: Instant,
+) -> Result<()> {
+    if let Some(downloads) = downloads
+        && params["responseHeaders"].as_array().is_some_and(|headers| {
+            headers.iter().any(|h| {
+                h["name"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))
+                    && h["value"].as_str().is_some_and(|v| {
+                        v.split(';')
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .eq_ignore_ascii_case("attachment")
+                    })
+            })
+        })
+    {
+        let target = targets
+            .lock()
+            .unwrap()
+            .values()
+            .find(|t| Some(t.session.as_str()) == session)
+            .cloned()
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+        let origin = url::Url::parse(params["request"]["url"].as_str().unwrap_or(""))
+            .map_err(|_| Failure::new("browser_url_denied"))?
+            .origin()
+            .ascii_serialization();
+        let owner = files::Owner {
+            principal: downloads.principal.clone(),
+            session: downloads.session.clone(),
+            tab: target.id,
+            origin,
+            control: downloads.control.clone(),
+        };
+        if downloads
+            .files
+            .intercept(cdp.cleanup(), target.session, params, owner)
+            .is_err()
+        {
+            cdp.call(
+                session,
+                "Fetch.failRequest",
+                json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
+                deadline,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    cdp.call(
+        session,
+        "Fetch.continueRequest",
+        json!({"requestId":params["requestId"]}),
+        deadline,
+    )
+    .await
+    .map(drop)
+}
+
+/// Records on a tab what became of the latest request for its own document:
+/// refused by the site policy, or under way.
+fn note(
+    targets: &Mutex<HashMap<String, Target>>,
+    session: Option<&str>,
+    frame: &str,
+    blocked: Option<bool>,
+) {
+    if let Some(target) = targets
+        .lock()
+        .unwrap()
+        .values_mut()
+        .find(|t| t.kind == "page" && Some(t.session.as_str()) == session && t.id == frame)
+    {
+        target.blocked = blocked;
+    }
+}
+
+/// The failure to report when the site policy refused the tab's own navigation.
+/// Nothing was sent when the first request was refused. After a redirect or a
+/// response, a request has left the browser and the outcome is uncertain.
+fn refusal(targets: &Mutex<HashMap<String, Target>>, tab: &str) -> Option<Failure> {
+    let sent = targets.lock().unwrap().get(tab)?.blocked?;
+    Some(if sent {
+        Failure::unknown("browser_site_denied")
+    } else {
+        Failure::new("browser_site_denied")
+    })
+}
+
+/// Splits the product string a browser reports about itself, such as
+/// `Chrome/122.0.6261.128`, into a bounded name and a dotted version. A string
+/// of any other shape is not reported.
+fn product(value: &str) -> Option<Value> {
+    let (name, version) = value.split_once('/')?;
+    let named =
+        !name.is_empty() && name.len() <= 32 && name.bytes().all(|b| b.is_ascii_alphanumeric());
+    let versioned = version.len() <= 32
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    (named && versioned).then(|| json!({"product":name,"version":version}))
+}
+
+/// Chooses the execution state reported for a failed call. Once an effect
+/// command has left, any `browser_act` failure is uncertain. A command that the
+/// browser rejected has changed nothing when no effect command left during the
+/// call, so it is reported as not sent and does not pause the session.
+fn settle(operation: &str, effects: bool, mut error: Failure) -> Failure {
+    // A refusal by the site policy says for itself whether anything left the browser.
+    if error.code == "browser_site_denied" {
+        return error;
+    }
+    if operation == "browser_act" && effects {
+        error.state = "unknown";
+    } else if !effects && error.code == "browser_command_failed" {
+        error.state = "not_sent";
+    }
+    error
+}
+
 async fn frames(
     cdp: &Cdp,
     session: &Session,
@@ -907,6 +1180,284 @@ async fn frames(
     Ok(frames)
 }
 
+#[tokio::test]
+async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+    let (client, browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let cdp = Cdp::new(read, write);
+    let tab = Target {
+        id: "tab".into(),
+        session: "page".into(),
+        kind: "page".into(),
+        url: String::new(),
+        title: String::new(),
+        dialog: None,
+        parent: None,
+        ready: true,
+        blocked: None,
+    };
+    let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
+    let gate = Arc::new(Gate::default());
+    // Where the names used below lead. A name without an answer is let through.
+    gate.lookup
+        .resolve_with(super::sites::resolver(|host: String| async move {
+            match host.as_str() {
+                "metadata.example" => Some(vec!["169.254.169.254".parse().unwrap()]),
+                "public.example" => Some(vec!["93.184.216.34".parse().unwrap()]),
+                _ => None,
+            }
+        }));
+    let task = guard(cdp.clone(), targets.clone(), None, gate);
+    let mut browser = BufReader::new(browser);
+    // Sends one paused document request and returns what the hook did with it.
+    async fn paused(browser: &mut BufReader<DuplexStream>, mut request: Value) -> Value {
+        request["requestId"] = "document".into();
+        let mut event = serde_json::to_vec(
+            &json!({"sessionId":"page","method":"Fetch.requestPaused","params":request}),
+        )
+        .unwrap();
+        event.push(0);
+        browser.get_mut().write_all(&event).await.unwrap();
+        let mut frame = Vec::new();
+        browser.read_until(0, &mut frame).await.unwrap();
+        let command: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        let mut reply = serde_json::to_vec(&json!({"id":command["id"],"result":{}})).unwrap();
+        reply.push(0);
+        browser.get_mut().write_all(&reply).await.unwrap();
+        command
+    }
+    let blocked = || targets.lock().unwrap()["tab"].blocked;
+    let metadata = "http://169.254.169.254/latest/meta-data/";
+    let scenario = async {
+        // The tab's own document, refused before anything was sent.
+        let failed = paused(
+            &mut browser,
+            json!({"frameId":"tab","request":{"url":metadata}}),
+        )
+        .await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(failed["params"]["errorReason"], "BlockedByClient");
+        assert_eq!(blocked(), Some(false));
+        // A frame inside it is refused too, and does not change what the tab says.
+        let failed = paused(
+            &mut browser,
+            json!({"frameId":"child","request":{"url":metadata}}),
+        )
+        .await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(blocked(), Some(false));
+        // The tab sets out for a page it may open.
+        let continued = paused(
+            &mut browser,
+            json!({"frameId":"tab","request":{"url":"http://127.0.0.1:8080/"}}),
+        )
+        .await;
+        assert_eq!(continued["method"], "Fetch.continueRequest");
+        assert_eq!(blocked(), None);
+        // That page redirects to the refused address: a request has left by now.
+        let failed = paused(
+            &mut browser,
+            json!({"frameId":"tab","redirectedRequestId":"document","request":{"url":metadata}}),
+        )
+        .await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(blocked(), Some(true));
+        // A name is judged by where it leads, both when it has to be asked about
+        // and when the answer is remembered.
+        for _ in 0..2 {
+            let failed = paused(
+                &mut browser,
+                json!({"frameId":"tab","request":{"url":"http://metadata.example/"}}),
+            )
+            .await;
+            assert_eq!(failed["method"], "Fetch.failRequest");
+            assert_eq!(blocked(), Some(false));
+            for open in ["http://public.example/", "http://unanswered.example/"] {
+                let continued = paused(
+                    &mut browser,
+                    json!({"frameId":"tab","request":{"url":open}}),
+                )
+                .await;
+                assert_eq!(continued["method"], "Fetch.continueRequest", "{open}");
+                assert_eq!(blocked(), None, "{open}");
+            }
+        }
+    };
+    let result = tokio::time::timeout(Duration::from_secs(2), scenario).await;
+    cdp.stop();
+    task.await.unwrap();
+    result.expect("the hook must answer every paused request");
+}
+
+#[tokio::test]
+async fn where_private_networks_are_refused_the_address_reached_decides() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+    let (client, browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let cdp = Cdp::new(read, write);
+    let tab = Target {
+        id: "tab".into(),
+        session: "page".into(),
+        kind: "page".into(),
+        url: String::new(),
+        title: String::new(),
+        dialog: None,
+        parent: None,
+        ready: true,
+        blocked: None,
+    };
+    let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
+    let gate = Arc::new(Gate {
+        sites: serde_json::from_value(json!({"private_networks":"deny"})).unwrap(),
+        lookup: Lookup::default(),
+    });
+    // Every name looks public when it is asked about.
+    gate.lookup.resolve_with(super::sites::resolver(|_| async {
+        Some(vec!["93.184.216.34".parse().unwrap()])
+    }));
+    let task = guard(cdp.clone(), targets.clone(), None, gate);
+    let mut browser = BufReader::new(browser);
+    async fn event(browser: &mut BufReader<DuplexStream>, method: &str, params: Value) {
+        let mut event =
+            serde_json::to_vec(&json!({"sessionId":"page","method":method,"params":params}))
+                .unwrap();
+        event.push(0);
+        browser.get_mut().write_all(&event).await.unwrap();
+    }
+    // Reads the hook's next command and acknowledges it.
+    async fn command(browser: &mut BufReader<DuplexStream>) -> Value {
+        let mut frame = Vec::new();
+        browser.read_until(0, &mut frame).await.unwrap();
+        let command: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        let mut reply = serde_json::to_vec(&json!({"id":command["id"],"result":{}})).unwrap();
+        reply.push(0);
+        browser.get_mut().write_all(&reply).await.unwrap();
+        command
+    }
+    let blocked = || targets.lock().unwrap()["tab"].blocked;
+    let request = |network: &str| json!({"requestId":network,"networkId":network,"frameId":"tab","request":{"url":"http://named.example/"}});
+    let response = |network: &str| {
+        let mut paused = request(network);
+        paused["responseStatusCode"] = 200.into();
+        paused
+    };
+    let said =
+        |network: &str, space: &str| json!({"requestId":network,"resourceIPAddressSpace":space});
+    let scenario = async {
+        // The name passes its lookup, and the request is sent.
+        event(&mut browser, "Fetch.requestPaused", request("a")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        // The browser reached a private address: the page does not get the response.
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("a", "Local"),
+        )
+        .await;
+        event(&mut browser, "Fetch.requestPaused", response("a")).await;
+        let failed = command(&mut browser).await;
+        assert_eq!(failed["method"], "Fetch.failRequest");
+        assert_eq!(failed["params"]["errorReason"], "BlockedByClient");
+        assert_eq!(blocked(), Some(true));
+        // The same when the browser's word arrives after the response is paused.
+        event(&mut browser, "Fetch.requestPaused", request("b")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        assert_eq!(blocked(), None);
+        event(&mut browser, "Fetch.requestPaused", response("b")).await;
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("b", "Loopback"),
+        )
+        .await;
+        assert_eq!(command(&mut browser).await["method"], "Fetch.failRequest");
+        assert_eq!(blocked(), Some(true));
+        // A public address is let through.
+        event(&mut browser, "Fetch.requestPaused", request("c")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("c", "Public"),
+        )
+        .await;
+        event(&mut browser, "Fetch.requestPaused", response("c")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        assert_eq!(blocked(), None);
+        // What was said about an earlier hop does not count for the next one, and a
+        // response the browser says nothing about goes by the name's lookup.
+        event(
+            &mut browser,
+            "Network.responseReceivedExtraInfo",
+            said("d", "Local"),
+        )
+        .await;
+        event(&mut browser, "Fetch.requestPaused", request("d")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        event(&mut browser, "Fetch.requestPaused", response("d")).await;
+        assert_eq!(
+            command(&mut browser).await["method"],
+            "Fetch.continueRequest"
+        );
+        assert_eq!(blocked(), None);
+    };
+    let result = tokio::time::timeout(Duration::from_secs(3), scenario).await;
+    cdp.stop();
+    task.await.unwrap();
+    result.expect("the hook must answer every paused request");
+}
+
+/// What the browser said about the address behind recent responses, one entry
+/// for a request, kept until it is asked for. The oldest give way to new ones.
+#[derive(Default)]
+struct Spaces {
+    known: HashMap<(String, String), String>,
+    order: std::collections::VecDeque<(String, String)>,
+}
+impl Spaces {
+    fn record(&mut self, session: &str, request: &str, space: &str) {
+        let key = (session.to_owned(), request.to_owned());
+        if self.known.insert(key.clone(), space.to_owned()).is_none() {
+            self.order.push_back(key);
+            if self.order.len() > 1024
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.known.remove(&oldest);
+            }
+        }
+    }
+    fn take(&mut self, session: &str, request: &str) -> Option<String> {
+        self.known.remove(&(session.to_owned(), request.to_owned()))
+    }
+}
+
+/// What one session's event task has under way.
+#[derive(Default)]
+struct Work {
+    initializers: tokio::task::JoinSet<()>,
+    /// Requests that wait for a host name to be looked up, or for the browser's
+    /// word on a connection.
+    checks: tokio::task::JoinSet<()>,
+    spaces: Arc<Mutex<Spaces>>,
+}
+
+#[derive(Clone)]
 struct DownloadContext {
     files: Arc<Files>,
     principal: Principal,
@@ -920,7 +1471,12 @@ async fn suspended_non_page_target_cannot_block_page_request_progress() {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let cdp = Cdp::new(read, write);
-    let task = guard(cdp.clone(), Arc::new(Mutex::new(HashMap::new())), None);
+    let task = guard(
+        cdp.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        None,
+        Arc::new(Gate::default()),
+    );
     let mut browser = BufReader::new(browser);
     let scenario = async {
         browser.get_mut().write_all(br#"{"method":"Target.attachedToTarget","params":{"sessionId":"worker","targetInfo":{"targetId":"worker-target","type":"service_worker"}}}"#).await.unwrap();
@@ -954,23 +1510,28 @@ fn guard(
     cdp: Cdp,
     targets: Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<DownloadContext>,
+    gate: Arc<Gate>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = cdp.events();
     tokio::spawn(async move {
-        let mut initializers = tokio::task::JoinSet::new();
+        let mut work = Work::default();
         loop {
             if !cdp.connected() {
                 break;
             }
             let event = tokio::select! {
-                joined=initializers.join_next(), if !initializers.is_empty()=>{
+                joined=work.initializers.join_next(), if !work.initializers.is_empty()=>{
+                    if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
+                    continue;
+                },
+                joined=work.checks.join_next(), if !work.checks.is_empty()=>{
                     if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
                     continue;
                 },
                 event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{cdp.stop();break;}},
                 _=tokio::time::sleep(Duration::from_millis(500))=>{if !cdp.connected(){break;}else{continue;}},
             };
-            if handle_event(&cdp, &targets, downloads.as_ref(), &mut initializers, event)
+            if handle_event(&cdp, &targets, downloads.as_ref(), &gate, &mut work, event)
                 .await
                 .is_err()
             {
@@ -980,15 +1541,25 @@ fn guard(
                 break;
             }
         }
-        initializers.abort_all();
-        while initializers.join_next().await.is_some() {}
+        work.initializers.abort_all();
+        work.checks.abort_all();
+        while work.initializers.join_next().await.is_some() {}
+        while work.checks.join_next().await.is_some() {}
     })
 }
-async fn initialize_target(cdp: &Cdp, session: &str, downloads: bool) -> Result<()> {
+/// Prepares a target. `responses` also pauses each document when its response
+/// arrives: downloads are taken over there, and so is the check of the address a
+/// connection really reached.
+async fn initialize_target(
+    cdp: &Cdp,
+    session: &str,
+    downloads: bool,
+    responses: bool,
+) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(125);
     let mut patterns =
         vec![json!({"urlPattern":"*","resourceType":"Document","requestStage":"Request"})];
-    if downloads {
+    if responses {
         patterns
             .push(json!({"urlPattern":"*","resourceType":"Document","requestStage":"Response"}));
     }
@@ -1044,7 +1615,8 @@ async fn handle_event(
     cdp: &Cdp,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<&DownloadContext>,
-    initializers: &mut tokio::task::JoinSet<()>,
+    gate: &Arc<Gate>,
+    work: &mut Work,
     event: Value,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -1058,11 +1630,11 @@ async fn handle_event(
             let id = info["targetId"].as_str().unwrap_or("");
             let kind = info["type"].as_str().unwrap_or("");
             if !matches!(kind, "page" | "iframe") {
-                if initializers.len() >= 40 {
+                if work.initializers.len() >= 40 {
                     return Err(Failure::new("browser_busy"));
                 }
                 let (cdp, session) = (cdp.clone(), session.to_owned());
-                initializers.spawn(async move {
+                work.initializers.spawn(async move {
                     // Resuming a worker can itself wait for a page request.
                     // Keep Fetch processing available to resolve that dependency,
                     // just as for page/iframe initialization below.
@@ -1090,7 +1662,7 @@ async fn handle_event(
                     .count()
                     >= MAX_TABS)
                 || targets.lock().unwrap().len() >= 40
-                || initializers.len() >= 40
+                || work.initializers.len() >= 40
             {
                 cdp.call(None, "Target.closeTarget", json!({"targetId":id}), deadline)
                     .await?;
@@ -1117,6 +1689,7 @@ async fn handle_event(
                     dialog: None,
                     parent: event["sessionId"].as_str().map(str::to_owned),
                     ready: false,
+                    blocked: None,
                 },
             );
             let (cdp, targets, id, session) = (
@@ -1126,10 +1699,11 @@ async fn handle_event(
                 session.to_owned(),
             );
             let downloads = downloads.is_some();
-            initializers.spawn(async move {
+            let responses = downloads || gate.sites.strict();
+            work.initializers.spawn(async move {
                 // A popup can have no renderer document until its attachment
                 // finishes. The event pump must keep serving Fetch meanwhile.
-                let result = initialize_target(&cdp, &session, downloads).await;
+                let result = initialize_target(&cdp, &session, downloads, responses).await;
                 if result.is_ok() {
                     if let Some(target) = targets
                         .lock()
@@ -1189,72 +1763,184 @@ async fn handle_event(
                     .chars()
                     .take(512)
                     .collect();
+                // An empty page is not the outcome of a refused navigation.
+                if target.url == "about:blank" {
+                    target.blocked = None;
+                }
             }
         }
         "Fetch.requestPaused" => {
             let url = params["request"]["url"].as_str().unwrap_or("");
-            let allowed = page::url_allowed(url) || url == "about:blank";
-            if let Some(downloads) = downloads
-                && allowed
-                && params["responseHeaders"].as_array().is_some_and(|headers| {
-                    headers.iter().any(|h| {
-                        h["name"]
-                            .as_str()
-                            .is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))
-                            && h["value"].as_str().is_some_and(|v| {
-                                v.split(';')
-                                    .next()
-                                    .unwrap_or("")
-                                    .trim()
-                                    .eq_ignore_ascii_case("attachment")
-                            })
-                    })
-                })
-            {
-                let target = targets
+            let ordinary = page::url_allowed(url);
+            // What the address itself and the owner's lists say.
+            let address = url::Url::parse(url).ok();
+            let mut verdict = match &address {
+                _ if url == "about:blank" => Verdict::Allow,
+                Some(address) if ordinary => gate.sites.judge(address),
+                _ => Verdict::Deny,
+            };
+            let responded = params.get("responseStatusCode").is_some()
+                || params.get("responseErrorReason").is_some();
+            // A request had left the browser when this is a later hop of a
+            // redirect, or a response.
+            let sent = responded || params.get("redirectedRequestId").is_some();
+            let session = event["sessionId"].as_str();
+            let frame = params["frameId"].as_str().unwrap_or("");
+            let request = params["networkId"].as_str().unwrap_or("");
+            // What the browser said about this request before it set out is about an
+            // earlier hop of a redirect.
+            if gate.sites.strict() && !responded {
+                work.spaces
                     .lock()
                     .unwrap()
-                    .values()
-                    .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
-                    .cloned()
-                    .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
-                let origin = url::Url::parse(url)
-                    .map_err(|_| Failure::new("browser_url_denied"))?
-                    .origin()
-                    .ascii_serialization();
-                let owner = files::Owner {
-                    principal: downloads.principal.clone(),
-                    session: downloads.session.clone(),
-                    tab: target.id,
-                    origin,
-                    control: downloads.control.clone(),
-                };
-                if downloads
-                    .files
-                    .intercept(cdp.cleanup(), target.session, params, owner)
-                    .is_err()
-                {
-                    cdp.call(
-                        event["sessionId"].as_str(),
-                        "Fetch.failRequest",
-                        json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
-                        deadline,
-                    )
-                    .await?;
+                    .take(session.unwrap_or(""), request);
+            }
+            // A host name is judged by the addresses it leads to, before its request
+            // is sent. The lookup must not hold up the events behind this one, so a
+            // name that has to be asked about is answered from a task of its own.
+            if verdict == Verdict::Resolve
+                && !responded
+                && let Some(host) = address.as_ref().and_then(|address| address.host_str())
+            {
+                let refuses = |found: &[std::net::IpAddr]| !gate.sites.judge_addresses(found);
+                match gate.lookup.remembered(host) {
+                    Some(answer) => {
+                        if answer.is_some_and(|found| refuses(&found)) {
+                            verdict = Verdict::Deny;
+                        }
+                    }
+                    None if work.checks.len() < 64 => {
+                        note(targets, session, frame, None);
+                        let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
+                        let (host, frame) = (host.to_owned(), frame.to_owned());
+                        let session = session.map(str::to_owned);
+                        let request = params["requestId"].clone();
+                        work.checks.spawn(async move {
+                            let refused = gate
+                                .lookup
+                                .addresses(&host)
+                                .await
+                                .is_some_and(|found| !gate.sites.judge_addresses(&found));
+                            let mut args = json!({"requestId":request});
+                            if refused {
+                                note(&targets, session.as_deref(), &frame, Some(sent));
+                                args["errorReason"] = "BlockedByClient".into();
+                            }
+                            let method = if refused {
+                                "Fetch.failRequest"
+                            } else {
+                                "Fetch.continueRequest"
+                            };
+                            let answered = Instant::now() + Duration::from_secs(3);
+                            let _ = cdp.call(session.as_deref(), method, args, answered).await;
+                        });
+                        return Ok(());
+                    }
+                    // Too many names are being asked about at once.
+                    None => {
+                        cdp.call(
+                            session,
+                            "Fetch.failRequest",
+                            json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
+                            deadline,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                 }
-                return Ok(());
             }
-            let method = if allowed {
-                "Fetch.continueRequest"
+            // Where the owner refuses private networks, the address the browser really
+            // reached decides, whatever the name's lookup said.
+            if gate.sites.strict()
+                && verdict == Verdict::Resolve
+                && params.get("responseStatusCode").is_some()
+            {
+                let reported = work
+                    .spaces
+                    .lock()
+                    .unwrap()
+                    .take(session.unwrap_or(""), request);
+                match reported {
+                    Some(space) => {
+                        if !gate.sites.judge_connection(&space) {
+                            verdict = Verdict::Deny;
+                        }
+                    }
+                    None if work.checks.len() < 64 => {
+                        let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
+                        let (spaces, downloads) = (work.spaces.clone(), downloads.cloned());
+                        let host = address
+                            .as_ref()
+                            .and_then(|address| address.host_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let (session, frame) = (session.map(str::to_owned), frame.to_owned());
+                        let (request, params) = (request.to_owned(), params.clone());
+                        work.checks.spawn(async move {
+                            let session = session.as_deref();
+                            // The browser's word on this connection has not arrived yet.
+                            let mut reported = None;
+                            for _ in 0..15 {
+                                reported =
+                                    spaces.lock().unwrap().take(session.unwrap_or(""), &request);
+                                if reported.is_some() {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                            let refused = match reported {
+                                Some(space) => !gate.sites.judge_connection(&space),
+                                // Nothing was said, as for a page out of the browser's
+                                // cache: what the name's lookup says stands.
+                                None => gate
+                                    .lookup
+                                    .addresses(&host)
+                                    .await
+                                    .is_some_and(|found| !gate.sites.judge_addresses(&found)),
+                            };
+                            let deadline = Instant::now() + Duration::from_secs(3);
+                            let done = if refused {
+                                note(&targets, session, &frame, Some(true));
+                                refuse(&cdp, session, &params, deadline).await
+                            } else {
+                                let downloads = downloads.as_ref();
+                                release(&cdp, &targets, downloads, session, &params, deadline).await
+                            };
+                            if done.is_err() && cdp.connected() {
+                                cdp.stop();
+                            }
+                        });
+                        return Ok(());
+                    }
+                    // Too many requests are waiting to be judged.
+                    None => verdict = Verdict::Deny,
+                }
+            }
+            let allowed = verdict != Verdict::Deny;
+            if !allowed || !responded {
+                // A refusal by the site policy stays on the tab until its document
+                // sets out again.
+                note(
+                    targets,
+                    session,
+                    frame,
+                    (!allowed && ordinary).then_some(sent),
+                );
+            }
+            if allowed {
+                release(cdp, targets, downloads, session, params, deadline).await?;
             } else {
-                "Fetch.failRequest"
-            };
-            let mut args = json!({"requestId":params["requestId"]});
-            if !allowed {
-                args["errorReason"] = "BlockedByClient".into();
+                refuse(cdp, session, params, deadline).await?;
             }
-            cdp.call(event["sessionId"].as_str(), method, args, deadline)
-                .await?;
+        }
+        "Network.responseReceivedExtraInfo" if gate.sites.strict() => {
+            if let (Some(session), Some(request), Some(space)) = (
+                event["sessionId"].as_str(),
+                params["requestId"].as_str(),
+                params["resourceIPAddressSpace"].as_str(),
+            ) {
+                work.spaces.lock().unwrap().record(session, request, space);
+            }
         }
         "Page.javascriptDialogOpening" => {
             let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
@@ -1322,6 +2008,19 @@ async fn handle_dialog(
     result.map(|_| ())
 }
 
+/// What an observation is asked for, from parameters that passed `validate`.
+fn scope(params: &Value) -> page::Scope {
+    page::Scope {
+        filter: match params["filter"].as_str() {
+            Some("interactive") => page::Filter::Interactive,
+            Some("viewport") => page::Filter::Viewport,
+            _ => page::Filter::All,
+        },
+        within: params["within"].as_str().map(str::to_owned),
+        find: params["find"].as_str().map(str::to_owned),
+    }
+}
+
 fn validate(operation: &str, params: &Value) -> Result<()> {
     let map = params
         .as_object()
@@ -1338,6 +2037,9 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "max_nodes",
             "max_chars",
             "cursor",
+            "filter",
+            "within",
+            "find",
         ],
         "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
         "browser_wait" => &[
@@ -1373,7 +2075,27 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     {
         return Err(Failure::new("browser_invalid_params"));
     }
-    for key in ["session_id", "tab_id"] {
+    if let Some(filter) = map.get("filter")
+        && !matches!(filter.as_str(), Some("all" | "interactive" | "viewport"))
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if let Some(find) = map.get("find")
+        && !find
+            .as_str()
+            .is_some_and(|s| s.chars().count() <= 128 && !s.trim().is_empty())
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    // A sequence keeps what its first call asked for.
+    if map.contains_key("cursor")
+        && ["filter", "within", "find"]
+            .iter()
+            .any(|key| map.contains_key(*key))
+    {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    for key in ["session_id", "tab_id", "within"] {
         if let Some(value) = map.get(key)
             && !value.as_str().is_some_and(|s| {
                 !s.is_empty()
@@ -1524,4 +2246,171 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(operation: &str, effects: bool, error: Failure) -> &'static str {
+        settle(operation, effects, error).state
+    }
+
+    #[test]
+    fn a_refusal_by_the_site_policy_keeps_the_state_it_was_given() {
+        // Refused before any request: nothing was sent, whatever else the call did.
+        assert_eq!(
+            state("browser_act", true, Failure::new("browser_site_denied")),
+            "not_sent"
+        );
+        // Refused after a redirect or a response: a request has left.
+        assert_eq!(
+            state(
+                "browser_open",
+                false,
+                Failure::unknown("browser_site_denied")
+            ),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn a_rejected_command_is_uncertain_only_after_an_effect() {
+        let rejected = || Failure::unknown("browser_command_failed");
+        for operation in [
+            "browser_observe",
+            "browser_screenshot",
+            "browser_wait",
+            "browser_act",
+        ] {
+            assert_eq!(
+                state(operation, false, rejected()),
+                "not_sent",
+                "{operation}"
+            );
+        }
+        assert_eq!(state("browser_act", true, rejected()), "unknown");
+    }
+
+    #[test]
+    fn only_a_plain_product_and_version_are_reported() {
+        assert_eq!(
+            product("HeadlessChrome/122.0.6261.128"),
+            Some(json!({"product":"HeadlessChrome","version":"122.0.6261.128"}))
+        );
+        assert_eq!(
+            product("Chrome/157"),
+            Some(json!({"product":"Chrome","version":"157"}))
+        );
+        for odd in [
+            "",
+            "Chrome",
+            "/1.2",
+            "Chrome/",
+            "Chrome/1..2",
+            "Chrome/1.2 beta",
+            "My Browser/1.2",
+            "Chrome/1/2",
+        ] {
+            assert_eq!(product(odd), None, "{odd}");
+        }
+        assert_eq!(product(&format!("{}/1", "a".repeat(33))), None);
+    }
+
+    #[test]
+    fn a_document_still_being_parsed_is_not_reported_as_complete() {
+        let observed = |state: &str| {
+            let mut value = json!({"page":{"ready_state":state},"coverage":{"complete_within_scope":true,"omitted":[]}});
+            mark_loading(&mut value);
+            value["coverage"].clone()
+        };
+        assert_eq!(
+            observed("loading"),
+            json!({"complete_within_scope":false,"omitted":["document_loading"]})
+        );
+        for parsed in ["interactive", "complete"] {
+            assert_eq!(
+                observed(parsed),
+                json!({"complete_within_scope":true,"omitted":[]}),
+                "{parsed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_navigation_is_given_up_before_the_call_deadline() {
+        let now = Instant::now();
+        let left = |budget: u64| {
+            navigation_deadline(now, now + Duration::from_secs(budget)).duration_since(now)
+        };
+        assert_eq!(left(20), Duration::from_secs(17));
+        assert_eq!(left(4), Duration::from_secs(3));
+        assert_eq!(left(0), Duration::ZERO);
+        // A deadline already behind us leaves nothing to wait for.
+        assert_eq!(navigation_deadline(now + Duration::from_secs(1), now), now);
+    }
+
+    /// Checks the parameters of an observation of session `s`, with `extra` added.
+    fn observation(extra: Value) -> std::result::Result<(), &'static str> {
+        let mut params = json!({"session_id":"s","control_epoch":1});
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        validate("browser_observe", &params).map_err(|error| error.code)
+    }
+
+    #[test]
+    fn an_observation_is_asked_for_part_of_a_page_only_where_it_starts() {
+        let invalid = Err("browser_invalid_params");
+        assert_eq!(observation(json!({})), Ok(()));
+        for filter in ["all", "interactive", "viewport"] {
+            assert_eq!(observation(json!({"filter":filter})), Ok(()), "{filter}");
+        }
+        assert_eq!(observation(json!({"filter":"text"})), invalid);
+        assert_eq!(observation(json!({"filter":true})), invalid);
+        // A continuation keeps what its sequence began with.
+        let cursor = "0123456789abcdef0123456789abcdef";
+        assert_eq!(observation(json!({"cursor":cursor})), Ok(()));
+        assert_eq!(
+            observation(json!({"cursor":cursor,"filter":"interactive"})),
+            invalid
+        );
+        // One frame is named by its id, as an observation gives it.
+        assert_eq!(
+            observation(json!({"within":"66937997627883EC913DF26FAB27DE65"})),
+            Ok(())
+        );
+        assert_eq!(observation(json!({"within":"a frame"})), invalid);
+        assert_eq!(observation(json!({"within":7})), invalid);
+        assert_eq!(observation(json!({"cursor":cursor,"within":"A1"})), invalid);
+        assert_eq!(scope(&json!({"within":"A1"})).within.as_deref(), Some("A1"));
+        assert_eq!(scope(&json!({})).within, None);
+        // A text to look for has something in it, and is not long.
+        assert_eq!(observation(json!({"find":"Customer 17"})), Ok(()));
+        assert_eq!(observation(json!({"find":"x".repeat(128)})), Ok(()));
+        assert_eq!(observation(json!({"find":"x".repeat(129)})), invalid);
+        assert_eq!(observation(json!({"find":"  "})), invalid);
+        assert_eq!(observation(json!({"find":17})), invalid);
+        assert_eq!(observation(json!({"cursor":cursor,"find":"x"})), invalid);
+        assert_eq!(scope(&json!({"find":"x"})).find.as_deref(), Some("x"));
+        assert_eq!(scope(&json!({})).filter, page::Filter::All);
+        assert_eq!(
+            scope(&json!({"filter":"viewport"})).filter,
+            page::Filter::Viewport
+        );
+    }
+
+    #[test]
+    fn other_failures_keep_their_meaning() {
+        let refused = || Failure::new("browser_not_actionable");
+        assert_eq!(state("browser_act", false, refused()), "not_sent");
+        assert_eq!(state("browser_act", true, refused()), "unknown");
+        for code in ["browser_timeout_unknown", "browser_lost"] {
+            assert_eq!(
+                state("browser_observe", false, Failure::unknown(code)),
+                "unknown",
+                "{code}"
+            );
+        }
+    }
 }
