@@ -113,3 +113,43 @@ belong under ignored `.build/` directories or external artifact storage. Buildin
 an artifact does not publish or deploy it. Release preparation is described in
 [Distribution](distribution.md#prepare-a-release); signing and notarization are
 separate from checksums and build provenance.
+
+### Recover a Windows installation when the old updater fails
+
+Stop the Agent and use the current installer independently of the old updater:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1))) -Update -NoStart
+rdh --version
+rdh
+```
+
+`-Force` is an alias for `-Update`; it does not bypass verification. For a saved
+script, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Update -NoStart
+```
+
+The installer is ASCII-only so Windows PowerShell 5.1 can read it without relying
+on a UTF-8 BOM. `RDH_UPDATE=1` also enables updates
+when using `irm ... | iex`; remove that environment variable afterward.
+
+The installer uses `RDH_INSTALL_DIR` or the default installation directory,
+checks the candidate's SHA-256 and version, rejects linked or busy targets, and
+retains the original executable as `.rdh-previous-<random>.exe` beside `rdh.exe`.
+It does not run the old updater or modify binding files, settings, or storage
+ACLs. If replacement fails after moving the original to its backup, it attempts
+to restore the original and reports any retained backup. After checking the new
+version and reconnection, the named backup can be removed. A same-version repair
+is supported; specify `-Version` only when deliberately selecting a release.
+
+### Windows exFAT shared directories
+
+Shared directories may be on exFAT while private binding/configuration storage
+remains on a volume that meets the existing ACL requirements. File operations
+retain directory handles and validate handle identities, including after renames.
+On FAT-family drivers without the required atomic replacement support, updating
+an existing file is refused with an explicit error and the original is retained.
+Creating a new file, reading, listing and moving files do not require that
+replacement facility. Use NTFS when atomic overwrite is required.

@@ -17,9 +17,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
-    ERROR_NOT_SAME_DEVICE, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, UNICODE_STRING,
+    ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
+    ERROR_NO_MORE_FILES, ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY,
@@ -29,8 +29,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_TYPE_DISK,
     FileBasicInfo, FileDispositionInfo, FileIdBothDirectoryInfo, FileIdInfo,
     GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType,
-    GetFinalPathNameByHandleW, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
-    VOLUME_NAME_NT,
+    GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, OPEN_EXISTING, SYNCHRONIZE,
+    SetFileInformationByHandle, VOLUME_NAME_NT,
 };
 use windows_sys::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
 
@@ -130,6 +130,7 @@ fn root_parts(path: &str) -> Result<(Vec<u16>, Vec<String>), String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {
+    legacy: bool,
     volume: u64,
     id: u128,
 }
@@ -173,6 +174,34 @@ impl Snapshot {
             && self.changed == other.changed
     }
 }
+fn fat_volume(file: &File) -> Result<bool, String> {
+    let mut name = [0u16; 32];
+    // SAFETY: query the held handle's volume, never a separately resolved path.
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            null_mut(),
+            0,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    let length = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or_else(invalid)?;
+    let name = String::from_utf16(&name[..length]).map_err(|_| invalid())?;
+    Ok(["FAT", "FAT32", "exFAT"]
+        .iter()
+        .any(|expected| name.eq_ignore_ascii_case(expected)))
+}
+
 fn snapshot(file: &File) -> Result<Snapshot, String> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     let mut id = FILE_ID_INFO::default();
@@ -182,23 +211,35 @@ fn snapshot(file: &File) -> Result<Snapshot, String> {
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
         return Err(invalid());
     }
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0
-        || unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileIdInfo,
-                (&mut id as *mut FILE_ID_INFO).cast(),
-                size_of::<FILE_ID_INFO>() as u32,
-            )
-        } == 0
-        || unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileBasicInfo,
-                (&mut basic as *mut FILE_BASIC_INFO).cast(),
-                size_of::<FILE_BASIC_INFO>() as u32,
-            )
-        } == 0
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(last_error());
+    }
+    let extended = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } != 0;
+    if !extended {
+        let error = io::Error::last_os_error();
+        // FAT-family volumes expose 64-bit handle identities, but reject FileIdInfo.
+        // Do not truncate ReFS identities or hide arbitrary filesystem errors.
+        if !matches!(error.raw_os_error(), Some(code) if code == ERROR_INVALID_PARAMETER as i32 || code == ERROR_NOT_SUPPORTED as i32)
+            || !fat_volume(file)?
+        {
+            return Err(format!("Windows FileIdInfo query failed: {error}"));
+        }
+    }
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    } == 0
     {
         return Err(last_error());
     }
@@ -208,9 +249,18 @@ fn snapshot(file: &File) -> Result<Snapshot, String> {
         return Err(invalid());
     }
     Ok(Snapshot {
-        identity: FileIdentity {
-            volume: id.VolumeSerialNumber,
-            id: u128::from_le_bytes(id.FileId.Identifier),
+        identity: if extended {
+            FileIdentity {
+                legacy: false,
+                volume: id.VolumeSerialNumber,
+                id: u128::from_le_bytes(id.FileId.Identifier),
+            }
+        } else {
+            FileIdentity {
+                legacy: true,
+                volume: u64::from(info.dwVolumeSerialNumber),
+                id: (u128::from(info.nFileIndexHigh) << 32) | u128::from(info.nFileIndexLow),
+            }
         },
         dev: u64::from(info.dwVolumeSerialNumber),
         ino: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
@@ -928,7 +978,17 @@ fn rename_file(file: &File, parent: &File, name: &str, replace: bool) -> Result<
         )
     };
     if status != 0 {
-        Err(nt_error(status))
+        let error = nt_error(status);
+        if replace
+            && matches!(error.raw_os_error(), Some(code) if code == ERROR_INVALID_PARAMETER as i32 || code == ERROR_NOT_SUPPORTED as i32)
+            && fat_volume(file).map_err(io::Error::other)?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Atomic replacement of existing files is unsupported on this FAT-family volume",
+            ));
+        }
+        Err(error)
     } else {
         Ok(())
     }
@@ -1099,7 +1159,12 @@ pub(super) fn write_atomic(
         .map_err(io_error)?;
         temporary.may_cleanup = false;
         parent.verify()?;
-        if !named(parent.file_handle(), name)?.is_some_and(|value| value.identity == own.identity) {
+        // FAT-family file IDs can change on rename. The still-held handle is
+        // authoritative for the published object; it denies delete sharing.
+        let committed = snapshot(&temporary.file)?;
+        if !named(parent.file_handle(), name)?
+            .is_some_and(|value| value.identity == committed.identity)
+        {
             return Err("Committed file changed".into());
         }
         Ok(())
@@ -1151,8 +1216,9 @@ pub(super) fn move_file(root: &Root, source: &str, destination: &str) -> Result<
     })?;
     source_parent.verify()?;
     target_parent.verify()?;
+    let moved = snapshot(&source_file)?;
     if !named(target_parent.file_handle(), &target_name)?
-        .is_some_and(|value| value.identity == before.identity && !value.directory())
+        .is_some_and(|value| value.identity == moved.identity && !value.directory())
     {
         return Err("Moved file changed".into());
     }
@@ -1177,7 +1243,11 @@ mod tests {
             (42_949_672_960_000_000, 4_294_967_296_000.0),
         ] {
             let snapshot = Snapshot {
-                identity: FileIdentity { volume: 1, id: 2 },
+                identity: FileIdentity {
+                    legacy: false,
+                    volume: 1,
+                    id: 2,
+                },
                 dev: 1,
                 ino: 2,
                 size: 3,
@@ -1195,7 +1265,10 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
+            Self::at(std::env::temp_dir())
+        }
+        fn at(directory: PathBuf) -> Self {
+            let path = directory.join(format!(
                 "rdh-win-files-{}",
                 crate::random::hex_token::<12>().unwrap()
             ));
@@ -1214,6 +1287,103 @@ mod tests {
             self.files.roots.clear();
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a disposable exFAT volume provided by native CI"]
+    fn exfat_volume_root_and_file_operations() {
+        let directory = std::env::var_os("RDH_TEST_EXFAT_ROOT").expect("exFAT fixture volume");
+        let fixture = Fixture::at(PathBuf::from(directory));
+        let root = &fixture.files.roots["work"];
+        assert!(fat_volume(root.file()).unwrap());
+        assert!(snapshot(root.file()).unwrap().identity.legacy);
+        fixture
+            .call("make_directory", json!({"path":"nested"}))
+            .unwrap();
+        fixture
+            .call(
+                "write_file",
+                json!({"path":"nested/file","content":"before"}),
+            )
+            .unwrap();
+        assert_eq!(
+            fixture
+                .call("read_file", json!({"path":"nested/file"}))
+                .unwrap()["content"],
+            "before"
+        );
+        assert!(
+            !fixture
+                .call("list_directory", json!({"path":"nested"}))
+                .unwrap()["entries"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            fixture
+                .call("read_file", json!({"path":"../outside"}))
+                .is_err()
+        );
+        assert!(
+            fixture
+                .call(
+                    "write_file",
+                    json!({"path":"nested/file","content":"wrong","expected_sha256":"bad"})
+                )
+                .is_err()
+        );
+        let held = root.open("nested/file", false).unwrap();
+        assert!(fs::rename(fixture.path.join("nested"), fixture.path.join("other")).is_err());
+        assert!(fs::rename(&fixture.path, fixture.path.with_extension("moved")).is_err());
+        drop(held);
+        fixture.call("move_file", json!({"source":"nested/file","destination":"a-much-longer-name-than-the-original-file.txt"})).unwrap();
+        assert_eq!(
+            fixture
+                .call(
+                    "read_file",
+                    json!({"path":"a-much-longer-name-than-the-original-file.txt"})
+                )
+                .unwrap()["content"],
+            "before"
+        );
+        assert!(!fixture.path.join("nested/file").exists());
+        let replacement = fixture.call(
+            "write_file",
+            json!({
+                "path":"a-much-longer-name-than-the-original-file.txt", "content":"after",
+                "expected_sha256":crate::config::sha256_hex(b"before")
+            }),
+        );
+        let expected = match replacement {
+            Ok(_) => "after",
+            Err(error) => {
+                assert!(
+                    error.contains("Atomic replacement of existing files is unsupported"),
+                    "{error}"
+                );
+                eprintln!(
+                    "exFAT refuses unsupported atomic replacement and preserves the original"
+                );
+                "before"
+            }
+        };
+        assert_eq!(
+            fs::read_to_string(
+                fixture
+                    .path
+                    .join("a-much-longer-name-than-the-original-file.txt")
+            )
+            .unwrap(),
+            expected
+        );
+        assert!(fs::read_dir(&fixture.path).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rdh-")
+        }));
     }
 
     #[test]

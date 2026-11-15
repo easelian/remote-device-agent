@@ -22,7 +22,15 @@ irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packagin
 
 脚本选择 GitHub 上最新发布的 Release，包括预发布版，校验对应平台程序的 SHA-256 和版本后安装单个文件：Linux/macOS 为 `~/.local/bin/rdh`，Windows 为 `%LOCALAPPDATA%\RemoteDeviceAgent\rdh.exe`。Linux 默认使用 musl 构建，支持的 CPU 架构为 x86_64 和 ARM64。
 
-安装器将命令目录保存到用户 PATH，并启动 `rdh`。POSIX 安装器没有可用终端时会完成安装，并提示在交互式终端运行 `rdh`。POSIX 的新终端会加载保存的 PATH；Windows 还会更新当前 PowerShell 会话。已有命令文件不会被覆盖。只安装不启动可设置 `RDH_NO_START=1`，不修改 PATH 可设置 `RDH_NO_MODIFY_PATH=1`。`RDH_INSTALL_DIR` 可指定其他绝对安装目录。离线产物、镜像和安装器选项见[分发说明](docs/distribution.md#bootstrap-installation)。
+安装器将命令目录保存到用户 PATH，并启动 `rdh`。POSIX 安装器没有可用终端时会完成安装，并提示在交互式终端运行 `rdh`。POSIX 的新终端会加载保存的 PATH；Windows 还会更新当前 PowerShell 会话。默认不覆盖已有命令文件。只安装不启动可设置 `RDH_NO_START=1`，不修改 PATH 可设置 `RDH_NO_MODIFY_PATH=1`。`RDH_INSTALL_DIR` 可指定其他绝对安装目录。离线产物、镜像和安装器选项见[分发说明](docs/distribution.md#bootstrap-installation)。
+
+如果旧版 Windows `rdh update` 失败，先停止 Agent，再执行安装脚本的 `-Update`（也可写成 `-Force`）。脚本验证下载文件后只替换可执行文件，并保留旧程序备份；绑定和配置保持不变：
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/easelian/remote-device-agent/main/packaging/install.ps1))) -Update -NoStart
+rdh --version
+rdh
+```
 
 ### 配对与连接
 

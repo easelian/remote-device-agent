@@ -4,6 +4,8 @@ param(
     [string]$Base = '',
     [string]$Version = '',
     [string]$Offline = '',
+    [Alias('Force')]
+    [switch]$Update,
     [switch]$NoStart,
     [switch]$NoModifyPath,
     [switch]$Help
@@ -12,22 +14,26 @@ $ErrorActionPreference = 'Stop'
 if ($Help) {
     Write-Output @'
 usage: install.ps1 [-Version VERSION] [-Base HTTPS_URL|DIRECTORY] [-Offline BINARY]
-                  [-NoStart] [-NoModifyPath]
+                  [-Update | -Force] [-NoStart] [-NoModifyPath]
 
 Install the newest published GitHub release (including prereleases) as
 %LOCALAPPDATA%\RemoteDeviceAgent\rdh.exe, verify its SHA256SUMS entry and version,
 and launch rdh. RDH_INSTALL_DIR overrides the absolute installation directory.
 RDH_VERSION and RDH_BASE override release defaults. RDH_NO_START=1 disables launch;
-RDH_NO_MODIFY_PATH=1 leaves PATH unchanged. Existing rdh.exe files are preserved;
-use rdh update to update an installed executable.
+RDH_NO_MODIFY_PATH=1 leaves PATH unchanged. Existing rdh.exe files are preserved
+unless -Update (alias -Force) or RDH_UPDATE=1 is specified. Stop the Agent first.
+Updates verify the candidate, replace only rdh.exe, and retain the old executable
+under a unique .rdh-previous-*.exe name. Binding and configuration are preserved.
+The update option also supports reinstalling the same version.
 '@
     exit 0
 }
 if ($env:OS -ne 'Windows_NT') { throw 'Use install.sh on Linux and macOS.' }
-foreach ($rdhOption in @('RDH_NO_START', 'RDH_NO_MODIFY_PATH')) {
+foreach ($rdhOption in @('RDH_NO_START', 'RDH_NO_MODIFY_PATH', 'RDH_UPDATE')) {
     $rdhValue = [Environment]::GetEnvironmentVariable($rdhOption)
     if ($rdhValue -and $rdhValue -notin @('0', '1')) { throw "$rdhOption must be 0 or 1." }
 }
+$Update = $Update -or $env:RDH_UPDATE -eq '1'
 $NoStart = $NoStart -or $env:RDH_NO_START -eq '1'
 $NoModifyPath = $NoModifyPath -or $env:RDH_NO_MODIFY_PATH -eq '1'
 $rdhInstallPrefix = $env:RDH_INSTALL_DIR
@@ -39,7 +45,57 @@ if (![IO.Path]::IsPathRooted($rdhInstallPrefix)) { throw 'RDH_INSTALL_DIR must b
 $rdhInstallPrefix = [IO.Path]::GetFullPath($rdhInstallPrefix).TrimEnd('\', '/')
 if (!$NoModifyPath -and $rdhInstallPrefix.Contains(';')) { throw 'The installation path cannot contain a semicolon when updating PATH.' }
 $rdhTarget = [IO.Path]::Combine($rdhInstallPrefix, 'rdh.exe')
-if (Test-Path -LiteralPath $rdhTarget) { throw 'Command path already exists; use rdh update.' }
+$rdhUpdating = Test-Path -LiteralPath $rdhTarget
+if ($rdhUpdating -and !$Update) { throw 'Command path already exists; use rdh update or rerun this installer with -Update (-Force).' }
+function Assert-UpdateTarget {
+    # Reject redirected paths before opening or replacing the installed image.
+    $rdhPath = [IO.DirectoryInfo]::new($rdhInstallPrefix)
+    while ($null -ne $rdhPath) {
+        if (($rdhPath.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Update refuses a reparse point in the installation path.'
+        }
+        $rdhPath = $rdhPath.Parent
+    }
+    $rdhAttributes = [IO.File]::GetAttributes($rdhTarget)
+    if (($rdhAttributes -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory)) -ne 0) {
+        throw 'Update requires a regular executable, not a directory or reparse point.'
+    }
+    if (!('RdhInstaller.UpdateFile' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace RdhInstaller {
+    public static class UpdateFile {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileInfo {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Creation, Access, Write;
+            public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInfo info);
+        public static void Check(string path) {
+            // Write access and exclusive sharing reject a running image or an open file.
+            using (FileStream file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) {
+                FileInfo info;
+                if (!GetFileInformationByHandle(file.SafeFileHandle, out info))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (info.Links != 1) throw new IOException("Update refuses a hard-linked executable.");
+                if (file.ReadByte() != 'M' || file.ReadByte() != 'Z')
+                    throw new IOException("Update requires a native Windows executable.");
+            }
+        }
+    }
+}
+'@
+    }
+    try { [RdhInstaller.UpdateFile]::Check($rdhTarget) } catch {
+        throw "Cannot safely update rdh.exe. Stop the Agent and close programs using this file. $($_.Exception.Message)"
+    }
+}
+if ($rdhUpdating) { Assert-UpdateTarget }
 if (!$Base) { $Base = $env:RDH_BASE }
 if (!$Version) { $Version = $env:RDH_VERSION }
 $rdhCpu = $env:PROCESSOR_ARCHITEW6432
@@ -192,12 +248,31 @@ try {
     $rdhStage = [IO.Path]::Combine($rdhInstallPrefix, ('.rdh-install-' + [Guid]::NewGuid().ToString('N') + '.exe'))
     try {
         [IO.File]::Copy($rdhBinary, $rdhStage, $false)
-        # Same-directory move is atomic and refuses to replace existing files.
-        [IO.File]::Move($rdhStage, $rdhTarget)
+        if ($rdhUpdating) {
+            # Recheck after downloading. Keep a same-volume backup, including on failure.
+            Assert-UpdateTarget
+            $rdhBackup = [IO.Path]::Combine($rdhInstallPrefix, ('.rdh-previous-' + [Guid]::NewGuid().ToString('N') + '.exe'))
+            try {
+                [IO.File]::Replace($rdhStage, $rdhTarget, $rdhBackup)
+            } catch {
+                $rdhReplaceError = $_.Exception.Message
+                if (![IO.File]::Exists($rdhTarget) -and [IO.File]::Exists($rdhBackup)) {
+                    try { [IO.File]::Move($rdhBackup, $rdhTarget) } catch {
+                        throw "Replacement and restoration failed. Original executable retained at $rdhBackup. $rdhReplaceError"
+                    }
+                }
+                throw "Executable replacement failed. Check $rdhTarget and retained backup $rdhBackup. $rdhReplaceError"
+            }
+            Write-Output "Updated $rdhTarget"
+            Write-Output "Previous executable retained at $rdhBackup"
+        } else {
+            # Same-directory move is atomic and refuses to replace existing files.
+            [IO.File]::Move($rdhStage, $rdhTarget)
+            Write-Output "Installed $rdhTarget"
+        }
     } finally {
         if ([IO.File]::Exists($rdhStage)) { [IO.File]::Delete($rdhStage) }
     }
-    Write-Output "Installed $rdhTarget"
 
 } finally {
     Remove-Item -LiteralPath $rdhTemporary -Recurse -Force
