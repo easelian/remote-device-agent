@@ -273,6 +273,20 @@ fn validate_acl(
     owner: PSID,
     acl: *mut ACL,
 ) -> Result<()> {
+    validate_owned_acl(identity, descriptor, owner, acl, true)
+}
+
+/// The existing user directory above a new private directory may inherit its
+/// ACL. It must still have the same owner, trusted principals and user control
+/// as private storage. Only the newly created objects contain RDH state, and
+/// those must always have a protected DACL.
+fn validate_owned_acl(
+    identity: &Identity,
+    descriptor: PSECURITY_DESCRIPTOR,
+    owner: PSID,
+    acl: *mut ACL,
+    require_protected: bool,
+) -> Result<()> {
     if descriptor.is_null() || owner.is_null() || acl.is_null() {
         return Err(unsafe_storage());
     }
@@ -287,7 +301,7 @@ fn validate_acl(
     let mut revision = 0u32;
     // SAFETY: descriptor is live and both outputs point to initialized storage.
     if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
-        || control & SE_DACL_PROTECTED == 0
+        || (require_protected && control & SE_DACL_PROTECTED == 0)
     {
         return Err(unsafe_storage());
     }
@@ -376,6 +390,13 @@ pub(crate) fn check_file_acl(file: &File) -> Result<()> {
     let identity = Identity::current()?;
     with_acl(file, |descriptor, owner, acl| {
         validate_acl(&identity, descriptor, owner, acl)
+    })
+}
+
+fn check_creation_parent_acl(file: &File) -> Result<()> {
+    let identity = Identity::current()?;
+    with_acl(file, |descriptor, owner, acl| {
+        validate_owned_acl(&identity, descriptor, owner, acl, false)
     })
 }
 
@@ -818,9 +839,10 @@ fn create_child_with_descriptor(
 }
 
 /// Keep the drive and each ancestor pinned until the caller is finished. When
-/// requested, only missing directories beneath verified private parents are
-/// created. Existing directories are never repaired, and the immediate parent
-/// must have a private ACL.
+/// requested, missing directories are created with a protected ACL beneath an
+/// owner/ACL-verified user directory. That existing creation parent may inherit
+/// its ACL; it need not itself be private storage. Existing directories are
+/// never repaired, and the final parent must have a private ACL when requested.
 pub(crate) fn open_parent(
     path: &Path,
     create_missing: bool,
@@ -837,15 +859,19 @@ pub(crate) fn open_parent(
         let next = match open_child(parent, name, true, read_acl) {
             Ok(file) => file,
             Err(Error::Io(error)) if create_missing && error.kind() == io::ErrorKind::NotFound => {
-                // Without a private parent, another principal could insert or
-                // redirect the missing name between the open and the create.
-                check_file_acl(parent)?;
+                // A normal LOCALAPPDATA directory inherits its ACL. Verify its
+                // owner and trusted-principal allowlist without requiring it
+                // to be private storage. The retained handle pins this parent;
+                // exclusive creation installs and verifies a protected DACL.
+                check_creation_parent_acl(parent)?;
                 match create_child(parent, name, true) {
                     Ok(file) => file,
                     // Another creator won the name. Open and verify its actual
                     // object rather than changing its permissions.
                     Err(Error::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        open_child(parent, name, true, read_acl)?
+                        let existing = open_child(parent, name, true, read_acl)?;
+                        check_file_acl(&existing)?;
+                        existing
                     }
                     Err(error) => return Err(error),
                 }
@@ -1162,8 +1188,8 @@ mod tests {
     use std::io::Write;
     use windows_sys::Win32::Foundation::GENERIC_WRITE;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SetSecurityInfo,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetSecurityInfo,
     };
     use windows_sys::Win32::Security::{
         GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, SECURITY_ATTRIBUTES,
@@ -1211,6 +1237,14 @@ mod tests {
     }
 
     fn accepted(identity: &Identity, descriptor: &LocalMemory) -> bool {
+        accepted_for(identity, descriptor, true)
+    }
+
+    fn accepted_for(
+        identity: &Identity,
+        descriptor: &LocalMemory,
+        require_protected: bool,
+    ) -> bool {
         let mut owner = null_mut();
         let mut owner_defaulted = 0;
         let mut present = 0;
@@ -1227,7 +1261,8 @@ mod tests {
             },
             0
         );
-        present != 0 && validate_acl(identity, descriptor.0, owner, acl).is_ok()
+        present != 0
+            && validate_owned_acl(identity, descriptor.0, owner, acl, require_protected).is_ok()
     }
 
     #[test]
@@ -1253,6 +1288,32 @@ mod tests {
         let identity = Identity::current().unwrap();
         assert!(accepted(&identity, &private_descriptor(false).unwrap()));
         assert!(accepted(&identity, &private_descriptor(true).unwrap()));
+    }
+
+    #[test]
+    fn creation_parent_may_inherit_but_keeps_owner_and_acl_requirements() {
+        let identity = Identity::current().unwrap();
+        let user = user_text(&identity);
+        let inherited = descriptor(&format!(
+            "O:{user}D:AI(A;OICIID;FA;;;{user})(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)"
+        ));
+        assert!(accepted_for(&identity, &inherited, false));
+        assert!(!accepted(&identity, &inherited));
+        for invalid in [
+            format!("O:BAD:(A;;FA;;;{user})"),
+            format!("O:{user}D:(A;;FA;;;{user})(A;;FA;;;WD)"),
+            format!("O:{user}D:(A;;FA;;;{user})(A;;FR;;;WD)"),
+            format!("O:{user}D:(D;;FR;;;WD)(A;;FA;;;{user})"),
+            format!("O:{user}D:(A;;FR;;;{user})"),
+            format!("O:{user}D:(A;OICIIO;FA;;;{user})"),
+            format!("O:{user}D:NO_ACCESS_CONTROL"),
+            format!("O:{user}D:"),
+        ] {
+            assert!(
+                !accepted_for(&identity, &descriptor(&invalid), false),
+                "unsafe creation parent accepted: {invalid}"
+            );
+        }
     }
 
     #[test]
@@ -1394,8 +1455,16 @@ mod tests {
         }
 
         fn private_directory(&self, name: &str) -> std::path::PathBuf {
-            let path = self.0.join(name);
             let descriptor = private_descriptor(true).unwrap();
+            self.directory_with_descriptor(name, &descriptor)
+        }
+
+        fn directory_with_descriptor(
+            &self,
+            name: &str,
+            descriptor: &LocalMemory,
+        ) -> std::path::PathBuf {
+            let path = self.0.join(name);
             let attributes = SECURITY_ATTRIBUTES {
                 nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: descriptor.0,
@@ -1432,6 +1501,100 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, [OsStr::new("device.json")]);
+    }
+
+    fn directory_security(path: &Path) -> (u16, String) {
+        let (parents, name) = open_parent(path, false, false).unwrap();
+        let directory = open_child(parents.last().unwrap(), &name, true, true).unwrap();
+        let mut security = None;
+        with_acl(&directory, |descriptor, _, _| {
+            let mut control = 0;
+            let mut revision = 0;
+            // SAFETY: descriptor belongs to the live GetSecurityInfo result.
+            assert_ne!(
+                unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) },
+                0
+            );
+            let mut raw = null_mut();
+            let mut length = 0;
+            // SAFETY: descriptor is live and both output pointers are writable.
+            assert_ne!(
+                unsafe {
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        descriptor,
+                        1,
+                        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                        &mut raw,
+                        &mut length,
+                    )
+                },
+                0
+            );
+            let _memory = LocalMemory(raw.cast());
+            assert!(length > 0);
+            // SAFETY: length includes the NUL terminator in the allocated string.
+            let text =
+                String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length as usize - 1) })
+                    .unwrap();
+            security = Some((control, text));
+            Ok(())
+        })
+        .unwrap();
+        security.unwrap()
+    }
+
+    #[test]
+    fn first_private_directory_under_inherited_user_acl_is_protected() {
+        let fixture = Fixture::new();
+        let profile = fixture.private_directory("profile");
+        let local = profile.join("AppData").join("Local");
+        // An elevated CI account may otherwise default the owner to Administrators.
+        // Set only the user owner; let Windows inherit the actual parent DACL.
+        let owner = descriptor(&format!("O:{}", current_sid_text().unwrap()));
+        fixture.directory_with_descriptor("profile/AppData", &owner);
+        fixture.directory_with_descriptor("profile/AppData/Local", &owner);
+        let before = directory_security(&local);
+        assert_eq!(before.0 & SE_DACL_PROTECTED, 0, "fixture must inherit");
+        assert!(private_metadata(&local, true).is_err());
+
+        let private = local.join("remote-device-hub");
+        let path = private.join("nested").join("device.json");
+        ensure_parent(&path).unwrap();
+        private_metadata(&private, true).unwrap();
+        private_metadata(path.parent().unwrap(), true).unwrap();
+        write_private_new(&path, b"first-run-secret").unwrap();
+        assert_eq!(read_private(&path).unwrap(), b"first-run-secret");
+        private_metadata(&path, false).unwrap();
+        assert_eq!(directory_security(&local), before, "parent ACL changed");
+    }
+
+    #[test]
+    fn first_run_does_not_repair_an_existing_unprotected_private_directory() {
+        let fixture = Fixture::new();
+        let profile = fixture.private_directory("profile");
+        let private = profile.join("remote-device-hub");
+        let owner = descriptor(&format!("O:{}", current_sid_text().unwrap()));
+        fixture.directory_with_descriptor("profile/remote-device-hub", &owner);
+        let before = directory_security(&private);
+        assert_eq!(before.0 & SE_DACL_PROTECTED, 0);
+        let path = private.join("device.json");
+        assert!(ensure_parent(&path).is_err());
+        assert!(!path.exists());
+        assert_eq!(directory_security(&private), before);
+    }
+
+    #[test]
+    fn first_run_rejects_a_creation_parent_accessible_to_other_users() {
+        let fixture = Fixture::new();
+        let identity = Identity::current().unwrap();
+        let user = user_text(&identity);
+        let descriptor = descriptor(&format!("O:{user}D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;WD)"));
+        let parent = fixture.directory_with_descriptor("shared", &descriptor);
+        let before = directory_security(&parent);
+        let private = parent.join("remote-device-hub");
+        assert!(ensure_parent(&private.join("device.json")).is_err());
+        assert!(!private.exists(), "unsafe parent must not be bootstrapped");
+        assert_eq!(directory_security(&parent), before);
     }
 
     #[test]
