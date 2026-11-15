@@ -1,5 +1,7 @@
 //! Text stays bound to the focused control seen in the user's image.
 use super::*;
+use crate::browser::cdp::Command;
+use crate::browser::control::Effect;
 
 pub(super) struct Focus {
     frame: page::Frame,
@@ -38,14 +40,14 @@ pub(super) async fn capture(
         let context = cdp
             .call(
                 Some(&frame.session),
-                "Page.createIsolatedWorld",
+                Command::PageCreateIsolatedWorld,
                 json!({
                     "frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false,
                 }),
                 deadline,
             )
             .await?;
-        let value = cdp.call(Some(&frame.session), "Runtime.evaluate", json!({
+        let value = cdp.call(Some(&frame.session), Command::RuntimeEvaluate(Effect::None), json!({
             "contextId":context["executionContextId"],"expression":FOCUSED,"objectGroup":"rdh-human-focus",
         }), deadline).await?;
         let Some(object) = value["result"]["objectId"].as_str() else {
@@ -54,7 +56,7 @@ pub(super) async fn capture(
         let node = cdp
             .call(
                 Some(&frame.session),
-                "DOM.describeNode",
+                Command::DomDescribeNode,
                 json!({"objectId":object,"depth":0}),
                 deadline,
             )
@@ -63,7 +65,7 @@ pub(super) async fn capture(
             .cleanup()
             .call(
                 Some(&frame.session),
-                "Runtime.releaseObjectGroup",
+                Command::RuntimeReleaseObjectGroup,
                 json!({"objectGroup":"rdh-human-focus"}),
                 deadline,
             )
@@ -93,17 +95,17 @@ impl Focus {
         {
             return Err(Failure::new("browser_stale_frame"));
         }
-        let context = cdp.call(session,"Page.createIsolatedWorld",json!({
+        let context = cdp.call(session,Command::PageCreateIsolatedWorld,json!({
             "frameId":self.frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false,
         }),deadline).await?;
-        let node = cdp.call(session,"DOM.resolveNode",json!({"backendNodeId":self.backend,"executionContextId":context["executionContextId"],"objectGroup":"rdh-human-focus"}),deadline).await?;
+        let node = cdp.call(session,Command::DomResolveNode,json!({"backendNodeId":self.backend,"executionContextId":context["executionContextId"],"objectGroup":"rdh-human-focus"}),deadline).await?;
         let object = node["object"]["objectId"]
             .as_str()
             .ok_or_else(|| Failure::new("browser_stale_frame"))?;
         let result = cdp
             .call(
                 session,
-                "Runtime.callFunctionOn",
+                Command::RuntimeCallFunction(Effect::None),
                 json!({"objectId":object,"functionDeclaration":INSERT,
             "arguments":[{"value":text}],"returnByValue":true}),
                 deadline,
@@ -113,7 +115,7 @@ impl Focus {
             .cleanup()
             .call(
                 session,
-                "Runtime.releaseObjectGroup",
+                Command::RuntimeReleaseObjectGroup,
                 json!({"objectGroup":"rdh-human-focus"}),
                 deadline,
             )

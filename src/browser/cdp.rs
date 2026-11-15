@@ -1,5 +1,8 @@
 //! Private Chromium pipe, with bounded framing, queueing and late-reply ownership.
-use super::{Failure, Result, control::Control};
+use super::{
+    Failure, Result,
+    control::{Control, Effect, Submission},
+};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -13,6 +16,12 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot, watch},
 };
+
+mod command;
+#[cfg(test)]
+mod submission_tests;
+use command::Dialog;
+pub use command::{Command, InputPair};
 
 const MAX_MESSAGE: usize = 2 * 1024 * 1024;
 struct Pending {
@@ -47,8 +56,7 @@ pub struct Cdp {
     inner: Arc<Inner>,
     outgoing: mpsc::Sender<Vec<u8>>,
     events: broadcast::Sender<Value>,
-    authorization: Option<(Arc<Control>, u64, bool)>,
-    effects: Option<Arc<AtomicBool>>,
+    submission: Submission,
 }
 
 impl Cdp {
@@ -170,37 +178,18 @@ impl Cdp {
             inner,
             outgoing,
             events,
-            authorization: None,
-            effects: None,
+            submission: Submission::default(),
         }
     }
 
     pub async fn call(
         &self,
         session: Option<&str>,
-        method: &str,
+        command: Command,
         params: Value,
         deadline: Instant,
     ) -> Result<Value> {
-        self.send(session, method, params, deadline, false).await
-    }
-    pub async fn call_effect(
-        &self,
-        session: Option<&str>,
-        method: &str,
-        params: Value,
-        deadline: Instant,
-    ) -> Result<Value> {
-        self.send(session, method, params, deadline, true).await
-    }
-    async fn send(
-        &self,
-        session: Option<&str>,
-        method: &str,
-        params: Value,
-        deadline: Instant,
-        explicit_effect: bool,
-    ) -> Result<Value> {
+        let spec = command.spec();
         if Instant::now() >= deadline {
             return Err(Failure::new("browser_deadline"));
         }
@@ -214,7 +203,7 @@ impl Cdp {
             .try_acquire_owned()
             .map_err(|_| Failure::new("browser_busy"))?;
         let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
-        let mut message = json!({"id":id,"method":method,"params":params});
+        let mut message = json!({"id":id,"method":spec.method,"params":params});
         if let Some(session) = session {
             message["sessionId"] = session.into();
         }
@@ -225,32 +214,14 @@ impl Cdp {
         }
         frame.push(0);
         let (reply, result) = oneshot::channel();
-        {
-            let control = self
-                .authorization
-                .as_ref()
-                .map(|(control, _, _)| control.state.lock().unwrap());
-            if let Some((_, epoch, paused)) = &self.authorization
-                && control
-                    .as_ref()
-                    .is_some_and(|state| state.0 != *epoch || state.1 != *paused)
-            {
-                return Err(Failure::new("browser_control_changed"));
-            }
+        let blocked_release = self.submission.enqueue(spec.effect, || {
             let mut pending = self.inner.pending.lock().unwrap();
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(Failure::unknown("browser_lost"));
             }
-            let dialog_blocks = method.starts_with("Input.")
-                || method.starts_with("DOM.")
-                || method.starts_with("Page.") && method != "Page.handleJavaScriptDialog"
-                || matches!(
-                    method,
-                    "Runtime.evaluate" | "Runtime.callFunctionOn" | "Page.navigate"
-                );
+            let dialog_blocks = spec.dialog != Dialog::Continue;
             let dialog_open = session.is_some_and(|s| pending.dialogs.contains(s));
-            let release = matches!(params["type"].as_str(), Some("keyUp" | "mouseReleased"));
-            if dialog_open && dialog_blocks && !release {
+            if dialog_open && spec.dialog == Dialog::Block {
                 return Err(Failure::new("browser_dialog_open"));
             }
             pending.commands.insert(
@@ -259,21 +230,7 @@ impl Cdp {
                     reply: Some(reply),
                     session: session.map(str::to_owned),
                     dialog_blocks,
-                    // Only commands that can emit input or change a page must
-                    // drain before handing control to another actor. Background
-                    // setup, reads and owned file streams retain transport slots.
-                    input_barrier: explicit_effect
-                        || method.starts_with("Input.")
-                        || matches!(
-                            method,
-                            "Page.navigate"
-                                | "Page.bringToFront"
-                                | "DOM.focus"
-                                | "DOM.scrollIntoViewIfNeeded"
-                                | "Target.createTarget"
-                                | "Target.closeTarget"
-                                | "Page.handleJavaScriptDialog"
-                        ),
+                    input_barrier: spec.effect == Effect::Page,
                     _permit: permit,
                 },
             );
@@ -281,25 +238,10 @@ impl Cdp {
                 pending.commands.remove(&id);
                 return Err(Failure::new("browser_busy"));
             }
-            if let Some(effects) = &self.effects
-                && (explicit_effect
-                    || method.starts_with("Input.")
-                    || matches!(
-                        method,
-                        "Page.navigate"
-                            | "Page.bringToFront"
-                            | "DOM.focus"
-                            | "DOM.scrollIntoViewIfNeeded"
-                            | "Target.createTarget"
-                            | "Target.closeTarget"
-                            | "Page.handleJavaScriptDialog"
-                    ))
-            {
-                effects.store(true, Ordering::Release);
-            }
-            if dialog_open && dialog_blocks {
-                return Err(Failure::unknown("browser_dialog_open"));
-            }
+            Ok(dialog_open && dialog_blocks)
+        })?;
+        if blocked_release {
+            return Err(Failure::unknown("browser_dialog_open"));
         }
         // Timeout never releases the outstanding command's slot or implies it stopped.
         match tokio::time::timeout_at(deadline.into(), result).await {
@@ -316,12 +258,13 @@ impl Cdp {
     pub async fn input_pair(
         &self,
         session: Option<&str>,
-        method: &str,
+        pair: InputPair,
         press: Value,
         release: Value,
         deadline: Instant,
     ) -> Result<()> {
-        let pressed = self.call(session, method, press, deadline).await;
+        let (press_command, release_command) = pair.commands();
+        let pressed = self.call(session, press_command, press, deadline).await;
         if pressed
             .as_ref()
             .is_err_and(|error| error.state == "not_sent")
@@ -332,7 +275,7 @@ impl Cdp {
             .cleanup()
             .call(
                 session,
-                method,
+                release_command,
                 release,
                 deadline.max(Instant::now() + Duration::from_secs(1)),
             )
@@ -363,23 +306,23 @@ impl Cdp {
     }
     pub fn authorized(&self, control: Arc<Control>, epoch: u64) -> Self {
         let mut copy = self.clone();
-        copy.authorization = Some((control, epoch, false));
+        copy.submission = self.submission.authorized(control, epoch, false);
         copy
     }
     pub fn human(&self, control: Arc<Control>, epoch: u64) -> Self {
         let mut copy = self.clone();
-        copy.authorization = Some((control, epoch, true));
+        copy.submission = self.submission.authorized(control, epoch, true);
         copy
     }
     pub fn track_effects(&self) -> (Self, Arc<AtomicBool>) {
-        let flag = Arc::new(AtomicBool::new(false));
+        let (submission, flag) = self.submission.track_effects();
         let mut copy = self.clone();
-        copy.effects = Some(flag.clone());
+        copy.submission = submission;
         (copy, flag)
     }
     pub fn cleanup(&self) -> Self {
         let mut copy = self.clone();
-        copy.authorization = None;
+        copy.submission = self.submission.cleanup();
         copy
     }
 }
@@ -421,7 +364,7 @@ mod tests {
             worker
                 .call(
                     None,
-                    "Runtime.evaluate",
+                    Command::RuntimeEvaluate(Effect::None),
                     json!({}),
                     Instant::now() + Duration::from_secs(5),
                 )
@@ -436,7 +379,7 @@ mod tests {
         assert!(
             cdp.call(
                 None,
-                "Page.navigate",
+                Command::PageNavigate,
                 json!({}),
                 Instant::now() + Duration::from_secs(1)
             )

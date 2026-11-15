@@ -1,5 +1,6 @@
 //! Authenticated, browser-only human control. Secrets are transient input, never receipts.
 use super::*;
+use crate::browser::cdp::{Command, InputPair};
 mod text;
 
 struct HumanFrame {
@@ -379,7 +380,7 @@ impl Browsers {
         if action == "screenshot" && session.active != target.id {
             cdp.call(
                 Some(&target.session),
-                "Page.bringToFront",
+                Command::PageBringToFront,
                 json!({}),
                 deadline,
             )
@@ -493,7 +494,12 @@ impl Browsers {
         }
         if matches!(input["kind"].as_str(), Some("click" | "scroll")) {
             let metrics = cdp
-                .call(target_session, "Page.getLayoutMetrics", json!({}), deadline)
+                .call(
+                    target_session,
+                    Command::PageGetLayoutMetrics,
+                    json!({}),
+                    deadline,
+                )
                 .await?;
             if input["x"].as_f64().unwrap()
                 >= metrics["cssLayoutViewport"]["clientWidth"]
@@ -533,7 +539,7 @@ impl Browsers {
                 match cdp
                     .call(
                         Some(&chosen.session),
-                        "Page.bringToFront",
+                        Command::PageBringToFront,
                         json!({}),
                         deadline,
                     )
@@ -631,15 +637,15 @@ async fn send_input(
 ) -> Result<()> {
     match input["kind"].as_str().unwrap() {
         "click" => {
-            cdp.input_pair(session,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":input["x"],"y":input["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":input["x"],"y":input["y"],"button":"left","clickCount":1}),deadline).await?;
+            cdp.input_pair(session,InputPair::Mouse,json!({"type":"mousePressed","x":input["x"],"y":input["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":input["x"],"y":input["y"],"button":"left","clickCount":1}),deadline).await?;
         }
         "scroll" => {
-            cdp.call(session,"Input.dispatchMouseEvent",json!({"type":"mouseWheel","x":input["x"],"y":input["y"],"deltaX":0,"deltaY":input["delta_y"]}),deadline).await?;
+            cdp.call(session,Command::InputMouseWheel,json!({"type":"mouseWheel","x":input["x"],"y":input["y"],"deltaX":0,"deltaY":input["delta_y"]}),deadline).await?;
         }
         "key" => {
             let key = input["key"].as_str().unwrap();
             let code = key_code(key).unwrap();
-            cdp.input_pair(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
+            cdp.input_pair(session,InputPair::Key,json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
         }
         _ => unreachable!(),
     }
