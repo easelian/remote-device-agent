@@ -10,15 +10,15 @@ create vdisk file="$rdhVhd" maximum=128 type=expandable
 select vdisk file="$rdhVhd"
 attach vdisk
 create partition primary
-format fs=exfat quick label=RDH_EXFAT_TEST
+format fs=exfat quick label=RDHEXTEST
 assign letter=$rdhLetter
 "@ | Set-Content -LiteralPath $rdhDiskScript -Encoding ascii
     & diskpart.exe /s $rdhDiskScript
     if ($LASTEXITCODE -ne 0) { throw 'Disposable exFAT volume creation failed.' }
     $rdhVolume = Get-Volume -DriveLetter $rdhLetter
-    if ($rdhVolume.FileSystem -ne 'exFAT' -or $rdhVolume.FileSystemLabel -ne 'RDH_EXFAT_TEST') { throw 'Unexpected test volume.' }
+    if ($rdhVolume.FileSystem -ne 'exFAT' -or $rdhVolume.FileSystemLabel -ne 'RDHEXTEST') { throw 'Unexpected test volume.' }
     $env:RDH_TEST_EXFAT_ROOT = $rdhLetter + ':\'
-    cargo +1.93.0 test --profile ci --locked -p rdh-agent --lib --all-features --target $env:RDH_TARGET native_windows_exfat_ -- --ignored --nocapture --test-threads=1
+    cargo +1.93.0 test --profile ci --locked -p rdh-agent --lib --all-features --target $env:RDH_TARGET exfat_volume_root_ -- --ignored --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'exFAT file operation regression failed.' }
     cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target $env:RDH_TARGET --test windows_pairing native_windows_cli_pairs_with_exfat_shared_root -- --ignored --exact --nocapture
     if ($LASTEXITCODE -ne 0) { throw 'exFAT post-binding startup regression failed.' }

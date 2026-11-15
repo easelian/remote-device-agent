@@ -207,7 +207,11 @@ exit 1
                     if ($env:RDH_TEST_USER_PATH -eq 'existing') { $rdhTestInitial = $env:RDH_INSTALL_DIR + ';' + $rdhTestTail }
                     $rdhTestRegistry.SetValue('Path', $rdhTestInitial, [Microsoft.Win32.RegistryValueKind]::ExpandString)
                 }
-                Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)
+                if ($env:RDH_TEST_UPDATE_SWITCH -eq '1') {
+                    & ([scriptblock]::Create((Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER))) -Force
+                } else {
+                    Invoke-Expression (Get-Content -Raw -LiteralPath $env:RDH_TEST_INSTALLER)
+                }
                 if ($rdhTestRegistry) {
                     $rdhTestStoredPath = $rdhTestRegistry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
                     if (@($rdhTestStoredPath -split ';' | Where-Object { $_ -ieq $env:RDH_INSTALL_DIR }).Count -ne 1) { throw 'User PATH must contain the installation exactly once' }
@@ -723,6 +727,28 @@ fn windows_bootstrap_update_refuses_links_directories_and_locked_files() {
     );
     assert_eq!(fs::read(&alias).unwrap(), bytes);
     fs::remove_file(&alias).unwrap();
+    let symbolic = fixture.0.join("symbolic.exe");
+    fs::rename(&target, &symbolic).unwrap();
+    std::os::windows::fs::symlink_file(&symbolic, &target).unwrap();
+    failure(
+        windows_update_command(&fixture.0, &prefix, "-Force")
+            .output()
+            .unwrap(),
+        "reparse point",
+    );
+    assert_eq!(fs::read(&symbolic).unwrap(), bytes);
+    fs::remove_file(&target).unwrap();
+    fs::rename(&symbolic, &target).unwrap();
+    let redirected = fixture.0.join("redirected install");
+    std::os::windows::fs::symlink_dir(&prefix, &redirected).unwrap();
+    failure(
+        windows_update_command(&fixture.0, &redirected, "-Force")
+            .output()
+            .unwrap(),
+        "reparse point",
+    );
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    fs::remove_dir(&redirected).unwrap();
     fs::remove_file(&target).unwrap();
     fs::create_dir(&target).unwrap();
     failure(
@@ -759,6 +785,14 @@ fn windows_bootstrap_update_accepts_iex_environment_and_ascii_encodings() {
             .unwrap(),
     );
     assert_eq!(fs::read(prefix.join("rdh.exe")).unwrap(), bytes);
+    success(
+        bootstrap_defaults_command(&fixture.0, &prefix, version)
+            .env("RDH_UPDATE", "0")
+            .env("RDH_TEST_UPDATE_SWITCH", "1")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fs::read(prefix.join("rdh.exe")).unwrap(), bytes);
     // The exact distributed script must survive legacy ANSI/GBK and UTF-8 decoding.
     let script =
         fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/install.ps1")).unwrap();
@@ -783,8 +817,7 @@ fn windows_bootstrap_update_accepts_iex_environment_and_ascii_encodings() {
             $bytes = [IO.File]::ReadAllBytes($env:RDH_TEST_INSTALLER)
             foreach ($codePage in @(936, 1252, 65001)) {
                 $text = [Text.Encoding]::GetEncoding($codePage).GetString($bytes)
-                $block = [ScriptBlock]::Create($text)
-                & $block -Help
+                [void][ScriptBlock]::Create($text)
             }
         "#,
             ])
@@ -792,4 +825,56 @@ fn windows_bootstrap_update_accepts_iex_environment_and_ascii_encodings() {
             .output()
             .unwrap();
     success(output);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_bootstrap_running_image_fixture() {
+    let Some(ready) = std::env::var_os("RDH_TEST_RUNNING_IMAGE_READY") else {
+        return;
+    };
+    fs::write(ready, b"running").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(30));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_bootstrap_update_refuses_running_image() {
+    let fixture = Fixture::new();
+    let version = env!("CARGO_PKG_VERSION");
+    let bytes = fs::read(initial_binary::path()).unwrap();
+    artifact(&fixture.0, version, &bytes);
+    let prefix = fixture.0.join("running installation");
+    fs::create_dir(&prefix).unwrap();
+    let target = prefix.join("rdh.exe");
+    let old = fs::read(std::env::current_exe().unwrap()).unwrap();
+    fs::write(&target, &old).unwrap();
+    let ready = fixture.0.join("running-ready");
+    let mut child = Command::new(&target)
+        .args([
+            "--exact",
+            "windows_bootstrap_running_image_fixture",
+            "--nocapture",
+        ])
+        .env("RDH_TEST_RUNNING_IMAGE_READY", &ready)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let started = ready.exists();
+    let output = windows_update_command(&fixture.0, &prefix, "-Force")
+        .output()
+        .unwrap();
+    let remained_running = child.try_wait().unwrap().is_none();
+    let _ = child.kill();
+    child.wait().unwrap();
+    assert!(
+        started && remained_running,
+        "The test image must stay running through the refusal"
+    );
+    failure(output, "cannot safely update");
+    assert_eq!(fs::read(&target).unwrap(), old);
+    assert_eq!(fs::read_dir(&prefix).unwrap().count(), 1);
 }

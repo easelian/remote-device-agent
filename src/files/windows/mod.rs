@@ -978,7 +978,17 @@ fn rename_file(file: &File, parent: &File, name: &str, replace: bool) -> Result<
         )
     };
     if status != 0 {
-        Err(nt_error(status))
+        let error = nt_error(status);
+        if replace
+            && matches!(error.raw_os_error(), Some(code) if code == ERROR_INVALID_PARAMETER as i32 || code == ERROR_NOT_SUPPORTED as i32)
+            && fat_volume(file).map_err(io::Error::other)?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Atomic replacement of existing files is unsupported on this FAT-family volume",
+            ));
+        }
+        Err(error)
     } else {
         Ok(())
     }
@@ -1281,7 +1291,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a disposable exFAT volume provided by native CI"]
-    fn native_windows_exfat_root_and_file_operations() {
+    fn exfat_volume_root_and_file_operations() {
         let directory = std::env::var_os("RDH_TEST_EXFAT_ROOT").expect("exFAT fixture volume");
         let fixture = Fixture::at(PathBuf::from(directory));
         let root = &fixture.files.roots["work"];
@@ -1338,6 +1348,42 @@ mod tests {
             "before"
         );
         assert!(!fixture.path.join("nested/file").exists());
+        let replacement = fixture.call(
+            "write_file",
+            json!({
+                "path":"a-much-longer-name-than-the-original-file.txt", "content":"after",
+                "expected_sha256":crate::config::sha256_hex(b"before")
+            }),
+        );
+        let expected = match replacement {
+            Ok(_) => "after",
+            Err(error) => {
+                assert!(
+                    error.contains("Atomic replacement of existing files is unsupported"),
+                    "{error}"
+                );
+                eprintln!(
+                    "exFAT refuses unsupported atomic replacement and preserves the original"
+                );
+                "before"
+            }
+        };
+        assert_eq!(
+            fs::read_to_string(
+                fixture
+                    .path
+                    .join("a-much-longer-name-than-the-original-file.txt")
+            )
+            .unwrap(),
+            expected
+        );
+        assert!(fs::read_dir(&fixture.path).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rdh-")
+        }));
     }
 
     #[test]

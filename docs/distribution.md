@@ -30,7 +30,8 @@ verify the checksum and executable version, and install:
 - Windows: `%LOCALAPPDATA%\RemoteDeviceAgent\rdh.exe`.
 
 Set `RDH_INSTALL_DIR` to an absolute directory to change the destination. Existing
-command files are preserved; update an installed executable with `rdh update`.
+command files are preserved by default; use `rdh update` for normal updates or
+Windows installer `-Update` for recovery.
 The installer can use an existing destination directory containing unrelated
 files. It does not create version directories or command aliases.
 
