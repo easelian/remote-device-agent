@@ -25,6 +25,7 @@ mod navigation;
 mod observation;
 #[cfg(target_os = "linux")]
 mod performance;
+mod race;
 mod resources;
 
 #[derive(Deserialize)]
@@ -459,6 +460,22 @@ impl Port for Fake {
         })
     }
     async fn input(&self, frame: &Frame, input: NativeInput, deadline: Instant) -> Result<()> {
+        // Model coordinate dispatch separately from the previously validated
+        // node identity, so the Fake exposes the same non-atomic window.
+        let click_index = if let NativeInput::Click { node, .. } = &input {
+            let index = self
+                .data
+                .lock()
+                .unwrap()
+                .rows(frame.context)?
+                .iter()
+                .position(|row| row.node == *node)
+                .ok_or_else(types::stale)?;
+            self.coordination().before_click_dispatch().await;
+            Some(index)
+        } else {
+            None
+        };
         let pressed = match &input {
             NativeInput::Press(key) => Some(format!("{key:?}")),
             _ => None,
@@ -467,8 +484,8 @@ impl Port for Fake {
             self.effects.fetch_add(1, Ordering::AcqRel);
             let mut data=self.data.lock().unwrap();
             match input {
-                NativeInput::Click{node,..}=>{
-                    let row=data.rows_mut(frame.context)?.iter_mut().find(|row|row.node==node).unwrap();if matches!(row.role.as_str(),"checkbox"|"radio"|"switch"){row.checked = !row.checked;}let id=row.id.clone();
+                NativeInput::Click{..}=>{
+                    let row=&mut data.rows_mut(frame.context)?[click_index.unwrap()];if matches!(row.role.as_str(),"checkbox"|"radio"|"switch"){row.checked = !row.checked;}let id=row.id.clone();
                     data.events.push(json!({"type":"click","id":id,"trusted":true}));
                 },
                 NativeInput::ReplaceText(value)=>{
@@ -709,6 +726,10 @@ async fn cdp_native_shared_oracle() {
         "cdp-ownership.json",
         &faults::assert_owned_inputs(session.port.clone(), "cdp").await,
     );
+    record(
+        "cdp-dispatch-race.json",
+        &race::assert_dispatch_race(session.port.clone()).await,
+    );
     session.close().await.unwrap();
     server.abort();
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
@@ -750,6 +771,10 @@ async fn bidi_native_shared_oracle() {
     record(
         "bidi-ownership.json",
         &faults::assert_owned_inputs(session.port.clone(), "bidi").await,
+    );
+    record(
+        "bidi-dispatch-race.json",
+        &race::assert_dispatch_race(session.port.clone()).await,
     );
     session.close().await.unwrap();
     server.abort();

@@ -247,7 +247,38 @@ pub(super) async fn assert_controls<P: Harness>(port: P) -> Value {
             .is_err()
     );
     page.resume(epoch, true, deadline()).await.unwrap();
-    json!({"sensitive_readonly_inferred_rejected":true,"nested_control_rejected":true,"forms":forms,"check_verified":true,"keys":keys,"human_handoffs":20,"shared_session_coordination":true})
+    let retired = page.claim_human(deadline()).await.unwrap();
+    let mut current = second.claim_human(deadline()).await.unwrap();
+    assert!(
+        page.human_observe(&retired, Query::default(), 200, 64000, deadline())
+            .await
+            .is_err()
+    );
+    let viewed = page
+        .human_observe(&current, Query::default(), 200, 64000, deadline())
+        .await
+        .unwrap();
+    let target = observation::reference(&viewed, "keys");
+    current.expire_for_test();
+    port.clear().await.unwrap();
+    let error = page
+        .human_act(&current, target, Action::Press(Key::ArrowRight), deadline())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.code, error.state),
+        ("browser_control_changed", "not_sent")
+    );
+    assert!(
+        port.evidence("keys").await.unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(page.return_to_ai(&current, true, deadline()).await.is_err());
+    let fresh = page.claim_human(deadline()).await.unwrap();
+    page.return_to_ai(&fresh, true, deadline()).await.unwrap();
+    json!({"sensitive_readonly_inferred_rejected":true,"nested_control_rejected":true,"forms":forms,"check_verified":true,"keys":keys,"human_handoffs":20,"shared_session_coordination":true,"superseded_human_permit_rejected":true,"expired_human_permit_rejected":true})
 }
 #[tokio::test]
 async fn fake_uses_shared_form_native_key_and_handoff_assertions() {

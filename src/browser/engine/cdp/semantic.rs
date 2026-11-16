@@ -713,6 +713,8 @@ impl Port for Semantic {
                 let Point { x, y } = self
                     .point(&native, &node, &frame.marker, token, deadline)
                     .await?;
+                #[cfg(test)]
+                self.coordination.before_click_dispatch().await;
                 self.leased_pair(
                     session,
                     InputPair::Mouse,

@@ -4,6 +4,11 @@ set -euo pipefail
 # Only synthetic profiles under the runner's temporary directory are used.
 fixture_root="${RUNNER_TEMP:?}/rdh-semantic"
 mkdir -p "$fixture_root/evidence" "$fixture_root/firefox-dist"
+{
+  uname -a
+  cat /etc/os-release
+  unshare --user --map-root-user --net --pid --mount --fork true
+} 2>&1 | tee "$fixture_root/namespace-prerequisite.log"
 archive="$fixture_root/firefox-160.0.tar.xz"
 curl --fail --location --retry 2 --connect-timeout 15 --max-time 180 \
   https://archive.mozilla.org/pub/firefox/releases/160.0/linux-x86_64/en-US/firefox-160.0.tar.xz \

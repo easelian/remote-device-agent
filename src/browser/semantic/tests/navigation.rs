@@ -309,6 +309,9 @@ async fn fake_navigation_uses_the_first_request_and_redirect_assertions() {
 async fn duplicate_hops_capacity_and_unattributed_requests_are_fenced() {
     let ledger = Decisions::default();
     let rules = Policy::new(Default::default());
+    rules.resolver(crate::browser::sites::resolver(|_| async {
+        Some(vec!["93.184.216.34".parse().unwrap()])
+    }));
     let first = ledger
         .claim("a", "native", 0, "http://example.com/", true, true)
         .unwrap();
