@@ -506,7 +506,7 @@ fn namespace_init(config: &Config) -> io::Result<()> {
     request.ifr_name[0] = b'l' as _;
     request.ifr_name[1] = b'o' as _;
     request.ifr_ifru.ifru_flags = (libc::IFF_UP | libc::IFF_LOOPBACK) as _;
-    if unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS, &request) } < 0 {
+    if unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS as _, &request) } < 0 {
         return Err(io::Error::last_os_error());
     }
     drop(socket);
