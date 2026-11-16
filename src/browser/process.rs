@@ -1,9 +1,12 @@
 //! Browser ownership and profile lifetime shared by all native launchers.
-use super::{Failure, Result, cdp::Cdp, io_error, profiles::NamedProfile};
-use crate::browser::cdp::Command;
-use serde_json::{Value, json};
+use super::{
+    Failure, Result,
+    engine::{Engine, Launch},
+    io_error,
+    profiles::NamedProfile,
+};
+use serde_json::Value;
 use std::{
-    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -15,7 +18,7 @@ mod posix;
 use posix as platform;
 #[cfg(windows)]
 mod windows;
-pub use platform::detect;
+pub use super::engine::detect;
 #[cfg(windows)]
 use windows as platform;
 #[cfg(windows)]
@@ -23,37 +26,11 @@ pub(super) use windows::supervisor::run as run_supervisor;
 
 pub struct BrowserProcess {
     child: platform::Child,
-    pub cdp: Cdp,
+    pub engine: Engine,
     pub profile: PathBuf,
     closed: bool,
     named: Option<NamedProfile>,
     owner: Value,
-}
-
-fn arguments(data: &Path) -> Vec<OsString> {
-    let mut args: Vec<OsString> = [
-        "--headless",
-        "--remote-debugging-pipe",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--disable-default-apps",
-        "--disable-extensions",
-        "--disable-breakpad",
-        "--disable-crash-reporter",
-        "--site-per-process",
-        "--window-size=1280,720",
-    ]
-    .iter()
-    .map(OsString::from)
-    .collect();
-    let mut directory = OsString::from("--user-data-dir=");
-    directory.push(data);
-    args.push(directory);
-    args.push("about:blank".into());
-    args
 }
 
 impl BrowserProcess {
@@ -66,12 +43,12 @@ impl BrowserProcess {
     ) -> Result<Self> {
         let profile = root.join(id);
         crate::storage::create_private_dir(&profile).map_err(io_error)?;
-        let args = arguments(
+        let launch = Launch::native(
             named
                 .as_ref()
                 .map_or(profile.as_path(), |p| p.data.as_path()),
         );
-        let (child, read, write) = match platform::Child::spawn(executable, &profile, &args) {
+        let (child, read, write) = match platform::Child::spawn(executable, &profile, &launch) {
             Ok(value) => value,
             Err(error) => {
                 let _ = fs::remove_dir_all(&profile);
@@ -85,7 +62,7 @@ impl BrowserProcess {
             .map_or(Value::Null, |s| s.into());
         let mut process = Self {
             child,
-            cdp: Cdp::new(read, write),
+            engine: Engine::from_private_channel(read, write),
             profile,
             closed: false,
             named,
@@ -105,10 +82,7 @@ impl BrowserProcess {
             let _ = process.close().await;
             return Err(Failure::unknown("browser_start_failed"));
         }
-        let ready = process
-            .cdp
-            .call(None, Command::BrowserGetVersion, json!({}), deadline)
-            .await;
+        let ready = process.engine.product(deadline).await;
         if ready.is_err() {
             let _ = process.close().await;
         }
@@ -120,7 +94,7 @@ impl BrowserProcess {
         if self.closed {
             return Ok(());
         }
-        self.cdp.graceful_stop();
+        self.engine.graceful_stop();
         let graceful = Instant::now() + Duration::from_secs(2);
         let deadline = graceful + Duration::from_secs(1);
         loop {
@@ -162,7 +136,7 @@ impl Drop for BrowserProcess {
             if let Some(named) = self.named.as_mut() {
                 named.retain();
             }
-            self.cdp.stop();
+            self.engine.stop();
             self.child.force_stop();
             for _ in 0..20 {
                 if matches!(self.child.stopped(), Ok(true)) {

@@ -60,10 +60,62 @@ pub fn stopped(group: u32) -> io::Result<bool> {
     if !list.iter().any(|(pid, _)| *pid == group) {
         return Err(io::Error::other("Unreaped browser leader is absent"));
     }
-    Ok(list.iter().all(|(_, state)| matches!(state, 'Z' | 'X')))
+    if !list.iter().all(|(_, state)| matches!(state, 'Z' | 'X')) {
+        return Ok(false);
+    }
+    // A descendant may exit after the caller's first reap pass. Keep the
+    // leader pinned until adopted descendants have also been collected; a
+    // zombie cannot use the profile, but it still belongs to this supervisor.
+    reap(group);
+    Ok(members(group)?.iter().all(|(pid, _)| *pid == group))
 }
 pub fn retired(group: u32) -> io::Result<bool> {
     Ok(members(group)?
         .iter()
         .all(|(_, state)| matches!(state, 'Z' | 'X')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        os::unix::process::CommandExt,
+        process::Command,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn stopped_reaps_adopted_descendants_before_releasing_the_leader() {
+        prepare().unwrap();
+        let mut leader = Command::new("/bin/sh")
+            .args(["-c", "sleep 0.02 &"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let group = leader.id();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let list = members(group).unwrap();
+            if list.len() >= 2 && list.iter().all(|(_, state)| matches!(state, 'Z' | 'X')) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture did not reach unreaped descendant state: {list:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let result = stopped(group).unwrap();
+        let remaining = members(group).unwrap();
+        reap(group);
+        leader.wait().unwrap();
+        assert!(result);
+        assert_eq!(
+            remaining.len(),
+            1,
+            "successful stop must leave only the pinned leader: {remaining:?}"
+        );
+        assert_eq!(remaining[0].0, group);
+        assert!(members(group).unwrap().is_empty());
+    }
 }

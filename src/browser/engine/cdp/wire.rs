@@ -1,5 +1,5 @@
 //! Private Chromium pipe, with bounded framing, queueing and late-reply ownership.
-use super::{
+use crate::browser::{
     Failure, Result,
     control::{Control, Effect, Submission},
 };
@@ -17,14 +17,20 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, broadcast, mpsc, oneshot, watch},
 };
 
+#[cfg(test)]
+mod bounds_tests;
 mod command;
 #[cfg(test)]
 mod submission_tests;
 use command::Dialog;
 pub use command::{Command, InputPair};
 
+#[cfg(test)]
+mod metrics;
 const MAX_MESSAGE: usize = 2 * 1024 * 1024;
 struct Pending {
+    #[cfg(test)]
+    metric: metrics::Command,
     reply: Option<oneshot::Sender<Result<Value>>>,
     session: Option<String>,
     dialog_blocks: bool,
@@ -33,6 +39,8 @@ struct Pending {
 }
 #[derive(Default)]
 struct PendingState {
+    #[cfg(test)]
+    resources: metrics::Resources,
     commands: HashMap<u64, Pending>,
     dialogs: HashSet<String>,
 }
@@ -60,6 +68,15 @@ pub struct Cdp {
 }
 
 impl Cdp {
+    #[cfg(test)]
+    pub fn test_metrics(&self) -> Value {
+        let pending = self.inner.pending.lock().unwrap();
+        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len()})
+    }
+    #[cfg(test)]
+    pub fn command_count(&self) -> u64 {
+        self.inner.next.load(Ordering::Relaxed) - 1
+    }
     pub fn new<R, W>(mut read: R, mut write: W) -> Self
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -95,9 +112,16 @@ impl Cdp {
                         };
                         frame.clear();
                         if let Some(id) = value["id"].as_u64() {
-                            if let Some(command) =
-                                reader.pending.lock().unwrap().commands.remove(&id)
-                            {
+                            let command = {
+                                let mut pending = reader.pending.lock().unwrap();
+                                let command = pending.commands.remove(&id);
+                                #[cfg(test)]
+                                if let Some(command) = &command {
+                                    pending.resources.settle(&command.metric, &value);
+                                }
+                                command
+                            };
+                            if let Some(command) = command {
                                 let result = if value.get("error").is_some() {
                                     Err(Failure::unknown("browser_command_failed"))
                                 } else {
@@ -203,6 +227,8 @@ impl Cdp {
             .try_acquire_owned()
             .map_err(|_| Failure::new("browser_busy"))?;
         let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        let metric = metrics::Command::new(session, spec.method, &params);
         let mut message = json!({"id":id,"method":spec.method,"params":params});
         if let Some(session) = session {
             message["sessionId"] = session.into();
@@ -227,6 +253,8 @@ impl Cdp {
             pending.commands.insert(
                 id,
                 Pending {
+                    #[cfg(test)]
+                    metric,
                     reply: Some(reply),
                     session: session.map(str::to_owned),
                     dialog_blocks,

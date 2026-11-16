@@ -1,23 +1,16 @@
 //! Viewport-only images with a fixed pixel and encoded-byte budget.
-use super::{Failure, Result, cdp::Cdp};
-use crate::browser::cdp::Command;
+use super::{
+    Failure, Result,
+    engine::{Context, Engine},
+};
 use serde_json::{Value, json};
 use std::time::Instant;
 
 pub const MAX_ENCODED: usize = 512 * 1024;
 
-pub async fn capture(cdp: &Cdp, session: &str, deadline: Instant) -> Result<Value> {
-    let metrics = cdp
-        .call(
-            Some(session),
-            Command::PageGetLayoutMetrics,
-            json!({}),
-            deadline,
-        )
-        .await?;
-    let viewport = &metrics["cssVisualViewport"];
-    let width = viewport["clientWidth"].as_f64().unwrap_or(0.);
-    let height = viewport["clientHeight"].as_f64().unwrap_or(0.);
+pub async fn capture(engine: &Engine, session: &Context, deadline: Instant) -> Result<Value> {
+    let viewport = engine.visual_viewport(session, deadline).await?;
+    let (width, height) = (viewport.width, viewport.height);
     if !width.is_finite()
         || !height.is_finite()
         || width < 1.
@@ -27,14 +20,12 @@ pub async fn capture(cdp: &Cdp, session: &str, deadline: Instant) -> Result<Valu
     {
         return Err(Failure::new("browser_image_too_large"));
     }
-    let image = cdp.call(Some(session), Command::PageCaptureScreenshot, json!({
-        "format":"jpeg","quality":60,"captureBeyondViewport":false,
-        "clip":{"x":viewport["pageX"],"y":viewport["pageY"],"width":width,"height":height,"scale":1},
-    }), deadline).await?;
-    let data = image["data"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= MAX_ENCODED)
-        .ok_or_else(|| Failure::new("browser_image_too_large"))?;
+    let data = engine
+        .capture_viewport(session, &viewport, deadline)
+        .await?;
+    if data.is_empty() || data.len() > MAX_ENCODED {
+        return Err(Failure::new("browser_image_too_large"));
+    }
     Ok(
         json!({"mime_type":"image/jpeg","data":data,"width":width.round() as u64,
         "height":height.round() as u64,"css_pixel_scale":1,"scope":"viewport"}),

@@ -309,3 +309,256 @@ async fn disconnect_does_not_erase_committed_operation_progress() {
     assert!(effects.load(Ordering::Acquire));
     assert_eq!(cdp.inner.slots.available_permits(), 32);
 }
+
+#[tokio::test(start_paused = true)]
+async fn ten_thousand_bounded_schedules_preserve_pending_fences_and_no_replay() {
+    let mut coverage = std::collections::BTreeMap::<&str, usize>::new();
+    let mut random = 0x63d1_bc20_2611_1601u64;
+    let mut max_steps = 0;
+    for sequence in 0..10_000 {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        let bits = random;
+        let mut steps = 0;
+        let (cdp, mut browser) = fixture();
+        let control = Arc::new(Control::new());
+        let old = cdp.authorized(control.clone(), 1);
+        if bits & 1 != 0 {
+            control.change(true);
+            steps += 1;
+            let error = old
+                .call(
+                    Some("page"),
+                    Command::InputInsertText,
+                    json!({"text":"fixture"}),
+                    deadline(),
+                )
+                .await
+                .unwrap_err();
+            steps += 1;
+            assert_eq!(error.code, "browser_control_changed");
+            *coverage.entry("fence_before_submit").or_default() += 1;
+        }
+        let (epoch, paused) = control.snapshot();
+        let allowed = if paused {
+            cdp.human(control.clone(), epoch)
+        } else {
+            cdp.authorized(control.clone(), epoch)
+        };
+        let (allowed, effects) = allowed.track_effects();
+        let mut pending = Vec::new();
+        let mut input = 0;
+        let mut any_effect = false;
+        for index in 0..(1 + (bits >> 1) % 4) {
+            let effect = (bits >> (8 + index)) & 1 != 0;
+            let command = if effect {
+                Command::InputInsertText
+            } else {
+                Command::PageGetFrameTree
+            };
+            let task = call(allowed.clone(), command, json!({}));
+            let sent = request(&mut browser).await;
+            steps += 1;
+            input += usize::from(effect);
+            any_effect |= effect;
+            pending.push((sent, Some(task), effect));
+            assert_eq!(cdp.pending(), input);
+            assert_eq!(
+                cdp.inner.pending.lock().unwrap().commands.len(),
+                pending.len()
+            );
+            assert_eq!(cdp.inner.slots.available_permits(), 32 - pending.len());
+            assert_eq!(effects.load(Ordering::Acquire), any_effect);
+            *coverage
+                .entry(if effect {
+                    "effect_submit"
+                } else {
+                    "read_submit"
+                })
+                .or_default() += 1;
+        }
+        control.change(!paused);
+        steps += 1;
+        let error = allowed
+            .call(Some("page"), Command::DomFocus, json!({}), deadline())
+            .await
+            .unwrap_err();
+        steps += 1;
+        assert_eq!(
+            (error.code, error.state),
+            ("browser_control_changed", "not_sent")
+        );
+        assert_eq!(cdp.pending(), input);
+        *coverage.entry("submit_before_fence").or_default() += 1;
+        for (index, (_, task, _)) in pending.iter_mut().enumerate() {
+            if (bits >> (16 + index)) & 1 != 0 {
+                let task = task.take().unwrap();
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+                steps += 1;
+                assert_eq!(cdp.pending(), input);
+                *coverage
+                    .entry("caller_cancelled_pending_retained")
+                    .or_default() += 1;
+            }
+        }
+        if sequence % 13 == 0 {
+            drop(browser);
+            steps += 1;
+            for (_, task, _) in &mut pending {
+                if let Some(task) = task.take() {
+                    assert_eq!(task.await.unwrap().unwrap_err().code, "browser_lost");
+                }
+            }
+            while cdp.connected() {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(cdp.inner.slots.available_permits(), 32);
+            assert_eq!(cdp.pending(), 0);
+            *coverage.entry("disconnect_settlement").or_default() += 1;
+        } else {
+            let timed_out = bits & 4 != 0;
+            if timed_out {
+                tokio::time::advance(Duration::from_secs(31)).await;
+                steps += 1;
+                for (_, task, _) in &mut pending {
+                    if let Some(task) = task.take() {
+                        let e = task.await.unwrap().unwrap_err();
+                        assert_eq!((e.code, e.state), ("browser_timeout_unknown", "unknown"));
+                        *coverage.entry("timeout_pending_retained").or_default() += 1;
+                    }
+                }
+                assert_eq!(cdp.pending(), input);
+                assert_eq!(cdp.inner.slots.available_permits(), 32 - pending.len());
+            }
+            let total = pending.len();
+            for (index, (sent, task, effect)) in pending.into_iter().enumerate() {
+                let failed = (bits >> (24 + index)) & 1 != 0;
+                let reply = if failed {
+                    json!({"id":sent["id"],"error":{"code":-32000}})
+                } else {
+                    json!({"id":sent["id"],"result":{"sequence":sequence}})
+                };
+                send(&mut browser, reply).await;
+                processed(&cdp, &mut browser).await;
+                steps += 1;
+                input -= usize::from(effect);
+                if let Some(task) = task {
+                    let result = task.await.unwrap();
+                    if failed {
+                        assert_eq!(result.unwrap_err().code, "browser_command_failed");
+                    } else {
+                        assert_eq!(result.unwrap()["sequence"], sequence);
+                    }
+                }
+                assert_eq!(cdp.pending(), input);
+                assert_eq!(
+                    cdp.inner.slots.available_permits(),
+                    32 - (total - index - 1)
+                );
+                *coverage
+                    .entry(match (timed_out, failed) {
+                        (true, true) => "late_failure",
+                        (true, false) => "late_success",
+                        (false, true) => "failure",
+                        (false, false) => "success",
+                    })
+                    .or_default() += 1;
+                send(
+                    &mut browser,
+                    json!({"id":sent["id"],"result":{"duplicate":true}}),
+                )
+                .await;
+                processed(&cdp, &mut browser).await;
+                steps += 1;
+                assert_eq!(cdp.pending(), input);
+                assert_eq!(
+                    cdp.inner.pending.lock().unwrap().commands.len(),
+                    total - index - 1
+                );
+                *coverage.entry("duplicate_reply_ignored").or_default() += 1;
+            }
+            // The endpoint received only explicit submissions, even after timeouts,
+            // cancellations, fences and duplicate responses.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1), request(&mut browser))
+                    .await
+                    .is_err()
+            );
+            steps += 1;
+            assert_eq!(cdp.pending(), 0);
+            assert_eq!(cdp.inner.slots.available_permits(), 32);
+            cdp.stop();
+        }
+        assert_eq!(effects.load(Ordering::Acquire), any_effect);
+        assert!(steps <= 64);
+        max_steps = max_steps.max(steps);
+    }
+    for required in [
+        "fence_before_submit",
+        "effect_submit",
+        "read_submit",
+        "caller_cancelled_pending_retained",
+        "disconnect_settlement",
+        "timeout_pending_retained",
+        "late_failure",
+        "late_success",
+        "failure",
+        "success",
+    ] {
+        assert!(coverage[required] > 0);
+    }
+    eprintln!(
+        "D1_SCHEDULES {}",
+        json!({"seed":"63d1bc2026111601","sequences":10000,"max_steps":max_steps,"old_epoch_submissions":0,"unknown_replays":0,"coverage":coverage})
+    );
+}
+
+#[tokio::test]
+async fn thousand_fences_remain_prompt_with_full_queue_and_event_ring() {
+    let (mut cdp, _browser) = fixture();
+    let control = Arc::new(Control::new());
+    let original = cdp.outgoing.clone();
+    let (queue, _requests) = mpsc::channel(32);
+    cdp.outgoing = queue;
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        tasks.push(call(
+            cdp.authorized(control.clone(), 1),
+            Command::InputInsertText,
+            json!({}),
+        ));
+    }
+    while cdp.inner.slots.available_permits() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(cdp.outgoing.capacity(), 0);
+    let _events = cdp.events();
+    let mut samples = Vec::new();
+    for index in 0..1000 {
+        for _ in 0..256 {
+            let _ = cdp.events.send(json!({"method":"fixture.pressure"}));
+        }
+        let start = Instant::now();
+        let epoch = control.change(index % 2 == 0);
+        samples.push(start.elapsed().as_nanos() as u64);
+        assert_eq!(control.snapshot().0, epoch);
+        assert_eq!(cdp.pending(), 32);
+        assert_eq!(cdp.outgoing.capacity(), 0);
+    }
+    samples.sort_unstable();
+    let p99 = samples[989];
+    assert!(p99 <= 100_000_000);
+    eprintln!(
+        "D1_FENCES {}",
+        json!({"count":1000,"queue":32,"events_per_fence":256,"p99_ns":p99,"max_ns":samples[999]})
+    );
+    for task in tasks {
+        task.abort();
+        let _ = task.await;
+    }
+    assert_eq!(cdp.pending(), 32);
+    cdp.stop();
+    drop(original);
+}
