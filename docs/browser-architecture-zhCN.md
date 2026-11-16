@@ -28,7 +28,7 @@ Core 从经过认证的请求构造操作主体，Agent 按主体隔离会话、
 
 当前产品后端为 Chromium/CDP。D1 已完成公共页面、事件和会话边界迁移，原生协议编码位于 `engine/cdp`；实现与复现方式见 [CDP D1 实现说明](browser-cdp-d1-implementation-zhCN.md)。
 
-Firefox/BiDi 目前仅有 Linux 测试构建中的 [D2a 原生通道与隔离夹具](browser-bidi-d2a-zhCN.md)。本机端点隔离和宿主 SIGKILL 后的寿命守护仍须实现，产品能力保持不可用。页面语义适配和公开 v2 属于后续阶段。
+Firefox/BiDi 的 [D2b 内部实现](browser-bidi-d2b-zhCN.md)通过 `experimental-browser-bidi` 开关提供 Linux namespace 寿命守护、私有端点、并发传输、公共提交门和迟到响应结算。原生验证组合为 Linux x86_64 / Firefox 160.0；产品能力保持不可用，页面语义、输入和站点策略以及公开 v2 属于后续阶段。[D2a 夹具](browser-bidi-d2a-zhCN.md)保留直接回环监听组合的边界验证。
 
 分层边界见[原生浏览器后端规约](browser-backend-contract-zhCN.md)，场景、量化指标和阶段门槛见[后端验收指标](browser-backend-acceptance-zhCN.md)。规约与验收计划不代替具体组合的测试证据。运行时继续使用用户已有的受支持浏览器，不新增 Node、Puppeteer 或独立驱动包依赖。
 

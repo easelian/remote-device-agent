@@ -22,6 +22,12 @@ pub struct Submission {
 }
 
 impl Submission {
+    /// Delivery has no new effect, but must cross the same authorization fence
+    /// as submission. The transport retains the original receipt on rejection.
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub fn deliver<T>(&self, value: T) -> Result<T> {
+        self.enqueue(Effect::None, || Ok(value))
+    }
     pub fn authorized(&self, control: Arc<Control>, epoch: u64, paused: bool) -> Self {
         Self {
             authorization: Some((control, epoch, paused)),
