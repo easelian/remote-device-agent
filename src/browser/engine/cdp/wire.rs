@@ -50,6 +50,14 @@ struct Inner {
     closed: AtomicBool,
     slots: Arc<Semaphore>,
     stop: watch::Sender<Shutdown>,
+    #[cfg(test)]
+    reply_gate: Mutex<Option<ReplyGate>>,
+}
+#[cfg(test)]
+struct ReplyGate {
+    id: u64,
+    reached: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +76,19 @@ pub struct Cdp {
 }
 
 impl Cdp {
+    #[cfg(test)]
+    pub fn hold_next_reply(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached, ready) = oneshot::channel();
+        let (release, wait) = oneshot::channel();
+        let mut gate = self.inner.reply_gate.lock().unwrap();
+        assert!(gate.is_none());
+        *gate = Some(ReplyGate {
+            id: self.inner.next.load(Ordering::Relaxed),
+            reached,
+            release: wait,
+        });
+        (ready, release)
+    }
     #[cfg(test)]
     pub fn test_metrics(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
@@ -91,6 +112,8 @@ impl Cdp {
             closed: AtomicBool::new(false),
             slots: Arc::new(Semaphore::new(32)),
             stop,
+            #[cfg(test)]
+            reply_gate: Mutex::new(None),
         });
         let reader = inner.clone();
         let notifications = events.clone();
@@ -112,6 +135,24 @@ impl Cdp {
                         };
                         frame.clear();
                         if let Some(id) = value["id"].as_u64() {
+                            #[cfg(test)]
+                            {
+                                let gate = {
+                                    let mut gate = reader.reply_gate.lock().unwrap();
+                                    if gate.as_ref().is_some_and(|gate| gate.id == id) {
+                                        gate.take()
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let Some(gate) = gate {
+                                    let _ = gate.reached.send(());
+                                    tokio::select! {_ = stopped.changed()=>{},_ = gate.release=>{}}
+                                    if *stopped.borrow_and_update() == Shutdown::Immediate {
+                                        break 'reader;
+                                    }
+                                }
+                            }
                             let command = {
                                 let mut pending = reader.pending.lock().unwrap();
                                 let command = pending.commands.remove(&id);

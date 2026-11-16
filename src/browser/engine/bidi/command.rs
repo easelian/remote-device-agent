@@ -1,10 +1,24 @@
 use super::{ContextId, event::CORE_EVENTS};
 use crate::browser::control::Effect;
+use crate::browser::semantic::{
+    program::{self, Program},
+    types::Marker,
+};
 use serde_json::{Value, json};
+
+#[derive(Clone, Debug)]
+pub(super) enum Action {
+    Key { value: String, down: bool },
+    MoveTo { node: String },
+    Button { down: bool },
+    Text(String),
+    SelectAll,
+}
 
 /// Closed transport-development commands. Page programs/input and DevTools
 /// extensions require their own typed contracts in later stages.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux owns native page sessions.
 pub(super) enum Command {
     Status,
     NewSession,
@@ -12,6 +26,45 @@ pub(super) enum Command {
     Tree,
     CreateTab,
     CloseContext(ContextId),
+    SubscribePage,
+    Intercept,
+    Program {
+        context: ContextId,
+        program: Program,
+    },
+    Document(ContextId),
+    Node {
+        context: ContextId,
+        marker: Marker,
+        node: u64,
+    },
+    FrameOwner {
+        context: ContextId,
+        child: ContextId,
+    },
+    FrameGeometry {
+        context: ContextId,
+        node: String,
+        geometry: crate::browser::semantic::Geometry,
+    },
+    Navigate {
+        context: ContextId,
+        url: String,
+    },
+    Action {
+        context: ContextId,
+        action: Action,
+    },
+    ReleaseInput(ContextId),
+    Decide {
+        request: String,
+        allow: bool,
+    },
+    #[cfg(test)]
+    Fixture {
+        context: ContextId,
+        expression: String,
+    },
     #[cfg(test)]
     TestPayload {
         effect: Effect,
@@ -22,7 +75,19 @@ pub(super) enum Command {
 impl Command {
     pub fn belongs_to(&self, scope: u64) -> bool {
         match self {
-            Self::CloseContext(context) => context.belongs_to(scope),
+            Self::CloseContext(context)
+            | Self::Document(context)
+            | Self::ReleaseInput(context)
+            | Self::Program { context, .. }
+            | Self::Node { context, .. }
+            | Self::Navigate { context, .. }
+            | Self::Action { context, .. } => context.belongs_to(scope),
+            Self::FrameOwner { context, child } => {
+                context.belongs_to(scope) && child.belongs_to(scope)
+            }
+            Self::FrameGeometry { context, .. } => context.belongs_to(scope),
+            #[cfg(test)]
+            Self::Fixture { context, .. } => context.belongs_to(scope),
             _ => true,
         }
     }
@@ -44,6 +109,140 @@ impl Command {
             Self::CloseContext(context) => (
                 "browsingContext.close",
                 json!({"context":context.as_str()}),
+                Effect::Page,
+            ),
+            Self::SubscribePage => (
+                "session.subscribe",
+                json!({"events":super::event::PAGE_EVENTS}),
+                Effect::None,
+            ),
+            Self::Intercept => (
+                "network.addIntercept",
+                json!({"phases":["beforeRequestSent"]}),
+                Effect::None,
+            ),
+            Self::Program { context, program } => {
+                let (operation, args) = program.encode();
+                (
+                    "script.callFunction",
+                    json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(op,args){{return ({})(op,JSON.parse(args));}}",program::SOURCE),"arguments":[{"type":"string","value":operation},{"type":"string","value":args.to_string()}],"awaitPromise":false,"resultOwnership":"none"}),
+                    program.effect(),
+                )
+            }
+            Self::Document(context) => (
+                "script.evaluate",
+                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"expression":"document","awaitPromise":false,"resultOwnership":"none","serializationOptions":{"maxDomDepth":0,"maxObjectDepth":0}}),
+                Effect::None,
+            ),
+            Self::Node {
+                context,
+                marker,
+                node,
+            } => (
+                "script.callFunction",
+                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":program::NATIVE_NODE,"arguments":[{"type":"string","value":json!({"realm":marker.realm,"restoration":marker.restoration,"node":node}).to_string()}],"awaitPromise":false,"resultOwnership":"none","serializationOptions":{"maxDomDepth":0,"maxObjectDepth":0}}),
+                Effect::None,
+            ),
+            Self::Navigate { context, url } => (
+                "browsingContext.navigate",
+                json!({"context":context.as_str(),"url":url,"wait":"complete"}),
+                Effect::Page,
+            ),
+            Self::FrameOwner { context, child } => (
+                "browsingContext.locateNodes",
+                json!({"context":context.as_str(),"locator":{"type":"context","value":{"context":child.as_str()}},"maxNodeCount":2,"serializationOptions":{"maxDomDepth":0,"maxObjectDepth":0}}),
+                Effect::None,
+            ),
+            Self::FrameGeometry {
+                context,
+                node,
+                geometry,
+            } => (
+                "script.callFunction",
+                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(args,node){{return ({})(\"native_frame\",JSON.parse(args),node);}}",program::SOURCE),"arguments":[{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
+                Effect::None,
+            ),
+            Self::Action { context, action } => {
+                let (source, kind, actions) = match action {
+                    Action::Key { value, down } => (
+                        "rdh-owned-key",
+                        "key",
+                        vec![json!({"type":if *down{"keyDown"}else{"keyUp"},"value":value})],
+                    ),
+                    Action::MoveTo { node } => (
+                        "rdh-owned-pointer",
+                        "pointer",
+                        vec![
+                            json!({"type":"pointerMove","x":0,"y":0,"origin":{"type":"element","element":{"sharedId":node}}}),
+                        ],
+                    ),
+                    Action::Button { down } => (
+                        "rdh-owned-pointer",
+                        "pointer",
+                        vec![json!({"type":if *down{"pointerDown"}else{"pointerUp"},"button":0})],
+                    ),
+                    Action::Text(text) => (
+                        "rdh-owned-key",
+                        "key",
+                        text.chars()
+                            .flat_map(|c| {
+                                let c = if c == '\n' {
+                                    "\u{e007}".into()
+                                } else {
+                                    c.to_string()
+                                };
+                                [
+                                    json!({"type":"keyDown","value":c}),
+                                    json!({"type":"keyUp","value":c}),
+                                ]
+                            })
+                            .collect(),
+                    ),
+                    Action::SelectAll => {
+                        let modifier = if cfg!(target_os = "macos") {
+                            "\u{e03d}"
+                        } else {
+                            "\u{e009}"
+                        };
+                        (
+                            "rdh-owned-key",
+                            "key",
+                            vec![
+                                json!({"type":"keyDown","value":modifier}),
+                                json!({"type":"keyDown","value":"a"}),
+                                json!({"type":"keyUp","value":"a"}),
+                                json!({"type":"keyUp","value":modifier}),
+                            ],
+                        )
+                    }
+                };
+                (
+                    "input.performActions",
+                    json!({"context":context.as_str(),"actions":[{"type":kind,"id":source,"actions":actions}]}),
+                    Effect::Page,
+                )
+            }
+            Self::ReleaseInput(context) => (
+                "input.releaseActions",
+                json!({"context":context.as_str()}),
+                Effect::Page,
+            ),
+            Self::Decide { request, allow } => (
+                if *allow {
+                    "network.continueRequest"
+                } else {
+                    "network.failRequest"
+                },
+                json!({"request":request}),
+                Effect::None,
+            ),
+            #[cfg(test)]
+            Self::Fixture {
+                context,
+                expression,
+            } => (
+                "script.evaluate",
+                json!({"target":{"context":context.as_str()},"expression":expression,"awaitPromise":true,"resultOwnership":"none"}),
                 Effect::Page,
             ),
             #[cfg(test)]
