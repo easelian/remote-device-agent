@@ -12,7 +12,7 @@
 | Core 从已验证请求构造 AI 主体，人工通路使用独立的 Auth application grant | RDH 服务端（不在本仓库） | 模型参数不能指定用户或所有者；接纳和内容披露都核对权限 |
 | 会话保存控制代次、frame 身份与当前段元素引用；观察支持有界续读 | [browser/runtime.rs](../src/browser/runtime.rs)、[browser/page.rs](../src/browser/page.rs)、[observe.js](../src/browser/observe.js) | 旧引用和游标不能用于控制变化后的页面；观察不是网站原子快照 |
 | 传输层与文件交付共用控制代次及暂停、恢复状态 | [browser/control.rs](../src/browser/control.rs) | 控制变化与命令入队前的最后一次授权检查串行执行 |
-| 页面动作使用有限 CDP 命令与固定隔离执行函数 | [browser/cdp.rs](../src/browser/cdp.rs)、[browser/page.rs](../src/browser/page.rs) | 不开放任意脚本、原始 CDP 或系统桌面输入；已发送未知输入仍保留在途记录 |
+| 公共页面算法通过类型化端口调用 CDP 适配器；原生命令与固定程序执行收在适配器内 | [browser/engine.rs](../src/browser/engine.rs)、[engine/cdp/page.rs](../src/browser/engine/cdp/page.rs)、[browser/page.rs](../src/browser/page.rs) | 不开放任意脚本、原始 CDP 或系统桌面输入；已发送未知输入仍保留在途记录 |
 | Web 提供同会话接管、会话找回与文件交付 | RDH 服务端（不在本仓库） | 只有明确接管才开放人工输入；交回前由用户确认内容分享范围 |
 | `browser_open`、`browser_act`、`browser_control` 复用操作回执和安全摘要 | [receipts.rs](../src/receipts.rs)；RDH 服务端（不在本仓库） | 去重与恢复不等于网站事务恰好一次；摘要不保存页面或输入正文 |
 | 截图通过 MCP image 块交付；文件字节通过逐块重新授权的人工通路交付 | RDH 服务端（不在本仓库）；[browser/files.rs](../src/browser/files.rs) | 图片和文件有各自预算；实际 AI 宿主渲染仍待验证 |
@@ -24,13 +24,13 @@ Core 从经过认证的请求构造操作主体，Agent 按主体隔离会话、
 
 浏览器动作复用设备操作回执。请求超时不代表网页动作已取消，恢复时查询原操作和会话状态。没有发出滚动、输入或导航命令的失败报告为未发送，不改变控制代次；发出之后的失败按未知结果处理，会话暂停并进入新的控制代次。Agent 重启后按原生进程所有权和完成记录清理私有目录，不重放网页动作。
 
-## 原生后端演进（设计稿）
+## 原生后端与开发验证
 
-当前可用后端仍是 Chromium/CDP；`control.rs` 已独立于 CDP 模块，Firefox/BiDi 的启动、传输和页面适配尚未实现。
+当前产品后端为 Chromium/CDP。D1 已完成公共页面、事件和会话边界迁移，原生协议编码位于 `engine/cdp`；实现与复现方式见 [CDP D1 实现说明](browser-cdp-d1-implementation-zhCN.md)。
 
-后续采用公共浏览器语义、类型化 Engine 接口和原生协议适配分层。设计及边界见[原生浏览器后端规约](browser-backend-contract-zhCN.md)，对应的场景、量化指标和阶段门槛见[后端验收指标](browser-backend-acceptance-zhCN.md)。两份文档均为评审稿，不能作为能力已经实现的证明。
+Firefox/BiDi 目前仅有 Linux 测试构建中的 [D2a 原生通道与隔离夹具](browser-bidi-d2a-zhCN.md)。本机端点隔离和宿主 SIGKILL 后的寿命守护仍须实现，产品能力保持不可用。页面语义适配和公开 v2 属于后续阶段。
 
-先冻结规约并完成 CDP 保真迁移，再验证 Firefox 的受管通道、导航策略和隔离条件，随后接入公共页面语义。运行时继续使用用户已有的受支持浏览器，不新增 Node、Puppeteer 或独立驱动包依赖。
+分层边界见[原生浏览器后端规约](browser-backend-contract-zhCN.md)，场景、量化指标和阶段门槛见[后端验收指标](browser-backend-acceptance-zhCN.md)。规约与验收计划不代替具体组合的测试证据。运行时继续使用用户已有的受支持浏览器，不新增 Node、Puppeteer 或独立驱动包依赖。
 
 ## 扩展和验证
 
