@@ -386,7 +386,7 @@ async fn frozen_session_tab_reference_and_image_budgets() {
     let (metrics, _, _) = fixture.snapshot(&first).await;
     assert!(observation["nodes"].as_array().unwrap().len() <= 1000);
     assert!(metrics["references"].as_u64().unwrap() <= 1000);
-    assert!(observation["cursor"].is_string());
+    assert!(observation["next_cursor"].is_string());
     let overflow = fixture
         .call(
             "browser_observe",
