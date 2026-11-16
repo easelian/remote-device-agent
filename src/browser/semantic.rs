@@ -1,13 +1,14 @@
-//! Internal, explicitly selected semantic_dom_v1 profile. The public v1 path
+//! Explicitly selected semantic_dom_v1 profile. The public v1 path
 //! keeps its own compatibility algorithm until capability v2 is negotiated.
-#![allow(dead_code)] // Internal profile; capability v2 selects it in D4.
+#![allow(dead_code)] // Native probes and unsupported platform builds retain the shared contract.
 mod page;
 pub(crate) mod policy;
 pub(crate) mod program;
+pub(crate) mod surface;
 pub(crate) mod types;
-pub(crate) use page::Coordination;
 #[allow(unused_imports)]
 pub(crate) use page::{Acknowledgement, Action, Continuation, Observation, Page, Reference};
+pub(crate) use page::{Coordination, HumanPermit};
 pub(crate) use types::*;
 
 use super::{Result, control::Control};

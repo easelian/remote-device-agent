@@ -402,6 +402,46 @@ pub(crate) enum Key {
     ArrowRight,
 }
 
+impl Key {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter",
+            Self::Tab => "Tab",
+            Self::Escape => "Escape",
+            Self::Backspace => "Backspace",
+            Self::ArrowDown => "ArrowDown",
+            Self::ArrowUp => "ArrowUp",
+            Self::ArrowLeft => "ArrowLeft",
+            Self::ArrowRight => "ArrowRight",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self> {
+        Ok(match value {
+            "Enter" => Self::Enter,
+            "Tab" => Self::Tab,
+            "Escape" => Self::Escape,
+            "Backspace" => Self::Backspace,
+            "ArrowDown" => Self::ArrowDown,
+            "ArrowUp" => Self::ArrowUp,
+            "ArrowLeft" => Self::ArrowLeft,
+            "ArrowRight" => Self::ArrowRight,
+            _ => return Err(Failure::new("browser_invalid_params")),
+        })
+    }
+    pub fn bidi(self) -> &'static str {
+        match self {
+            Self::Enter => "\u{e007}",
+            Self::Tab => "\u{e004}",
+            Self::Escape => "\u{e00c}",
+            Self::Backspace => "\u{e003}",
+            Self::ArrowDown => "\u{e015}",
+            Self::ArrowUp => "\u{e013}",
+            Self::ArrowLeft => "\u{e012}",
+            Self::ArrowRight => "\u{e014}",
+        }
+    }
+}
+
 pub(crate) fn stale() -> Failure {
     Failure::new("browser_stale_reference")
 }

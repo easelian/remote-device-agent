@@ -91,6 +91,15 @@ pub(crate) struct Coordination {
     >,
 }
 impl Coordination {
+    pub fn control(&self) -> Arc<Control> {
+        self.control.clone()
+    }
+    pub fn pause(&self) {
+        self.control.change(true);
+        let mut state = self.state.lock().unwrap();
+        state.refs.clear();
+        state.cursor = None;
+    }
     pub fn close(&self) {
         self.control.change(true);
         let mut state = self.state.lock().unwrap();
@@ -753,6 +762,98 @@ impl<P: Port> Page<P> {
             }
         }
     }
+    /// Run a typed session/surface mutation under the same cancellation and
+    /// effect fence as reference input. Dialog recovery alone bypasses the
+    /// pending-input mutex, since that input may be waiting for this dialog.
+    pub async fn command<T, F, Fut>(
+        &self,
+        human: bool,
+        emergency: bool,
+        deadline: Instant,
+        operation: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(P) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
+        self.0
+            .inputs
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < 32).then_some(n + 1)
+            })
+            .map_err(|_| Failure::new("browser_busy"))?;
+        struct Caller<P: Port> {
+            page: Page<P>,
+            armed: bool,
+        }
+        impl<P: Port> Drop for Caller<P> {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.page.pause();
+                }
+            }
+        }
+        let mut caller = Caller {
+            page: self.clone(),
+            armed: true,
+        };
+        let page = self.clone();
+        let task = tokio::spawn(async move {
+            struct Owner<P>(Arc<Inner<P>>);
+            impl<P> Drop for Owner<P> {
+                fn drop(&mut self) {
+                    self.0.inputs.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            let _owner = Owner(page.0.clone());
+            let _serial = if emergency {
+                None
+            } else {
+                Some(
+                    tokio::time::timeout_at(deadline.into(), page.0.input.lock())
+                        .await
+                        .map_err(|_| Failure::new("browser_busy"))?,
+                )
+            };
+            let (port, epoch) = page.authorization(human)?;
+            {
+                let mut state = page.0.state.lock().unwrap();
+                state.refs.clear();
+                state.cursor = None;
+            }
+            let (port, effects) = port.tracked();
+            let result = operation(port).await;
+            let result = result.and_then(|value| {
+                page.delivery(epoch, human)?;
+                Ok(value)
+            });
+            result.map_err(|mut error| {
+                if effects.load(Ordering::Acquire) || error.state == "unknown" {
+                    error.state = "unknown";
+                    if !human {
+                        page.pause();
+                    }
+                }
+                error
+            })
+        });
+        let result = task.await.map_err(|_| Failure::unknown("browser_lost"))?;
+        caller.armed = false;
+        result
+    }
+    pub fn access(&self, human: bool) -> Result<P> {
+        self.authorization(human).map(|(port, _)| port)
+    }
+    pub fn check_human(&self, permit: &HumanPermit) -> Result<()> {
+        self.human(permit).map(drop)
+    }
+    pub fn renew_human(&self, permit: &mut HumanPermit) -> Result<()> {
+        self.human(permit)?;
+        permit.expires = Instant::now() + Duration::from_secs(300);
+        Ok(())
+    }
+
     pub async fn release(&self, deadline: Instant) -> Result<()> {
         self.pause();
         self.settled(deadline).await?;

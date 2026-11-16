@@ -24,6 +24,12 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 mod human;
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
+))]
+mod v2;
 use human::HumanLease;
 
 const MAX_SESSIONS: usize = 2;
@@ -126,6 +132,12 @@ struct Admission {
     closing: bool,
 }
 pub struct Browsers {
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    ))]
+    v2_sessions: Arc<Mutex<HashMap<String, Arc<v2::Slot>>>>,
     settings: Settings,
     executable: Option<PathBuf>,
     root: Option<PathBuf>,
@@ -151,6 +163,12 @@ impl Browsers {
         let root = config_path.and_then(|config| super::storage_root(config, token));
         let files = Files::new(root.as_deref());
         Self {
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            ))]
+            v2_sessions: Arc::new(Mutex::new(HashMap::new())),
             settings: settings.clone(),
             executable: process::detect(settings.executable.as_deref()),
             root,
@@ -196,13 +214,25 @@ impl Browsers {
         } else {
             None
         };
-        json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"sites":self.settings.sites.summary(),"shell":{"enabled":self.shell.enabled,"sandboxed":self.shell.sandboxed,"coexistence":self.settings.shell_coexistence},"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}})
+        let mut value = json!({"version":1,"available":reason.is_none(),"reason":reason,"mode":"managed_headless","profiles":if self.settings.persistent_profiles {vec!["temporary","named"]}else{vec!["temporary"]},"max_sessions":MAX_SESSIONS,"max_tabs":MAX_TABS,"idle_seconds":IDLE.as_secs(),"principal_version":1,"network_isolation":false,"sites":self.settings.sites.summary(),"shell":{"enabled":self.shell.enabled,"sandboxed":self.shell.sandboxed,"coexistence":self.settings.shell_coexistence},"human_takeover":true,"screenshot":true,"file_transfer":self.settings.downloads||self.settings.uploads,"downloads":{"enabled":self.settings.downloads,"http_attachment_only":true,"declared_length_required":true,"max_file_bytes":files::MAX_FILE,"max_total_bytes":files::MAX_TOTAL,"retention_seconds":files::RETENTION},"uploads":{"enabled":self.settings.uploads,"source":"user_local_file","main_frame_only":true,"max_file_bytes":files::MAX_FILE,"grant_ttl_seconds":files::UPLOAD_TTL,"uses":1}});
+        value["v2"] = super::selection::capability(
+            &self.settings,
+            reason.filter(|r| *r != "browser_not_installed"),
+            self.executable.is_some(),
+        );
+        value
     }
     fn prepare(&self) -> Result<&Path> {
         if self.info()["available"] != true {
             return Err(Failure::new("browser_unavailable"));
         }
-        let root = self.root.as_deref().unwrap();
+        self.prepare_storage()
+    }
+    fn prepare_storage(&self) -> Result<&Path> {
+        let root = self
+            .root
+            .as_deref()
+            .ok_or_else(|| Failure::new("browser_unavailable"))?;
         let mut initialized = self.initialized.lock().unwrap();
         if !*initialized {
             let parent = root.parent().unwrap();
@@ -270,6 +300,45 @@ impl Browsers {
         deadline: Instant,
         operation_id: Option<&str>,
     ) -> Result<Value> {
+        if operation == "browser_open"
+            && let Some(selection) = super::selection::parse(params)?
+        {
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            ))]
+            {
+                return self.v2_open(params, principal, selection, deadline).await;
+            }
+            #[cfg(not(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            )))]
+            {
+                let _ = selection;
+                return Err(Failure::new("browser_backend_unavailable"));
+            }
+        }
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        {
+            if self.v2_contains(params) {
+                return self
+                    .v2_execute(operation, params, principal, deadline)
+                    .await;
+            }
+            if operation == "browser_sessions"
+                && self.info()["available"] != true
+                && self.info()["v2"]["available"] == true
+            {
+                return Ok(json!({"sessions":self.v2_listing(principal,false)}));
+            }
+        }
         self.prepare()?;
         self.expire().await;
         if operation == "browser_open" {
@@ -313,6 +382,12 @@ impl Browsers {
                 };
                 sessions.push(json!({"session_id":id,"state":state,"control_epoch":epoch,"controller":if paused {"paused"} else {"ai"},"profile_name":slot.profile_name}));
             }
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            ))]
+            sessions.extend(self.v2_listing(principal, false));
             return Ok(json!({"sessions":sessions}));
         }
         let id = params["session_id"]
@@ -676,7 +751,14 @@ impl Browsers {
                 return Err(Failure::new("browser_paused"));
             }
             let mut sessions = self.sessions.lock().unwrap();
-            if sessions.len() >= MAX_SESSIONS {
+            let occupied = sessions.len();
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            ))]
+            let occupied = occupied + self.v2_sessions.lock().unwrap().len();
+            if occupied >= MAX_SESSIONS {
                 return Err(Failure::new("browser_session_limit"));
             }
             sessions.insert(id.clone(), slot.clone());
@@ -834,6 +916,12 @@ impl Browsers {
         let mut admission = self.admission.lock().unwrap();
         admission.closing = true;
         admission.online = false;
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        self.v2_pause_all(true);
         for slot in self.sessions.lock().unwrap().values() {
             slot.control.change(true);
             slot.closing.store(true, Ordering::Release);
@@ -845,6 +933,12 @@ impl Browsers {
     pub fn pause_all(&self) {
         let mut admission = self.admission.lock().unwrap();
         admission.online = false;
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        self.v2_pause_all(false);
         for slot in self.sessions.lock().unwrap().values() {
             slot.control.change(true);
         }
@@ -860,6 +954,12 @@ impl Browsers {
         if admission.online {
             return;
         }
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        self.v2_expire_offline();
         let slots: Vec<_> = self
             .sessions
             .lock()
@@ -895,6 +995,14 @@ impl Browsers {
         }
         if stopped {
             self.sessions.lock().unwrap().clear();
+        }
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        {
+            stopped &= self.v2_close_all().await;
         }
         self.files.wait().await;
         stopped
@@ -1563,11 +1671,14 @@ fn scope(params: &Value) -> page::Scope {
 }
 
 fn validate(operation: &str, params: &Value) -> Result<()> {
+    if operation == "browser_open" {
+        super::selection::parse(params)?;
+    }
     let map = params
         .as_object()
         .ok_or_else(|| Failure::new("browser_invalid_params"))?;
     let allowed: &[&str] = match operation {
-        "browser_open" => &["url", "profile_name"],
+        "browser_open" => &["url", "profile_name", "selection"],
         "browser_sessions" | "browser_profiles" | "browser_files" => &[],
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],

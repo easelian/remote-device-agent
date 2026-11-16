@@ -1,6 +1,6 @@
 # 原生浏览器后端规约与架构方案
 
-状态：分阶段实施规约。D1 的 CDP/v1 迁移、Firefox [D2b 内部通道](browser-bidi-d2b-zhCN.md)和 [D3 内部共同页面语义](browser-semantic-implementation-zhCN.md)已进入实现。公开 v2、产品选择与完整平台发布验收属于 D4；内部测试结果不等于产品 capability 已开放。
+状态：分阶段实施规约。CDP/v1 迁移、Firefox [内部通道](browser-bidi-d2b-zhCN.md)和[共同页面语义](browser-semantic-implementation-zhCN.md)已实现。[Capability v2](browser-capability-v2-zhCN.md) 在 Linux x86_64 开发构建中提供显式选择及 RPC/MCP 接入，须由本地策略启用；完整平台发布验收与文件等扩展能力仍按 D4 门槛推进。
 
 版本：0.2，2026-11-16。评审结论及本次取舍见第 14 节。
 
@@ -317,7 +317,7 @@ CDP 迁移阶段保持既有 MCP v1、默认浏览器选择、错误映射和观
 
 公开跨浏览器语义采用明确的 browser capability v2 方案：Server 同时识别 v1 和 v2；v2 的打开请求显式选择浏览器/语义 profile，会话响应返回实际选择和能力。未启用 v2 的设备继续按 v1 工作，不能将其字段静默解释成另一种语义。旧客户端需要 v1 行为时，由 Server 的兼容入口保持既有选择；若客户端硬编码只接受 version=1，则不向它承诺 v2 兼容。
 
-v2 的具体 JSON schema、错误目录和协商字段应在公开 Firefox 前通过单独的 Agent/Server 契约变更冻结并加入兼容测试。本稿已经确定升级条件与行为，不提前修改现有 tools-list.json。该门槛未满足时，BiDi 只能进行内部开发验收，不能对外广告为可用能力。
+v2 的 JSON schema、错误目录和协商字段由 [Agent/Server 契约](browser-capability-v2-zhCN.md)定义，Server 的 `tools-list.json` 增加可选 `selection`。能力发现的 `candidate` 表示本机条件允许尝试；成功打开后的 `session_ready` 表示本次会话已完成启动、文档身份与截图检查。客户端须区分这两个阶段，不能将编译通过或候选声明当作协议握手与全平台运行验收。
 
 ## 12. 分阶段落地与退出条件
 

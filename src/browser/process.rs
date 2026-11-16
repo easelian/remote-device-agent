@@ -199,6 +199,11 @@ pub fn recover(root: &Path) -> Result<()> {
         let id = id
             .to_str()
             .ok_or_else(|| Failure::new("browser_cleanup_pending"))?;
+        #[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
+        if id == "v2" {
+            recover_v2(&entry.path())?;
+            continue;
+        }
         if matches!(id, "profiles" | "artifacts") {
             crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
             continue;
@@ -252,6 +257,55 @@ pub fn recover(root: &Path) -> Result<()> {
         retire(&path)?;
     }
     Ok(())
+}
+
+#[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
+fn recover_v2(root: &Path) -> Result<()> {
+    crate::storage::private_metadata(root, true).map_err(io_error)?;
+    for entry in fs::read_dir(root).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        if !matches!(
+            name.to_str(),
+            Some("chromium-temporary-v1" | "firefox-temporary-v1")
+        ) {
+            return Err(Failure::new("browser_cleanup_pending"));
+        }
+        crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
+        recover(&entry.path())?;
+    }
+    Ok(())
+}
+
+/// Separate temporary profile families. An old Agent rejects the unknown v2
+/// directory instead of adopting or deleting a different browser's files.
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
+))]
+pub(super) fn prepare_v2(root: &Path, backend: &str) -> Result<PathBuf> {
+    fn directory(path: &Path) -> Result<()> {
+        match crate::storage::create_private_dir(path) {
+            Ok(_) => Ok(()),
+            Err(crate::error::Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                crate::storage::private_metadata(path, true)
+                    .map(drop)
+                    .map_err(io_error)
+            }
+            Err(e) => Err(io_error(e)),
+        }
+    }
+    let v2 = root.join("v2");
+    directory(&v2)?;
+    let family = match backend {
+        "cdp" => "chromium-temporary-v1",
+        "bidi" => "firefox-temporary-v1",
+        _ => return Err(Failure::new("browser_selection_invalid")),
+    };
+    let path = v2.join(family);
+    directory(&path)?;
+    Ok(path)
 }
 
 #[cfg(test)]

@@ -7,7 +7,15 @@ use crate::browser::semantic::{
     program::{Output, Program},
     types::Identities,
 };
+use sem::surface::{Dialog, HumanInput, Metadata, Tab};
 use std::{collections::HashMap, sync::Mutex};
+
+#[derive(Clone)]
+struct NativeTab {
+    info: Tab,
+    context: Context,
+    native: TabId,
+}
 
 #[derive(Clone)]
 pub(in crate::browser) struct Semantic {
@@ -16,13 +24,14 @@ pub(in crate::browser) struct Semantic {
     identity: Arc<Mutex<Identities>>,
     routes: Arc<Mutex<HashMap<String, Frame>>>,
     coordination: Arc<sem::Coordination>,
+    tabs: Arc<Mutex<HashMap<String, NativeTab>>>,
+    policy: Policy,
     #[cfg(test)]
     realm_variant: Arc<std::sync::atomic::AtomicU64>,
 }
 pub(in crate::browser) struct Session {
     pub port: Semantic,
     engine: Engine,
-    policy: Policy,
     task: tokio::task::JoinHandle<()>,
     owner: Option<crate::browser::process::BrowserProcess>,
     decisions: Decisions,
@@ -41,16 +50,33 @@ impl Session {
         policy: Policy,
         deadline: Instant,
     ) -> Result<Self> {
+        Self::launch_with(
+            browser,
+            root,
+            "profile",
+            policy,
+            Arc::new(sem::Coordination::new()),
+            deadline,
+        )
+        .await
+    }
+    pub async fn launch_with(
+        browser: &std::path::Path,
+        root: &std::path::Path,
+        id: &str,
+        policy: Policy,
+        coordination: Arc<sem::Coordination>,
+        deadline: Instant,
+    ) -> Result<Self> {
         policy.admit(Capabilities {
             navigation_intercept: true,
             resolved_destination_check: true,
             observed_connection_address: false,
         })?;
-        let mut owner = crate::browser::process::BrowserProcess::launch(
-            browser, root, "profile", None, deadline,
-        )
-        .await?;
-        match Self::attach(owner.engine.clone(), policy, deadline).await {
+        let mut owner =
+            crate::browser::process::BrowserProcess::launch(browser, root, id, None, deadline)
+                .await?;
+        match Self::attach(owner.engine.clone(), policy, coordination, deadline).await {
             Ok(mut session) => {
                 session.owner = Some(owner);
                 Ok(session)
@@ -74,7 +100,12 @@ impl Session {
     }
     /// The private attach stage installs the global barrier before exposing a
     /// page. Policy admission has already preceded native process allocation.
-    async fn attach(engine: Engine, policy: Policy, deadline: Instant) -> Result<Self> {
+    async fn attach(
+        engine: Engine,
+        policy: Policy,
+        coordination: Arc<sem::Coordination>,
+        deadline: Instant,
+    ) -> Result<Self> {
         policy.admit(Capabilities {
             navigation_intercept: true,
             resolved_destination_check: true,
@@ -86,6 +117,8 @@ impl Session {
         let rules = policy.clone();
         let decisions = Decisions::default();
         let ledger = decisions.clone();
+        let tabs = Arc::new(Mutex::new(HashMap::<String, NativeTab>::new()));
+        let observed = tabs.clone();
         let task = tokio::spawn(async move {
             let mut first = Some(first);
             let mut decisions: tokio::task::JoinSet<Result<()>> = tokio::task::JoinSet::new();
@@ -110,10 +143,20 @@ impl Session {
                             // its intercepted document request. Keep draining
                             // and deciding requests while that setup is pending.
                             if initializing.len()>=32 {monitor.stop();break;}
-                            let port=monitor.clone();
+                            let tab = if info.kind==ContextKind::Page {
+                                if observed.lock().unwrap().len() >= 8 {
+                                    if monitor.discard_tab(&info.tab,Policy::deadline()).await.is_err(){monitor.stop();break;}
+                                    continue;
+                                }
+                                let id=match crate::random::hex_token::<16>() {Ok(id)=>id,Err(_)=>{monitor.stop();break;}};
+                                observed.lock().unwrap().insert(id.clone(),NativeTab{info:Tab{tab_id:id.clone(),title:info.title.clone(),url:info.url.clone(),ready:false,dialog:None},context:context.clone(),native:info.tab.clone()});
+                                Some(id)
+                            } else {None};
+                            let port=monitor.clone();let all=observed.clone();
                             let ready=if info.kind==ContextKind::Page{first.take()}else{None};
                             initializing.spawn(async move {
                                 port.initialize_context(&context,false,false,Instant::now()+std::time::Duration::from_secs(10)).await?;
+                                if let Some(id)=tab && let Some(tab)=all.lock().unwrap().get_mut(&id){tab.info.ready=true;}
                                 if let Some(ready)=ready {let _=ready.send(context);}
                                 Ok(())
                             });
@@ -131,7 +174,15 @@ impl Session {
                                 port.respond(&request.handle,if allowed{RequestDecision::Continue}else{RequestDecision::Deny},token.deadline()).await?;token.settled(allowed);Ok(())
                             });
                         },
-                        Ok(Event::DialogOpened{..})=>{monitor.stop();break;},
+                        Ok(Event::Detached(context))=>{observed.lock().unwrap().retain(|_,tab|tab.context!=context);},
+                        Ok(Event::TargetChanged(info))=>{for tab in observed.lock().unwrap().values_mut().filter(|t|t.native==info.tab){tab.info.title=info.title.chars().take(4096).collect();tab.info.url=info.url.chars().take(8192).collect();}},
+                        Ok(Event::DialogOpened{context,kind,message})=>{
+                            let dialog=match Dialog::new(kind.as_str().unwrap_or(""),&message){Ok(d)=>d,Err(_)=>{monitor.stop();break;}};
+                            let mut all=observed.lock().unwrap();
+                            let Some(tab)=all.values_mut().find(|t|Some(&t.context)==context.as_ref())else{monitor.stop();break;};
+                            tab.info.dialog=Some(dialog);
+                        },
+                        Ok(Event::DialogClosed{context})=>{for tab in observed.lock().unwrap().values_mut().filter(|t|Some(&t.context)==context.as_ref()){tab.info.dialog=None;}},
                         Ok(_)=>{},Err(_)=>{monitor.stop();break;}
                     }
                 }
@@ -160,29 +211,263 @@ impl Session {
             root,
             identity: Arc::new(Mutex::new(Identities::new())),
             routes: Arc::new(Mutex::new(HashMap::new())),
-            coordination: Arc::new(sem::Coordination::new()),
+            coordination,
+            tabs,
+            policy: policy.clone(),
             #[cfg(test)]
             realm_variant: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         Ok(Self {
             port,
             engine,
-            policy,
             task,
             owner: None,
             decisions,
         })
     }
     pub async fn navigate(&self, url: &str, deadline: Instant) -> Result<()> {
+        self.port.navigate(url, deadline).await
+    }
+    pub fn policy_metrics(&self) -> sem::policy::Metrics {
+        self.decisions.metrics()
+    }
+}
+impl Semantic {
+    pub fn tab_id(&self) -> Result<String> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .values()
+            .find(|t| t.context == self.root)
+            .map(|t| t.info.tab_id.clone())
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))
+    }
+    pub fn tabs(&self) -> Vec<Tab> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| t.info.clone())
+            .collect()
+    }
+    pub fn for_tab(&self, id: &str) -> Result<Self> {
+        let root = self
+            .tabs
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|t| t.info.ready)
+            .map(|t| t.context.clone())
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+        Ok(Self {
+            root,
+            ..self.clone()
+        })
+    }
+    pub fn dialog(&self) -> Option<Dialog> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .values()
+            .find(|t| t.context == self.root)
+            .and_then(|t| t.info.dialog.clone())
+    }
+    pub async fn handle_dialog(&self, id: &str, accept: bool, deadline: Instant) -> Result<()> {
+        if self.dialog().as_ref().is_none_or(|d| d.dialog_id != id) {
+            return Err(Failure::new("browser_stale_frame"));
+        }
+        self.engine().dialog(&self.root, accept, deadline).await?;
+        for tab in self
+            .tabs
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|t| t.context == self.root)
+        {
+            if tab.info.dialog.as_ref().is_some_and(|d| d.dialog_id == id) {
+                tab.info.dialog = None;
+            }
+        }
+        Ok(())
+    }
+    pub async fn metadata(&self, deadline: Instant) -> Result<(sem::Frame, Metadata)> {
+        if self.dialog().is_some() {
+            return Err(Failure::new("browser_dialog_open"));
+        }
+        let frame = self
+            .frames(deadline)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(stale)?;
+        let Output::Surface(metadata) = self.program(&frame, Program::Surface, deadline).await?
+        else {
+            return Err(sem::types::decode());
+        };
+        for tab in self
+            .tabs
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|t| t.context == self.root)
+        {
+            tab.info.title = metadata.title.clone();
+            tab.info.url = metadata.url.clone();
+        }
+        Ok((frame, metadata))
+    }
+    pub async fn screenshot(&self, deadline: Instant) -> Result<Value> {
+        crate::browser::image::capture(&self.engine(), &self.root, deadline).await
+    }
+    pub async fn new_tab(&self, deadline: Instant) -> Result<String> {
+        if self.tabs.lock().unwrap().len() >= 8 {
+            return Err(Failure::new("browser_tab_limit"));
+        }
+        let native = self.engine().new_tab(deadline).await?;
+        loop {
+            if let Some(id) = self
+                .tabs
+                .lock()
+                .unwrap()
+                .values()
+                .find(|t| t.native == native && t.info.ready)
+                .map(|t| t.info.tab_id.clone())
+            {
+                return Ok(id);
+            }
+            if !self.connected() || Instant::now() >= deadline {
+                return Err(Failure::unknown("browser_tab_unavailable"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+    pub async fn close_tab(&self, deadline: Instant) -> Result<()> {
+        let native = {
+            let all = self.tabs.lock().unwrap();
+            if all.len() <= 1 {
+                return Err(Failure::new("browser_last_tab"));
+            }
+            all.values()
+                .find(|t| t.context == self.root)
+                .map(|t| t.native.clone())
+                .ok_or_else(stale)?
+        };
+        self.engine().close_tab(&native, deadline).await?;
+        self.tabs
+            .lock()
+            .unwrap()
+            .retain(|_, t| t.context != self.root);
+        Ok(())
+    }
+    pub async fn activate(&self, deadline: Instant) -> Result<()> {
+        self.engine().activate(&self.root, deadline).await
+    }
+    pub async fn focused_frame(&self, frame: &sem::Frame, deadline: Instant) -> Result<bool> {
+        let mut child = self.native(frame)?;
+        let mut parent = frame.parent;
+        let mut depth = 0;
+        while let Some(context) = parent {
+            depth += 1;
+            if depth > sem::MAX_FRAMES {
+                return Err(sem::types::decode());
+            }
+            let (key, next) = {
+                let ids = self.identity.lock().unwrap();
+                (ids.key(context)?.to_owned(), ids.parent(context)?)
+            };
+            let native = self
+                .routes
+                .lock()
+                .unwrap()
+                .get(&key)
+                .cloned()
+                .ok_or_else(stale)?;
+            let owner = self
+                .engine()
+                .frame_owner(&native.session, &child.id, deadline)
+                .await?;
+            let world = self.world(&native, deadline).await?;
+            let session = Some(self.adapter.session(&native.session)?);
+            let reply = self.adapter.wire.call(session, Command::DomResolveNode,
+                json!({"backendNodeId":self.adapter.node(&owner)?,"executionContextId":world,"objectGroup":"rdh-semantic-focus"}),deadline).await?;
+            let object = reply["object"]["objectId"].as_str().ok_or_else(stale)?;
+            let checked = self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),
+                json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_focused_frame"},{"value":null},{"objectId":object}],"returnByValue":true}),deadline).await;
+            let released = self
+                .adapter
+                .wire
+                .cleanup()
+                .call(
+                    session,
+                    Command::RuntimeReleaseObject,
+                    json!({"objectId":object}),
+                    deadline.max(Instant::now() + std::time::Duration::from_secs(1)),
+                )
+                .await;
+            if released.is_err() {
+                self.adapter.stop();
+                return Err(Failure::unknown("browser_cleanup_pending"));
+            }
+            if !matches!(
+                decode_program(&Program::NativeFrameFocused, checked?)?,
+                Output::Applied(Some(true))
+            ) {
+                return Ok(false);
+            }
+            child = native;
+            parent = next;
+        }
+        Ok(child.session == self.root)
+    }
+    pub async fn human_input(&self, input: HumanInput, deadline: Instant) -> Result<()> {
+        let engine = self.engine();
+        match input {
+            HumanInput::Click { x, y } => engine.click(&self.root, Point { x, y }, deadline).await,
+            HumanInput::Scroll { x, y, delta } => {
+                engine
+                    .wheel(&self.root, Point { x, y }, delta, deadline)
+                    .await
+            }
+            HumanInput::Key(key) => engine.press(&self.root, key.name(), deadline).await,
+            HumanInput::Text { frame, focus, text } => {
+                let current = self.refresh(&frame, deadline).await?;
+                if current != *frame {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                if !self.focused_frame(&frame, deadline).await? {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                let Output::Surface(metadata) =
+                    self.program(&frame, Program::Surface, deadline).await?
+                else {
+                    return Err(sem::types::decode());
+                };
+                if metadata.focus.as_ref() != Some(&focus) {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                let native = self.native(&frame)?;
+                self.adapter
+                    .wire
+                    .call(
+                        Some(self.adapter.session(&native.session)?),
+                        Command::InputInsertText,
+                        json!({"text":text}),
+                        deadline,
+                    )
+                    .await
+                    .map(drop)
+            }
+        }
+    }
+    pub async fn navigate(&self, url: &str, deadline: Instant) -> Result<()> {
         if !self.policy.allows(url, deadline).await {
             return Err(Failure::new("browser_site_denied"));
         }
         let reply = self
-            .engine
-            .backend
+            .adapter
             .wire
             .call(
-                Some(self.engine.backend.session(&self.port.root)?),
+                Some(self.adapter.session(&self.root)?),
                 Command::PageNavigate,
                 json!({"url":url}),
                 deadline,
@@ -192,16 +477,16 @@ impl Session {
             return Err(Failure::unknown("browser_navigation_failed"));
         }
         loop {
-            let native = self.engine.page_frames(&self.port.root, deadline).await?;
+            let native = self.engine().page_frames(&self.root, deadline).await?;
             if let Some(top) = native.first() {
-                let document = self.engine.backend.key(&top.document.0)?;
+                let document = self.adapter.key(&top.document.0)?;
                 if reply["loaderId"]
                     .as_str()
                     .is_none_or(|expected| expected == document)
                 {
-                    let world = self.port.world(top, deadline).await?;
+                    let world = self.world(top, deadline).await?;
                     if matches!(
-                        self.port.run(top, world, &Program::Ready, deadline).await?,
+                        self.run(top, world, &Program::Ready, deadline).await?,
                         Output::Applied(Some(true))
                     ) {
                         return Ok(());
@@ -214,11 +499,6 @@ impl Session {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
-    pub fn policy_metrics(&self) -> sem::policy::Metrics {
-        self.decisions.metrics()
-    }
-}
-impl Semantic {
     #[cfg(test)]
     pub fn advance_semantic_realm(&self) {
         self.realm_variant
@@ -271,7 +551,13 @@ impl Semantic {
                 deadline.max(Instant::now() + std::time::Duration::from_secs(1)),
             )
             .await;
-        if released.is_err() {
+        // A dialog can defer the native release reply. Wire retains that
+        // command and its input barrier; explicit dialog recovery can settle
+        // it. Other cleanup failures still stop the connection.
+        if released
+            .as_ref()
+            .is_err_and(|e| e.code != "browser_dialog_open")
+        {
             self.adapter.stop();
         }
         pressed.and(released).map(drop).map_err(|mut error| {
