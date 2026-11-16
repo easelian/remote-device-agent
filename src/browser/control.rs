@@ -18,7 +18,7 @@ pub enum Effect {
 #[derive(Clone, Default)]
 pub struct Submission {
     authorization: Option<(Arc<Control>, u64, bool)>,
-    effects: Option<Arc<AtomicBool>>,
+    effects: Vec<Arc<AtomicBool>>,
 }
 
 impl Submission {
@@ -37,9 +37,11 @@ impl Submission {
 
     pub fn track_effects(&self) -> (Self, Arc<AtomicBool>) {
         let flag = Arc::new(AtomicBool::new(false));
+        let mut effects = self.effects.clone();
+        effects.push(flag.clone());
         (
             Self {
-                effects: Some(flag.clone()),
+                effects,
                 ..self.clone()
             },
             flag,
@@ -71,10 +73,10 @@ impl Submission {
             return Err(Failure::new("browser_control_changed"));
         }
         let result = enqueue()?;
-        if effect == Effect::Page
-            && let Some(effects) = &self.effects
-        {
-            effects.store(true, Ordering::Release);
+        if effect == Effect::Page {
+            for effects in &self.effects {
+                effects.store(true, Ordering::Release);
+            }
         }
         Ok(result)
     }
@@ -113,6 +115,15 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_input_tracking_preserves_the_operation_progress() {
+        let (outer, operation) = Submission::default().track_effects();
+        let (inner, input) = outer.track_effects();
+        inner.enqueue(Effect::Page, || Ok(())).unwrap();
+        assert!(operation.load(Ordering::Acquire));
+        assert!(input.load(Ordering::Acquire));
+    }
 
     #[test]
     fn changed_control_never_enters_the_enqueue_closure() {
