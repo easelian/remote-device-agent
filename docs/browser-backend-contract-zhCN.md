@@ -1,6 +1,6 @@
 # 原生浏览器后端规约与架构方案
 
-状态：分阶段实施规约。D1 的 CDP/v1 迁移已完成，见[实现说明](browser-cdp-d1-implementation-zhCN.md)。Firefox 已有 [D2b 内部通道](browser-bidi-d2b-zhCN.md)，产品页面能力、站点策略与公开 v2 仍待 D3/D4 实施及发布验收。
+状态：分阶段实施规约。D1 的 CDP/v1 迁移、Firefox [D2b 内部通道](browser-bidi-d2b-zhCN.md)和 [D3 内部共同页面语义](browser-semantic-implementation-zhCN.md)已进入实现。公开 v2、产品选择与完整平台发布验收属于 D4；内部测试结果不等于产品 capability 已开放。
 
 版本：0.2，2026-11-16。评审结论及本次取舍见第 14 节。
 

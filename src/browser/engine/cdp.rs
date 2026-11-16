@@ -9,6 +9,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 mod decode_tests;
 pub(super) mod launch;
 mod page;
+#[cfg(feature = "experimental-browser-bidi")]
+pub(in crate::browser) mod semantic;
 mod session;
 mod support;
 mod wire;
