@@ -11,7 +11,7 @@ use std::{
 };
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub(super) mod linux;
 #[cfg(target_os = "linux")]
 use linux as group;
 #[cfg(target_os = "macos")]

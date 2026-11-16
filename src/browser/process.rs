@@ -17,6 +17,9 @@ use std::{
 #[cfg(all(test, target_os = "linux"))]
 mod bidi_probe;
 
+#[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
+pub(crate) mod firefox;
+
 #[cfg(unix)]
 mod posix;
 #[cfg(unix)]
@@ -223,9 +226,27 @@ pub fn recover(root: &Path) -> Result<()> {
             fs::remove_dir(&path).map_err(io_error)?;
             continue;
         }
-        if !platform::retired(&path, owner.as_ref())
-            .map_err(|_| Failure::new("browser_cleanup_pending"))?
+        #[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
+        let stopped = if owner
+            .as_ref()
+            .is_some_and(|v| v["kind"] == "linux-bidi-namespace-v1")
         {
+            firefox::retired(owner.as_ref().unwrap())
+        } else {
+            platform::retired(&path, owner.as_ref())
+        };
+        #[cfg(not(all(target_os = "linux", feature = "experimental-browser-bidi")))]
+        let stopped = if owner
+            .as_ref()
+            .is_some_and(|v| v["kind"] == "linux-bidi-namespace-v1")
+        {
+            Err(std::io::Error::other(
+                "BiDi namespace recovery requires its development feature",
+            ))
+        } else {
+            platform::retired(&path, owner.as_ref())
+        };
+        if !stopped.map_err(|_| Failure::new("browser_cleanup_pending"))? {
             return Err(Failure::new("browser_cleanup_pending"));
         }
         retire(&path)?;
