@@ -517,6 +517,8 @@ impl Port for Semantic {
                     owned
                         .action(&context, Action::MoveTo { node }, deadline)
                         .await?;
+                    #[cfg(test)]
+                    self.coordination.before_click_dispatch().await;
                     owned
                         .action(&context, Action::Button { down: true }, deadline)
                         .await?;

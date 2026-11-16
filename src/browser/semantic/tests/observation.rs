@@ -12,6 +12,7 @@ pub(super) enum Change {
     Other,
     Own,
     Replace,
+    ReplaceAtDispatch,
     Type,
     Hash,
     History,
@@ -60,6 +61,9 @@ fn change_expression(change: Change) -> &'static str {
         Change::Own => "(document.getElementById('own').textContent='Invoice-A changed',true)",
         Change::Replace => {
             "(()=>{const a=document.getElementById('a');a.replaceWith(a.cloneNode(true));return true;})()"
+        }
+        Change::ReplaceAtDispatch => {
+            "(()=>{const a=document.getElementById('a'),replacement=a.cloneNode(true);replacement.id='replacement';a.replaceWith(replacement);return true;})()"
         }
         Change::Type => "(document.getElementById('a').setAttribute('role','link'),true)",
         Change::Hash => "(location.hash='same-document',true)",
@@ -219,6 +223,11 @@ impl Harness for Fake {
             }
             Change::Replace => {
                 data.rows.iter_mut().find(|row| row.id == "a").unwrap().node += 10000
+            }
+            Change::ReplaceAtDispatch => {
+                let row = data.rows.iter_mut().find(|row| row.id == "a").unwrap();
+                row.node += 10000;
+                row.id = "replacement".into();
             }
             Change::Type => {
                 data.rows.iter_mut().find(|row| row.id == "a").unwrap().role = "link".into()

@@ -239,23 +239,6 @@ jobs:
         run: |
           "$RDH_BROWSER_EXECUTABLE" --version
           cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test browser_session -- --ignored --test-threads=1
-      - name: Run the common semantic profile against Chrome and Firefox
-        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && matrix.target == 'x86_64-unknown-linux-gnu' }}
-        env:
-          RDH_TARGET: ${{ matrix.target }}
-          RDH_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
-        run: bash .github/scripts/test-semantic-browser.sh
-      - name: Retain semantic browser evidence
-        if: ${{ !cancelled() && matrix.target == 'x86_64-unknown-linux-gnu' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: semantic-browser-linux-x86_64
-          path: |
-            ${{ runner.temp }}/rdh-semantic/evidence/*.json
-            ${{ runner.temp }}/rdh-semantic/evidence/*.jsonl
-            ${{ runner.temp }}/rdh-semantic/*.log
-          if-no-files-found: ignore
-          retention-days: 7
       - name: Exercise npm launcher with the native executable
         if: ${{ !endsWith(matrix.target, '-linux-musl') }}
         env:
@@ -330,9 +313,47 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  semantic-browser:
+    name: Native semantic browser (Linux x86_64)
+    needs: plan
+    if: needs.plan.outputs.native_required == 'true'
+    # This profile requires unprivileged user/network/PID/mount namespaces.
+    # The 24.04 image denies custom helpers through its default host policy.
+    # Use a compatible image and verify the prerequisite without changing it.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: 1.93.0
+      RDH_TARGET: x86_64-unknown-linux-gnu
+      RDH_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.93.0 --profile minimal --target "$RDH_TARGET"
+      - name: Restore Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: semantic-ubuntu-22.04-x86_64
+          cache-bin: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Run the common semantic profile against Chrome and Firefox
+        run: bash .github/scripts/test-semantic-browser.sh
+      - name: Retain semantic browser evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-browser-linux-x86_64
+          path: |
+            ${{ runner.temp }}/rdh-semantic/evidence/*.json
+            ${{ runner.temp }}/rdh-semantic/evidence/*.jsonl
+            ${{ runner.temp }}/rdh-semantic/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   assemble-candidate:
     if: github.event_name == 'pull_request'
-    needs: native-target
+    needs: [native-target, semantic-browser]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

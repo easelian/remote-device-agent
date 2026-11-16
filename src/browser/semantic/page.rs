@@ -82,6 +82,13 @@ pub(crate) struct Coordination {
     operation: AsyncMutex<()>,
     input: AsyncMutex<()>,
     inputs: AtomicUsize,
+    #[cfg(test)]
+    click_dispatch: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 impl Coordination {
     pub fn close(&self) {
@@ -101,6 +108,30 @@ impl Coordination {
             operation: AsyncMutex::new(()),
             input: AsyncMutex::new(()),
             inputs: AtomicUsize::new(0),
+            #[cfg(test)]
+            click_dispatch: Mutex::new(None),
+        }
+    }
+    #[cfg(test)]
+    pub fn hold_click_dispatch(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let mut gate = self.click_dispatch.lock().unwrap();
+        assert!(gate.is_none());
+        *gate = Some((reached, wait));
+        (ready, release)
+    }
+    #[cfg(test)]
+    pub async fn before_click_dispatch(&self) {
+        let gate = self.click_dispatch.lock().unwrap().take();
+        if let Some((reached, wait)) = gate {
+            let _ = reached.send(());
+            let _ = wait.await;
         }
     }
 }
@@ -117,6 +148,12 @@ pub(crate) struct HumanPermit {
     scope: u64,
     epoch: u64,
     expires: Instant,
+}
+#[cfg(test)]
+impl HumanPermit {
+    pub fn expire_for_test(&mut self) {
+        self.expires = Instant::now();
+    }
 }
 impl<P> Clone for Page<P> {
     fn clone(&self) -> Self {
