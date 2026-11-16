@@ -508,6 +508,7 @@ impl Bidi {
         self.inner.mode.subscribe()
     }
     #[cfg(test)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn advance_semantic_realm(&self) {
         self.inner.semantic_realm.fetch_add(1, Ordering::AcqRel);
     }
