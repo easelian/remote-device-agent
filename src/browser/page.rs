@@ -1,5 +1,7 @@
 //! Bounded, document-bound semantic observations and typed element actions.
 use super::{Failure, Result, cdp::Cdp};
+use crate::browser::cdp::{Command, InputPair};
+use crate::browser::control::Effect;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
@@ -71,7 +73,12 @@ pub fn url_allowed(url: &str) -> bool {
 
 pub async fn frame_tree(cdp: &Cdp, session: &str, deadline: Instant) -> Result<Vec<Frame>> {
     let tree = cdp
-        .call(Some(session), "Page.getFrameTree", json!({}), deadline)
+        .call(
+            Some(session),
+            Command::PageGetFrameTree,
+            json!({}),
+            deadline,
+        )
         .await?;
     let mut todo = VecDeque::from([&tree["frameTree"]]);
     let mut frames = Vec::new();
@@ -114,12 +121,12 @@ pub async fn metadata(cdp: &Cdp, frame: &Frame, deadline: Instant) -> Result<Val
     let context = cdp
         .call(
             Some(&frame.session),
-            "Page.createIsolatedWorld",
+            Command::PageCreateIsolatedWorld,
             json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),
             deadline,
         )
         .await?;
-    let result = cdp.call(Some(&frame.session), "Runtime.evaluate", json!({
+    let result = cdp.call(Some(&frame.session), Command::RuntimeEvaluate(Effect::None), json!({
         "contextId":context["executionContextId"],"returnByValue":true,
         "expression":"({url:location.href.slice(0,4096),title:document.title.slice(0,512),ready_state:document.readyState})",
     }),deadline).await?;
@@ -135,12 +142,12 @@ async fn object(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> Re
     let context = cdp
         .call(
             Some(&frame.session),
-            "Page.createIsolatedWorld",
+            Command::PageCreateIsolatedWorld,
             json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),
             deadline,
         )
         .await?;
-    let result = cdp.call(Some(&frame.session), "DOM.resolveNode", json!({"backendNodeId":backend,"executionContextId":context["executionContextId"],"objectGroup":"rdh-observe"}), deadline).await?;
+    let result = cdp.call(Some(&frame.session), Command::DomResolveNode, json!({"backendNodeId":backend,"executionContextId":context["executionContextId"],"objectGroup":"rdh-observe"}), deadline).await?;
     result["object"]["objectId"]
         .as_str()
         .map(str::to_owned)
@@ -248,7 +255,7 @@ async fn details(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> R
     let reply = cdp
         .call(
             Some(&frame.session),
-            "Runtime.callFunctionOn",
+            Command::RuntimeCallFunction(Effect::None),
             json!({"objectId":object,"functionDeclaration":DETAILS,"returnByValue":true}),
             deadline,
         )
@@ -256,7 +263,7 @@ async fn details(cdp: &Cdp, frame: &Frame, backend: i64, deadline: Instant) -> R
     let _ = cdp
         .call(
             Some(&frame.session),
-            "Runtime.releaseObject",
+            Command::RuntimeReleaseObject,
             json!({"objectId":object}),
             deadline,
         )
@@ -297,14 +304,14 @@ pub async fn scroll(cdp: &Cdp, frame: &Frame, delta: &Value, deadline: Instant) 
     let context = cdp
         .call(
             Some(&frame.session),
-            "Page.createIsolatedWorld",
+            Command::PageCreateIsolatedWorld,
             json!({
                 "frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false,
             }),
             deadline,
         )
         .await?;
-    let result = cdp.call_effect(Some(&frame.session), "Runtime.evaluate", json!({
+    let result = cdp.call(Some(&frame.session), Command::RuntimeEvaluate(Effect::Page), json!({
         "contextId":context["executionContextId"],"returnByValue":true,
         "expression":format!("(()=>{{window.scrollBy(0,{delta});return {{scroll_x:window.scrollX,scroll_y:window.scrollY}};}})()"),
     }), deadline).await?;
@@ -466,7 +473,7 @@ impl Cursor {
             let Some(reader) = &self.readers[index] else {
                 continue;
             };
-            let status=cdp.call(Some(&self.frames[index].session),"Runtime.callFunctionOn",json!({"objectId":reader,"functionDeclaration":"function(){return this.status();}","returnByValue":true}),deadline).await;
+            let status=cdp.call(Some(&self.frames[index].session),Command::RuntimeCallFunction(Effect::None),json!({"objectId":reader,"functionDeclaration":"function(){return this.status();}","returnByValue":true}),deadline).await;
             match status {
                 Ok(value) if value["result"]["value"]["closed"] == false => {
                     self.changed |= value["result"]["value"]["changed"] == true;
@@ -487,12 +494,12 @@ impl Cursor {
     pub async fn close(&self, cdp: &Cdp, deadline: Instant) {
         for (frame, reader) in self.frames.iter().zip(&self.readers) {
             if let Some(reader) = reader {
-                let _=cdp.cleanup().call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":reader,"functionDeclaration":"function(){this.close();}"}),deadline).await;
+                let _=cdp.cleanup().call(Some(&frame.session),Command::RuntimeCallFunction(Effect::None),json!({"objectId":reader,"functionDeclaration":"function(){this.close();}"}),deadline).await;
                 let _ = cdp
                     .cleanup()
                     .call(
                         Some(&frame.session),
-                        "Runtime.releaseObjectGroup",
+                        Command::RuntimeReleaseObjectGroup,
                         json!({"objectGroup":format!("rdh-reader-{}",frame.id)}),
                         deadline,
                     )
@@ -543,7 +550,7 @@ async fn located(
     let remote = cdp
         .call(
             session,
-            "Runtime.callFunctionOn",
+            Command::RuntimeCallFunction(Effect::None),
             json!({
                 "objectId":reader,"functionDeclaration":"function(i){return this.pending[i].node;}",
                 "arguments":[{"value":index}],"objectGroup":"rdh-observe",
@@ -554,7 +561,7 @@ async fn located(
     let dom = cdp
         .call(
             session,
-            "DOM.describeNode",
+            Command::DomDescribeNode,
             json!({"objectId":remote["result"]["objectId"],"depth":0}),
             deadline,
         )
@@ -565,7 +572,7 @@ async fn located(
     let ax = cdp
         .call(
             session,
-            "Accessibility.getPartialAXTree",
+            Command::AccessibilityGetPartialAXTree,
             json!({"backendNodeId":backend,"fetchRelatives":false}),
             deadline,
         )
@@ -605,7 +612,7 @@ async fn details_of(
     }
     cdp.call(
         Some(&frame.session),
-        "Runtime.callFunctionOn",
+        Command::RuntimeCallFunction(Effect::None),
         json!({
             "objectId":reader,
             "functionDeclaration":format!("function(indexes){{const details={DETAILS};return indexes.map(i=>{{try{{return details.call(this.pending[i].node);}}catch(error){{return null;}}}});}}"),
@@ -723,16 +730,16 @@ pub async fn observe_next(
         let result:Result<bool>=async {
             current(cdp, &frame, deadline).await?;
             if cursor.readers[index].is_none() {
-                let context=cdp.call(Some(&frame.session),"Page.createIsolatedWorld",json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),deadline).await?;
+                let context=cdp.call(Some(&frame.session),Command::PageCreateIsolatedWorld,json!({"frameId":frame.id,"worldName":"rdh-browser-v1","grantUniveralAccess":false}),deadline).await?;
                 let group = format!("rdh-reader-{}", frame.id);
                 cdp.call(
                     Some(&frame.session),
-                    "Runtime.releaseObjectGroup",
+                    Command::RuntimeReleaseObjectGroup,
                     json!({"objectGroup":group}),
                     deadline,
                 )
                 .await?;
-                let created=cdp.call(Some(&frame.session),"Runtime.evaluate",json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS},{options})",options=cursor.scope.options(PLACES.saturating_sub(cursor.places.iter().sum::<usize>())))}),deadline).await?;
+                let created=cdp.call(Some(&frame.session),Command::RuntimeEvaluate(Effect::None),json!({"contextId":context["executionContextId"],"objectGroup":group,"expression":format!("({COLLECT})({MARKS},{options})",options=cursor.scope.options(PLACES.saturating_sub(cursor.places.iter().sum::<usize>())))}),deadline).await?;
                 cursor.readers[index] = Some(
                     created["result"]["objectId"]
                         .as_str()
@@ -741,7 +748,7 @@ pub async fn observe_next(
                 );
             }
             let object = cursor.readers[index].clone().unwrap();
-            let summary=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(nodes,scan){return this.collect(nodes,scan);}","arguments":[{"value":(max_nodes-nodes.len()).min(200)},{"value":(reach-visited).min(5000)}],"returnByValue":true}),deadline).await?;
+            let summary=cdp.call(Some(&frame.session),Command::RuntimeCallFunction(Effect::None),json!({"objectId":object,"functionDeclaration":"function(nodes,scan){return this.collect(nodes,scan);}","arguments":[{"value":(max_nodes-nodes.len()).min(200)},{"value":(reach-visited).min(5000)}],"returnByValue":true}),deadline).await?;
             let summary=&summary["result"]["value"];
             // A reader that a later observation closed returns no nodes.
             let candidates=summary["nodes"].as_array().ok_or_else(||Failure::new("browser_stale_reference"))?;
@@ -865,7 +872,7 @@ pub async fn observe_next(
                 nodes.push(visible);
                 if element.is_none() && name.len()<full_name.len() { processed-=1; partial_chars=name.chars().count(); break; }
             }
-            let ack=cdp.call(Some(&frame.session),"Runtime.callFunctionOn",json!({"objectId":object,"functionDeclaration":"function(count,chars){return this.ack(count,chars);}","arguments":[{"value":processed},{"value":partial_chars}],"returnByValue":true}),deadline).await?;
+            let ack=cdp.call(Some(&frame.session),Command::RuntimeCallFunction(Effect::None),json!({"objectId":object,"functionDeclaration":"function(count,chars){return this.ack(count,chars);}","arguments":[{"value":processed},{"value":partial_chars}],"returnByValue":true}),deadline).await?;
             let ack=&ack["result"]["value"];
             if ack["closed"]!=false {return Err(Failure::new("browser_stale_reference"));}
             changed|=ack["changed"]==true;
@@ -876,7 +883,7 @@ pub async fn observe_next(
             .cleanup()
             .call(
                 Some(&frame.session),
-                "Runtime.releaseObjectGroup",
+                Command::RuntimeReleaseObjectGroup,
                 json!({"objectGroup":"rdh-observe"}),
                 deadline,
             )
@@ -939,7 +946,12 @@ pub async fn observe_next(
 /// offset is added. A point outside the viewport cannot receive input.
 async fn node_at(cdp: &Cdp, session: &str, x: f64, y: f64, deadline: Instant) -> Result<Value> {
     let metrics = cdp
-        .call(Some(session), "Page.getLayoutMetrics", json!({}), deadline)
+        .call(
+            Some(session),
+            Command::PageGetLayoutMetrics,
+            json!({}),
+            deadline,
+        )
         .await?;
     let view = &metrics["cssLayoutViewport"];
     let (Some(left), Some(top), Some(width), Some(height)) = (
@@ -955,7 +967,7 @@ async fn node_at(cdp: &Cdp, session: &str, x: f64, y: f64, deadline: Instant) ->
     }
     cdp.call(
         Some(session),
-        "DOM.getNodeForLocation",
+        Command::DomGetNodeForLocation,
         json!({"x":(x + left).round() as i64,"y":(y + top).round() as i64}),
         deadline,
     )
@@ -982,9 +994,9 @@ impl Element {
         path: &std::path::Path,
         deadline: Instant,
     ) -> Result<Value> {
-        cdp.call_effect(
+        cdp.call(
             Some(&self.frame.session),
-            "DOM.setFileInputFiles",
+            Command::DomSetFileInputFiles,
             json!({"backendNodeId":self.backend,"files":[path]}),
             deadline,
         )
@@ -1003,7 +1015,7 @@ impl Element {
             let metrics = cdp
                 .call(
                     Some(child_session),
-                    "Page.getLayoutMetrics",
+                    Command::PageGetLayoutMetrics,
                     json!({}),
                     deadline,
                 )
@@ -1017,7 +1029,7 @@ impl Element {
             let owner = cdp
                 .call(
                     Some(parent_session),
-                    "DOM.getFrameOwner",
+                    Command::DomGetFrameOwner,
                     json!({"frameId":child_frame}),
                     deadline,
                 )
@@ -1025,7 +1037,7 @@ impl Element {
             let quads = cdp
                 .call(
                     Some(parent_session),
-                    "DOM.getContentQuads",
+                    Command::DomGetContentQuads,
                     json!({"backendNodeId":owner["backendNodeId"]}),
                     deadline,
                 )
@@ -1060,7 +1072,7 @@ impl Element {
         let quads = cdp
             .call(
                 Some(&self.frame.session),
-                "DOM.getContentQuads",
+                Command::DomGetContentQuads,
                 json!({"backendNodeId":self.backend}),
                 deadline,
             )
@@ -1108,7 +1120,7 @@ impl Element {
             let ax = cdp
                 .call(
                     Some(&self.frame.session),
-                    "Accessibility.getPartialAXTree",
+                    Command::AccessibilityGetPartialAXTree,
                     json!({"backendNodeId":self.backend,"fetchRelatives":false}),
                     deadline,
                 )
@@ -1148,17 +1160,27 @@ impl Element {
         let params = json!({"objectId":object,"functionDeclaration":SET,
             "arguments":[{"value":value},{"value":apply}],"returnByValue":true});
         let result = if apply {
-            cdp.call_effect(session, "Runtime.callFunctionOn", params, deadline)
-                .await
+            cdp.call(
+                session,
+                Command::RuntimeCallFunction(Effect::Page),
+                params,
+                deadline,
+            )
+            .await
         } else {
-            cdp.call(session, "Runtime.callFunctionOn", params, deadline)
-                .await
+            cdp.call(
+                session,
+                Command::RuntimeCallFunction(Effect::None),
+                params,
+                deadline,
+            )
+            .await
         };
         let _ = cdp
             .cleanup()
             .call(
                 session,
-                "Runtime.releaseObject",
+                Command::RuntimeReleaseObject,
                 json!({"objectId":object}),
                 deadline,
             )
@@ -1195,7 +1217,7 @@ impl Element {
         } else {
             cdp.call(
                 Some(&self.frame.session),
-                "DOM.scrollIntoViewIfNeeded",
+                Command::DomScrollIntoViewIfNeeded,
                 json!({"backendNodeId":self.backend}),
                 deadline,
             )
@@ -1221,13 +1243,13 @@ impl Element {
             "select" => {
                 let value = action["value"].as_str().unwrap_or("");
                 let object = object(cdp, &self.frame, self.backend, deadline).await?;
-                let result = cdp.call_effect(session,"Runtime.callFunctionOn",json!({"objectId":object,
+                let result = cdp.call(session,Command::RuntimeCallFunction(Effect::Page),json!({"objectId":object,
                     "functionDeclaration":SELECT,"arguments":[{"value":value}],"returnByValue":true}),deadline).await;
                 let _ = cdp
                     .cleanup()
                     .call(
                         session,
-                        "Runtime.releaseObject",
+                        Command::RuntimeReleaseObject,
                         json!({"objectId":object}),
                         deadline,
                     )
@@ -1237,7 +1259,7 @@ impl Element {
                 }
             }
             "click" | "check" => {
-                cdp.input_pair(session,"Input.dispatchMouseEvent",json!({"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline).await?;
+                cdp.input_pair(session,InputPair::Mouse,json!({"type":"mousePressed","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":point["x"],"y":point["y"],"button":"left","clickCount":1}),deadline).await?;
             }
             "fill" if picked(&data) => {
                 // Asked before anything is sent, so that a value the field cannot
@@ -1252,16 +1274,16 @@ impl Element {
             "fill" => {
                 cdp.call(
                     session,
-                    "DOM.focus",
+                    Command::DomFocus,
                     json!({"backendNodeId":self.backend}),
                     deadline,
                 )
                 .await?;
                 // Input.insertText follows the browser's editing path, including frontend input events.
-                cdp.input_pair(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),json!({"type":"keyUp","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),deadline).await?;
+                cdp.input_pair(session,InputPair::Key,json!({"type":"keyDown","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),json!({"type":"keyUp","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),deadline).await?;
                 cdp.call(
                     session,
-                    "Input.insertText",
+                    Command::InputInsertText,
                     json!({"text":action["text"]}),
                     deadline,
                 )
@@ -1272,12 +1294,12 @@ impl Element {
                 let code = key_code(key).ok_or_else(|| Failure::new("browser_invalid_params"))?;
                 cdp.call(
                     session,
-                    "DOM.focus",
+                    Command::DomFocus,
                     json!({"backendNodeId":self.backend}),
                     deadline,
                 )
                 .await?;
-                cdp.input_pair(session,"Input.dispatchKeyEvent",json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
+                cdp.input_pair(session,InputPair::Key,json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
             }
             _ => return Err(Failure::new("browser_invalid_params")),
         }

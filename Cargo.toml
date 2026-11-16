@@ -100,3 +100,4 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["test-util"] }

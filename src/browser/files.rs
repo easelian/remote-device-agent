@@ -1,5 +1,6 @@
 //! Private, bounded browser artifacts. Chromium's own download writer stays disabled.
 use super::{Failure, Principal, Result, cdp::Cdp, control::Control, io_error};
+use crate::browser::cdp::Command;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -527,7 +528,7 @@ impl Files {
                 let value = cdp
                     .call(
                         Some(&session),
-                        "Fetch.takeResponseBodyAsStream",
+                        Command::FetchTakeResponseBodyAsStream,
                         json!({"requestId":request}),
                         deadline,
                     )
@@ -549,7 +550,7 @@ impl Files {
                     let data = tokio::select! {
                         result=cdp.call(
                             Some(&session),
-                            "IO.read",
+                            Command::IoRead,
                             json!({"handle":stream,"size":CHUNK}),
                             deadline,
                         )=>result?,
@@ -601,7 +602,7 @@ impl Files {
                 let _ = cdp
                     .call(
                         Some(&session),
-                        "IO.close",
+                        Command::IoClose,
                         json!({"handle":stream}),
                         Instant::now() + Duration::from_secs(1),
                     )
@@ -610,7 +611,7 @@ impl Files {
             let _ = cdp
                 .call(
                     Some(&session),
-                    "Fetch.failRequest",
+                    Command::FetchFailRequest,
                     json!({"requestId":request,"errorReason":"Aborted"}),
                     Instant::now() + Duration::from_secs(1),
                 )

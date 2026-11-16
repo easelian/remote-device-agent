@@ -8,6 +8,7 @@ use super::{
     profiles::{self, Profiles},
     sites::{Lookup, Resolver, Sites, Verdict},
 };
+use crate::browser::cdp::Command;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -519,7 +520,7 @@ impl Browsers {
                         let result = cdp
                             .call(
                                 None,
-                                "Target.createTarget",
+                                Command::TargetCreateTarget,
                                 json!({"url":"about:blank"}),
                                 deadline,
                             )
@@ -546,7 +547,7 @@ impl Browsers {
                         }
                         cdp.call(
                             None,
-                            "Target.closeTarget",
+                            Command::TargetCloseTarget,
                             json!({"targetId":tab}),
                             deadline,
                         )
@@ -567,7 +568,7 @@ impl Browsers {
                         Ok(json!({"tab_closed":true}))
                     }
                     "select_tab" => {
-                        cdp.call(Some(&target.session),"Page.bringToFront",json!({}),deadline).await?;
+                        cdp.call(Some(&target.session),Command::PageBringToFront,json!({}),deadline).await?;
                         session.active = tab;
                         session.references.clear();
                         Ok(json!({"active_tab":session.active}))
@@ -705,11 +706,11 @@ impl Browsers {
                 return Err(Failure::new("browser_control_changed"));
             }
             session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()}),self.gate.clone()));
-            cdp.call(None,"Browser.setDownloadBehavior",json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
-            cdp.call(None,"Target.setDiscoverTargets",json!({"discover":true}),deadline).await?;
-            cdp.call(None,"Target.setAutoAttach",json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
+            cdp.call(None,Command::BrowserSetDownloadBehavior,json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
+            cdp.call(None,Command::TargetSetDiscoverTargets,json!({"discover":true}),deadline).await?;
+            cdp.call(None,Command::TargetSetAutoAttach,json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
             // Reported with the session so a result can be tied to the browser build behind it.
-            let browser=cdp.call(None,"Browser.getVersion",json!({}),deadline).await.ok().and_then(|v|v["product"].as_str().and_then(product));
+            let browser=cdp.call(None,Command::BrowserGetVersion,json!({}),deadline).await.ok().and_then(|v|v["product"].as_str().and_then(product));
             let target=loop {
                 if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page"&&t.ready).cloned(){break target;}
                 if !cdp.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
@@ -948,13 +949,18 @@ async fn wait_target(
 async fn navigate(cdp: &Cdp, session: &str, url: &Value, deadline: Instant) -> Result<Value> {
     let give_up = navigation_deadline(Instant::now(), deadline);
     match cdp
-        .call(Some(session), "Page.navigate", json!({"url":url}), give_up)
+        .call(
+            Some(session),
+            Command::PageNavigate,
+            json!({"url":url}),
+            give_up,
+        )
         .await
     {
         Err(error) if error.code == "browser_timeout_unknown" => {
             let _ = cdp
                 .cleanup()
-                .call(Some(session), "Page.stopLoading", json!({}), deadline)
+                .call(Some(session), Command::PageStopLoading, json!({}), deadline)
                 .await;
             while cdp.pending() != 0 && Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1003,7 +1009,7 @@ fn mark_blocked(result: &mut Value, targets: &Mutex<HashMap<String, Target>>, ta
 async fn refuse(cdp: &Cdp, session: Option<&str>, params: &Value, deadline: Instant) -> Result<()> {
     cdp.call(
         session,
-        "Fetch.failRequest",
+        Command::FetchFailRequest,
         json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
         deadline,
     )
@@ -1061,7 +1067,7 @@ async fn release(
         {
             cdp.call(
                 session,
-                "Fetch.failRequest",
+                Command::FetchFailRequest,
                 json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
                 deadline,
             )
@@ -1071,7 +1077,7 @@ async fn release(
     }
     cdp.call(
         session,
-        "Fetch.continueRequest",
+        Command::FetchContinueRequest,
         json!({"requestId":params["requestId"]}),
         deadline,
     )
@@ -1566,30 +1572,30 @@ async fn initialize_target(
     }
     cdp.call(
         Some(session),
-        "Fetch.enable",
+        Command::FetchEnable,
         json!({"patterns":patterns}),
         deadline,
     )
     .await?;
     cdp.call(
         Some(session),
-        "Target.setAutoAttach",
+        Command::TargetSetAutoAttach,
         json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),
         deadline,
     )
     .await?;
     cdp.call(
         Some(session),
-        "Runtime.runIfWaitingForDebugger",
+        Command::RuntimeRunIfWaitingForDebugger,
         json!({}),
         deadline,
     )
     .await?;
-    cdp.call(Some(session),"Network.setBlockedURLs",json!({"urls":["file:*","filesystem:*","javascript:*","chrome:*","chrome-extension:*","devtools:*","mailto:*","tel:*"]}),deadline).await?;
+    cdp.call(Some(session),Command::NetworkSetBlockedURLs,json!({"urls":["file:*","filesystem:*","javascript:*","chrome:*","chrome-extension:*","devtools:*","mailto:*","tel:*"]}),deadline).await?;
     if downloads {
         cdp.call(
             Some(session),
-            "Network.setCacheDisabled",
+            Command::NetworkSetCacheDisabled,
             json!({"cacheDisabled":true}),
             deadline,
         )
@@ -1597,16 +1603,16 @@ async fn initialize_target(
     }
     cdp.call(
         Some(session),
-        "Page.setInterceptFileChooserDialog",
+        Command::PageSetInterceptFileChooserDialog,
         json!({"enabled":true}),
         deadline,
     )
     .await?;
     for method in [
-        "Page.enable",
-        "Runtime.enable",
-        "Network.enable",
-        "Accessibility.enable",
+        Command::PageEnable,
+        Command::RuntimeEnable,
+        Command::NetworkEnable,
+        Command::AccessibilityEnable,
     ] {
         cdp.call(Some(session), method, json!({}), deadline).await?;
     }
@@ -1642,7 +1648,7 @@ async fn handle_event(
                     if cdp
                         .call(
                             Some(&session),
-                            "Runtime.runIfWaitingForDebugger",
+                            Command::RuntimeRunIfWaitingForDebugger,
                             json!({}),
                             Instant::now() + Duration::from_secs(125),
                         )
@@ -1665,8 +1671,13 @@ async fn handle_event(
                 || targets.lock().unwrap().len() >= 40
                 || work.initializers.len() >= 40
             {
-                cdp.call(None, "Target.closeTarget", json!({"targetId":id}), deadline)
-                    .await?;
+                cdp.call(
+                    None,
+                    Command::TargetCloseTarget,
+                    json!({"targetId":id}),
+                    deadline,
+                )
+                .await?;
                 return Ok(());
             }
             targets.lock().unwrap().insert(
@@ -1724,7 +1735,7 @@ async fn handle_event(
                         if cdp
                             .call(
                                 None,
-                                "Target.closeTarget",
+                                Command::TargetCloseTarget,
                                 json!({"targetId":id}),
                                 Instant::now() + Duration::from_secs(1),
                             )
@@ -1828,9 +1839,9 @@ async fn handle_event(
                                 args["errorReason"] = "BlockedByClient".into();
                             }
                             let method = if refused {
-                                "Fetch.failRequest"
+                                Command::FetchFailRequest
                             } else {
-                                "Fetch.continueRequest"
+                                Command::FetchContinueRequest
                             };
                             let answered = Instant::now() + Duration::from_secs(3);
                             let _ = cdp.call(session.as_deref(), method, args, answered).await;
@@ -1841,7 +1852,7 @@ async fn handle_event(
                     None => {
                         cdp.call(
                             session,
-                            "Fetch.failRequest",
+                            Command::FetchFailRequest,
                             json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
                             deadline,
                         )
@@ -1991,7 +2002,7 @@ async fn handle_dialog(
     let result = cdp
         .call(
             Some(&target.session),
-            "Page.handleJavaScriptDialog",
+            Command::PageHandleJavaScriptDialog,
             json!({"accept":accept}),
             deadline,
         )

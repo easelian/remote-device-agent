@@ -1,5 +1,6 @@
 //! Browser ownership and profile lifetime shared by all native launchers.
 use super::{Failure, Result, cdp::Cdp, io_error, profiles::NamedProfile};
+use crate::browser::cdp::Command;
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -106,7 +107,7 @@ impl BrowserProcess {
         }
         let ready = process
             .cdp
-            .call(None, "Browser.getVersion", json!({}), deadline)
+            .call(None, Command::BrowserGetVersion, json!({}), deadline)
             .await;
         if ready.is_err() {
             let _ = process.close().await;
