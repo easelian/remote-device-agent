@@ -4,6 +4,7 @@ use crate::browser::engine::{Chunk, Request, Stream, TargetInfo, testing::Ids};
 #[derive(Clone, Default)]
 struct Fake {
     calls: Arc<Mutex<Vec<&'static str>>>,
+    fail_initialize: bool,
 }
 impl SessionPort for Fake {
     fn connected(&self) -> bool {
@@ -14,6 +15,9 @@ impl SessionPort for Fake {
     }
     async fn initialize_context(&self, _: &Context, _: bool, _: bool, _: Instant) -> Result<()> {
         self.calls.lock().unwrap().push("initialize");
+        if self.fail_initialize {
+            return Err(Failure::unknown("browser_command_failed"));
+        }
         Ok(())
     }
     async fn resume_context(&self, _: &Context, _: Instant) -> Result<()> {
@@ -193,4 +197,29 @@ fn connection_evidence_cache_keeps_its_frozen_bound() {
     assert_eq!(cache.take(&ids.network(&context, "0")), None);
     assert_eq!(cache.take(&ids.network(&context, "1")), Some(false));
     assert_eq!(cache.take(&ids.network(&context, "1024")), Some(true));
+}
+
+#[tokio::test]
+async fn missing_core_context_support_never_publishes_a_ready_target() {
+    let fake = Fake {
+        fail_initialize: true,
+        ..Fake::default()
+    };
+    let targets = Arc::new(Mutex::new(HashMap::new()));
+    let gate = Arc::new(Gate::default());
+    let mut work = Work::default();
+    handle_event(
+        &fake,
+        &targets,
+        None,
+        &gate,
+        &mut work,
+        attached(Ids::new(), "tab", "context"),
+    )
+    .await
+    .unwrap();
+    assert!(!targets.lock().unwrap()["tab"].ready);
+    work.initializers.join_next().await.unwrap().unwrap();
+    assert!(targets.lock().unwrap().is_empty());
+    assert_eq!(*fake.calls.lock().unwrap(), ["initialize", "discard"]);
 }

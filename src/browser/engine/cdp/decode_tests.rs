@@ -195,3 +195,31 @@ async fn viewport_image_budget_refuses_the_first_excess_encoded_byte() {
         engine.stop();
     }
 }
+
+#[tokio::test]
+async fn missing_native_core_command_fails_initialization_without_retry_or_payload_leak() {
+    let (client, browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let engine = Engine::from_private_channel(read, write);
+    let reply = async {
+        let mut browser = BufReader::new(browser);
+        let mut frame = Vec::new();
+        browser.read_until(0, &mut frame).await.unwrap();
+        frame.pop();
+        let command: Value = serde_json::from_slice(&frame).unwrap();
+        let mut response = serde_json::to_vec(&json!({"id":command["id"],"error":{"code":-32601,"message":"SYNTHETIC_PRIVATE_NATIVE_ERROR"}})).unwrap();
+        response.push(0);
+        browser.get_mut().write_all(&response).await.unwrap();
+        browser
+    };
+    let (result, _browser) = tokio::join!(
+        engine.initialize(Instant::now() + Duration::from_secs(1)),
+        reply
+    );
+    let error = result.unwrap_err();
+    assert_eq!(error.code, "browser_command_failed");
+    assert!(!format!("{error:?}").contains("SYNTHETIC_PRIVATE_NATIVE_ERROR"));
+    assert_eq!(engine.test_metrics()["commands"], 1);
+    assert_eq!(engine.test_metrics()["pending"], 0);
+    engine.stop();
+}
