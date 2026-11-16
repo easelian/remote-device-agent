@@ -484,7 +484,8 @@ impl Runtime {
         operations.extend_from_slice(FILE_OPERATIONS);
         operations.extend_from_slice(SEARCH_OPERATIONS);
         operations.extend_from_slice(PROCESS_OPERATIONS);
-        if self.browsers.info()["available"] == true {
+        let browser = self.browsers.info();
+        if browser["available"] == true || browser["v2"]["available"] == true {
             operations.extend_from_slice(BROWSER_OPERATIONS);
         }
         if self.startup.is_some() {
@@ -539,7 +540,7 @@ impl Runtime {
             "shell_authority":"Agent OS user; file roots do not sandbox shell commands",
             "capabilities":{"operation_receipts":{"version":1,"instance_id":self.receipts.instance_id,
                 "max_records":self.receipts.max_records,"ttl_seconds":self.receipts.ttl.as_secs()},
-                "request_budget":1,"chunk_encoding":1,"browser":self.browsers.info(),"process_tree_termination":Processes::TREE_TERMINATION,
+                "request_budget":1,"chunk_encoding":1,"browser":browser,"process_tree_termination":Processes::TREE_TERMINATION,
                 "operations":operations},
             "search_limits":{"max_concurrent":2,"max_entries":1000,"max_depth":30,"max_visited":10000,
                 "max_result_bytes":256 * 1024,"task_ttl_seconds":30},

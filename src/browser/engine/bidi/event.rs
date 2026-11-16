@@ -5,10 +5,11 @@ pub(super) const CORE_EVENTS: [&str; 2] = [
     "browsingContext.contextCreated",
     "browsingContext.contextDestroyed",
 ];
-pub(super) const PAGE_EVENTS: [&str; 4] = [
+pub(super) const PAGE_EVENTS: [&str; 5] = [
     "network.beforeRequestSent",
     "script.realmDestroyed",
     "browsingContext.userPromptOpened",
+    "browsingContext.userPromptClosed",
     "browsingContext.navigationCommitted",
 ];
 pub(super) const MAX_CONTEXTS: usize = 128;
@@ -55,6 +56,11 @@ pub(super) enum Event {
         realm: String,
     },
     Prompt {
+        context: ContextId,
+        kind: String,
+        message: String,
+    },
+    PromptClosed {
         context: ContextId,
     },
     Navigation {
@@ -107,7 +113,12 @@ impl Event {
                 },
             }),
             "browsingContext.contextDestroyed" => Some(Self::Destroyed { context }),
-            "browsingContext.userPromptOpened" => Some(Self::Prompt { context }),
+            "browsingContext.userPromptOpened" => Some(Self::Prompt {
+                context,
+                kind: params["type"].as_str()?.to_owned(),
+                message: params["message"].as_str()?.chars().take(4096).collect(),
+            }),
+            "browsingContext.userPromptClosed" => Some(Self::PromptClosed { context }),
             "browsingContext.navigationCommitted" => Some(Self::Navigation {
                 context,
                 navigation: params["navigation"]
@@ -153,6 +164,14 @@ impl Contexts {
             }
         }
         Some(())
+    }
+    #[cfg(target_os = "linux")]
+    pub fn roots(&self) -> Vec<ContextId> {
+        self.0
+            .iter()
+            .filter(|(_, parent)| parent.is_none())
+            .map(|(id, _)| id.clone())
+            .collect()
     }
     pub fn apply(&mut self, event: &Event) -> bool {
         match event {

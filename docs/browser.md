@@ -10,6 +10,8 @@ application-access contract with the `device-browser` purpose. The Server exampl
 configurations contain these settings. The Agent release does not deploy the
 matching services.
 
+Linux x86_64 development builds can explicitly select `semantic_dom_v1` and CDP/BiDi using the [capability v2 configuration and contract](browser-capability-v2-zhCN.md). Requests without a selection retain the v1 behavior described here.
+
 ## Enable browser sessions
 
 The remote device needs a Chromium executable that can run with its sandbox under the Agent's OS account. The Agent uses a private browser profile and a private protocol pipe. It does not attach to your everyday browser. The shared runtime supports Linux and macOS; Windows builds need the native process and private-storage features enabled by the default build. Native validation covers Linux x64, macOS ARM64 and Windows 11 ARM64. Other architectures and browser packages need their own runtime evidence.

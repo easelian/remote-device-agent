@@ -16,7 +16,7 @@ function(operation, args, other) {
   const picked = new Set(['date','time','datetime-local','month','week','color','range']);
   let state = globalThis[SLOT];
   if (!state || state.document !== document) {
-    state = {document, realm:crypto.randomUUID(), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null};
+    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null};
     Object.defineProperty(globalThis, SLOT, {value:state, configurable:true});
     addEventListener('pageshow', event => {
       if (event.persisted) { state.restoration++; state.nodes.clear(); state.scan = null; }
@@ -253,6 +253,49 @@ function(operation, args, other) {
     if(!scan.pending.length)state.scan=null;
     return result({stamp:stamp(),rows,sequence:scan.sequence,more:scan.pending.length>0,scanned:count,
       changed:scan.revision !== state.revision,omitted:Array.from(omitted).sort(),characters});
+  }
+  const activeElement=()=>{let node=document.activeElement;while(node?.shadowRoot?.activeElement)node=node.shadowRoot.activeElement;return node;};
+  const viewportHit=(x,y)=>{
+    let node=document.elementFromPoint(x,y);
+    for(let depth=0;node?.shadowRoot&&depth<64;depth++){
+      const child=node.shadowRoot.elementFromPoint(x,y);if(!child||child===node)break;node=child;
+    }
+    return node;
+  };
+  if(operation==='frame_at_point')return result(['iframe','frame'].includes(viewportHit(args.x,args.y)?.localName));
+  if(operation==='native_frame_point'){
+    const node=other;
+    if(!node||node.ownerDocument!==document||!node.isConnected||viewportHit(args.x,args.y)!==node||!['iframe','frame'].includes(node.localName))return result(null);
+    // Human coordinates originate in the top-level screenshot. Only a proven
+    // positive axis-aligned content-box mapping may descend into a child.
+    for(let e=node;e;e=parent(e)){const s=getComputedStyle(e);if(s.transform!=='none'){const m=new DOMMatrixReadOnly(s.transform);if(!m.is2D||m.b!==0||m.c!==0||m.a<=0||m.d<=0)return result(null);}}
+    if(!node.offsetWidth||!node.offsetHeight||!node.clientWidth||!node.clientHeight||!visible(node))return result(null);
+    const r=node.getBoundingClientRect(),sx=r.width/node.offsetWidth,sy=r.height/node.offsetHeight;
+    let left=r.left+node.clientLeft*sx,top=r.top+node.clientTop*sy,width=node.clientWidth*sx,height=node.clientHeight*sy;
+    if(typeof node.getBoxQuads==='function'){
+      const quads=node.getBoxQuads({box:'content'});if(quads.length!==1)return result(null);const q=quads[0];
+      if(Math.abs(q.p1.y-q.p2.y)>0.001||Math.abs(q.p2.x-q.p3.x)>0.001||Math.abs(q.p3.y-q.p4.y)>0.001||Math.abs(q.p4.x-q.p1.x)>0.001)return result(null);
+      left=q.p1.x;top=q.p1.y;width=q.p2.x-q.p1.x;height=q.p4.y-q.p1.y;
+    }
+    if(width<=0||height<=0)return result(null);
+    const x=(args.x-left)/width*args.width,y=(args.y-top)/height*args.height;
+    if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=args.width||y>=args.height)return result(null);
+    return result({x,y,width:args.width,height:args.height,visible:true,hit:true,in_view:true});
+  }
+  if(operation==='native_focused_frame')return result(!!other&&other.isConnected&&other.ownerDocument===document&&activeElement()===other);
+  if(operation==='scroll_viewport'){
+    if(!Number.isFinite(args.delta)||Math.abs(args.delta)>2000)return result(false);
+    scrollBy({top:args.delta,left:0,behavior:'instant'});return result(true);
+  }
+  if(operation==='surface') {
+    let node=activeElement(),focus=null;
+    // Headless Firefox can keep hasFocus() false after native pointer input.
+    // This is a candidate; adapters separately prove every focused iframe owner.
+    if(node&&node.isConnected&&!disabled(node)&&!node.readOnly&&visible(node)&&
+       (node.localName==='textarea'||node.localName==='input'&&['text','search','url','tel','email','password'].includes(node.type))&&node.value.length<=16384) {
+      focus={node:identity(node),tag:node.localName,input_type:node.type||'',value:node.value,start:node.selectionStart,end:node.selectionEnd};
+    }
+    return result({title:prefix(document.title,4096),url:location.href,width:innerWidth,height:innerHeight,scroll_x:scrollX,scroll_y:scrollY,focus});
   }
   if (operation === 'inspect') return result(facts(target()));
   if (operation === 'geometry') {

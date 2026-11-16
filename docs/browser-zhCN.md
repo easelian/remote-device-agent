@@ -6,6 +6,8 @@
 
 服务端需将 Core 的 `http.browser_user_url` 设为用户网站的 origin，在 Gate 的网页登录动作列表允许 `browser:control`，并应用包含 `device-browser` 用途的配套 Auth application-access 契约。Server 示例配置已包含这些设置；发布 Agent 不会部署配套服务。
 
+Linux x86_64 的开发构建还可显式选择 `semantic_dom_v1` 与 CDP/BiDi，见 [capability v2 配置和契约](browser-capability-v2-zhCN.md)。省略选择的请求继续按本指南的 v1 行为执行。
+
 ## 启用浏览器
 
 远程设备需要能以 Agent 所属操作系统账号、在启用沙箱的条件下运行的 Chromium 可执行文件。Agent 使用独立的浏览器资料目录和私有协议管道，不接管日常浏览器。共用运行时支持 Linux 和 macOS；Windows 构建需要原生进程及私有存储功能，默认构建已启用。原生验证覆盖 Linux x64、macOS ARM64 和 Windows 11 ARM64，其他架构与浏览器安装包仍需各自运行证据。

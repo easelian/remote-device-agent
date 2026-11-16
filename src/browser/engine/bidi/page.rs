@@ -1,5 +1,8 @@
 //! Native BiDi encoding for the shared semantic_dom_v1 coordinator.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))] // Native factory is Linux-only.
+#![cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)] // Public native sessions are validated on Linux x86_64.
 #[cfg(target_os = "linux")]
 use super::Event;
 use super::{
@@ -7,8 +10,9 @@ use super::{
     command::Action,
     wire::{Bidi, Error, ProtocolError},
 };
+use crate::browser::semantic::policy::Policy;
 #[cfg(target_os = "linux")]
-use crate::browser::semantic::policy::{Capabilities, Decisions, Policy};
+use crate::browser::semantic::policy::{Capabilities, Decisions};
 use crate::browser::{
     Failure, Result,
     control::Control,
@@ -18,7 +22,15 @@ use crate::browser::{
         types::Identities,
     },
 };
+use sem::surface::{Dialog, HumanInput, Metadata, Tab};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+
+#[derive(Clone)]
+struct NativeTab {
+    info: Tab,
+    context: ContextId,
+}
 use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, Instant},
@@ -30,13 +42,14 @@ pub(in crate::browser) struct Semantic {
     root: ContextId,
     identities: Arc<Mutex<Identities>>,
     coordination: Arc<sem::Coordination>,
+    tabs: Arc<Mutex<HashMap<String, NativeTab>>>,
+    policy: Policy,
 }
 
 #[cfg(target_os = "linux")]
 pub(in crate::browser) struct Session {
     pub port: Semantic,
     owner: super::session::Managed,
-    policy: Policy,
     task: tokio::task::JoinHandle<()>,
     decisions: Decisions,
 }
@@ -56,6 +69,22 @@ impl Session {
         root: &std::path::Path,
         policy: Policy,
     ) -> Result<Self> {
+        Self::open_with(
+            helper,
+            browser,
+            root,
+            policy,
+            Arc::new(sem::Coordination::new()),
+        )
+        .await
+    }
+    pub async fn open_with(
+        helper: &std::path::Path,
+        browser: &std::path::Path,
+        root: &std::path::Path,
+        policy: Policy,
+        coordination: Arc<sem::Coordination>,
+    ) -> Result<Self> {
         // This rejection precedes even native process/profile allocation.
         policy.admit(Capabilities {
             navigation_intercept: true,
@@ -68,11 +97,33 @@ impl Session {
         let channel = owner.channel.clone();
         let mut events = owner.events.take().unwrap();
         let boot = owner.boot.take().unwrap();
+        if !boot.prompts_ignored {
+            owner.close(false).await.map_err(failure)?;
+            return Err(Failure::new("browser_backend_unsupported"));
+        }
         let mut contexts = boot.contexts;
-        let Some(root) = contexts.ids().first().cloned() else {
+        let Some(root) = contexts.roots().first().cloned() else {
             owner.close(false).await.map_err(failure)?;
             return Err(sem::types::decode());
         };
+        let tabs = Arc::new(Mutex::new(HashMap::new()));
+        for context in contexts.roots() {
+            let id = crate::random::hex_token::<16>().map_err(crate::browser::io_error)?;
+            tabs.lock().unwrap().insert(
+                id.clone(),
+                NativeTab {
+                    context,
+                    info: Tab {
+                        tab_id: id,
+                        url: "about:blank".into(),
+                        title: String::new(),
+                        ready: true,
+                        dialog: None,
+                    },
+                },
+            );
+        }
+        let observed = tabs.clone();
         let monitor = channel.clone();
         let rules = policy.clone();
         let decisions = Decisions::default();
@@ -98,8 +149,28 @@ impl Session {
                                 channel.call(Command::Decide{request:token.request().into(),allow},token.deadline()).await?;token.settled(allow);Ok(())
                             });
                         },
-                        Ok(event@Event::Created{..})=>{ledger.context_created();if !contexts.apply(&event){monitor.stop();break;}},
-                        Ok(Event::Prompt{..})=>{monitor.stop();break;},
+                        Ok(event@Event::Created{..})=>{
+                            ledger.context_created();if !contexts.apply(&event){monitor.stop();break;}
+                            if let Event::Created{context,parent:None}=&event {
+                                if observed.lock().unwrap().len()>=8 {
+                                    if monitor.call(Command::CloseContext(context.clone()),Policy::deadline()).await.is_err(){monitor.stop();break;}
+                                } else if !observed.lock().unwrap().values().any(|t|&t.context==context) {
+                                    let id=match crate::random::hex_token::<16>(){Ok(id)=>id,Err(_)=>{monitor.stop();break;}};
+                                    observed.lock().unwrap().insert(id.clone(),NativeTab{context:context.clone(),info:Tab{tab_id:id,url:"about:blank".into(),title:String::new(),ready:true,dialog:None}});
+                                }
+                            }
+                        },
+                        Ok(event@Event::Destroyed{..})=>{
+                            if let Event::Destroyed{context}=&event {observed.lock().unwrap().retain(|_,t|&t.context!=context);}
+                            if !contexts.apply(&event){monitor.stop();break;}
+                        },
+                        Ok(Event::Prompt{context,kind,message})=>{
+                            let dialog=match Dialog::new(&kind,&message){Ok(d)=>d,Err(_)=>{monitor.stop();break;}};
+                            let mut all=observed.lock().unwrap();
+                            let Some(tab)=all.values_mut().find(|t|t.context==context)else{monitor.stop();break;};
+                            tab.info.dialog=Some(dialog);
+                        },
+                        Ok(Event::PromptClosed{context})=>{for tab in observed.lock().unwrap().values_mut().filter(|t|t.context==context){tab.info.dialog=None;}},
                         Ok(event)=>if !contexts.apply(&event){monitor.stop();break;},
                         Err(_)=>{monitor.stop();break;}
                     }
@@ -128,32 +199,19 @@ impl Session {
             channel,
             root,
             identities: Arc::new(Mutex::new(Identities::new())),
-            coordination: Arc::new(sem::Coordination::new()),
+            coordination,
+            tabs,
+            policy: policy.clone(),
         };
         Ok(Self {
             port,
             owner,
-            policy,
             task,
             decisions,
         })
     }
     pub async fn navigate(&self, url: &str, deadline: Instant) -> Result<()> {
-        if !self.policy.allows(url, deadline).await {
-            return Err(Failure::new("browser_site_denied"));
-        }
-        self.port
-            .channel
-            .call(
-                Command::Navigate {
-                    context: self.port.root.clone(),
-                    url: url.into(),
-                },
-                deadline,
-            )
-            .await
-            .map(drop)
-            .map_err(failure)
+        self.port.navigate(url, deadline).await
     }
     pub async fn close(&mut self) -> Result<()> {
         self.port.coordination.close();
@@ -170,6 +228,434 @@ impl Session {
 }
 
 impl Semantic {
+    pub fn tab_id(&self) -> Result<String> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .values()
+            .find(|t| t.context == self.root)
+            .map(|t| t.info.tab_id.clone())
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))
+    }
+    pub fn tabs(&self) -> Vec<Tab> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| t.info.clone())
+            .collect()
+    }
+    pub fn for_tab(&self, id: &str) -> Result<Self> {
+        let root = self
+            .tabs
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|t| t.info.ready)
+            .map(|t| t.context.clone())
+            .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+        Ok(Self {
+            root,
+            ..self.clone()
+        })
+    }
+    pub fn dialog(&self) -> Option<Dialog> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .values()
+            .find(|t| t.context == self.root)
+            .and_then(|t| t.info.dialog.clone())
+    }
+    pub async fn handle_dialog(&self, id: &str, accept: bool, deadline: Instant) -> Result<()> {
+        if self.dialog().as_ref().is_none_or(|d| d.dialog_id != id) {
+            return Err(Failure::new("browser_stale_frame"));
+        }
+        self.channel
+            .call(
+                Command::Dialog {
+                    context: self.root.clone(),
+                    accept,
+                },
+                deadline,
+            )
+            .await
+            .map_err(failure)?;
+        for tab in self
+            .tabs
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|t| t.context == self.root)
+        {
+            if tab.info.dialog.as_ref().is_some_and(|d| d.dialog_id == id) {
+                tab.info.dialog = None;
+            }
+        }
+        Ok(())
+    }
+    pub async fn metadata(&self, deadline: Instant) -> Result<(sem::Frame, Metadata)> {
+        if self.dialog().is_some() {
+            return Err(Failure::new("browser_dialog_open"));
+        }
+        let frame = self
+            .frames(deadline)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(sem::types::stale)?;
+        let Output::Surface(metadata) = self.program(&frame, Program::Surface, deadline).await?
+        else {
+            return Err(sem::types::decode());
+        };
+        for tab in self
+            .tabs
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|t| t.context == self.root)
+        {
+            tab.info.url = metadata.url.clone();
+            tab.info.title = metadata.title.clone();
+        }
+        Ok((frame, metadata))
+    }
+    pub async fn screenshot(&self, deadline: Instant) -> Result<Value> {
+        let (_, metadata) = self.metadata(deadline).await?;
+        let reply = self
+            .channel
+            .call(Command::Screenshot(self.root.clone()), deadline)
+            .await
+            .map_err(failure)?
+            .value;
+        let data = reply["data"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= crate::browser::image::MAX_ENCODED)
+            .ok_or_else(|| Failure::new("browser_image_too_large"))?;
+        Ok(
+            json!({"data":data,"mime_type":"image/jpeg","width":metadata.width.round() as u64,"height":metadata.height.round() as u64,"css_pixel_scale":1,"scope":"viewport"}),
+        )
+    }
+    pub async fn new_tab(&self, deadline: Instant) -> Result<String> {
+        if self.tabs.lock().unwrap().len() >= 8 {
+            return Err(Failure::new("browser_tab_limit"));
+        }
+        let reply = self
+            .channel
+            .call(Command::CreateTab, deadline)
+            .await
+            .map_err(failure)?
+            .value;
+        let context = self
+            .channel
+            .context(&reply["context"])
+            .ok_or_else(sem::types::decode)?;
+        loop {
+            if let Some(id) = self
+                .tabs
+                .lock()
+                .unwrap()
+                .values()
+                .find(|t| t.context == context)
+                .map(|t| t.info.tab_id.clone())
+            {
+                return Ok(id);
+            }
+            if !self.connected() || Instant::now() >= deadline {
+                return Err(Failure::unknown("browser_tab_unavailable"));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    pub async fn close_tab(&self, deadline: Instant) -> Result<()> {
+        if self.tabs.lock().unwrap().len() <= 1 {
+            return Err(Failure::new("browser_last_tab"));
+        }
+        self.channel
+            .call(Command::CloseContext(self.root.clone()), deadline)
+            .await
+            .map_err(failure)?;
+        self.tabs
+            .lock()
+            .unwrap()
+            .retain(|_, t| t.context != self.root);
+        Ok(())
+    }
+    pub async fn activate(&self, deadline: Instant) -> Result<()> {
+        self.channel
+            .call(Command::Activate(self.root.clone()), deadline)
+            .await
+            .map(drop)
+            .map_err(failure)
+    }
+    pub async fn focused_frame(&self, frame: &sem::Frame, deadline: Instant) -> Result<bool> {
+        let mut child = self.context(frame)?;
+        let mut parent = frame.parent;
+        let mut depth = 0;
+        while let Some(key) = parent {
+            depth += 1;
+            if depth > sem::MAX_FRAMES {
+                return Err(sem::types::decode());
+            }
+            let (context, next) = {
+                let ids = self.identities.lock().unwrap();
+                (
+                    self.channel
+                        .context(&json!(ids.key(key)?))
+                        .ok_or_else(sem::types::stale)?,
+                    ids.parent(key)?,
+                )
+            };
+            let reply = self
+                .channel
+                .call(
+                    Command::FrameOwner {
+                        context: context.clone(),
+                        child,
+                    },
+                    deadline,
+                )
+                .await
+                .map_err(failure)?
+                .value;
+            let nodes = reply["nodes"].as_array().ok_or_else(sem::types::decode)?;
+            if nodes.len() != 1 {
+                return Err(sem::types::stale());
+            }
+            let node = nodes[0]["sharedId"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 512)
+                .ok_or_else(sem::types::stale)?
+                .to_owned();
+            let checked = self
+                .channel
+                .call(
+                    Command::FrameFocused {
+                        context: context.clone(),
+                        node,
+                    },
+                    deadline,
+                )
+                .await
+                .map_err(failure)?
+                .value;
+            if !matches!(
+                decode_program(&Program::NativeFrameFocused, checked)?,
+                Output::Applied(Some(true))
+            ) {
+                return Ok(false);
+            }
+            child = context;
+            parent = next;
+        }
+        Ok(child == self.root)
+    }
+    async fn viewport_target(
+        &self,
+        mut x: f64,
+        mut y: f64,
+        deadline: Instant,
+    ) -> Result<(ContextId, f64, f64)> {
+        let frames = self.frames(deadline).await?;
+        let mut current = frames.first().ok_or_else(sem::types::stale)?;
+        for _ in 0..sem::MAX_FRAMES {
+            let context = self.context(current)?;
+            if matches!(
+                self.run(&context, Program::FrameAtPoint { x, y }, deadline)
+                    .await?,
+                Output::Applied(Some(false))
+            ) {
+                let after = self.frames(deadline).await?;
+                if frames.len() != after.len() || !frames.iter().all(|f| after.contains(f)) {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                return Ok((context, x, y));
+            }
+            let mut next = None;
+            for child in frames.iter().filter(|f| f.parent == Some(current.context)) {
+                let child_context = self.context(child)?;
+                let reply = self
+                    .channel
+                    .call(
+                        Command::FrameOwner {
+                            context: context.clone(),
+                            child: child_context.clone(),
+                        },
+                        deadline,
+                    )
+                    .await
+                    .map_err(failure)?
+                    .value;
+                let nodes = reply["nodes"].as_array().ok_or_else(sem::types::decode)?;
+                if nodes.len() != 1 {
+                    return Err(sem::types::stale());
+                }
+                let node = nodes[0]["sharedId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 512)
+                    .ok_or_else(sem::types::stale)?
+                    .to_owned();
+                let Output::Surface(meta) =
+                    self.run(&child_context, Program::Surface, deadline).await?
+                else {
+                    return Err(sem::types::decode());
+                };
+                let geometry = sem::Geometry {
+                    x,
+                    y,
+                    width: meta.width,
+                    height: meta.height,
+                    visible: true,
+                    hit: true,
+                    in_view: true,
+                };
+                let reply = self
+                    .channel
+                    .call(
+                        Command::FramePoint {
+                            context: context.clone(),
+                            node,
+                            geometry,
+                        },
+                        deadline,
+                    )
+                    .await
+                    .map_err(failure)?
+                    .value;
+                match decode_program(&Program::NativeFramePoint, reply)? {
+                    Output::Geometry(Some(point)) => {
+                        if next.is_some() {
+                            return Err(Failure::new("browser_stale_frame"));
+                        }
+                        next = Some((child, point.x, point.y));
+                    }
+                    Output::Geometry(None) => {}
+                    _ => return Err(sem::types::decode()),
+                }
+            }
+            let Some((child, child_x, child_y)) = next else {
+                return Err(Failure::new("browser_geometry_unsupported"));
+            };
+            current = child;
+            x = child_x;
+            y = child_y;
+        }
+        Err(Failure::new("browser_frame_limit"))
+    }
+    async fn focused_context(&self, deadline: Instant) -> Result<ContextId> {
+        let frames = self.frames(deadline).await?;
+        let mut current = frames.first().ok_or_else(sem::types::stale)?;
+        for _ in 0..sem::MAX_FRAMES {
+            let mut next = None;
+            for child in frames.iter().filter(|f| f.parent == Some(current.context)) {
+                if self.focused_frame(child, deadline).await? {
+                    if next.is_some() {
+                        return Err(Failure::new("browser_stale_frame"));
+                    }
+                    next = Some(child);
+                }
+            }
+            let Some(child) = next else {
+                if self.refresh(current, deadline).await? != *current {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                return self.context(current);
+            };
+            current = child;
+        }
+        Err(Failure::new("browser_frame_limit"))
+    }
+    pub async fn human_input(&self, input: HumanInput, deadline: Instant) -> Result<()> {
+        let (channel, effects) = self.channel.track_effects();
+        let port = Self {
+            channel,
+            ..self.clone()
+        };
+        let mut input_context = port.root.clone();
+        let result = async {
+            match input {
+                HumanInput::Click { x, y } => {
+                    let (context, x, y) = port.viewport_target(x, y, deadline).await?;
+                    input_context = context;
+                    port.action(&input_context, Action::Move { x, y }, deadline)
+                        .await?;
+                    port.action(&input_context, Action::Button { down: true }, deadline)
+                        .await?;
+                    port.action(&input_context, Action::Button { down: false }, deadline)
+                        .await
+                }
+                HumanInput::Scroll { x, y, delta } => {
+                    let (context, x, y) = port.viewport_target(x, y, deadline).await?;
+                    input_context = context;
+                    port.action(&input_context, Action::Wheel { x, y, delta }, deadline)
+                        .await
+                }
+                HumanInput::Key(key) => {
+                    input_context = port.focused_context(deadline).await?;
+                    port.key(&input_context, key.bidi(), deadline).await
+                }
+                HumanInput::Text { frame, focus, text } => {
+                    if port.refresh(&frame, deadline).await? != *frame {
+                        return Err(Failure::new("browser_stale_frame"));
+                    }
+                    if !port.focused_frame(&frame, deadline).await? {
+                        return Err(Failure::new("browser_stale_frame"));
+                    }
+                    let context = port.context(&frame)?;
+                    input_context = context.clone();
+                    let Output::Surface(metadata) =
+                        port.run(&context, Program::Surface, deadline).await?
+                    else {
+                        return Err(sem::types::decode());
+                    };
+                    if metadata.focus.as_ref() != Some(&focus) {
+                        return Err(Failure::new("browser_stale_frame"));
+                    }
+                    for chunk in text.chars().collect::<Vec<_>>().chunks(64) {
+                        port.action(&context, Action::Text(chunk.iter().collect()), deadline)
+                            .await?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+        .await;
+        if effects.load(std::sync::atomic::Ordering::Acquire) {
+            let cleanup = port
+                .channel
+                .release_inputs(
+                    input_context,
+                    deadline.max(Instant::now() + Duration::from_secs(1)),
+                )
+                .await
+                .map_err(failure);
+            if cleanup.is_err() {
+                self.channel.stop();
+            }
+            result.and(cleanup.map(drop)).map_err(|mut error| {
+                error.state = "unknown";
+                error
+            })
+        } else {
+            result
+        }
+    }
+    pub async fn navigate(&self, url: &str, deadline: Instant) -> Result<()> {
+        if !self.policy.allows(url, deadline).await {
+            return Err(Failure::new("browser_site_denied"));
+        }
+        self.channel
+            .call(
+                Command::Navigate {
+                    context: self.root.clone(),
+                    url: url.into(),
+                },
+                deadline,
+            )
+            .await
+            .map(drop)
+            .map_err(failure)
+    }
     #[cfg(test)]
     pub fn advance_semantic_realm(&self) {
         self.channel.advance_semantic_realm();

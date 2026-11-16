@@ -1,6 +1,6 @@
 # semantic_dom_v1 实现与验证
 
-`semantic_dom_v1` 是 `experimental-browser-bidi` 开关下的内部页面 profile，契约见[共同语义](browser-semantic-dom-v1-zhCN.md)。CDP、BiDi 和 Fake 使用同一个 `semantic::Page<P>`。公开 browser v1 的入口、输出、默认浏览器和页面算法仍由原有模块提供；公开 v2 的协商、RPC/MCP、人工截图、文件和资料格式属于 D4。
+`semantic_dom_v1` 是 `experimental-browser-bidi` 开关下的共同页面 profile，契约见[共同语义](browser-semantic-dom-v1-zhCN.md)。CDP、BiDi 和 Fake 使用同一个 `semantic::Page<P>`。公开 browser v1 的入口、输出、默认浏览器和页面算法仍由原有模块提供；Linux x86_64 的 [capability v2](browser-capability-v2-zhCN.md) 通过显式选择接入 RPC/MCP，并提供原生截图、弹窗及人工控制。文件与命名资料扩展仍未开放。
 
 ## 模块职责
 

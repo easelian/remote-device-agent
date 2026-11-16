@@ -7,6 +7,16 @@ pub(crate) const SOURCE: &str = include_str!("program.js");
 #[derive(Clone, Debug)]
 pub(crate) enum Program {
     Stamp,
+    Surface,
+    NativeFrameFocused,
+    FrameAtPoint {
+        x: f64,
+        y: f64,
+    },
+    NativeFramePoint,
+    ScrollViewport {
+        delta: f64,
+    },
     Ready,
     Stats,
     ClearNodes {
@@ -54,6 +64,7 @@ pub(crate) enum Program {
 pub(crate) const NATIVE_NODE: &str = "function(serialized){const a=JSON.parse(serialized),s=globalThis.__rdhSemanticDomV1;return s&&s.document===document&&s.realm===a.realm&&s.restoration===a.restoration?s.nodes.get(a.node)||null:null;}";
 pub(crate) enum Output {
     Marker(Marker),
+    Surface(super::surface::Metadata),
     Batch(Batch),
     Facts(Option<Box<Facts>>),
     Checks(Vec<Option<Facts>>),
@@ -65,7 +76,10 @@ impl Program {
     pub fn effect(&self) -> crate::browser::control::Effect {
         use crate::browser::control::Effect;
         match self {
-            Self::Scroll { .. } | Self::Focus { .. } | Self::Form { .. } => Effect::Page,
+            Self::Scroll { .. }
+            | Self::ScrollViewport { .. }
+            | Self::Focus { .. }
+            | Self::Form { .. } => Effect::Page,
             _ => Effect::None,
         }
     }
@@ -73,6 +87,11 @@ impl Program {
         let target = |marker: &Marker, node| json!({"realm":marker.realm,"restoration":marker.restoration,"node":node});
         match self {
             Self::Stamp => ("stamp", json!({})),
+            Self::Surface => ("surface", json!({})),
+            Self::NativeFrameFocused => ("native_focused_frame", json!({})),
+            Self::FrameAtPoint { x, y } => ("frame_at_point", json!({"x":x,"y":y})),
+            Self::NativeFramePoint => ("native_frame_point", json!({})),
+            Self::ScrollViewport { delta } => ("scroll_viewport", json!({"delta":delta})),
             Self::Ready => ("ready", json!({})),
             Self::Stats => ("stats", json!({})),
             Self::ClearNodes { marker } => (
@@ -126,6 +145,11 @@ impl Program {
             serde_json::from_str(text).map_err(|_| types::decode())
         }
         match self {
+            Self::Surface => {
+                let value: super::surface::Metadata = parse(text)?;
+                value.validate()?;
+                Ok(Output::Surface(value))
+            }
             Self::Stamp | Self::Open(_) => {
                 let marker: Marker = parse(text)?;
                 marker.validate()?;
@@ -153,7 +177,7 @@ impl Program {
                 }
                 Ok(Output::Facts(facts))
             }
-            Self::Geometry { .. } => {
+            Self::Geometry { .. } | Self::NativeFramePoint => {
                 let geometry: Option<Geometry> = parse(text)?;
                 if let Some(value) = &geometry {
                     value.validate()?;

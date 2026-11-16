@@ -10,15 +10,19 @@ use serde_json::{Value, json};
 pub(super) enum Action {
     Key { value: String, down: bool },
     MoveTo { node: String },
+    Move { x: f64, y: f64 },
+    Wheel { x: f64, y: f64, delta: f64 },
     Button { down: bool },
     Text(String),
     SelectAll,
 }
 
-/// Closed transport-development commands. Page programs/input and DevTools
-/// extensions require their own typed contracts in later stages.
+/// Closed native transport and page commands. No caller-supplied methods or scripts.
 #[derive(Clone, Debug)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux owns native page sessions.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)] // Public native sessions are validated on Linux x86_64.
 pub(super) enum Command {
     Status,
     NewSession,
@@ -26,6 +30,12 @@ pub(super) enum Command {
     Tree,
     CreateTab,
     CloseContext(ContextId),
+    Activate(ContextId),
+    Screenshot(ContextId),
+    Dialog {
+        context: ContextId,
+        accept: bool,
+    },
     SubscribePage,
     Intercept,
     Program {
@@ -43,6 +53,15 @@ pub(super) enum Command {
         child: ContextId,
     },
     FrameGeometry {
+        context: ContextId,
+        node: String,
+        geometry: crate::browser::semantic::Geometry,
+    },
+    FrameFocused {
+        context: ContextId,
+        node: String,
+    },
+    FramePoint {
         context: ContextId,
         node: String,
         geometry: crate::browser::semantic::Geometry,
@@ -76,6 +95,9 @@ impl Command {
     pub fn belongs_to(&self, scope: u64) -> bool {
         match self {
             Self::CloseContext(context)
+            | Self::Activate(context)
+            | Self::Screenshot(context)
+            | Self::Dialog { context, .. }
             | Self::Document(context)
             | Self::ReleaseInput(context)
             | Self::Program { context, .. }
@@ -85,7 +107,9 @@ impl Command {
             Self::FrameOwner { context, child } => {
                 context.belongs_to(scope) && child.belongs_to(scope)
             }
-            Self::FrameGeometry { context, .. } => context.belongs_to(scope),
+            Self::FrameGeometry { context, .. }
+            | Self::FrameFocused { context, .. }
+            | Self::FramePoint { context, .. } => context.belongs_to(scope),
             #[cfg(test)]
             Self::Fixture { context, .. } => context.belongs_to(scope),
             _ => true,
@@ -94,7 +118,11 @@ impl Command {
     pub fn encode(&self) -> (&'static str, Value, Effect) {
         match self {
             Self::Status => ("session.status", json!({}), Effect::None),
-            Self::NewSession => ("session.new", json!({"capabilities":{}}), Effect::None),
+            Self::NewSession => (
+                "session.new",
+                json!({"capabilities":{"alwaysMatch":{"unhandledPromptBehavior":{"default":"ignore"}}}}),
+                Effect::None,
+            ),
             Self::SubscribeCore => (
                 "session.subscribe",
                 json!({"events":CORE_EVENTS}),
@@ -109,6 +137,21 @@ impl Command {
             Self::CloseContext(context) => (
                 "browsingContext.close",
                 json!({"context":context.as_str()}),
+                Effect::Page,
+            ),
+            Self::Activate(context) => (
+                "browsingContext.activate",
+                json!({"context":context.as_str()}),
+                Effect::Page,
+            ),
+            Self::Screenshot(context) => (
+                "browsingContext.captureScreenshot",
+                json!({"context":context.as_str(),"origin":"viewport","format":{"type":"image/jpeg","quality":0.65}}),
+                Effect::None,
+            ),
+            Self::Dialog { context, accept } => (
+                "browsingContext.handleUserPrompt",
+                json!({"context":context.as_str(),"accept":accept}),
                 Effect::Page,
             ),
             Self::SubscribePage => (
@@ -162,12 +205,40 @@ impl Command {
                 json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(args,node){{return ({})(\"native_frame\",JSON.parse(args),node);}}",program::SOURCE),"arguments":[{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
                 Effect::None,
             ),
+            Self::FrameFocused { context, node } => (
+                "script.callFunction",
+                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(node){{return ({})(\"native_focused_frame\",null,node);}}",program::SOURCE),"arguments":[{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
+                Effect::None,
+            ),
+            Self::FramePoint {
+                context,
+                node,
+                geometry,
+            } => (
+                "script.callFunction",
+                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(args,node){{return ({})(\"native_frame_point\",JSON.parse(args),node);}}",program::SOURCE),"arguments":[{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
+                Effect::None,
+            ),
             Self::Action { context, action } => {
                 let (source, kind, actions) = match action {
                     Action::Key { value, down } => (
                         "rdh-owned-key",
                         "key",
                         vec![json!({"type":if *down{"keyDown"}else{"keyUp"},"value":value})],
+                    ),
+                    Action::Move { x, y } => (
+                        "rdh-owned-pointer",
+                        "pointer",
+                        vec![
+                            json!({"type":"pointerMove","x":x.round() as i64,"y":y.round() as i64,"origin":"viewport"}),
+                        ],
+                    ),
+                    Action::Wheel { x, y, delta } => (
+                        "rdh-owned-wheel",
+                        "wheel",
+                        vec![
+                            json!({"type":"scroll","x":x.round() as i64,"y":y.round() as i64,"origin":"viewport","deltaX":0,"deltaY":delta.round() as i64}),
+                        ],
                     ),
                     Action::MoveTo { node } => (
                         "rdh-owned-pointer",
