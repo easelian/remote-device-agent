@@ -166,6 +166,7 @@ struct Inner {
     pending: Mutex<PendingState>,
     next: AtomicU64,
     event_sequence: AtomicU64,
+    navigations: Mutex<HashMap<ContextId, String>>,
     fenced: AtomicBool,
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
@@ -173,6 +174,8 @@ struct Inner {
     workers: watch::Sender<usize>,
     #[cfg(test)]
     reply_gate: Mutex<Option<ReplyGate>>,
+    #[cfg(test)]
+    semantic_realm: AtomicU64,
 }
 struct Worker(Arc<Inner>);
 impl Drop for Worker {
@@ -245,6 +248,7 @@ impl Bidi {
             pending: Mutex::new(PendingState::default()),
             next: AtomicU64::new(1),
             event_sequence: AtomicU64::new(0),
+            navigations: Mutex::new(HashMap::new()),
             fenced: AtomicBool::new(false),
             slots: Arc::new(Semaphore::new(SLOTS)),
             bytes: Arc::new(Semaphore::new(EVENT_BYTES)),
@@ -252,6 +256,8 @@ impl Bidi {
             workers,
             #[cfg(test)]
             reply_gate: Mutex::new(None),
+            #[cfg(test)]
+            semantic_realm: AtomicU64::new(0),
         });
         let reader = inner.clone();
         let worker = Worker(inner.clone());
@@ -390,6 +396,15 @@ impl Bidi {
             return Err(reject("browser_id_exhausted"));
         }
         let (method, params, effect) = command.encode();
+        #[cfg(test)]
+        let params = {
+            let mut params = params;
+            let variant = self.inner.semantic_realm.load(Ordering::Acquire);
+            if variant > 0 && params["target"]["sandbox"] == "rdh-semantic-dom-v1" {
+                params["target"]["sandbox"] = json!(format!("rdh-semantic-dom-v1-{variant}"));
+            }
+            params
+        };
         let frame = serde_json::to_string(&json!({"id":id,"method":method,"params":params}))
             .map_err(|_| reject("browser_invalid_params"))?;
         if frame.len() > MAX_OUTGOING {
@@ -448,6 +463,16 @@ impl Bidi {
             flag,
         )
     }
+    /// The sole page input task owns all sources for this context. It calls
+    /// this only after an input command may have been admitted; no new source
+    /// or ordinary action can be submitted through this cleanup entry point.
+    pub async fn release_inputs(&self, context: ContextId, deadline: Instant) -> Result<Reply> {
+        let cleanup = Self {
+            submission: self.submission.cleanup(),
+            ..self.clone()
+        };
+        cleanup.call(Command::ReleaseInput(context), deadline).await
+    }
     pub fn connected(&self) -> bool {
         !self.inner.fenced.load(Ordering::Acquire)
     }
@@ -456,6 +481,12 @@ impl Bidi {
     }
     pub fn context(&self, value: &Value) -> Option<ContextId> {
         ContextId::parse(self.inner.scope, value)
+    }
+    pub fn navigation(&self, context: &ContextId) -> Result<Option<String>> {
+        if !context.belongs_to(self.inner.scope) || !self.connected() {
+            return Err(Error::Rejected(Failure::new("browser_lost")));
+        }
+        Ok(self.inner.navigations.lock().unwrap().get(context).cloned())
     }
     pub fn pending_effects(&self) -> usize {
         self.inner
@@ -475,6 +506,10 @@ impl Bidi {
     }
     pub fn lifecycle(&self) -> watch::Receiver<Mode> {
         self.inner.mode.subscribe()
+    }
+    #[cfg(test)]
+    pub fn advance_semantic_realm(&self) {
+        self.inner.semantic_realm.fetch_add(1, Ordering::AcqRel);
     }
     #[cfg(test)]
     pub fn hold_next_reply(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
@@ -576,13 +611,34 @@ impl Inner {
                 }
                 // Only subscribed lifecycle events enter the critical channel.
                 // Future diagnostic subscriptions need separate budgets.
-                if !CORE_EVENTS.contains(&method) {
+                if !CORE_EVENTS.contains(&method) && !super::event::PAGE_EVENTS.contains(&method) {
                     return Ok(());
                 }
                 let event =
                     Event::parse(self.scope, method, &value["params"]).ok_or(Fault::Malformed)?;
                 let mut pending = self.pending.lock().unwrap();
                 let sent = (|| {
+                    // Read-side publication precedes replies on this connection;
+                    // a slow event consumer cannot hide a committed navigation
+                    // from a later native document query (including BFCache).
+                    match &event {
+                        Event::Navigation {
+                            context,
+                            navigation,
+                        } => {
+                            let mut current = self.navigations.lock().unwrap();
+                            if !current.contains_key(context)
+                                && current.len() >= super::event::MAX_CONTEXTS
+                            {
+                                return Err(Fault::EventGap);
+                            }
+                            current.insert(context.clone(), navigation.clone());
+                        }
+                        Event::Destroyed { context } => {
+                            self.navigations.lock().unwrap().remove(context);
+                        }
+                        _ => {}
+                    }
                     if text.len() > MAX_EVENT {
                         return Err(Fault::EventGap);
                     }
@@ -632,6 +688,7 @@ impl Inner {
         self.fenced.store(true, Ordering::Release);
         self.slots.close();
         self.mode.send_replace(Mode::Stopped(fault));
+        self.navigations.lock().unwrap().clear();
         for (_, command) in pending.commands.drain() {
             command.receipt.settle(Settlement::Unknown(fault));
             let _ = command.reply.send(Err(Error::Transport(fault)));

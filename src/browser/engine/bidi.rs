@@ -3,6 +3,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 mod command;
 mod event;
+pub(in crate::browser) mod page;
 #[cfg(target_os = "linux")]
 mod session;
 mod startup;

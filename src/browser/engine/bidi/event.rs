@@ -5,9 +5,15 @@ pub(super) const CORE_EVENTS: [&str; 2] = [
     "browsingContext.contextCreated",
     "browsingContext.contextDestroyed",
 ];
+pub(super) const PAGE_EVENTS: [&str; 4] = [
+    "network.beforeRequestSent",
+    "script.realmDestroyed",
+    "browsingContext.userPromptOpened",
+    "browsingContext.navigationCommitted",
+];
 pub(super) const MAX_CONTEXTS: usize = 128;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(super) struct ContextId {
     scope: u64,
     key: String,
@@ -37,9 +43,59 @@ pub(super) enum Event {
     Destroyed {
         context: ContextId,
     },
+    Request {
+        context: Option<ContextId>,
+        request: String,
+        url: String,
+        navigation: Option<String>,
+        hop: u32,
+        blocked: bool,
+    },
+    RealmDestroyed {
+        realm: String,
+    },
+    Prompt {
+        context: ContextId,
+    },
+    Navigation {
+        context: ContextId,
+        navigation: String,
+    },
 }
 impl Event {
     pub fn parse(scope: u64, method: &str, params: &Value) -> Option<Self> {
+        if method == "network.beforeRequestSent" {
+            let bounded = |value: &Value, max| {
+                value
+                    .as_str()
+                    .filter(|v| !v.is_empty() && v.len() <= max)
+                    .map(str::to_owned)
+            };
+            return Some(Self::Request {
+                context: if params["context"].is_null() {
+                    None
+                } else {
+                    Some(ContextId::parse(scope, &params["context"])?)
+                },
+                request: bounded(&params["request"]["request"], 512)?,
+                url: bounded(&params["request"]["url"], 8192)?,
+                navigation: if params["navigation"].is_null() {
+                    None
+                } else {
+                    Some(bounded(&params["navigation"], 512)?)
+                },
+                hop: params["redirectCount"].as_u64()?.try_into().ok()?,
+                blocked: params["isBlocked"].as_bool()?,
+            });
+        }
+        if method == "script.realmDestroyed" {
+            return Some(Self::RealmDestroyed {
+                realm: params["realm"]
+                    .as_str()
+                    .filter(|v| !v.is_empty() && v.len() <= 512)?
+                    .to_owned(),
+            });
+        }
         let context = ContextId::parse(scope, &params["context"])?;
         match method {
             "browsingContext.contextCreated" => Some(Self::Created {
@@ -51,6 +107,14 @@ impl Event {
                 },
             }),
             "browsingContext.contextDestroyed" => Some(Self::Destroyed { context }),
+            "browsingContext.userPromptOpened" => Some(Self::Prompt { context }),
+            "browsingContext.navigationCommitted" => Some(Self::Navigation {
+                context,
+                navigation: params["navigation"]
+                    .as_str()
+                    .filter(|value| !value.is_empty() && value.len() <= 512)?
+                    .to_owned(),
+            }),
             _ => None,
         }
     }
@@ -127,6 +191,7 @@ impl Contexts {
                     }
                 }
             }
+            _ => return true,
         }
         self.0.len() <= MAX_CONTEXTS && self.1.len() <= MAX_CONTEXTS
     }

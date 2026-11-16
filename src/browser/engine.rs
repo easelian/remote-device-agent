@@ -12,6 +12,9 @@ use std::{
 #[cfg(feature = "experimental-browser-bidi")]
 pub(crate) mod bidi;
 mod cdp;
+#[cfg(feature = "experimental-browser-bidi")]
+#[allow(unused_imports)] // Internal profile is selected only by D3 acceptance until D4.
+pub(in crate::browser) use cdp::semantic as semantic_cdp;
 mod programs;
 pub use cdp::launch::detect;
 #[cfg(test)]

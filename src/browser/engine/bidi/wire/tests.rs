@@ -474,6 +474,58 @@ async fn unrelated_event_flood_does_not_occupy_the_critical_queue() {
 }
 
 #[tokio::test]
+async fn navigation_identity_precedes_reply_delivery_without_an_event_consumer() {
+    let (channel, events, mut browser) = fixture().await;
+    let context = channel.context(&json!("document-context")).unwrap();
+    for (method, params, expected) in [
+        (
+            "browsingContext.navigationCommitted",
+            json!({"context":"document-context","navigation":"nav-1"}),
+            Some("nav-1"),
+        ),
+        (
+            "browsingContext.navigationCommitted",
+            json!({"context":"document-context","navigation":"nav-2"}),
+            Some("nav-2"),
+        ),
+        (
+            "browsingContext.contextDestroyed",
+            json!({"context":"document-context"}),
+            None,
+        ),
+    ] {
+        let call = channel.submit(Command::Status, deadline()).unwrap();
+        let request = request(&mut browser).await;
+        send(
+            &mut browser,
+            json!({"type":"event","method":method,"params":params}),
+        )
+        .await;
+        send(
+            &mut browser,
+            json!({"type":"success","id":request["id"],"result":{}}),
+        )
+        .await;
+        call.wait().await.unwrap();
+        assert_eq!(channel.navigation(&context).unwrap().as_deref(), expected);
+    }
+    let foreign = ContextId::parse(channel.scope() + 1, &json!("document-context")).unwrap();
+    assert!(channel.navigation(&foreign).is_err());
+    finish(&channel, events).await;
+}
+
+#[tokio::test]
+async fn navigation_identity_budget_fences_at_the_producer() {
+    let (channel, events, mut browser) = fixture().await;
+    for index in 0..=super::super::event::MAX_CONTEXTS {
+        send(&mut browser,json!({"type":"event","method":"browsingContext.navigationCommitted","params":{"context":format!("context-{index}"),"navigation":"native-navigation"}})).await;
+    }
+    assert_eq!(stopped(&channel).await, Fault::EventGap);
+    assert!(channel.submit(Command::Status, deadline()).is_err());
+    finish(&channel, events).await;
+}
+
+#[tokio::test]
 async fn malformed_envelopes_and_oversized_messages_fail_without_payload_diagnostics() {
     for payload in [
         "not-json",

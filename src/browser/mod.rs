@@ -292,6 +292,19 @@ mod profiles;
     )
 ))]
 mod runtime;
+#[cfg(all(
+    feature = "experimental-browser-bidi",
+    any(
+        target_os = "linux",
+        target_os = "macos",
+        all(
+            windows,
+            feature = "experimental-windows-private-storage",
+            feature = "experimental-windows-processes"
+        )
+    )
+))]
+mod semantic;
 #[cfg(any(
     target_os = "linux",
     target_os = "macos",

@@ -239,6 +239,23 @@ jobs:
         run: |
           "$RDH_BROWSER_EXECUTABLE" --version
           cargo +1.93.0 test --profile ci --locked -p rdh-agent --all-features --target "$RDH_TARGET" --test browser_session -- --ignored --test-threads=1
+      - name: Run the common semantic profile against Chrome and Firefox
+        if: ${{ !cancelled() && steps.native_checks.outcome == 'success' && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        env:
+          RDH_TARGET: ${{ matrix.target }}
+          RDH_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+        run: bash .github/scripts/test-semantic-browser.sh
+      - name: Retain semantic browser evidence
+        if: ${{ !cancelled() && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-browser-linux-x86_64
+          path: |
+            ${{ runner.temp }}/rdh-semantic/evidence/*.json
+            ${{ runner.temp }}/rdh-semantic/evidence/*.jsonl
+            ${{ runner.temp }}/rdh-semantic/*.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Exercise npm launcher with the native executable
         if: ${{ !endsWith(matrix.target, '-linux-musl') }}
         env:
