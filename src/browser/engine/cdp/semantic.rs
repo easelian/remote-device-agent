@@ -1,5 +1,5 @@
 //! CDP encoding for the explicit semantic_dom_v1 profile.
-#![allow(dead_code)] // Internal profile; capability v2 selects it in D4.
+#![allow(dead_code)] // Non-Linux builds retain the shared profile and native probes.
 use super::*;
 use crate::browser::semantic::{
     self as sem, Port,

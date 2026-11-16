@@ -165,6 +165,7 @@ impl Contexts {
         }
         Some(())
     }
+    #[cfg(target_os = "linux")]
     pub fn roots(&self) -> Vec<ContextId> {
         self.0
             .iter()
