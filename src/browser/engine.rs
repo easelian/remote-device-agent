@@ -9,6 +9,8 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "experimental-browser-bidi")]
+pub(crate) mod bidi;
 mod cdp;
 mod programs;
 pub use cdp::launch::detect;
