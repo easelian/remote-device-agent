@@ -1,15 +1,19 @@
 //! Native BiDi encoding for the shared semantic_dom_v1 coordinator.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))] // Native factory is Linux-only.
+#[cfg(target_os = "linux")]
+use super::Event;
 use super::{
-    Command, ContextId, Event,
+    Command, ContextId,
     command::Action,
     wire::{Bidi, Error, ProtocolError},
 };
+#[cfg(target_os = "linux")]
+use crate::browser::semantic::policy::{Capabilities, Decisions, Policy};
 use crate::browser::{
     Failure, Result,
     control::Control,
     semantic::{
         self as sem, Port,
-        policy::{Capabilities, Decisions, Policy},
         program::{Output, Program},
         types::Identities,
     },
