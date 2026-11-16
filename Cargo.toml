@@ -32,6 +32,8 @@ path = "src/main.rs"
 
 [features]
 default = ["experimental-windows-install", "experimental-macos-install"]
+# Internal Linux BiDi development only; no RPC/backend selection is exposed.
+experimental-browser-bidi = []
 # Windows platform backends.
 experimental-windows-install = ["experimental-windows-processes", "experimental-windows-startup", "experimental-windows-audit"]
 # macOS platform backends.
