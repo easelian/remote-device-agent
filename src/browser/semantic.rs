@@ -6,9 +6,11 @@ pub(crate) mod policy;
 pub(crate) mod program;
 pub(crate) mod surface;
 pub(crate) mod types;
+pub(crate) use page::Coordination;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use page::HumanPermit;
 #[allow(unused_imports)]
 pub(crate) use page::{Acknowledgement, Action, Continuation, Observation, Page, Reference};
-pub(crate) use page::{Coordination, HumanPermit};
 pub(crate) use types::*;
 
 use super::{Result, control::Control};

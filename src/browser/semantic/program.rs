@@ -14,6 +14,9 @@ pub(crate) enum Program {
         y: f64,
     },
     NativeFramePoint,
+    ScrollViewport {
+        delta: f64,
+    },
     Ready,
     Stats,
     ClearNodes {
@@ -73,7 +76,10 @@ impl Program {
     pub fn effect(&self) -> crate::browser::control::Effect {
         use crate::browser::control::Effect;
         match self {
-            Self::Scroll { .. } | Self::Focus { .. } | Self::Form { .. } => Effect::Page,
+            Self::Scroll { .. }
+            | Self::ScrollViewport { .. }
+            | Self::Focus { .. }
+            | Self::Form { .. } => Effect::Page,
             _ => Effect::None,
         }
     }
@@ -85,6 +91,7 @@ impl Program {
             Self::NativeFrameFocused => ("native_focused_frame", json!({})),
             Self::FrameAtPoint { x, y } => ("frame_at_point", json!({"x":x,"y":y})),
             Self::NativeFramePoint => ("native_frame_point", json!({})),
+            Self::ScrollViewport { delta } => ("scroll_viewport", json!({"delta":delta})),
             Self::Ready => ("ready", json!({})),
             Self::Stats => ("stats", json!({})),
             Self::ClearNodes { marker } => (

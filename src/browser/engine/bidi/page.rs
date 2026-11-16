@@ -1,5 +1,8 @@
 //! Native BiDi encoding for the shared semantic_dom_v1 coordinator.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))] // Native factory is Linux-only.
+#![cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)] // Public native sessions are validated on Linux x86_64.
 #[cfg(target_os = "linux")]
 use super::Event;
 use super::{

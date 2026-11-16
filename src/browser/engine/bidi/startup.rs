@@ -9,11 +9,11 @@ pub(super) struct Boot {
     pub product: String,
     pub version: String,
     pub contexts: Contexts,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub prompts_ignored: bool,
 }
 
-/// Internal transport readiness only. Navigation interception, page semantics
-/// and public capabilities remain unavailable until their own D3/D4 gates.
+/// Transport readiness is distinct from page initialization and public capability admission.
 pub(super) async fn initialize(
     channel: &Bidi,
     events: &mut Events,

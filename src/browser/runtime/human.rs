@@ -158,7 +158,7 @@ impl Browsers {
                 .filter(|(_, s)| s.user == principal.user)
                 .map(|(id, s)| (id.clone(), s.clone()))
                 .collect();
-            let mut sessions: Vec<_>=slots.iter().map(|(id,slot)| {
+            let sessions: Vec<_>=slots.iter().map(|(id,slot)| {
                 let (epoch,paused)=slot.control.snapshot();
                 json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"profile_name":slot.profile_name})
             }).collect();
@@ -167,7 +167,10 @@ impl Browsers {
                 target_arch = "x86_64",
                 feature = "experimental-browser-bidi"
             ))]
-            sessions.extend(self.v2_listing(principal, true));
+            let sessions: Vec<_> = sessions
+                .into_iter()
+                .chain(self.v2_listing(principal, true))
+                .collect();
             return Ok(json!({"sessions":sessions}));
         }
         let id = string(params, "session_id")?;

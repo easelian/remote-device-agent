@@ -85,7 +85,9 @@ fn capability() -> Value {
     json!({"managed_lifecycle":true,"document_identity":true,"observation":true,"input":true,"screenshot":true,
         "dialogs":true,"human_takeover":true,"navigation_policy":true,"conservative_recovery":true,
         "max_tabs":8,"max_frames":32,"named_profiles":false,"uploads":false,"downloads":false,"native_ax":false,"devtools":false,
-        "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false})
+        "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
+        "actions":["navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
+        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document"})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
@@ -546,8 +548,10 @@ async fn observe(
             id
         };
         let facts = row.facts;
-        let mut node = json!({"role":facts.role,"name":facts.name,"name_source":facts.name_source,"name_quality":facts.name_quality,"frame_id":frame,
-            "enabled":facts.enabled,"readonly":facts.readonly,"editable":facts.editable,"checked":facts.checked,"in_view":facts.in_view,"record_complete":facts.record.complete});
+        let entries: Vec<_> = facts.record.entries.into_iter().map(|entry|json!({"tag":entry.tag,"attributes":entry.attributes,"text":entry.text,"value":entry.value,"checked":entry.checked})).collect();
+        let mut node = json!({"role":facts.role,"kind":facts.kind,"tag":facts.tag,"input_type":facts.input_type,"name":facts.name,"name_source":facts.name_source,"name_quality":facts.name_quality,"frame_id":frame,
+            "enabled":facts.enabled,"readonly":facts.readonly,"editable":facts.editable,"sensitive":facts.sensitive,"checked":facts.checked,"in_view":facts.in_view,"record_complete":facts.record.complete,
+            "record":{"entries":entries,"complete":facts.record.complete,"limits":facts.record.limits}});
         if let Some(value) = facts.value {
             node["value"] = value.into();
         }
@@ -660,16 +664,19 @@ async fn act(
         "scroll" => {
             let delta = action["delta_y"].as_f64().unwrap();
             page.command(false, false, deadline, move |p| async move {
-                let (_, m) = p.metadata(deadline).await?;
-                p.human_input(
-                    sem::surface::HumanInput::Scroll {
-                        x: m.width / 2.,
-                        y: m.height / 2.,
-                        delta,
-                    },
-                    deadline,
-                )
-                .await
+                let frames = p.frames(deadline).await?;
+                let frame = frames.first().ok_or_else(sem::types::stale)?;
+                match p
+                    .program(
+                        frame,
+                        sem::program::Program::ScrollViewport { delta },
+                        deadline,
+                    )
+                    .await?
+                {
+                    sem::program::Output::Applied(Some(true)) => Ok(()),
+                    _ => Err(Failure::new("browser_invalid_params")),
+                }
             })
             .await?;
             let (_, m) = page.access(false)?.metadata(deadline).await?;

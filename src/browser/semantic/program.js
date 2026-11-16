@@ -283,6 +283,10 @@ function(operation, args, other) {
     return result({x,y,width:args.width,height:args.height,visible:true,hit:true,in_view:true});
   }
   if(operation==='native_focused_frame')return result(!!other&&other.isConnected&&other.ownerDocument===document&&activeElement()===other);
+  if(operation==='scroll_viewport'){
+    if(!Number.isFinite(args.delta)||Math.abs(args.delta)>2000)return result(false);
+    scrollBy({top:args.delta,left:0,behavior:'instant'});return result(true);
+  }
   if(operation==='surface') {
     let node=activeElement(),focus=null;
     // Headless Firefox can keep hasFocus() false after native pointer input.

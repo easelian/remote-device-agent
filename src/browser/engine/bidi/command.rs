@@ -17,10 +17,12 @@ pub(super) enum Action {
     SelectAll,
 }
 
-/// Closed transport-development commands. Page programs/input and DevTools
-/// extensions require their own typed contracts in later stages.
+/// Closed native transport and page commands. No caller-supplied methods or scripts.
 #[derive(Clone, Debug)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux owns native page sessions.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "x86_64")),
+    allow(dead_code)
+)] // Public native sessions are validated on Linux x86_64.
 pub(super) enum Command {
     Status,
     NewSession,
