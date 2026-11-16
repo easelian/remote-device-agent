@@ -10,7 +10,7 @@ use std::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     ptr::{null, null_mut},
     task::{Context, Poll},
@@ -160,7 +160,7 @@ pub(super) struct NativeProcess {
 /// The only native process creator used by the browser and its completion witness.
 pub(super) fn create_process(
     executable: &Path,
-    args: &[OsString],
+    launch: &super::Launch,
     profile: &Path,
     inherited: &[HANDLE],
     job: Option<HANDLE>,
@@ -290,7 +290,7 @@ impl Child {
     pub fn spawn(
         executable: &Path,
         profile: &Path,
-        args: &[OsString],
+        launch: &super::Launch,
     ) -> io::Result<(Self, AsyncPipe, AsyncPipe)> {
         let intent = supervisor::Supervisor::prepare(profile)?;
         let (input, child_input) = windows_pipe::pair(true)?;
@@ -318,8 +318,7 @@ impl Child {
             u32::try_from(child_input.as_raw_handle() as usize).map_err(io::Error::other)?;
         let output_number =
             u32::try_from(child_output.as_raw_handle() as usize).map_err(io::Error::other)?;
-        let mut command = args.to_vec();
-        command.push(format!("--remote-debugging-io-pipes={input_number},{output_number}").into());
+        let command = launch.with_handles(input_number, output_number);
         let raw = unsafe { CreateJobObjectW(null(), null()) };
         if raw.is_null() {
             return Err(io::Error::last_os_error());
@@ -396,22 +395,4 @@ impl Drop for Child {
 }
 pub fn retired(path: &Path, owner: Option<&Value>) -> io::Result<bool> {
     supervisor::retired(path, owner)
-}
-pub fn detect(configured: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = configured {
-        return path.is_file().then(|| path.to_owned());
-    }
-    let mut candidates = Vec::new();
-    for base in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-        if let Some(base) = std::env::var_os(base) {
-            for relative in [
-                r"Google\Chrome\Application\chrome.exe",
-                r"Microsoft\Edge\Application\msedge.exe",
-                r"Chromium\Application\chrome.exe",
-            ] {
-                candidates.push(PathBuf::from(&base).join(relative));
-            }
-        }
-    }
-    candidates.into_iter().find(|path| path.is_file())
 }

@@ -1,6 +1,10 @@
 //! Private, bounded browser artifacts. Chromium's own download writer stays disabled.
-use super::{Failure, Principal, Result, cdp::Cdp, control::Control, io_error};
-use crate::browser::cdp::Command;
+use super::{
+    Failure, Principal, Result,
+    control::Control,
+    engine::{DocumentRequest, RequestDecision, TransferPort},
+    io_error,
+};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -423,23 +427,19 @@ impl Files {
     }
     pub fn intercept(
         self: &Arc<Self>,
-        cdp: Cdp,
-        session: String,
-        params: &Value,
+        engine: impl TransferPort,
+        params: &DocumentRequest,
         owner: Owner,
     ) -> Result<()> {
-        let headers = params["responseHeaders"]
-            .as_array()
+        let headers = params
+            .headers
+            .as_ref()
             .ok_or_else(|| Failure::new("browser_file_incomplete"))?;
         let values = |name: &str| {
             headers
                 .iter()
-                .filter(|h| {
-                    h["name"]
-                        .as_str()
-                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
-                })
-                .filter_map(|h| h["value"].as_str())
+                .filter(|h| h.name.eq_ignore_ascii_case(name))
+                .map(|h| h.value.as_str())
                 .collect::<Vec<_>>()
         };
         let disposition = values("content-disposition");
@@ -473,7 +473,7 @@ impl Files {
             upload: None,
         };
         let encoding = values("content-encoding");
-        let denied = if !matches!(params["responseStatusCode"].as_u64(), Some(200))
+        let denied = if !matches!(params.status, Some(200))
             || size.is_none()
             || encoding.iter().any(|e| !e.eq_ignore_ascii_case("identity"))
         {
@@ -520,25 +520,12 @@ impl Files {
         }
         drop(control);
         let files = self.clone();
-        let request = params["requestId"].clone();
+        let request = params.handle.clone();
         let job = tokio::spawn(async move {
             let deadline = Instant::now() + Duration::from_secs(120);
             let mut stream = None;
             let outcome: Result<()> = async {
-                let value = cdp
-                    .call(
-                        Some(&session),
-                        Command::FetchTakeResponseBodyAsStream,
-                        json!({"requestId":request}),
-                        deadline,
-                    )
-                    .await?;
-                stream = Some(
-                    value["stream"]
-                        .as_str()
-                        .ok_or_else(|| Failure::new("browser_file_incomplete"))?
-                        .to_owned(),
-                );
+                stream = Some(engine.open_stream(&request, deadline).await?);
                 let mut file = crate::storage::create_private_file(&path.join("content"))
                     .map_err(io_error)?;
                 let mut received = 0u64;
@@ -548,34 +535,17 @@ impl Files {
                         return Err(Failure::new("browser_file_cancelled"));
                     }
                     let data = tokio::select! {
-                        result=cdp.call(
-                            Some(&session),
-                            Command::IoRead,
-                            json!({"handle":stream,"size":CHUNK}),
-                            deadline,
-                        )=>result?,
+                        result=engine.read_stream(stream.as_ref().unwrap(), CHUNK, deadline)=>result?,
                         _=async {while !files.stopping.load(Ordering::Acquire)&&!cancel.load(Ordering::Acquire){tokio::time::sleep(Duration::from_millis(50)).await;}}=>return Err(Failure::new("browser_file_cancelled")),
                     };
-                    let encoded = data["data"]
-                        .as_str()
-                        .ok_or_else(|| Failure::new("browser_file_incomplete"))?;
-                    if encoded.len() > CHUNK * 2 {
-                        return Err(Failure::new("browser_file_limit"));
-                    }
-                    let bytes = if data["base64Encoded"] == true {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(encoded)
-                            .map_err(|_| Failure::new("browser_file_incomplete"))?
-                    } else {
-                        encoded.as_bytes().to_vec()
-                    };
+                    let bytes=data.bytes;
                     if bytes.len() > CHUNK || received + bytes.len() as u64 > meta.size_bytes {
                         return Err(Failure::new("browser_file_limit"));
                     }
                     file.write_all(&bytes).map_err(io_error)?;
                     hash.update(&bytes);
                     received += bytes.len() as u64;
-                    if data["eof"] == true {
+                    if data.eof {
                         break;
                     }
                 }
@@ -599,20 +569,14 @@ impl Files {
             }
             .await;
             if let Some(stream) = stream {
-                let _ = cdp
-                    .call(
-                        Some(&session),
-                        Command::IoClose,
-                        json!({"handle":stream}),
-                        Instant::now() + Duration::from_secs(1),
-                    )
+                let _ = engine
+                    .close_stream(stream, Instant::now() + Duration::from_secs(1))
                     .await;
             }
-            let _ = cdp
-                .call(
-                    Some(&session),
-                    Command::FetchFailRequest,
-                    json!({"requestId":request,"errorReason":"Aborted"}),
+            let _ = engine
+                .respond(
+                    &request,
+                    RequestDecision::Abort,
                     Instant::now() + Duration::from_secs(1),
                 )
                 .await;

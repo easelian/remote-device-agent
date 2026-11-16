@@ -1,13 +1,12 @@
 //! POSIX descriptors and an unreaped process-group leader; no desktop input.
 use serde_json::{Value, json};
 use std::{
-    ffi::OsString,
     io,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{net::UnixStream, process::CommandExt},
     },
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child as Process, Command, Stdio},
 };
 
@@ -53,7 +52,7 @@ impl Child {
     pub fn spawn(
         executable: &Path,
         profile: &Path,
-        args: &[OsString],
+        launch: &super::Launch,
     ) -> io::Result<(Self, tokio::net::UnixStream, tokio::net::UnixStream)> {
         let (input, browser_input) = UnixStream::pair()?;
         let (output, browser_output) = UnixStream::pair()?;
@@ -64,12 +63,13 @@ impl Child {
         let child_input = duplicate(browser_input.as_raw_fd())?;
         let child_output = duplicate(browser_output.as_raw_fd())?;
         let (read, write) = (child_input.as_raw_fd(), child_output.as_raw_fd());
+        let (read_fd, write_fd) = launch.child_descriptors;
         group::prepare()?;
         let stderr = crate::storage::create_private_file(&profile.join("browser.stderr"))
             .map_err(|e| io::Error::other(e.to_string()))?;
         let mut command = Command::new(executable);
         command
-            .args(args)
+            .args(&launch.arguments)
             .env_clear()
             .env("HOME", profile)
             .env("PATH", "/usr/bin:/bin")
@@ -87,7 +87,7 @@ impl Child {
         }
         unsafe {
             command.pre_exec(move || {
-                if libc::dup2(read, 3) < 0 || libc::dup2(write, 4) < 0 {
+                if libc::dup2(read, read_fd) < 0 || libc::dup2(write, write_fd) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -154,24 +154,4 @@ pub fn retired(_: &Path, owner: Option<&Value>) -> io::Result<bool> {
         .filter(|v| *v > 1 && *v <= i32::MAX as u32)
         .ok_or_else(|| io::Error::other("Invalid browser process owner"))?;
     group::retired(pid)
-}
-pub fn detect(configured: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = configured {
-        return path.is_file().then(|| path.to_owned());
-    }
-    #[cfg(target_os = "linux")]
-    let paths = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/opt/google/chrome/chrome",
-    ];
-    #[cfg(target_os = "macos")]
-    let paths = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-    ];
-    paths.iter().map(PathBuf::from).find(|p| p.is_file())
 }

@@ -1,12 +1,18 @@
 //! Authenticated, browser-only human control. Secrets are transient input, never receipts.
 use super::*;
-use crate::browser::cdp::{Command, InputPair};
+use crate::browser::engine::{Context, DocumentId, PageActionPort, Point};
 mod text;
+
+#[derive(Default, PartialEq, Eq)]
+struct Stamp {
+    identities: Vec<(Context, FrameId, DocumentId)>,
+    dialog: Option<String>,
+}
 
 struct HumanFrame {
     id: String,
     at: Instant,
-    stamp: String,
+    stamp: Stamp,
     focus: Option<text::Focus>,
     dialog: Option<String>,
 }
@@ -210,7 +216,7 @@ impl Browsers {
             .process
             .as_ref()
             .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
-        if !process.cdp.connected() {
+        if !process.engine.connected() {
             return Err(Failure::unknown("browser_lost"));
         }
         let dialog_recovery = (action == "screenshot"
@@ -221,10 +227,10 @@ impl Browsers {
                 .unwrap()
                 .get(&session.active)
                 .is_some_and(|t| t.dialog.is_some());
-        if process.cdp.pending() != 0 && !dialog_recovery {
+        if process.engine.pending() != 0 && !dialog_recovery {
             return Err(Failure::unknown("browser_input_pending"));
         }
-        let cdp = process.cdp.human(slot.control.clone(), epoch);
+        let engine = process.engine.human(slot.control.clone(), epoch);
         if action == "claim" {
             if let Some(human) = &session.human
                 && human.epoch == epoch
@@ -252,7 +258,7 @@ impl Browsers {
             }
             session.references.clear();
             if let Some(read) = session.read.take() {
-                read.cursor.close(&cdp, deadline).await;
+                read.cursor.close(&engine, deadline).await;
             }
             session.touched = Instant::now();
             self.files.disclosure(id, false)?;
@@ -287,15 +293,15 @@ impl Browsers {
                     .lock()
                     .unwrap()
                     .get(&session.active)
-                    .filter(|t| t.ready && t.kind == "page" && t.dialog.is_none())
+                    .filter(|t| t.ready && t.kind == ContextKind::Page && t.dialog.is_none())
                     .cloned()
                     .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
                 if params["tab_id"] != target.id {
                     return Err(Failure::new("browser_stale_frame"));
                 }
-                let frames = page::frame_tree(&cdp, &target.session, deadline).await?;
+                let frames = page::frame_tree(&engine, &target.session, deadline).await?;
                 let metadata = page::metadata(
-                    &cdp,
+                    &engine,
                     frames
                         .first()
                         .ok_or_else(|| Failure::new("browser_tab_unavailable"))?,
@@ -366,7 +372,7 @@ impl Browsers {
                         .then(|| {
                             targets
                                 .values()
-                                .filter(|t| t.kind == "page")
+                                .filter(|t| t.kind == ContextKind::Page)
                                 .min_by_key(|t| &t.id)
                                 .cloned()
                         })
@@ -378,16 +384,10 @@ impl Browsers {
             return Err(Failure::new("browser_busy"));
         }
         if action == "screenshot" && session.active != target.id {
-            cdp.call(
-                Some(&target.session),
-                Command::PageBringToFront,
-                json!({}),
-                deadline,
-            )
-            .await?;
+            engine.activate(&target.session, deadline).await?;
             session.active = target.id.clone();
         }
-        let target_session = Some(target.session.as_str());
+        let target_session = &target.session;
         if action == "screenshot" {
             // Chromium suspends even Page.getFrameTree and captureScreenshot
             // while a native JavaScript dialog waits. Use the dialog event only.
@@ -397,7 +397,7 @@ impl Browsers {
                 human.frame = Some(HumanFrame {
                     id: frame_id.clone(),
                     at: Instant::now(),
-                    stamp: String::new(),
+                    stamp: Stamp::default(),
                     focus: None,
                     dialog: dialog["dialog_id"].as_str().map(str::to_owned),
                 });
@@ -409,16 +409,16 @@ impl Browsers {
                     "page":{"url":target.url,"title":target.title,"tab_id":target.id}}),
                 );
             }
-            let stamp = frame_stamp(&cdp, &session, &target, deadline).await?;
-            let tree = frames(&cdp, &session, &target, deadline).await?;
+            let stamp = frame_stamp(&engine, &session, &target, deadline).await?;
+            let tree = frames(&engine, &session, &target, deadline).await?;
             let focus = if target.dialog.is_some() {
                 None
             } else {
-                text::capture(&cdp, &tree, deadline).await?
+                text::capture(&engine, &tree, deadline).await?
             };
-            let image = super::super::image::capture(&cdp, &target.session, deadline).await?;
+            let image = super::super::image::capture(&engine, &target.session, deadline).await?;
             let mut page = page::metadata(
-                &cdp,
+                &engine,
                 tree.first()
                     .ok_or_else(|| Failure::new("browser_tab_unavailable"))?,
                 deadline,
@@ -426,7 +426,7 @@ impl Browsers {
             .await?;
             page["tab_id"] = target.id.clone().into();
             if slot.control.snapshot() != (epoch, true)
-                || frame_stamp(&cdp, &session, &target, deadline).await? != stamp
+                || frame_stamp(&engine, &session, &target, deadline).await? != stamp
             {
                 return Err(Failure::new("browser_control_changed"));
             }
@@ -447,7 +447,7 @@ impl Browsers {
                 .lock()
                 .unwrap()
                 .values()
-                .filter(|t| t.kind == "page")
+                .filter(|t| t.kind == ContextKind::Page)
                 .map(|t| json!({"tab_id":t.id,"title":t.title,"url":t.url}))
                 .collect();
             return Ok(
@@ -487,28 +487,15 @@ impl Browsers {
                 return Err(Failure::new("browser_stale_frame"));
             }
         } else if human.frame.as_ref().unwrap().dialog.is_some()
-            || frame_stamp(&cdp, &session, &target, deadline).await?
+            || frame_stamp(&engine, &session, &target, deadline).await?
                 != human.frame.as_ref().unwrap().stamp
         {
             return Err(Failure::new("browser_stale_frame"));
         }
         if matches!(input["kind"].as_str(), Some("click" | "scroll")) {
-            let metrics = cdp
-                .call(
-                    target_session,
-                    Command::PageGetLayoutMetrics,
-                    json!({}),
-                    deadline,
-                )
-                .await?;
-            if input["x"].as_f64().unwrap()
-                >= metrics["cssLayoutViewport"]["clientWidth"]
-                    .as_f64()
-                    .unwrap_or(0.)
-                || input["y"].as_f64().unwrap()
-                    >= metrics["cssLayoutViewport"]["clientHeight"]
-                        .as_f64()
-                        .unwrap_or(0.)
+            let metrics = engine.layout(target_session, deadline).await?;
+            if input["x"].as_f64().unwrap() >= metrics.width
+                || input["y"].as_f64().unwrap() >= metrics.height
             {
                 return Err(Failure::new("browser_invalid_params"));
             }
@@ -518,7 +505,7 @@ impl Browsers {
         let frame = session.human.as_mut().unwrap().frame.take().unwrap();
         let outcome = if input["kind"] == "dialog" {
             handle_dialog(
-                &cdp,
+                &engine,
                 &session.targets,
                 &target,
                 &input["dialog_id"],
@@ -533,18 +520,10 @@ impl Browsers {
                 .lock()
                 .unwrap()
                 .get(tab)
-                .filter(|t| t.kind == "page")
+                .filter(|t| t.kind == ContextKind::Page)
                 .cloned();
             if let Some(chosen) = chosen {
-                match cdp
-                    .call(
-                        Some(&chosen.session),
-                        Command::PageBringToFront,
-                        json!({}),
-                        deadline,
-                    )
-                    .await
-                {
+                match engine.activate(&chosen.session, deadline).await {
                     Ok(_) => {
                         session.active = tab.into();
                         session.references.clear();
@@ -557,11 +536,11 @@ impl Browsers {
             }
         } else if input["kind"] == "text" {
             match frame.focus {
-                Some(focus) => focus.insert(&cdp, &input["text"], deadline).await,
+                Some(focus) => focus.insert(&engine, &input["text"], deadline).await,
                 None => Err(Failure::new("browser_not_actionable")),
             }
         } else {
-            send_input(&cdp, target_session, input, deadline).await
+            send_input(&engine, target_session, input, deadline).await
         };
         if outcome.is_ok() {
             session.human.as_mut().unwrap().outcome = "acknowledged";
@@ -630,22 +609,31 @@ fn key_code(key: &str) -> Option<i32> {
     })
 }
 async fn send_input(
-    cdp: &Cdp,
-    session: Option<&str>,
+    engine: &Engine,
+    session: &Context,
     input: &Value,
     deadline: Instant,
 ) -> Result<()> {
+    let point = || Point {
+        x: input["x"].as_f64().unwrap(),
+        y: input["y"].as_f64().unwrap(),
+    };
     match input["kind"].as_str().unwrap() {
-        "click" => {
-            cdp.input_pair(session,InputPair::Mouse,json!({"type":"mousePressed","x":input["x"],"y":input["y"],"button":"left","clickCount":1}),json!({"type":"mouseReleased","x":input["x"],"y":input["y"],"button":"left","clickCount":1}),deadline).await?;
-        }
+        "click" => engine.click(session, point(), deadline).await?,
         "scroll" => {
-            cdp.call(session,Command::InputMouseWheel,json!({"type":"mouseWheel","x":input["x"],"y":input["y"],"deltaX":0,"deltaY":input["delta_y"]}),deadline).await?;
+            engine
+                .wheel(
+                    session,
+                    point(),
+                    input["delta_y"].as_f64().unwrap(),
+                    deadline,
+                )
+                .await?
         }
         "key" => {
-            let key = input["key"].as_str().unwrap();
-            let code = key_code(key).unwrap();
-            cdp.input_pair(session,InputPair::Key,json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"text":if key=="Enter"{"\r"}else{""}}),json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code}),deadline).await?;
+            engine
+                .press(session, input["key"].as_str().unwrap(), deadline)
+                .await?
         }
         _ => unreachable!(),
     }
@@ -653,28 +641,24 @@ async fn send_input(
 }
 
 async fn frame_stamp(
-    cdp: &Cdp,
+    engine: &Engine,
     session: &Session,
     target: &Target,
     deadline: Instant,
-) -> Result<String> {
-    let mut identities: Vec<_> = frames(cdp, session, target, deadline)
+) -> Result<Stamp> {
+    let mut identities: Vec<_> = frames(engine, session, target, deadline)
         .await?
         .into_iter()
-        .map(|frame| (frame.session, frame.id, frame.loader))
+        .map(|f| (f.session, f.id, f.document))
         .collect();
     identities.sort();
-    Ok(crate::config::sha256_hex(
-        &serde_json::to_vec(&json!([
-            identities,
-            session
-                .targets
-                .lock()
-                .unwrap()
-                .get(&target.id)
-                .and_then(|t| t.dialog.as_ref())
-                .map(|d| &d["dialog_id"])
-        ]))
-        .unwrap(),
-    ))
+    let dialog = session
+        .targets
+        .lock()
+        .unwrap()
+        .get(&target.id)
+        .and_then(|t| t.dialog.as_ref())
+        .and_then(|d| d["dialog_id"].as_str())
+        .map(str::to_owned);
+    Ok(Stamp { identities, dialog })
 }

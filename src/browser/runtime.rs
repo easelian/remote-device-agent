@@ -1,14 +1,17 @@
 use super::{
     Failure, Principal, Result, Settings, Shell,
-    cdp::Cdp,
     control::Control,
+    engine::{
+        Context, DocumentRequest, Engine, Event, FrameId, Navigation, NetworkId, RequestDecision,
+        SessionPort, TabId, TransferPort,
+    },
     files::{self, Files},
     page::{self, Element},
     process::{self, BrowserProcess},
     profiles::{self, Profiles},
     sites::{Lookup, Resolver, Sites, Verdict},
 };
-use crate::browser::cdp::Command;
+use crate::browser::engine::ContextKind;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -30,12 +33,13 @@ const IDLE: Duration = Duration::from_secs(600);
 #[derive(Clone)]
 struct Target {
     id: String,
-    session: String,
-    kind: String,
+    handle: TabId,
+    root: FrameId,
+    session: Context,
+    kind: ContextKind,
     url: String,
     title: String,
     dialog: Option<Value>,
-    parent: Option<String>,
     ready: bool,
     /// Set while the tab shows the outcome of a navigation of its own document
     /// that the site policy refused. The value says whether a request had left
@@ -48,7 +52,7 @@ struct Slot {
     profile_name: Option<String>,
     control: Arc<Control>,
     closing: AtomicBool,
-    transport: Mutex<Option<Cdp>>,
+    transport: Mutex<Option<Engine>>,
     session: AsyncMutex<Session>,
 }
 struct Session {
@@ -302,7 +306,7 @@ impl Browsers {
             for (id, slot) in slots {
                 let (epoch, paused) = slot.control.snapshot();
                 let state = match slot.session.try_lock() {
-                    Ok(s) if s.process.as_ref().is_some_and(|p| p.cdp.connected()) => "ready",
+                    Ok(s) if s.process.as_ref().is_some_and(|p| p.engine.connected()) => "ready",
                     Ok(s) if s.process.is_none() => "closed",
                     Ok(_) => "lost",
                     Err(_) => "busy",
@@ -347,25 +351,25 @@ impl Browsers {
             .process
             .as_ref()
             .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
-        if !process.cdp.connected() {
+        if !process.engine.connected() {
             return Err(Failure::unknown("browser_lost"));
         }
-        if process.cdp.pending() != 0 && operation != "browser_tabs" && !resolving_dialog {
+        if process.engine.pending() != 0 && operation != "browser_tabs" && !resolving_dialog {
             return Err(Failure::unknown("browser_input_pending"));
         }
-        let cdp = if paused {
-            process.cdp.human(slot.control.clone(), epoch)
+        let engine = if paused {
+            process.engine.human(slot.control.clone(), epoch)
         } else {
-            process.cdp.authorized(slot.control.clone(), epoch)
+            process.engine.authorized(slot.control.clone(), epoch)
         };
-        let (cdp, effects) = cdp.track_effects();
+        let (engine, effects) = engine.track_effects();
         if operation == "browser_tabs" {
             let tabs: Vec<_> = session
                 .targets
                 .lock()
                 .unwrap()
                 .values()
-                .filter(|t| t.kind == "page")
+                .filter(|t| t.kind == ContextKind::Page)
                 .map(|t| {
                     let mut tab = json!({"tab_id":t.id,"url":t.url,"title":t.title,"dialog":t.dialog,"ready":t.ready});
                     if t.blocked.is_some() {
@@ -375,7 +379,7 @@ impl Browsers {
                 })
                 .collect();
             return Ok(
-                json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}),
+                json!({"session_id":id,"control_epoch":epoch,"active_tab":session.active,"tabs":tabs,"controller":if paused{"paused"}else{"ai"},"input_pending":engine.pending()!=0}),
             );
         }
         let tab = params
@@ -388,7 +392,7 @@ impl Browsers {
             .lock()
             .unwrap()
             .get(&tab)
-            .filter(|t| t.kind == "page")
+            .filter(|t| t.kind == ContextKind::Page)
             .cloned()
             .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
         if !(target.ready || operation == "browser_act" && params["action"]["kind"] == "close_tab")
@@ -400,13 +404,13 @@ impl Browsers {
                 if target.dialog.is_some() {
                     return Err(Failure::new("browser_dialog_open"));
                 }
-                let before = page::frame_tree(&cdp, &target.session, deadline).await?;
-                let mut value = super::image::capture(&cdp, &target.session, deadline).await?;
-                let after = page::frame_tree(&cdp, &target.session, deadline).await?;
-                if before.first().map(|f| (&f.id, &f.loader)) != after.first().map(|f| (&f.id, &f.loader)) {
+                let before = page::frame_tree(&engine, &target.session, deadline).await?;
+                let mut value = super::image::capture(&engine, &target.session, deadline).await?;
+                let after = page::frame_tree(&engine, &target.session, deadline).await?;
+                if before.first().map(|f| (&f.id, &f.document)) != after.first().map(|f| (&f.id, &f.document)) {
                     return Err(Failure::new("browser_stale_frame"));
                 }
-                value["page"] = page::metadata(&cdp,after.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                value["page"] = page::metadata(&engine,after.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                 value["page"]["tab_id"] = tab.clone().into();
                 mark_blocked(&mut value, &session.targets, &tab);
                 Ok(value)
@@ -415,7 +419,7 @@ impl Browsers {
                 if target.dialog.is_some() {
                     return Err(Failure::new("browser_dialog_open"));
                 }
-                let mut tree = frames(&cdp, &session, &target, deadline).await?;
+                let mut tree = frames(&engine, &session, &target, deadline).await?;
                 let continuing = params["cursor"].is_string();
                 if let Some(token)=params["cursor"].as_str()
                     && !session.read.as_ref().is_some_and(|r|r.token==token&&r.tab==tab&&r.epoch==epoch&&r.until>Instant::now()&&r.cursor.matches(&tree)) {
@@ -428,7 +432,7 @@ impl Browsers {
                     read.cursor.compare(&tree);
                     read
                 } else {
-                    if let Some(previous)=previous {previous.cursor.close(&cdp,deadline).await;}
+                    if let Some(previous)=previous {previous.cursor.close(&engine,deadline).await;}
                     PageRead{token:String::new(),tab:tab.clone(),epoch,until:Instant::now()+Duration::from_secs(300),cursor:page::Cursor::new(&tree, scope(params))?}
                 };
                 // A first read that finds the document replaced under it starts once more,
@@ -439,14 +443,14 @@ impl Browsers {
                 let (mut value, refs) = loop {
                     let result=async {
                         let (mut value, refs) = page::observe_next(
-                            &cdp,
+                            &engine,
                             &mut read.cursor,
                             params["max_nodes"].as_u64().unwrap_or(200) as usize,
                             params["max_chars"].as_u64().unwrap_or(20000) as usize,
                             deadline,
                         )
                         .await?;
-                        value["page"] = page::metadata(&cdp,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
+                        value["page"] = page::metadata(&engine,tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?,deadline).await?;
                         value["page"]["tab_id"] = tab.clone().into();
                         mark_loading(&mut value);
                         mark_blocked(&mut value, &session.targets, &tab);
@@ -456,11 +460,11 @@ impl Browsers {
                         Ok(value) => break value,
                         Err(error) => error,
                     };
-                    read.cursor.close(&cdp,Instant::now()+Duration::from_millis(500)).await;
+                    read.cursor.close(&engine,Instant::now()+Duration::from_millis(500)).await;
                     if again
                         && matches!(error.code, "browser_stale_reference" | "browser_command_failed")
                         && Instant::now() + Duration::from_secs(3) < deadline
-                        && let Ok(fresh) = frames(&cdp, &session, &target, deadline).await
+                        && let Ok(fresh) = frames(&engine, &session, &target, deadline).await
                         && let Ok(cursor) = page::Cursor::new(&fresh, scope(params))
                     {
                         again = false;
@@ -478,19 +482,19 @@ impl Browsers {
                     read.until=Instant::now()+Duration::from_secs(300);
                     value["next_cursor"]=read.token.clone().into();
                     session.read=Some(read);
-                } else {read.cursor.close(&cdp,deadline).await;}
+                } else {read.cursor.close(&engine,deadline).await;}
                 Ok(value)
             }
             "browser_act" => {
-                if let Some(read)=session.read.take() {read.cursor.close(&cdp,deadline).await;}
+                if let Some(read)=session.read.take() {read.cursor.close(&engine,deadline).await;}
                 let action = &params["action"];
                 match action["kind"].as_str().unwrap_or("") {
                     "scroll" => {
                         if target.dialog.is_some() { return Err(Failure::new("browser_dialog_open")); }
-                        let tree = page::frame_tree(&cdp, &target.session, deadline).await?;
+                        let tree = page::frame_tree(&engine, &target.session, deadline).await?;
                         let frame = tree.first().ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
                         session.references.clear();
-                        page::scroll(&cdp, frame, &action["delta_y"], deadline).await
+                        page::scroll(&engine, frame, &action["delta_y"], deadline).await
                     }
                     "navigate" => {
                         self.admit(&action["url"])?;
@@ -498,8 +502,8 @@ impl Browsers {
                         if let Some(target) = session.targets.lock().unwrap().get_mut(&tab) {
                             target.blocked = None;
                         }
-                        let reply = navigate(&cdp, &target.session, &action["url"], deadline).await?;
-                        if reply.get("errorText").is_some() {
+                        let reply = navigate(&engine, &target.session, &action["url"], deadline).await?;
+                        if reply.failed {
                             Err(refusal(&session.targets, &tab).unwrap_or_else(|| Failure::unknown("browser_navigation_failed")))
                         } else {
                             Ok(json!({"navigation_started":true,"business_result_verified":false}))
@@ -511,25 +515,14 @@ impl Browsers {
                             .lock()
                             .unwrap()
                             .values()
-                            .filter(|t| t.kind == "page")
+                            .filter(|t| t.kind == ContextKind::Page)
                             .count()
                             >= MAX_TABS
                         {
                             return Err(Failure::new("browser_tab_limit"));
                         }
-                        let result = cdp
-                            .call(
-                                None,
-                                Command::TargetCreateTarget,
-                                json!({"url":"about:blank"}),
-                                deadline,
-                            )
-                            .await?;
-                        let new_tab = result["targetId"]
-                            .as_str()
-                            .ok_or_else(|| Failure::unknown("browser_command_failed"))?
-                            .to_owned();
-                        wait_target(&cdp, &session.targets, &new_tab, deadline).await?;
+                        let new_tab = engine.new_tab(deadline).await?.v1().to_owned();
+                        wait_target(&engine, &session.targets, &new_tab, deadline).await?;
                         session.active = new_tab.clone();
                         Ok(json!({"tab_id":new_tab}))
                     }
@@ -539,19 +532,13 @@ impl Browsers {
                             .lock()
                             .unwrap()
                             .values()
-                            .filter(|t| t.kind == "page")
+                            .filter(|t| t.kind == ContextKind::Page)
                             .count()
                             <= 1
                         {
                             return Err(Failure::new("browser_last_tab"));
                         }
-                        cdp.call(
-                            None,
-                            Command::TargetCloseTarget,
-                            json!({"targetId":tab}),
-                            deadline,
-                        )
-                        .await?;
+                        engine.close_tab(&target.handle, deadline).await?;
                         session.targets.lock().unwrap().remove(&tab);
                         if session.active == tab {
                             let next_active = session
@@ -559,7 +546,7 @@ impl Browsers {
                                 .lock()
                                 .unwrap()
                                 .values()
-                                .find(|t| t.kind == "page" && t.ready)
+                                .find(|t| t.kind == ContextKind::Page && t.ready)
                                 .map(|t| t.id.clone())
                                 .unwrap_or_default();
                             session.active = next_active;
@@ -568,14 +555,14 @@ impl Browsers {
                         Ok(json!({"tab_closed":true}))
                     }
                     "select_tab" => {
-                        cdp.call(Some(&target.session),Command::PageBringToFront,json!({}),deadline).await?;
+                        engine.activate(&target.session,deadline).await?;
                         session.active = tab;
                         session.references.clear();
                         Ok(json!({"active_tab":session.active}))
                     }
                     "dialog" => {
-                        handle_dialog(&cdp,&session.targets,&target,&action["dialog_id"],&action["accept"],deadline).await?;
-                        Ok(json!({"dialog_handled":true,"controller":if paused{"paused"}else{"ai"},"input_pending":cdp.pending()!=0}))
+                        handle_dialog(&engine,&session.targets,&target,&action["dialog_id"],&action["accept"],deadline).await?;
+                        Ok(json!({"dialog_handled":true,"controller":if paused{"paused"}else{"ai"},"input_pending":engine.pending()!=0}))
                     }
                     _ => {
                         if target.dialog.is_some() {
@@ -590,19 +577,19 @@ impl Browsers {
                         let result = if action["kind"] == "attach_file" {
                             if !self.settings.uploads { return Err(Failure::new("browser_upload_disabled")); }
                             let operation_id = operation_id.ok_or_else(||Failure::new("browser_unauthorized"))?;
-                            let tree = page::frame_tree(&cdp, &target.session, deadline).await?;
+                            let tree = page::frame_tree(&engine, &target.session, deadline).await?;
                             let top = tree.first().ok_or_else(||Failure::new("browser_tab_unavailable"))?;
-                            let origin = element.prepare_file(&cdp, top, deadline).await?;
+                            let origin = element.prepare_file(&engine, top, deadline).await?;
                             let path = self.files.consume_upload(&files::Owner{principal:principal.clone(),session:id.into(),tab:tab.clone(),origin,control:slot.control.clone()},action["file_grant_id"].as_str().unwrap_or(""),operation_id)?;
-                            element.attach_file(&cdp, &path, deadline).await.map(|mut value|{value["file_grant_id"]=action["file_grant_id"].clone();value})
-                        } else { element.act(&cdp, action, deadline).await };
+                            element.attach_file(&engine, &path, deadline).await.map(|mut value|{value["file_grant_id"]=action["file_grant_id"].clone();value})
+                        } else { element.act(&engine, action, deadline).await };
                         session.references.clear();
                         result
                     }
                 }
             }
             "browser_wait" => {
-                if let Some(read)=session.read.take() {read.cursor.close(&cdp,deadline).await;}
+                if let Some(read)=session.read.take() {read.cursor.close(&engine,deadline).await;}
                 let expected = params["url_contains"].as_str().unwrap_or("");
                 let text = params["text_contains"].as_str();
                 loop {
@@ -610,9 +597,9 @@ impl Browsers {
                     // read that the browser rejects during navigation has sent nothing.
                     // Retry observation only; never replay the preceding action.
                     let changing = |error: &Failure| matches!(error.code, "browser_stale_reference" | "browser_command_failed");
-                    match frames(&cdp, &session, &target, deadline).await {
+                    match frames(&engine, &session, &target, deadline).await {
                         Ok(tree) => if let Some(text) = text {
-                            match page::observe(&cdp, &tree, 200, 20000, deadline).await {
+                            match page::observe(&engine, &tree, 200, 20000, deadline).await {
                                 Ok((value,_)) => if value["nodes"].as_array().is_some_and(|v|v.iter().any(|n|n["name"].as_str().is_some_and(|s|s.contains(text)))) {
                                     break Ok(json!({"condition_observed":true,"observation_id":value["observation_id"],"coverage":value["coverage"]}));
                                 },
@@ -698,30 +685,27 @@ impl Browsers {
         let result=async {
             let named = profile_name.map(|name|self.profiles.open(self.root.as_deref().unwrap(),principal,name)).transpose()?;
             let process=BrowserProcess::launch(self.executable.as_deref().unwrap(),self.root.as_deref().unwrap(),&id,named,deadline).await?;
-            let cdp=process.cdp.authorized(slot.control.clone(), 1);
-            *slot.transport.lock().unwrap()=Some(cdp.clone());
+            let engine=process.engine.authorized(slot.control.clone(), 1);
+            *slot.transport.lock().unwrap()=Some(engine.clone());
             session.process=Some(process);
             if slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) {
-                cdp.stop();
+                engine.stop();
                 return Err(Failure::new("browser_control_changed"));
             }
-            session.guard=Some(guard(cdp.cleanup(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()}),self.gate.clone()));
-            cdp.call(None,Command::BrowserSetDownloadBehavior,json!({"behavior":"deny","eventsEnabled":true}),deadline).await?;
-            cdp.call(None,Command::TargetSetDiscoverTargets,json!({"discover":true}),deadline).await?;
-            cdp.call(None,Command::TargetSetAutoAttach,json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),deadline).await?;
-            // Reported with the session so a result can be tied to the browser build behind it.
-            let browser=cdp.call(None,Command::BrowserGetVersion,json!({}),deadline).await.ok().and_then(|v|v["product"].as_str().and_then(product));
+            session.guard=Some(guard(engine.clone(),session.targets.clone(),self.settings.downloads.then(||DownloadContext{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()}),self.gate.clone()));
+            engine.initialize(deadline).await?;
+            let browser=engine.product(deadline).await.ok().flatten().as_deref().and_then(product);
             let target=loop {
-                if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind=="page"&&t.ready).cloned(){break target;}
-                if !cdp.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
+                if let Some(target)=session.targets.lock().unwrap().values().find(|t|t.kind==ContextKind::Page&&t.ready).cloned(){break target;}
+                if !engine.connected() || slot.closing.load(Ordering::Acquire) || slot.control.snapshot() != (1, false) { return Err(Failure::unknown("browser_control_changed")); }
                 if Instant::now()>=deadline {return Err(Failure::unknown("browser_timeout_unknown"));}
                 tokio::time::sleep(Duration::from_millis(10)).await;
             };
             session.active=target.id.clone();
             if let Some(url)=params["url"].as_str(){
-                let reply=navigate(&cdp,&target.session,&json!(url),deadline).await?;
+                let reply=navigate(&engine,&target.session,&json!(url),deadline).await?;
                 // A session whose first page the site policy refused has nothing to show.
-                if reply.get("errorText").is_some() && let Some(refused)=refusal(&session.targets,&target.id) {
+                if reply.failed && let Some(refused)=refusal(&session.targets,&target.id) {
                     return Err(refused);
                 }
             }
@@ -776,8 +760,8 @@ impl Browsers {
         }
         if action == "close" {
             slot.closing.store(true, Ordering::Release);
-            if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
-                cdp.graceful_stop();
+            if let Some(engine) = slot.transport.lock().unwrap().as_ref() {
+                engine.graceful_stop();
             }
         }
         let mut session = if action == "close" {
@@ -807,10 +791,10 @@ impl Browsers {
                 Ok(json!({"session_id":id,"state":"closed"}))
             }
             "pause" | "resume" => {
-                if !process.cdp.connected() {
+                if !process.engine.connected() {
                     return Err(Failure::unknown("browser_lost"));
                 }
-                if process.cdp.pending() != 0 {
+                if process.engine.pending() != 0 {
                     return Err(Failure::unknown("browser_input_pending"));
                 }
                 if action == "resume" {
@@ -853,8 +837,8 @@ impl Browsers {
         for slot in self.sessions.lock().unwrap().values() {
             slot.control.change(true);
             slot.closing.store(true, Ordering::Release);
-            if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
-                cdp.graceful_stop();
+            if let Some(engine) = slot.transport.lock().unwrap().as_ref() {
+                engine.graceful_stop();
             }
         }
     }
@@ -886,8 +870,8 @@ impl Browsers {
         for (_, slot) in &slots {
             slot.control.change(true);
             slot.closing.store(true, Ordering::Release);
-            if let Some(cdp) = slot.transport.lock().unwrap().as_ref() {
-                cdp.graceful_stop();
+            if let Some(engine) = slot.transport.lock().unwrap().as_ref() {
+                engine.graceful_stop();
             }
         }
         let browsers = Arc::clone(self);
@@ -923,13 +907,13 @@ impl Browsers {
 }
 
 async fn wait_target(
-    cdp: &Cdp,
+    engine: &Engine,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
     id: &str,
     deadline: Instant,
 ) -> Result<()> {
     loop {
-        if !cdp.connected() {
+        if !engine.connected() {
             return Err(Failure::unknown("browser_lost"));
         }
         if targets.lock().unwrap().get(id).is_some_and(|t| t.ready) {
@@ -946,23 +930,20 @@ async fn wait_target(
 /// the command, and with it the whole session, pending until the browser gives
 /// up minutes later. Stop waiting early, cancel the load and let the command
 /// settle, so that the session can be used again at once.
-async fn navigate(cdp: &Cdp, session: &str, url: &Value, deadline: Instant) -> Result<Value> {
+async fn navigate(
+    engine: &Engine,
+    session: &Context,
+    url: &Value,
+    deadline: Instant,
+) -> Result<Navigation> {
     let give_up = navigation_deadline(Instant::now(), deadline);
-    match cdp
-        .call(
-            Some(session),
-            Command::PageNavigate,
-            json!({"url":url}),
-            give_up,
-        )
+    match engine
+        .navigate(session, url.as_str().unwrap_or(""), give_up)
         .await
     {
         Err(error) if error.code == "browser_timeout_unknown" => {
-            let _ = cdp
-                .cleanup()
-                .call(Some(session), Command::PageStopLoading, json!({}), deadline)
-                .await;
-            while cdp.pending() != 0 && Instant::now() < deadline {
+            let _ = engine.stop_loading(session, deadline).await;
+            while engine.pending() != 0 && Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             Err(Failure::unknown("browser_navigation_failed"))
@@ -1006,39 +987,35 @@ fn mark_blocked(result: &mut Value, targets: &Mutex<HashMap<String, Target>>, ta
 }
 
 /// Fails a paused request the way a content blocker would.
-async fn refuse(cdp: &Cdp, session: Option<&str>, params: &Value, deadline: Instant) -> Result<()> {
-    cdp.call(
-        session,
-        Command::FetchFailRequest,
-        json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
-        deadline,
-    )
-    .await
-    .map(drop)
+async fn refuse(
+    engine: &impl SessionPort,
+    params: &DocumentRequest,
+    deadline: Instant,
+) -> Result<()> {
+    engine
+        .respond(&params.handle, RequestDecision::Deny, deadline)
+        .await
 }
 
 /// Lets a paused document go on, or takes it over as a download.
 async fn release(
-    cdp: &Cdp,
+    engine: &impl TransferPort,
     targets: &Mutex<HashMap<String, Target>>,
     downloads: Option<&DownloadContext>,
-    session: Option<&str>,
-    params: &Value,
+    session: Option<&Context>,
+    params: &DocumentRequest,
     deadline: Instant,
 ) -> Result<()> {
     if let Some(downloads) = downloads
-        && params["responseHeaders"].as_array().is_some_and(|headers| {
+        && params.headers.as_ref().is_some_and(|headers| {
             headers.iter().any(|h| {
-                h["name"]
-                    .as_str()
-                    .is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))
-                    && h["value"].as_str().is_some_and(|v| {
-                        v.split(';')
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .eq_ignore_ascii_case("attachment")
-                    })
+                h.name.eq_ignore_ascii_case("content-disposition")
+                    && h.value
+                        .split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .eq_ignore_ascii_case("attachment")
             })
         })
     {
@@ -1046,10 +1023,10 @@ async fn release(
             .lock()
             .unwrap()
             .values()
-            .find(|t| Some(t.session.as_str()) == session)
+            .find(|t| Some(&t.session) == session)
             .cloned()
             .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
-        let origin = url::Url::parse(params["request"]["url"].as_str().unwrap_or(""))
+        let origin = url::Url::parse(params.url.as_str())
             .map_err(|_| Failure::new("browser_url_denied"))?
             .origin()
             .ascii_serialization();
@@ -1062,42 +1039,32 @@ async fn release(
         };
         if downloads
             .files
-            .intercept(cdp.cleanup(), target.session, params, owner)
+            .intercept(engine.clone(), params, owner)
             .is_err()
         {
-            cdp.call(
-                session,
-                Command::FetchFailRequest,
-                json!({"requestId":params["requestId"],"errorReason":"Aborted"}),
-                deadline,
-            )
-            .await?;
+            engine
+                .respond(&params.handle, RequestDecision::Abort, deadline)
+                .await?;
         }
         return Ok(());
     }
-    cdp.call(
-        session,
-        Command::FetchContinueRequest,
-        json!({"requestId":params["requestId"]}),
-        deadline,
-    )
-    .await
-    .map(drop)
+    engine
+        .respond(&params.handle, RequestDecision::Continue, deadline)
+        .await
 }
 
 /// Records on a tab what became of the latest request for its own document:
 /// refused by the site policy, or under way.
 fn note(
     targets: &Mutex<HashMap<String, Target>>,
-    session: Option<&str>,
-    frame: &str,
+    session: Option<&Context>,
+    frame: &FrameId,
     blocked: Option<bool>,
 ) {
-    if let Some(target) = targets
-        .lock()
-        .unwrap()
-        .values_mut()
-        .find(|t| t.kind == "page" && Some(t.session.as_str()) == session && t.id == frame)
+    if let Some(target) =
+        targets.lock().unwrap().values_mut().find(|t| {
+            t.kind == ContextKind::Page && Some(&t.session) == session && t.root == *frame
+        })
     {
         target.blocked = blocked;
     }
@@ -1147,301 +1114,25 @@ fn settle(operation: &str, effects: bool, mut error: Failure) -> Failure {
 }
 
 async fn frames(
-    cdp: &Cdp,
-    session: &Session,
+    engine: &Engine,
+    _session: &Session,
     target: &Target,
     deadline: Instant,
 ) -> Result<Vec<page::Frame>> {
-    let mut frames = page::frame_tree(cdp, &target.session, deadline).await?;
-    let children: Vec<_> = session
-        .targets
-        .lock()
-        .unwrap()
-        .values()
-        .filter(|t| t.kind == "iframe")
-        .cloned()
-        .collect();
-    let mut selected = HashMap::from([(target.session.clone(), Vec::<(String, String)>::new())]);
-    let mut remaining = children;
-    loop {
-        let Some(index) = remaining
-            .iter()
-            .position(|t| t.parent.as_ref().is_some_and(|p| selected.contains_key(p)))
-        else {
-            break;
-        };
-        let child = remaining.remove(index);
-        let parent = child.parent.as_ref().unwrap();
-        let mut ancestors = vec![(parent.clone(), child.id.clone())];
-        ancestors.extend(selected.get(parent).unwrap().iter().cloned());
-        selected.insert(child.session.clone(), ancestors.clone());
-        for mut frame in page::frame_tree(cdp, &child.session, deadline).await? {
-            frame.ancestors = ancestors.clone();
-            if let Some(old) = frames.iter_mut().find(|f| f.id == frame.id) {
-                *old = frame;
-            } else {
-                frames.push(frame);
-            }
-        }
-    }
-    Ok(frames)
-}
-
-#[tokio::test]
-async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-    let (client, browser) = tokio::io::duplex(8192);
-    let (read, write) = tokio::io::split(client);
-    let cdp = Cdp::new(read, write);
-    let tab = Target {
-        id: "tab".into(),
-        session: "page".into(),
-        kind: "page".into(),
-        url: String::new(),
-        title: String::new(),
-        dialog: None,
-        parent: None,
-        ready: true,
-        blocked: None,
-    };
-    let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
-    let gate = Arc::new(Gate::default());
-    // Where the names used below lead. A name without an answer is let through.
-    gate.lookup
-        .resolve_with(super::sites::resolver(|host: String| async move {
-            match host.as_str() {
-                "metadata.example" => Some(vec!["169.254.169.254".parse().unwrap()]),
-                "public.example" => Some(vec!["93.184.216.34".parse().unwrap()]),
-                _ => None,
-            }
-        }));
-    let task = guard(cdp.clone(), targets.clone(), None, gate);
-    let mut browser = BufReader::new(browser);
-    // Sends one paused document request and returns what the hook did with it.
-    async fn paused(browser: &mut BufReader<DuplexStream>, mut request: Value) -> Value {
-        request["requestId"] = "document".into();
-        let mut event = serde_json::to_vec(
-            &json!({"sessionId":"page","method":"Fetch.requestPaused","params":request}),
-        )
-        .unwrap();
-        event.push(0);
-        browser.get_mut().write_all(&event).await.unwrap();
-        let mut frame = Vec::new();
-        browser.read_until(0, &mut frame).await.unwrap();
-        let command: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
-        let mut reply = serde_json::to_vec(&json!({"id":command["id"],"result":{}})).unwrap();
-        reply.push(0);
-        browser.get_mut().write_all(&reply).await.unwrap();
-        command
-    }
-    let blocked = || targets.lock().unwrap()["tab"].blocked;
-    let metadata = "http://169.254.169.254/latest/meta-data/";
-    let scenario = async {
-        // The tab's own document, refused before anything was sent.
-        let failed = paused(
-            &mut browser,
-            json!({"frameId":"tab","request":{"url":metadata}}),
-        )
-        .await;
-        assert_eq!(failed["method"], "Fetch.failRequest");
-        assert_eq!(failed["params"]["errorReason"], "BlockedByClient");
-        assert_eq!(blocked(), Some(false));
-        // A frame inside it is refused too, and does not change what the tab says.
-        let failed = paused(
-            &mut browser,
-            json!({"frameId":"child","request":{"url":metadata}}),
-        )
-        .await;
-        assert_eq!(failed["method"], "Fetch.failRequest");
-        assert_eq!(blocked(), Some(false));
-        // The tab sets out for a page it may open.
-        let continued = paused(
-            &mut browser,
-            json!({"frameId":"tab","request":{"url":"http://127.0.0.1:8080/"}}),
-        )
-        .await;
-        assert_eq!(continued["method"], "Fetch.continueRequest");
-        assert_eq!(blocked(), None);
-        // That page redirects to the refused address: a request has left by now.
-        let failed = paused(
-            &mut browser,
-            json!({"frameId":"tab","redirectedRequestId":"document","request":{"url":metadata}}),
-        )
-        .await;
-        assert_eq!(failed["method"], "Fetch.failRequest");
-        assert_eq!(blocked(), Some(true));
-        // A name is judged by where it leads, both when it has to be asked about
-        // and when the answer is remembered.
-        for _ in 0..2 {
-            let failed = paused(
-                &mut browser,
-                json!({"frameId":"tab","request":{"url":"http://metadata.example/"}}),
-            )
-            .await;
-            assert_eq!(failed["method"], "Fetch.failRequest");
-            assert_eq!(blocked(), Some(false));
-            for open in ["http://public.example/", "http://unanswered.example/"] {
-                let continued = paused(
-                    &mut browser,
-                    json!({"frameId":"tab","request":{"url":open}}),
-                )
-                .await;
-                assert_eq!(continued["method"], "Fetch.continueRequest", "{open}");
-                assert_eq!(blocked(), None, "{open}");
-            }
-        }
-    };
-    let result = tokio::time::timeout(Duration::from_secs(2), scenario).await;
-    cdp.stop();
-    task.await.unwrap();
-    result.expect("the hook must answer every paused request");
-}
-
-#[tokio::test]
-async fn where_private_networks_are_refused_the_address_reached_decides() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-    let (client, browser) = tokio::io::duplex(8192);
-    let (read, write) = tokio::io::split(client);
-    let cdp = Cdp::new(read, write);
-    let tab = Target {
-        id: "tab".into(),
-        session: "page".into(),
-        kind: "page".into(),
-        url: String::new(),
-        title: String::new(),
-        dialog: None,
-        parent: None,
-        ready: true,
-        blocked: None,
-    };
-    let targets = Arc::new(Mutex::new(HashMap::from([("tab".to_owned(), tab)])));
-    let gate = Arc::new(Gate {
-        sites: serde_json::from_value(json!({"private_networks":"deny"})).unwrap(),
-        lookup: Lookup::default(),
-    });
-    // Every name looks public when it is asked about.
-    gate.lookup.resolve_with(super::sites::resolver(|_| async {
-        Some(vec!["93.184.216.34".parse().unwrap()])
-    }));
-    let task = guard(cdp.clone(), targets.clone(), None, gate);
-    let mut browser = BufReader::new(browser);
-    async fn event(browser: &mut BufReader<DuplexStream>, method: &str, params: Value) {
-        let mut event =
-            serde_json::to_vec(&json!({"sessionId":"page","method":method,"params":params}))
-                .unwrap();
-        event.push(0);
-        browser.get_mut().write_all(&event).await.unwrap();
-    }
-    // Reads the hook's next command and acknowledges it.
-    async fn command(browser: &mut BufReader<DuplexStream>) -> Value {
-        let mut frame = Vec::new();
-        browser.read_until(0, &mut frame).await.unwrap();
-        let command: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
-        let mut reply = serde_json::to_vec(&json!({"id":command["id"],"result":{}})).unwrap();
-        reply.push(0);
-        browser.get_mut().write_all(&reply).await.unwrap();
-        command
-    }
-    let blocked = || targets.lock().unwrap()["tab"].blocked;
-    let request = |network: &str| json!({"requestId":network,"networkId":network,"frameId":"tab","request":{"url":"http://named.example/"}});
-    let response = |network: &str| {
-        let mut paused = request(network);
-        paused["responseStatusCode"] = 200.into();
-        paused
-    };
-    let said =
-        |network: &str, space: &str| json!({"requestId":network,"resourceIPAddressSpace":space});
-    let scenario = async {
-        // The name passes its lookup, and the request is sent.
-        event(&mut browser, "Fetch.requestPaused", request("a")).await;
-        assert_eq!(
-            command(&mut browser).await["method"],
-            "Fetch.continueRequest"
-        );
-        // The browser reached a private address: the page does not get the response.
-        event(
-            &mut browser,
-            "Network.responseReceivedExtraInfo",
-            said("a", "Local"),
-        )
-        .await;
-        event(&mut browser, "Fetch.requestPaused", response("a")).await;
-        let failed = command(&mut browser).await;
-        assert_eq!(failed["method"], "Fetch.failRequest");
-        assert_eq!(failed["params"]["errorReason"], "BlockedByClient");
-        assert_eq!(blocked(), Some(true));
-        // The same when the browser's word arrives after the response is paused.
-        event(&mut browser, "Fetch.requestPaused", request("b")).await;
-        assert_eq!(
-            command(&mut browser).await["method"],
-            "Fetch.continueRequest"
-        );
-        assert_eq!(blocked(), None);
-        event(&mut browser, "Fetch.requestPaused", response("b")).await;
-        event(
-            &mut browser,
-            "Network.responseReceivedExtraInfo",
-            said("b", "Loopback"),
-        )
-        .await;
-        assert_eq!(command(&mut browser).await["method"], "Fetch.failRequest");
-        assert_eq!(blocked(), Some(true));
-        // A public address is let through.
-        event(&mut browser, "Fetch.requestPaused", request("c")).await;
-        assert_eq!(
-            command(&mut browser).await["method"],
-            "Fetch.continueRequest"
-        );
-        event(
-            &mut browser,
-            "Network.responseReceivedExtraInfo",
-            said("c", "Public"),
-        )
-        .await;
-        event(&mut browser, "Fetch.requestPaused", response("c")).await;
-        assert_eq!(
-            command(&mut browser).await["method"],
-            "Fetch.continueRequest"
-        );
-        assert_eq!(blocked(), None);
-        // What was said about an earlier hop does not count for the next one, and a
-        // response the browser says nothing about goes by the name's lookup.
-        event(
-            &mut browser,
-            "Network.responseReceivedExtraInfo",
-            said("d", "Local"),
-        )
-        .await;
-        event(&mut browser, "Fetch.requestPaused", request("d")).await;
-        assert_eq!(
-            command(&mut browser).await["method"],
-            "Fetch.continueRequest"
-        );
-        event(&mut browser, "Fetch.requestPaused", response("d")).await;
-        assert_eq!(
-            command(&mut browser).await["method"],
-            "Fetch.continueRequest"
-        );
-        assert_eq!(blocked(), None);
-    };
-    let result = tokio::time::timeout(Duration::from_secs(3), scenario).await;
-    cdp.stop();
-    task.await.unwrap();
-    result.expect("the hook must answer every paused request");
+    engine.page_frames(&target.session, deadline).await
 }
 
 /// What the browser said about the address behind recent responses, one entry
 /// for a request, kept until it is asked for. The oldest give way to new ones.
 #[derive(Default)]
 struct Spaces {
-    known: HashMap<(String, String), String>,
-    order: std::collections::VecDeque<(String, String)>,
+    known: HashMap<NetworkId, bool>,
+    order: std::collections::VecDeque<NetworkId>,
 }
 impl Spaces {
-    fn record(&mut self, session: &str, request: &str, space: &str) {
-        let key = (session.to_owned(), request.to_owned());
-        if self.known.insert(key.clone(), space.to_owned()).is_none() {
-            self.order.push_back(key);
+    fn record(&mut self, request: NetworkId, public: bool) {
+        if self.known.insert(request.clone(), public).is_none() {
+            self.order.push_back(request);
             if self.order.len() > 1024
                 && let Some(oldest) = self.order.pop_front()
             {
@@ -1449,8 +1140,8 @@ impl Spaces {
             }
         }
     }
-    fn take(&mut self, session: &str, request: &str) -> Option<String> {
-        self.known.remove(&(session.to_owned(), request.to_owned()))
+    fn take(&mut self, request: &NetworkId) -> Option<bool> {
+        self.known.remove(request)
     }
 }
 
@@ -1472,78 +1163,44 @@ struct DownloadContext {
     control: Arc<Control>,
 }
 
-#[tokio::test]
-async fn suspended_non_page_target_cannot_block_page_request_progress() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let (client, browser) = tokio::io::duplex(8192);
-    let (read, write) = tokio::io::split(client);
-    let cdp = Cdp::new(read, write);
-    let task = guard(
-        cdp.clone(),
-        Arc::new(Mutex::new(HashMap::new())),
-        None,
-        Arc::new(Gate::default()),
-    );
-    let mut browser = BufReader::new(browser);
-    let scenario = async {
-        browser.get_mut().write_all(br#"{"method":"Target.attachedToTarget","params":{"sessionId":"worker","targetInfo":{"targetId":"worker-target","type":"service_worker"}}}"#).await.unwrap();
-        browser.get_mut().write_all(&[0]).await.unwrap();
-        let mut frame = Vec::new();
-        browser.read_until(0, &mut frame).await.unwrap();
-        let resume: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
-        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
-        // Renderer startup cannot finish until a document request is released.
-        // A browser may deliver this dependency before acknowledging resume.
-        browser.get_mut().write_all(br#"{"sessionId":"page","method":"Fetch.requestPaused","params":{"requestId":"navigation","request":{"url":"http://127.0.0.1/fixture"}}}"#).await.unwrap();
-        browser.get_mut().write_all(&[0]).await.unwrap();
-        frame.clear();
-        browser.read_until(0, &mut frame).await.unwrap();
-        let continued: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
-        assert_eq!(continued["method"], "Fetch.continueRequest");
-        assert_eq!(continued["params"]["requestId"], "navigation");
-        for request in [continued, resume] {
-            let mut reply = serde_json::to_vec(&json!({"id":request["id"],"result":{}})).unwrap();
-            reply.push(0);
-            browser.get_mut().write_all(&reply).await.unwrap();
-        }
-    };
-    let result = tokio::time::timeout(Duration::from_secs(1), scenario).await;
-    cdp.stop();
-    task.await.unwrap();
-    result.expect("target resume must not block the request that lets startup finish");
-}
-
 fn guard(
-    cdp: Cdp,
+    engine: Engine,
     targets: Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<DownloadContext>,
     gate: Arc<Gate>,
 ) -> tokio::task::JoinHandle<()> {
-    let mut events = cdp.events();
+    let mut events = engine.events();
     tokio::spawn(async move {
         let mut work = Work::default();
         loop {
-            if !cdp.connected() {
+            if !engine.connected() {
                 break;
             }
             let event = tokio::select! {
                 joined=work.initializers.join_next(), if !work.initializers.is_empty()=>{
-                    if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
+                    if joined.is_some_and(|r|r.is_err()){engine.stop();break;}
                     continue;
                 },
                 joined=work.checks.join_next(), if !work.checks.is_empty()=>{
-                    if joined.is_some_and(|r|r.is_err()){cdp.stop();break;}
+                    if joined.is_some_and(|r|r.is_err()){engine.stop();break;}
                     continue;
                 },
-                event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{cdp.stop();break;}},
-                _=tokio::time::sleep(Duration::from_millis(500))=>{if !cdp.connected(){break;}else{continue;}},
+                event=events.recv()=>match event {Ok(event)=>event,Err(_)=>{engine.stop();break;}},
+                _=tokio::time::sleep(Duration::from_millis(500))=>{if !engine.connected(){break;}else{continue;}},
             };
-            if handle_event(&cdp, &targets, downloads.as_ref(), &gate, &mut work, event)
-                .await
-                .is_err()
+            if handle_event(
+                &engine,
+                &targets,
+                downloads.as_ref(),
+                &gate,
+                &mut work,
+                event,
+            )
+            .await
+            .is_err()
             {
-                if cdp.connected() {
-                    cdp.stop();
+                if engine.connected() {
+                    engine.stop();
                 }
                 break;
             }
@@ -1554,168 +1211,89 @@ fn guard(
         while work.checks.join_next().await.is_some() {}
     })
 }
-/// Prepares a target. `responses` also pauses each document when its response
-/// arrives: downloads are taken over there, and so is the check of the address a
-/// connection really reached.
-async fn initialize_target(
-    cdp: &Cdp,
-    session: &str,
-    downloads: bool,
-    responses: bool,
-) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(125);
-    let mut patterns =
-        vec![json!({"urlPattern":"*","resourceType":"Document","requestStage":"Request"})];
-    if responses {
-        patterns
-            .push(json!({"urlPattern":"*","resourceType":"Document","requestStage":"Response"}));
-    }
-    cdp.call(
-        Some(session),
-        Command::FetchEnable,
-        json!({"patterns":patterns}),
-        deadline,
-    )
-    .await?;
-    cdp.call(
-        Some(session),
-        Command::TargetSetAutoAttach,
-        json!({"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}),
-        deadline,
-    )
-    .await?;
-    cdp.call(
-        Some(session),
-        Command::RuntimeRunIfWaitingForDebugger,
-        json!({}),
-        deadline,
-    )
-    .await?;
-    cdp.call(Some(session),Command::NetworkSetBlockedURLs,json!({"urls":["file:*","filesystem:*","javascript:*","chrome:*","chrome-extension:*","devtools:*","mailto:*","tel:*"]}),deadline).await?;
-    if downloads {
-        cdp.call(
-            Some(session),
-            Command::NetworkSetCacheDisabled,
-            json!({"cacheDisabled":true}),
-            deadline,
-        )
-        .await?;
-    }
-    cdp.call(
-        Some(session),
-        Command::PageSetInterceptFileChooserDialog,
-        json!({"enabled":true}),
-        deadline,
-    )
-    .await?;
-    for method in [
-        Command::PageEnable,
-        Command::RuntimeEnable,
-        Command::NetworkEnable,
-        Command::AccessibilityEnable,
-    ] {
-        cdp.call(Some(session), method, json!({}), deadline).await?;
-    }
-    Ok(())
-}
 async fn handle_event(
-    cdp: &Cdp,
+    engine: &impl TransferPort,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
     downloads: Option<&DownloadContext>,
     gate: &Arc<Gate>,
     work: &mut Work,
-    event: Value,
+    event: Event,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
-    let params = &event["params"];
-    match event["method"].as_str().unwrap_or("") {
-        "Target.attachedToTarget" => {
-            let info = &params["targetInfo"];
-            let session = params["sessionId"]
-                .as_str()
-                .ok_or_else(|| Failure::unknown("browser_lost"))?;
-            let id = info["targetId"].as_str().unwrap_or("");
-            let kind = info["type"].as_str().unwrap_or("");
-            if !matches!(kind, "page" | "iframe") {
+    match event {
+        Event::Attached {
+            context: session,
+            info,
+        } => {
+            let id = info.tab.v1();
+            let kind = info.kind;
+            if kind == ContextKind::Background {
                 if work.initializers.len() >= 40 {
                     return Err(Failure::new("browser_busy"));
                 }
-                let (cdp, session) = (cdp.clone(), session.to_owned());
+                let (engine, session) = (engine.clone(), session.clone());
                 work.initializers.spawn(async move {
                     // Resuming a worker can itself wait for a page request.
                     // Keep Fetch processing available to resolve that dependency,
                     // just as for page/iframe initialization below.
-                    if cdp
-                        .call(
-                            Some(&session),
-                            Command::RuntimeRunIfWaitingForDebugger,
-                            json!({}),
-                            Instant::now() + Duration::from_secs(125),
-                        )
+                    if engine
+                        .resume_context(&session, Instant::now() + Duration::from_secs(125))
                         .await
                         .is_err()
                     {
-                        cdp.stop();
+                        engine.stop();
                     }
                 });
                 return Ok(());
             }
-            if (kind == "page"
+            if (kind == ContextKind::Page
                 && targets
                     .lock()
                     .unwrap()
                     .values()
-                    .filter(|t| t.kind == "page")
+                    .filter(|t| t.kind == ContextKind::Page)
                     .count()
                     >= MAX_TABS)
                 || targets.lock().unwrap().len() >= 40
                 || work.initializers.len() >= 40
             {
-                cdp.call(
-                    None,
-                    Command::TargetCloseTarget,
-                    json!({"targetId":id}),
-                    deadline,
-                )
-                .await?;
+                engine.discard_tab(&info.tab, deadline).await?;
                 return Ok(());
             }
             targets.lock().unwrap().insert(
                 id.into(),
                 Target {
                     id: id.into(),
-                    session: session.into(),
-                    kind: kind.into(),
-                    url: info["url"]
-                        .as_str()
-                        .unwrap_or("")
-                        .chars()
-                        .take(4096)
-                        .collect(),
-                    title: info["title"]
-                        .as_str()
-                        .unwrap_or("")
-                        .chars()
-                        .take(512)
-                        .collect(),
+                    handle: info.tab.clone(),
+                    root: info.root.clone(),
+                    session: session.clone(),
+                    kind,
+                    url: info.url,
+                    title: info.title,
                     dialog: None,
-                    parent: event["sessionId"].as_str().map(str::to_owned),
                     ready: false,
                     blocked: None,
                 },
             );
-            let (cdp, targets, id, session) = (
-                cdp.clone(),
+            let (engine, targets, id, session) = (
+                engine.clone(),
                 targets.clone(),
                 id.to_owned(),
-                session.to_owned(),
+                session.clone(),
             );
             let downloads = downloads.is_some();
             let responses = downloads || gate.sites.strict();
             work.initializers.spawn(async move {
                 // A popup can have no renderer document until its attachment
                 // finishes. The event pump must keep serving Fetch meanwhile.
-                let result = initialize_target(&cdp, &session, downloads, responses).await;
+                let result = engine
+                    .initialize_context(
+                        &session,
+                        downloads,
+                        responses,
+                        Instant::now() + Duration::from_secs(125),
+                    )
+                    .await;
                 if result.is_ok() {
                     if let Some(target) = targets
                         .lock()
@@ -1732,57 +1310,33 @@ async fn handle_event(
                         .get(&id)
                         .is_some_and(|t| t.session == session);
                     if present {
-                        if cdp
-                            .call(
-                                None,
-                                Command::TargetCloseTarget,
-                                json!({"targetId":id}),
-                                Instant::now() + Duration::from_secs(1),
-                            )
+                        if engine
+                            .discard_tab(&info.tab, Instant::now() + Duration::from_secs(1))
                             .await
                             .is_err()
-                            && cdp.connected()
+                            && engine.connected()
                         {
-                            cdp.stop();
+                            engine.stop();
                         }
                         targets.lock().unwrap().remove(&id);
                     }
                 }
             });
         }
-        "Target.detachedFromTarget" => {
-            targets
-                .lock()
-                .unwrap()
-                .retain(|_, t| t.session != params["sessionId"].as_str().unwrap_or(""));
+        Event::Detached(context) => {
+            targets.lock().unwrap().retain(|_, t| t.session != context);
         }
-        "Target.targetInfoChanged" => {
-            let info = &params["targetInfo"];
-            if let Some(target) = targets
-                .lock()
-                .unwrap()
-                .get_mut(info["targetId"].as_str().unwrap_or(""))
-            {
-                target.url = info["url"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(4096)
-                    .collect();
-                target.title = info["title"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(512)
-                    .collect();
-                // An empty page is not the outcome of a refused navigation.
+        Event::TargetChanged(info) => {
+            if let Some(target) = targets.lock().unwrap().get_mut(info.tab.v1()) {
+                target.url = info.url;
+                target.title = info.title;
                 if target.url == "about:blank" {
                     target.blocked = None;
                 }
             }
         }
-        "Fetch.requestPaused" => {
-            let url = params["request"]["url"].as_str().unwrap_or("");
+        Event::DocumentPaused(params) => {
+            let url = params.url.as_str();
             let ordinary = page::url_allowed(url);
             // What the address itself and the owner's lists say.
             let address = url::Url::parse(url).ok();
@@ -1791,21 +1345,15 @@ async fn handle_event(
                 Some(address) if ordinary => gate.sites.judge(address),
                 _ => Verdict::Deny,
             };
-            let responded = params.get("responseStatusCode").is_some()
-                || params.get("responseErrorReason").is_some();
-            // A request had left the browser when this is a later hop of a
-            // redirect, or a response.
-            let sent = responded || params.get("redirectedRequestId").is_some();
-            let session = event["sessionId"].as_str();
-            let frame = params["frameId"].as_str().unwrap_or("");
-            let request = params["networkId"].as_str().unwrap_or("");
+            let responded = params.responded;
+            let sent = responded || params.redirected;
+            let session = params.context.as_ref();
+            let frame = &params.frame;
+            let request = &params.network;
             // What the browser said about this request before it set out is about an
             // earlier hop of a redirect.
             if gate.sites.strict() && !responded {
-                work.spaces
-                    .lock()
-                    .unwrap()
-                    .take(session.unwrap_or(""), request);
+                work.spaces.lock().unwrap().take(request);
             }
             // A host name is judged by the addresses it leads to, before its request
             // is sent. The lookup must not hold up the events behind this one, so a
@@ -1823,85 +1371,73 @@ async fn handle_event(
                     }
                     None if work.checks.len() < 64 => {
                         note(targets, session, frame, None);
-                        let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
+                        let (engine, gate, targets) =
+                            (engine.clone(), gate.clone(), targets.clone());
                         let (host, frame) = (host.to_owned(), frame.to_owned());
-                        let session = session.map(str::to_owned);
-                        let request = params["requestId"].clone();
+                        let session = session.cloned();
+                        let request = params.handle.clone();
                         work.checks.spawn(async move {
                             let refused = gate
                                 .lookup
                                 .addresses(&host)
                                 .await
                                 .is_some_and(|found| !gate.sites.judge_addresses(&found));
-                            let mut args = json!({"requestId":request});
                             if refused {
-                                note(&targets, session.as_deref(), &frame, Some(sent));
-                                args["errorReason"] = "BlockedByClient".into();
+                                note(&targets, session.as_ref(), &frame, Some(sent));
                             }
-                            let method = if refused {
-                                Command::FetchFailRequest
+                            let decision = if refused {
+                                RequestDecision::Deny
                             } else {
-                                Command::FetchContinueRequest
+                                RequestDecision::Continue
                             };
                             let answered = Instant::now() + Duration::from_secs(3);
-                            let _ = cdp.call(session.as_deref(), method, args, answered).await;
+                            let _ = engine.respond(&request, decision, answered).await;
                         });
                         return Ok(());
                     }
                     // Too many names are being asked about at once.
                     None => {
-                        cdp.call(
-                            session,
-                            Command::FetchFailRequest,
-                            json!({"requestId":params["requestId"],"errorReason":"BlockedByClient"}),
-                            deadline,
-                        )
-                        .await?;
+                        engine
+                            .respond(&params.handle, RequestDecision::Deny, deadline)
+                            .await?;
                         return Ok(());
                     }
                 }
             }
             // Where the owner refuses private networks, the address the browser really
             // reached decides, whatever the name's lookup said.
-            if gate.sites.strict()
-                && verdict == Verdict::Resolve
-                && params.get("responseStatusCode").is_some()
-            {
-                let reported = work
-                    .spaces
-                    .lock()
-                    .unwrap()
-                    .take(session.unwrap_or(""), request);
+            if gate.sites.strict() && verdict == Verdict::Resolve && params.status.is_some() {
+                let reported = work.spaces.lock().unwrap().take(request);
                 match reported {
                     Some(space) => {
-                        if !gate.sites.judge_connection(&space) {
+                        if !space {
                             verdict = Verdict::Deny;
                         }
                     }
                     None if work.checks.len() < 64 => {
-                        let (cdp, gate, targets) = (cdp.clone(), gate.clone(), targets.clone());
+                        let (engine, gate, targets) =
+                            (engine.clone(), gate.clone(), targets.clone());
                         let (spaces, downloads) = (work.spaces.clone(), downloads.cloned());
                         let host = address
                             .as_ref()
                             .and_then(|address| address.host_str())
                             .unwrap_or("")
                             .to_owned();
-                        let (session, frame) = (session.map(str::to_owned), frame.to_owned());
+                        let (session, frame) = (session.cloned(), frame.to_owned());
                         let (request, params) = (request.to_owned(), params.clone());
                         work.checks.spawn(async move {
-                            let session = session.as_deref();
+                            let session = session.as_ref();
                             // The browser's word on this connection has not arrived yet.
                             let mut reported = None;
                             for _ in 0..15 {
-                                reported =
-                                    spaces.lock().unwrap().take(session.unwrap_or(""), &request);
+                                reported = spaces.lock().unwrap().take(&request);
                                 if reported.is_some() {
                                     break;
                                 }
                                 tokio::time::sleep(Duration::from_millis(20)).await;
                             }
                             let refused = match reported {
-                                Some(space) => !gate.sites.judge_connection(&space),
+                                Some(space) => !space,
                                 // Nothing was said, as for a page out of the browser's
                                 // cache: what the name's lookup says stands.
                                 None => gate
@@ -1913,13 +1449,14 @@ async fn handle_event(
                             let deadline = Instant::now() + Duration::from_secs(3);
                             let done = if refused {
                                 note(&targets, session, &frame, Some(true));
-                                refuse(&cdp, session, &params, deadline).await
+                                refuse(&engine, &params, deadline).await
                             } else {
                                 let downloads = downloads.as_ref();
-                                release(&cdp, &targets, downloads, session, &params, deadline).await
+                                release(&engine, &targets, downloads, session, &params, deadline)
+                                    .await
                             };
-                            if done.is_err() && cdp.connected() {
-                                cdp.stop();
+                            if done.is_err() && engine.connected() {
+                                engine.stop();
                             }
                         });
                         return Ok(());
@@ -1940,39 +1477,36 @@ async fn handle_event(
                 );
             }
             if allowed {
-                release(cdp, targets, downloads, session, params, deadline).await?;
+                release(engine, targets, downloads, session, &params, deadline).await?;
             } else {
-                refuse(cdp, session, params, deadline).await?;
+                refuse(engine, &params, deadline).await?;
             }
         }
-        "Network.responseReceivedExtraInfo" if gate.sites.strict() => {
-            if let (Some(session), Some(request), Some(space)) = (
-                event["sessionId"].as_str(),
-                params["requestId"].as_str(),
-                params["resourceIPAddressSpace"].as_str(),
-            ) {
-                work.spaces.lock().unwrap().record(session, request, space);
-            }
+        Event::Connection { network, public } if gate.sites.strict() => {
+            work.spaces.lock().unwrap().record(network, public);
         }
-        "Page.javascriptDialogOpening" => {
+        Event::DialogOpened {
+            context,
+            kind,
+            message,
+        } => {
             let id = crate::random::hex_token::<16>().map_err(super::io_error)?;
             if let Some(target) = targets
                 .lock()
                 .unwrap()
                 .values_mut()
-                .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
+                .find(|t| Some(&t.session) == context.as_ref())
             {
-                target.dialog = Some(
-                    json!({"dialog_id":id,"attempted":false,"type":params["type"],"message":params["message"].as_str().unwrap_or("").chars().take(512).collect::<String>()}),
-                );
+                target.dialog =
+                    Some(json!({"dialog_id":id,"attempted":false,"type":kind,"message":message}));
             }
         }
-        "Page.javascriptDialogClosed" => {
+        Event::DialogClosed { context } => {
             if let Some(target) = targets
                 .lock()
                 .unwrap()
                 .values_mut()
-                .find(|t| Some(t.session.as_str()) == event["sessionId"].as_str())
+                .find(|t| Some(&t.session) == context.as_ref())
             {
                 target.dialog = None;
             }
@@ -1983,7 +1517,7 @@ async fn handle_event(
 }
 
 async fn handle_dialog(
-    cdp: &Cdp,
+    engine: &Engine,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
     target: &Target,
     id: &Value,
@@ -1999,13 +1533,8 @@ async fn handle_dialog(
             .ok_or_else(|| Failure::new("browser_no_dialog"))?;
         dialog["attempted"] = true.into();
     }
-    let result = cdp
-        .call(
-            Some(&target.session),
-            Command::PageHandleJavaScriptDialog,
-            json!({"accept":accept}),
-            deadline,
-        )
+    let result = engine
+        .dialog(&target.session, accept.as_bool().unwrap_or(false), deadline)
         .await;
     if result.as_ref().is_err_and(|e| e.state == "not_sent")
         && let Some(dialog) = targets
@@ -2426,3 +1955,13 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine/cdp/runtime_tests.rs"]
+mod protocol_tests;
+
+#[cfg(test)]
+mod fake_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod acceptance_tests;
