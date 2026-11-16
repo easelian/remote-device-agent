@@ -169,6 +169,18 @@ pub fn result_summary(value: &Value) -> Value {
     let Some(source) = value.as_object() else {
         return Value::Object(out);
     };
+    if let Some(selection) = value.get("selection")
+        && selection.as_object().is_some_and(|m| {
+            m.len() == 3
+                && m.keys()
+                    .all(|k| ["version", "observation_profile", "backend"].contains(&k.as_str()))
+        })
+        && selection["version"].as_u64() == Some(2)
+        && selection["observation_profile"] == "semantic_dom_v1"
+        && matches!(selection["backend"].as_str(), Some("cdp" | "bidi"))
+    {
+        out.insert("selection".into(), selection.clone());
+    }
     for key in [
         "job_id",
         "search_id",
@@ -444,6 +456,28 @@ impl Receipts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_selection_summary_is_closed_and_contains_no_page_data() {
+        for backend in ["cdp", "bidi"] {
+            let selection =
+                json!({"version":2,"observation_profile":"semantic_dom_v1","backend":backend});
+            assert_eq!(
+                result_summary(&json!({"selection":selection,"url":"private","title":"private"})),
+                json!({"selection":selection})
+            );
+            for bad in [
+                json!({"version":2.0,"observation_profile":"semantic_dom_v1","backend":backend}),
+                json!({"version":2,"observation_profile":"semantic_dom_v1","backend":backend,"url":"private"}),
+                json!({"version":2,"observation_profile":"private","backend":backend}),
+                json!({"version":2,"observation_profile":"semantic_dom_v1","backend":"private"}),
+                Value::Null,
+                json!([]),
+            ] {
+                assert_eq!(result_summary(&json!({"selection":bad})), json!({}));
+            }
+        }
+    }
 
     #[test]
     fn acknowledged_history_does_not_block_sequential_operations() {

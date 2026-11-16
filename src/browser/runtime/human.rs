@@ -47,7 +47,6 @@ impl Browsers {
         principal: &Principal,
         deadline: Instant,
     ) -> Result<Value> {
-        self.prepare()?;
         let action = string(params, "action")?;
         let keys: &[&str] = match action {
             "list" | "files_list" => &["action"],
@@ -119,6 +118,23 @@ impl Browsers {
         {
             return Err(Failure::new("browser_invalid_params"));
         }
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        {
+            if self.v2_contains(params) {
+                return self.v2_human(params, principal, deadline).await;
+            }
+            if action == "list"
+                && self.info()["available"] != true
+                && self.info()["v2"]["available"] == true
+            {
+                return Ok(json!({"sessions":self.v2_listing(principal,true)}));
+            }
+        }
+        self.prepare()?;
         match action {
             "files_list" => return self.files.list(principal),
             "file_read" => {
@@ -142,10 +158,16 @@ impl Browsers {
                 .filter(|(_, s)| s.user == principal.user)
                 .map(|(id, s)| (id.clone(), s.clone()))
                 .collect();
-            let sessions: Vec<_>=slots.iter().map(|(id,slot)| {
+            let mut sessions: Vec<_>=slots.iter().map(|(id,slot)| {
                 let (epoch,paused)=slot.control.snapshot();
                 json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"profile_name":slot.profile_name})
             }).collect();
+            #[cfg(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            ))]
+            sessions.extend(self.v2_listing(principal, true));
             return Ok(json!({"sessions":sessions}));
         }
         let id = string(params, "session_id")?;
@@ -556,7 +578,7 @@ impl Browsers {
         )
     }
 }
-fn validate_input(input: &Value) -> Result<()> {
+pub(super) fn validate_input(input: &Value) -> Result<()> {
     let fields: &[&str] = match input["kind"].as_str().unwrap_or("") {
         "click" => &["kind", "x", "y"],
         "scroll" => &["kind", "x", "y", "delta_y"],

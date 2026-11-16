@@ -79,6 +79,8 @@ pub const MUTATIONS: &[&str] = &["browser_open", "browser_act", "browser_control
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub capability_v2: bool,
+    pub firefox_executable: Option<PathBuf>,
     pub enabled: bool,
     pub persistent_profiles: bool,
     pub downloads: bool,
@@ -125,6 +127,8 @@ impl Coexistence {
     }
 }
 
+mod selection;
+
 impl Settings {
     pub fn parse(value: Option<&Value>) -> crate::error::Result<Self> {
         let settings: Self = value
@@ -132,13 +136,13 @@ impl Settings {
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
-        if settings
-            .executable
-            .as_ref()
-            .is_some_and(|p| !p.is_absolute() || p.as_os_str().is_empty())
+        if [&settings.executable, &settings.firefox_executable]
+            .into_iter()
+            .flatten()
+            .any(|p| !p.is_absolute() || p.as_os_str().is_empty())
         {
             return Err(crate::error::Error::message(
-                "browser.executable must be an absolute path",
+                "browser executable paths must be absolute",
             ));
         }
         Ok(settings)

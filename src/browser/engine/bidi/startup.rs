@@ -9,6 +9,7 @@ pub(super) struct Boot {
     pub product: String,
     pub version: String,
     pub contexts: Contexts,
+    pub prompts_ignored: bool,
 }
 
 /// Internal transport readiness only. Navigation interception, page semantics
@@ -63,5 +64,6 @@ pub(super) async fn initialize(
         product: "firefox".into(),
         version,
         contexts,
+        prompts_ignored: capabilities["unhandledPromptBehavior"]["default"] == "ignore",
     })
 }

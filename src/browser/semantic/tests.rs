@@ -27,6 +27,8 @@ mod observation;
 mod performance;
 mod race;
 mod resources;
+#[cfg(target_os = "linux")]
+mod surface;
 
 #[derive(Deserialize)]
 struct Oracle {
