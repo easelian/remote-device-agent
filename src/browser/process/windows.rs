@@ -160,7 +160,7 @@ pub(super) struct NativeProcess {
 /// The only native process creator used by the browser and its completion witness.
 pub(super) fn create_process(
     executable: &Path,
-    launch: &super::Launch,
+    args: &[OsString],
     profile: &Path,
     inherited: &[HANDLE],
     job: Option<HANDLE>,
