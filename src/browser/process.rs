@@ -12,6 +12,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Explicit internal Firefox feasibility tests; no RPC or product backend is
+// enabled until its isolation and transport contracts have independent proof.
+#[cfg(all(test, target_os = "linux"))]
+mod bidi_probe;
+
 #[cfg(unix)]
 mod posix;
 #[cfg(unix)]
