@@ -63,6 +63,9 @@ fn installed(path: &std::path::Path) -> bool {
         true
     }
 }
+pub(super) fn actionability(reason: Option<&str>) -> Value {
+    json!({"version":1,"available":reason.is_none(),"reason":reason})
+}
 pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: bool) -> Value {
     let compiled = cfg!(all(
         target_os = "linux",
@@ -93,7 +96,8 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
     .map(|(backend, family, exists)| {
         let why = reason.or((!exists).then_some("browser_not_installed"));
         json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
-                "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"]})
+                "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"],
+                "extensions":{"actionability":actionability(why)}})
     })
     .collect();
     let available = backends.iter().any(|b| b["available"] == true);
@@ -121,6 +125,14 @@ mod tests {
         let only_bidi = capability(&settings, None, false);
         assert_eq!(only_bidi["backends"][0]["available"], false);
         assert_eq!(only_bidi["backends"][1]["available"], compiled);
+        for candidate in [&only_cdp, &only_bidi] {
+            for backend in candidate["backends"].as_array().unwrap() {
+                let extension = &backend["extensions"]["actionability"];
+                assert_eq!(extension["version"], 1);
+                assert_eq!(extension["available"], backend["available"]);
+                assert_eq!(extension["reason"], backend["reason"]);
+            }
+        }
         for reason in [
             "disabled_by_local_policy",
             "private_storage_unavailable",

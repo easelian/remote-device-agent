@@ -14,7 +14,8 @@ Agent 使用 Rust 单二进制和设备上已安装的浏览器。运行时不�
 | v2/CDP | `semantic::Page<P>` 驱动 CDP adapter，提供 `semantic_dom_v1` | 编译 `experimental-browser-bidi`，Linux x86_64，本地开启 `browser.enabled` 与 `browser.capability_v2`，请求显式选择 |
 | v2/BiDi | 同一共同页面算法驱动 Firefox/BiDi；Linux namespace 内启动和连接 | 与 v2/CDP 相同的编译/策略门槛，另需配置 Firefox 绝对路径及可用的 namespace/pidfd 能力 |
 | 命名资料、上传、下载 | v1 与两个 v2 后端均有实现，各自按策略声明 | `persistent_profiles`、`uploads`、`downloads` 默认分别关闭；实际可用性随设备和会话返回 |
-| 只读诊断工具、能力指引工具、观察差分、独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
+| 只读可操作性诊断 | `browser_inspect` 检查一个当前 ref 的动作前置条件 | 仅显式 v2 / `semantic_dom_v1`，要求候选与打开结果均声明 `actionability` 扩展版本 1 |
+| 能力指引工具、观察差分、独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
 
 v2 的编译、策略及后端门槛见[选择解析与能力声明](../src/browser/selection.rs)和[会话实际能力](../src/browser/runtime/v2.rs)。`candidate` 仅表示允许尝试；成功打开并返回 `session_ready` 才表示本次启动、文档身份和截图检查完成。最低浏览器版本、Firefox ESR、其他 Chromium 品牌及其他 OS/CPU 的支持需要独立证据，不能由协议名称或交叉构建推导。
 
@@ -42,6 +43,7 @@ flowchart TD
 | [control.rs](../src/browser/control.rs) | `Control` 与 `Submission`：控制代次、最后授权检查、同步入队及单调副作用标记 |
 | [page.rs](../src/browser/page.rs)、[engine.rs](../src/browser/engine.rs) | v1 算法及 `PageReadPort`、`PageActionPort`、`SessionPort`、`TransferPort`；`Engine` 仍封装 CDP adapter |
 | [semantic.rs](../src/browser/semantic.rs)、[semantic/page.rs](../src/browser/semantic/page.rs) | `Port` 与 `Page<P>`：v2 共同事实、记录、引用、动作及输入任务；不按后端改变 canonical 规则 |
+| [semantic/actionability.rs](../src/browser/semantic/actionability.rs) | 动作和只读诊断共用的类型与几何判定；诊断输出不含页面值、文本或原生身份 |
 | [semantic/program.rs](../src/browser/semantic/program.rs)、[program.js](../src/browser/semantic/program.js)、[types.rs](../src/browser/semantic/types.rs) | 随二进制交付的固定程序、严格解码、身份和记录材料；不接受调用者脚本 |
 | [engine/cdp](../src/browser/engine/cdp)、[engine/bidi](../src/browser/engine/bidi) | 封闭命令、原生 ID、事件、realm、输入和连接待决表；协议差异留在 adapter |
 | [process.rs](../src/browser/process.rs)、[process](../src/browser/process)、[profiles.rs](../src/browser/profiles.rs) | 进程树与启动身份、独占资料租约、恢复和关闭；通道断开不作为进程退出证明 |
@@ -85,6 +87,8 @@ Server 对应源码为 `apps/core/src/browser.rs`、`mcp_tools.rs`、`mcp.rs`，
 
 Server 先验证选择结构，再检查设备的 v2 声明和目标后端，满足后才分配或执行变更操作。旧 Agent 缺少 v2 时返回 `browser_capability_unsupported`。Agent 独立重复验证。未知选择返回 `browser_selection_invalid`，后端候选不可用返回 `browser_backend_unavailable`。严格策略在能力声明中以 `reason: browser_policy_unsupported` 标为不可用，公开打开因此被拒绝；内部共同语义入口也保留策略校验。这些公开拒绝发生在进程、临时资料和页面副作用之前。
 
+`capabilities.browser.v2.backends[].extensions.actionability` 声明 `version: 1`、布尔值 `available` 和可空 `reason`；可用性沿用对应后端的构建、平台、本地策略和浏览器检查。成功打开后的 `capabilities.extensions.actionability` 声明本次实际启用的诊断扩展。扩展不增加 `selection` 字段，也不新增本地开关。
+
 打开成功返回原有 `session_id`、`tab_id`、`control_epoch`、`state`，并增加实际 `selection`、`capabilities` 和 `stage: "session_ready"`。选择在会话内固定；后续会话请求通过会话 ID 路由，不再接受选择参数；资料列举和删除单独接受 `selection`。核心能力在运行中丢失时暂停或关闭，不降级成 v1，也不更换后端。
 
 v2 复用 `browser_sessions`、`browser_tabs`、`browser_observe`、`browser_act`、`browser_wait`、`browser_screenshot` 和 `browser_control`，继续使用经过认证的 `browser_principal`、操作回执和控制 epoch。人工接口继续由 Server 绑定用户主体，并用 view、lease、epoch、sequence 和截图 frame 约束输入。人工输入内容不进入操作回执。
@@ -107,7 +111,7 @@ v1 与 v2 共用每设备 2 个会话的上限，每个 v2 会话最多 8 个标
 
 `Submission::enqueue` 在与控制换代相同的临界区内核对 epoch、同步尝试入队并标记副作用。提交点是经授权的子命令进入可发送队列，不表示浏览器已经执行；入队失败不产生已提交标记。临界区不等待 I/O、响应或队列容量。
 
-各连接待决表持有命令容量、输入交接屏障及原始回执；调用者超时或取消不提前释放这些占用。多子命令动作一旦提交过副作用，后续错误不将它改回 `not_sent`。`Failure` 当前只含错误码及执行状态；Core 映射固定文案，没有公开的结构化可操作性诊断正文。
+各连接待决表持有命令容量、输入交接屏障及原始回执；调用者超时或取消不提前释放这些占用。多子命令动作一旦提交过副作用，后续错误不将它改回 `not_sent`。`Failure` 只含错误码及执行状态，Core 继续映射原有固定文案；结构化可操作性诊断通过独立的 `browser_inspect` 成功结果返回，不穿过错误和变更回执路径。
 
 暂停先换代并阻止旧代次的新提交；已提交工作继续结算。读取也占用传输容量，但不全部计入输入交接屏障。人工或 AI 恢复输入前检查相关输入与必要清理是否完成；断线后 pending 归零不表示可继续输入。命令共享上层绝对 deadline，资源清理有独立上限。恢复查询原回执与会话，不自动重放不明结果。
 
@@ -135,7 +139,7 @@ v1 与 v2 共用每设备 2 个会话的上限，每个 v2 会话最多 8 个标
 
 每页最多 1,000 项、64,000 字符；默认 200/20,000。每段扫描最多访问 5,000 个节点，find/interactive/viewport 不通过无限重启取得完整。查询与 frame 范围在首次扫描固定。续页替换上一页引用；新观察、控制权换代、300 秒空闲过期或扫描释放使旧 cursor/ref 失效。变更中读取返回 changed_during_read，发生语义变化的记录不取得 ref；未扫描部分不标 complete。
 
-会话、上下文、文档与 realm 身份分开。新文档、同 URL reload、BFCache 恢复及无法证明连续性时换文档代次；hash/history 更新地址而不据 URL 猜测新文档。realm 重建释放扫描与脚本资源，旧 AI ref 不复活。节点仅在仍能证明同一文档与原生节点时重新解析。动作前再次查询身份与材料，不仅依赖事件缓存。
+会话、上下文、文档与 realm 身份分开。新文档、同 URL reload、BFCache 恢复及无法证明连续性时换文档代次；hash/history 更新地址而不据 URL 猜测新文档。realm 重建释放扫描与脚本资源，旧 AI ref 不复活。节点仅在仍能证明同一文档与原生节点时重新解析。动作和诊断前再次查询身份与材料，不仅依赖事件缓存。公开 ref 映射同时绑定签发它的 tab；向另一 tab 提交同一 ref 返回 `browser_stale_reference`，不能把引用转移到该 tab。
 
 ### 5.3 输入与控制
 
@@ -156,6 +160,43 @@ contenteditable 的编辑值采用显示文本并将 CRLF 规范为 LF；没有�
 能力区分导航拦截、DNS 解析检查、实际连接地址证据。DNS 不能替代实际连接证据；连接后证据也不能证明此前没有连接私网。当前两个 v2 adapter 均不提供实际连接地址证据，要求严格连接检查的策略在创建浏览器前拒绝。
 
 公开 v2 每次观察会重新签发 `ref` 和 `frame_id`，续页同样替换引用映射。页面内容相同不会延长旧 ID 的寿命；当前没有展示内容缓存、revision 协议或增量输出。
+
+### 5.5 只读可操作性诊断
+
+`browser_inspect` 只接受 `device_id`、`session_id`、`control_epoch`、`ref`、`action_kind` 和可选 `tab_id`；前五项必填，省略 `tab_id` 时使用当前活动 tab。`ref` 沿用不透明 ID 的 ASCII 字母、数字、下划线和连字符格式，长度为 1～128 字节。未知字段拒绝，不接受脚本、选择器、坐标、实际输入值或文件授权。
+
+先读取设备与打开结果中的诊断扩展，再从最新观察取得 ref。下面是调用参数的形状；会话、代次和引用需替换为本次真实结果：
+
+```json
+{
+  "device_id": "test",
+  "session_id": "session-from-open",
+  "control_epoch": 1,
+  "ref": "ref-from-latest-observation",
+  "action_kind": "click"
+}
+```
+
+`action_kind` 只接受 `click`、`press`、`fill`、`check`、`select`、`attach_file`。缺少设备扩展、未知扩展版本或不匹配的 profile，Core 在普通准入和计量前返回 `browser_feature_unsupported`；不支持诊断的 v1 会话由 Agent 拒绝。有效诊断按普通读取准入和计量，不属于免配额的后续操作，也不生成变更回执。Gate 和 Core 都编译 MCP 工具目录，新增工具需要配套构建；本扩展不修改数据库函数或恢复摘要白名单。
+
+结果包含 `diagnostic_version: 1`、请求的 `action_kind`、`status`、去重的 `reasons`、`conditions`、`session_id`、`tab_id`、`control_epoch`、原三字段 `selection` 和 `content_trust: untrusted_page`。Core 沿用 `support_id` 和适用时的 `human_url` 封装。
+
+| status | 当前含义 |
+| --- | --- |
+| `ready_now` | 两次身份与几何采样都满足已检查的前置条件；不保证稍后输入或业务结果 |
+| `needs_scroll` | 当前视口外；检查不滚动，实际动作仍按自己的滚动和复核流程执行 |
+| `blocked` | 有效引用下已确定只读、遮挡、敏感输入限制或动作种类不适用 |
+| `indeterminate` | 现有几何保证无法证明，或两次位置采样不稳定；不能当作可操作 |
+
+原因只取 `read_only`、`covered`、`outside_viewport`、`unstable_geometry`、`unsupported_geometry`、`sensitive_target`、`unsupported_action`，最多 8 项。条件对象包含布尔值 `read_only`、`sensitive`、`editable`，以及可空的 `in_view`、`hit`、`stable`；未取得证据时为 `null`。有两次采样时，位置与命中条件取最后一次，`stable` 比较两次坐标。结果不返回页面文本、值、DOM 路径、坐标或原生 ID。
+
+诊断复用动作的纯类型与几何规则，采集只执行身份刷新、固定 Inspect 和只读几何/命中检查。只读文本框可以接受 click；fill 才按只读条件拒绝。禁用、隐藏或其他无资格节点不签发 ref，观察后失去资格或记录变化仍返回 `browser_stale_reference`。隐藏祖先 frame 或旋转、透视导致无法证明屏幕几何时返回 `indeterminate`，不会按名称重新匹配目标。`attach_file` 检查本地上传开关、主文档与原生文件控件条件；开关关闭返回 `browser_upload_disabled`，检查本身不读取或消耗一次性文件授权。
+
+诊断不调用 Scroll、Focus、表单设值或输入，不续期 ref/cursor、不签发替代引用、不创建节点表或缓存。真实动作仍独立检查身份、参数值、控制代次和上传授权；诊断结果不能作为后续输入许可。
+
+单次调用在 Agent 接纳时固定绝对 deadline，为调用剩余期限与 1 秒的较小值，包含普通锁等待、原生命令及两次稳定性采样间的 50 ms 间隔。已知阻止条件可以提前返回；`ready_now` 必须经过第二次身份和几何校验。期限不足沿用既有错误，不循环等待。包括会话标识和 selection 的 Agent 诊断正文 UTF-8 JSON 最多 4 KiB，不包含 Core/MCP 封装。
+
+普通诊断锁不参与同步控制 fence。人工接管可立即换代，旧代次结果不能披露；纯读取不占用输入交接屏障。已提交读取在调用取消或超时后仍由原生通道持有待决槽及适用租约，迟到响应结算后才释放，不能由调用 future 的销毁伪造归零。
 
 ## 6. 原生连接、进程和资源所有权
 
@@ -212,6 +253,7 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 观察 | 默认 200 节点/20,000 字符，最大 1,000/64,000；每段遍历 5,000 节点，待遍历队列 50,000 项 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 扫描与引用 | 每 frame 一个扫描、每扫描最多 1,000 强节点；空闲期 300 秒 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 命名与记录 | 名称 512 Unicode 标量、32 关联、16 层、256 命名节点；记录 256 节点/4,096 标量 | [program](../src/browser/semantic/program.js)、[types](../src/browser/semantic/types.rs) |
+| 可操作性诊断 | 一个有效 ref、最多 8 项原因、Agent 正文最多 4 KiB、总期限最多 1 秒；稳定性采样间隔 50 ms | [actionability](../src/browser/semantic/actionability.rs)、[page](../src/browser/semantic/page.rs)、[v2](../src/browser/runtime/v2.rs) |
 | 人工控制 | 公开视图租约 120 秒；内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
@@ -249,6 +291,8 @@ Firefox 下载开始及结束事件必须匹配已接纳的主 frame、navigatio
 3. 停止 Agent，确认没有所属浏览器进程或有效所有权记录。从最深层开始，仅用非递归 `rmdir` 移除已核实为空的 v2 目录，最后移除 `v2` 本身。任何文件、符号链接或非空目录都使此步骤停止；不删除所有权记录或递归清空目录。
 4. 使用旧版接受的本地配置启动旧 Agent；旧版配置不包含 `capability_v2` 和 `firefox_executable`。重新打开原有 v1 命名资料，验证资料 ID 和合成持久状态；实际业务数据按设备的验收流程核对。
 
+新增工具的 Gate/Core 目录须保持配套。旧 Gate 会在路由层拒绝未知工具；旧 Core 不认识新工具或参数时，客户端继续使用其已支持的完整观察，不隐式重试输入。
+
 Server 回退是独立步骤：停止并排空受影响的 Core，再用目标版本的迁移器离线安装其 Runtime 函数契约，执行目标 Core 的 `check-storage` 后才恢复服务。旧 Core 不接受新的 `selection` 参数。程序和 SQL 函数来自不同版本时不能继续启动；Agent 的资料清理不会修复 Server 契约不一致。
 
 Core 的离线函数切换入口是目标版本的 `rdh-migrate activate-runtime-transactions ENV CORE_ROLE`；`ENV` 指向维护数据库连接的私有环境变量，`CORE_ROLE` 为已有受限角色。完成后运行目标 Core 的 `check-storage CONFIG.json`。新旧二进制、迁移器和函数契约必须配套；此处描述现有恢复机制，不表示已经执行任何部署或数据退役。
@@ -265,6 +309,7 @@ v1 的 [select_all](../src/browser/engine/cdp/page.rs) 在 macOS 发送 Command+
 | [semantic/tests](../src/browser/semantic/tests)、[共同语料](../tests/fixtures/semantic-dom-v1) | Fake 与双后端共同语义、身份、输入、导航、资源与性能 |
 | [CDP wire](../src/browser/engine/cdp/wire)、[BiDi wire tests](../src/browser/engine/bidi/wire/tests) | 准入、迟到响应、取消、预算、原生租约和控制 fence |
 | [Firefox process tests](../src/browser/process/firefox/tests)、[BiDi session tests](../src/browser/engine/bidi/session/tests.rs) | namespace、监督链、端点、出站和原生恢复 |
+| [diagnostics.rs](../src/browser/semantic/tests/diagnostics.rs)、Server `tests/core/test_browser_diagnostics.py` | 判定和预算、原生只读采集、人工接管、迟到响应、公开权限/计量和一次性上传授权 |
 | Server `tests/core/test_browser_v2*.py`、`tests/runtime/test_single_call_transactions.py` | 公开 MCP、两个后端、文件、版本回退、预算、重复恢复、RSS、回执白名单 |
 | Server `scripts/run_browser_acceptance.py`、`scripts/summarize_browser_rss.py` | 严格收集/JUnit 对照、产物摘要及四组 RSS 汇总；不自动构建、重试、部署或启动托管 CI |
 

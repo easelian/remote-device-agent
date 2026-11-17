@@ -17,6 +17,7 @@ use std::{
 };
 mod cleanup;
 mod controls;
+mod diagnostics;
 mod faults;
 mod frames;
 mod identity;

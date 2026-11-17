@@ -486,7 +486,9 @@ impl Runtime {
         operations.extend_from_slice(PROCESS_OPERATIONS);
         let browser = self.browsers.info();
         if browser["available"] == true || browser["v2"]["available"] == true {
-            operations.extend_from_slice(BROWSER_OPERATIONS);
+            operations.extend(BROWSER_OPERATIONS.iter().copied().filter(|operation| {
+                *operation != "browser_inspect" || browser["v2"]["available"] == true
+            }));
         }
         if self.startup.is_some() {
             operations.extend_from_slice(STARTUP_OPERATIONS);

@@ -179,6 +179,19 @@ pub(crate) enum Action {
     SetFormValue(String),
     AttachFile(crate::browser::files::Attachment),
 }
+impl Action {
+    fn kind(&self) -> actionability::ActionKind {
+        use actionability::ActionKind as Kind;
+        match self {
+            Self::Click => Kind::Click,
+            Self::Check(_) => Kind::Check,
+            Self::ReplaceText(_) => Kind::Fill,
+            Self::Press(_) => Kind::Press,
+            Self::SetFormValue(_) => Kind::Select,
+            Self::AttachFile(_) => Kind::AttachFile,
+        }
+    }
+}
 #[derive(Debug, Serialize)]
 pub(crate) struct Acknowledgement {
     pub changed: bool,
@@ -649,6 +662,91 @@ impl<P: Port> Page<P> {
     ) -> Result<Acknowledgement> {
         self.act_as(reference, action, false, deadline).await
     }
+    pub async fn diagnose(
+        &self,
+        reference: Reference,
+        kind: actionability::ActionKind,
+        deadline: Instant,
+    ) -> Result<actionability::Diagnostic> {
+        let deadline = deadline.min(Instant::now() + actionability::TIMEOUT);
+        if Instant::now() >= deadline {
+            return Err(Failure::new("browser_deadline"));
+        }
+        // This ordinary lock does not participate in the synchronous control
+        // fence. No input permit or upload authorization is acquired here.
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .map_err(|_| Failure::new("browser_busy"))?;
+        let (port, epoch) = self.authorization(false)?;
+        if reference.scope != self.0.scope || reference.epoch != epoch {
+            return Err(types::stale());
+        }
+        let element = {
+            let state = self.0.state.lock().unwrap();
+            if state
+                .expires
+                .is_some_and(|expires| expires <= Instant::now())
+            {
+                return Err(types::stale());
+            }
+            state
+                .refs
+                .get(&reference)
+                .cloned()
+                .ok_or_else(types::stale)?
+        };
+        let task = async {
+            let facts = inspect(&port, &element, deadline).await?;
+            let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
+            if !actionability::requirements(&facts, kind, top_level).is_empty() {
+                return Ok(actionability::assess(&facts, kind, top_level, None, None));
+            }
+            let geometry = match port.target(&element.frame, facts.node, deadline).await {
+                Ok(geometry) => geometry,
+                Err(error) if error.code == "browser_geometry_unsupported" => {
+                    return Ok(actionability::assess(&facts, kind, top_level, None, None));
+                }
+                Err(error) => return Err(error),
+            };
+            if !geometry.visible
+                || !geometry.in_view
+                || !facts.in_view
+                || !geometry.hit
+                || !facts.hit
+            {
+                return Ok(actionability::assess(
+                    &facts,
+                    kind,
+                    top_level,
+                    Some(&geometry),
+                    None,
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let current = inspect(&port, &element, deadline).await?;
+            let current_geometry = match port.target(&element.frame, current.node, deadline).await {
+                Ok(geometry) => geometry,
+                Err(error) if error.code == "browser_geometry_unsupported" => {
+                    return Ok(actionability::assess(&current, kind, top_level, None, None));
+                }
+                Err(error) => return Err(error),
+            };
+            Ok(actionability::assess(
+                &facts,
+                kind,
+                top_level,
+                Some(&geometry),
+                Some((&current, &current_geometry)),
+            ))
+        };
+        // A cancelled or timed-out read leaves submitted native commands and
+        // their late replies under the existing transport ownership rules.
+        let result = tokio::time::timeout_at(deadline.into(), task)
+            .await
+            .map_err(|_| Failure::unknown("browser_timeout_unknown"))??;
+        self.delivery(epoch, false)?;
+        Ok(result)
+    }
     pub async fn human_act(
         &self,
         permit: &HumanPermit,
@@ -913,19 +1011,17 @@ async fn perform<P: Port>(
     deadline: Instant,
 ) -> Result<Acknowledgement> {
     let mut facts = inspect(port, element, deadline).await?;
+    let kind = action.kind();
+    let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
     if facts.kind == "inferred" && !matches!(action, Action::Click | Action::Press(_)) {
         return Err(Failure::new("browser_not_actionable"));
     }
     match &action {
         Action::AttachFile(_) => {
-            if element.frame.parent.is_some() || !element.ancestors.is_empty() {
+            if !top_level {
                 return Err(Failure::new("browser_upload_frame_unsupported"));
             }
-            if facts.tag != "input"
-                || facts.input_type != "file"
-                || facts.kind != "native"
-                || facts.readonly
-            {
+            if !actionability::requirements(&facts, kind, top_level).is_empty() {
                 return Err(Failure::new("browser_not_actionable"));
             }
         }
@@ -933,14 +1029,7 @@ async fn perform<P: Port>(
             if value.chars().count() > 4096 {
                 return Err(Failure::new("browser_invalid_params"));
             }
-            if facts.sensitive
-                || !facts.editable
-                || facts.readonly
-                || matches!(
-                    facts.input_type.as_str(),
-                    "date" | "time" | "datetime-local" | "month" | "week" | "color" | "range"
-                )
-            {
+            if !actionability::requirements(&facts, kind, top_level).is_empty() {
                 return Err(Failure::new("browser_not_actionable"));
             }
             if value.contains('\n') && facts.tag == "input" {
@@ -951,7 +1040,7 @@ async fn perform<P: Port>(
             }
         }
         Action::Check(value) => {
-            if facts.readonly || !matches!(facts.role.as_str(), "checkbox" | "radio" | "switch") {
+            if !actionability::requirements(&facts, kind, top_level).is_empty() {
                 return Err(Failure::new("browser_not_actionable"));
             }
             if facts.checked == *value {
@@ -962,13 +1051,7 @@ async fn perform<P: Port>(
             if value.len() > 4096 || facts.sensitive || facts.readonly {
                 return Err(Failure::new("browser_invalid_params"));
             }
-            if facts.tag != "select"
-                && !(facts.tag == "input"
-                    && matches!(
-                        facts.input_type.as_str(),
-                        "date" | "time" | "datetime-local" | "month" | "week" | "color" | "range"
-                    ))
-            {
+            if !actionability::native_form(&facts) {
                 return Err(Failure::new("browser_not_actionable"));
             }
             if !matches!(
@@ -1024,15 +1107,20 @@ async fn perform<P: Port>(
     if !steady.hit || steady.x != facts.x || steady.y != facts.y {
         return Err(Failure::new("browser_not_actionable"));
     }
-    facts = steady;
     let final_geometry = port.target(&element.frame, node, deadline).await?;
-    if !final_geometry.hit
-        || !final_geometry.in_view
-        || final_geometry.x != geometry.x
-        || final_geometry.y != geometry.y
+    if actionability::assess(
+        &facts,
+        kind,
+        top_level,
+        Some(&geometry),
+        Some((&steady, &final_geometry)),
+    )
+    .status
+        != actionability::Status::ReadyNow
     {
         return Err(Failure::new("browser_not_actionable"));
     }
+    facts = steady;
     let expected_check = match &action {
         Action::Check(value) => Some(*value),
         _ => None,

@@ -1,6 +1,7 @@
 //! Explicitly selected semantic_dom_v1 profile. The public v1 path
 //! keeps its own compatibility algorithm until capability v2 is negotiated.
 #![allow(dead_code)] // Native probes and unsupported platform builds retain the shared contract.
+pub(crate) mod actionability;
 mod page;
 pub(crate) mod policy;
 pub(crate) mod program;

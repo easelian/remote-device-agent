@@ -26,6 +26,7 @@ struct Session {
     native: Option<native::Session>,
     active: String,
     references: HashMap<String, sem::Reference>,
+    reference_tab: Option<String>,
     frames: HashMap<String, sem::Context>,
     cursor: Option<(String, sem::Continuation, sem::Query)>,
     human: Option<human::Lease>,
@@ -34,6 +35,7 @@ struct Session {
 impl Session {
     fn invalidate(&mut self) {
         self.references.clear();
+        self.reference_tab = None;
         self.frames.clear();
         self.cursor = None;
     }
@@ -45,6 +47,15 @@ impl Session {
         self.invalidate();
         self.human = None;
         Ok(())
+    }
+    fn reference(&self, id: &str, tab: &str) -> Result<sem::Reference> {
+        if self.reference_tab.as_deref() != Some(tab) {
+            return Err(Failure::new("browser_stale_reference"));
+        }
+        self.references
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Failure::new("browser_stale_reference"))
     }
 }
 impl Slot {
@@ -87,7 +98,8 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":false,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
-        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document"})
+        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
+        "extensions":{"actionability":crate::browser::selection::actionability(None)}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
@@ -169,6 +181,7 @@ impl Browsers {
                 native: None,
                 active: String::new(),
                 references: HashMap::new(),
+                reference_tab: None,
                 frames: HashMap::new(),
                 cursor: None,
                 human: None,
@@ -331,6 +344,19 @@ impl Browsers {
         let result = async {
             match operation {
                 "browser_observe" => observe(&mut session, &page, &port, params, deadline).await,
+                "browser_inspect" => {
+                    if params["action_kind"] == "attach_file" && !self.settings.uploads {
+                        return Err(Failure::new("browser_upload_disabled"));
+                    }
+                    let reference = session.reference(params["ref"].as_str().unwrap(), &tab)?;
+                    let kind = serde_json::from_value(params["action_kind"].clone())
+                        .map_err(|_| Failure::new("browser_invalid_params"))?;
+                    let diagnostic = page.diagnose(reference, kind, deadline).await?;
+                    let mut value =
+                        serde_json::to_value(diagnostic).map_err(|_| sem::types::decode())?;
+                    value["tab_id"] = port.tab_id()?.into();
+                    Ok(value)
+                }
                 "browser_screenshot" => capture(&page.access(false)?, deadline).await.map(|v| v.0),
                 "browser_act" => {
                     let attachment = if params["action"]["kind"] == "attach_file" {
@@ -416,6 +442,9 @@ impl Browsers {
         value["session_id"] = id.into();
         value["control_epoch"] = epoch.into();
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
+        if operation == "browser_inspect" {
+            sem::actionability::check_size(&value)?;
+        }
         Ok(value)
     }
     async fn v2_control(
@@ -570,6 +599,7 @@ async fn observe(
         )
         .await?;
     session.references.clear();
+    session.reference_tab = None;
     session.cursor = None;
     session.frames.clear();
     let mut nodes = Vec::new();
@@ -605,6 +635,7 @@ async fn observe(
         session.invalidate();
         return Err(Failure::new("browser_stale_reference"));
     }
+    session.reference_tab = Some(port.tab_id()?);
     let mut value = json!({"observation_profile":"semantic_dom_v1","nodes":nodes,"page":meta.public(),
         "coverage":{"complete":result.complete,"changed_during_read":result.changed_during_read,"omitted":result.omitted,"scanned":result.scanned},"content_trust":"untrusted_page"});
     value["page"]["tab_id"] = port.tab_id()?.into();
@@ -628,13 +659,7 @@ async fn act(
     let kind = action["kind"].as_str().unwrap_or("");
     let reference = action["ref"]
         .as_str()
-        .map(|id| {
-            session
-                .references
-                .get(id)
-                .cloned()
-                .ok_or_else(|| Failure::new("browser_stale_reference"))
-        })
+        .map(|id| session.reference(id, &port.tab_id()?))
         .transpose()?;
     session.invalidate();
     if let Some(reference) = reference {

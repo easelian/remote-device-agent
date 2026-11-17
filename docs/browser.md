@@ -110,6 +110,8 @@ Ask your connected AI client to use the specific device and website, for example
 
 The AI uses `browser_open`, then `browser_observe`. It acts on returned element references using `browser_act`, waits for the expected page state with `browser_wait`, and observes the result again. Normal text fields, native single-select controls, checkboxes, links, buttons, page scrolling, tabs and supported frames are available. A date, a time, a colour or a slider is filled with a value in the field's own format, such as `2026-03-04`, `09:30`, `#ff8800` or `7`. Passwords and verification codes belong in the human page, not AI tool arguments.
 
+An explicit v2 session can use `browser_inspect` when both the device and opened session advertise actionability extension version 1 as available. It checks one current ref: `ready_now` means the sampled prerequisites hold, `needs_scroll` means outside the viewport, `blocked` reports a known restriction, and `indeterminate` means the check could not prove readiness. The check does not scroll, focus, input or renew references. Use `browser_act` for the actual action and verify its result; observe again after a stale-reference error and never replay an uncertain input based on a diagnostic.
+
 Each element that the AI can act on has a reference, and the observation names its `kind`:
 
 | Kind | Which elements |

@@ -283,6 +283,11 @@ impl Browsers {
             return tokio::runtime::Handle::current()
                 .block_on(self.human(params, principal, deadline));
         }
+        let deadline = if operation == "browser_inspect" {
+            deadline.min(Instant::now() + Duration::from_secs(1))
+        } else {
+            deadline
+        };
         validate(operation, params)?;
         tokio::runtime::Handle::current().block_on(self.execute(
             operation,
@@ -373,6 +378,11 @@ impl Browsers {
             {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
+        }
+        if operation == "browser_inspect" {
+            // Only the explicitly selected v2 branch above can inspect refs.
+            // Refuse before preparing storage or touching a legacy session.
+            return Err(Failure::new("browser_feature_unsupported"));
         }
         if self.info()["v2"]["available"] == true
             && (operation == "browser_files"
@@ -1731,6 +1741,13 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         "browser_profiles" => &["selection"],
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
+        "browser_inspect" => &[
+            "session_id",
+            "tab_id",
+            "control_epoch",
+            "ref",
+            "action_kind",
+        ],
         "browser_observe" => &[
             "session_id",
             "tab_id",
@@ -1761,6 +1778,23 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         _ => return Err(Failure::new("browser_invalid_params")),
     };
     if map.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if operation == "browser_inspect"
+        && (params["session_id"].as_str().is_none()
+            || params["control_epoch"].as_u64().is_none()
+            || !params["ref"].as_str().is_some_and(|value| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+            || !matches!(
+                params["action_kind"].as_str(),
+                Some("click" | "press" | "fill" | "check" | "select" | "attach_file")
+            ))
+    {
         return Err(Failure::new("browser_invalid_params"));
     }
     if let Some(value) = params.get("profile_name")
@@ -1955,6 +1989,54 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_accept_only_a_complete_bounded_read_request() {
+        let valid =
+            json!({"session_id":"session","control_epoch":1,"ref":"r","action_kind":"click"});
+        assert!(validate("browser_inspect", &valid).is_ok());
+        for kind in ["click", "press", "fill", "check", "select", "attach_file"] {
+            let mut request = valid.clone();
+            request["action_kind"] = kind.into();
+            request["tab_id"] = "tab".into();
+            request["ref"] = "r".repeat(128).into();
+            assert!(validate("browser_inspect", &request).is_ok());
+        }
+        for required in ["session_id", "control_epoch", "ref", "action_kind"] {
+            let mut request = valid.clone();
+            request.as_object_mut().unwrap().remove(required);
+            assert_eq!(
+                validate("browser_inspect", &request).unwrap_err().code,
+                "browser_invalid_params"
+            );
+        }
+        for (key, value) in [
+            ("ref", json!("")),
+            ("ref", json!("r".repeat(129))),
+            ("ref", json!("é")),
+            ("ref", json!(false)),
+            ("action_kind", json!("navigate")),
+            ("action_kind", Value::Null),
+            ("session_id", json!("")),
+            ("tab_id", Value::Null),
+            ("control_epoch", json!(0)),
+            ("control_epoch", json!(9_007_199_254_740_992u64)),
+            ("control_epoch", json!(1.5)),
+            ("operation_id", json!("not-a-mutation")),
+            ("text", json!("not-an-input")),
+            ("selector", json!("button")),
+            ("file_grant_id", json!("not-consumed")),
+            ("presentation", json!({})),
+        ] {
+            let mut request = valid.clone();
+            request[key] = value;
+            assert_eq!(
+                validate("browser_inspect", &request).unwrap_err().code,
+                "browser_invalid_params",
+                "{request}"
+            );
+        }
+    }
 
     fn state(operation: &str, effects: bool, error: Failure) -> &'static str {
         settle(operation, effects, error).state

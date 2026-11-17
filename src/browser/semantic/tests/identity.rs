@@ -83,6 +83,13 @@ async fn assertions<H: Harness>(session: &H, url: &str) -> Value {
     assert_eq!(before.document, after.document);
     assert_ne!(before.realm, after.realm);
     assert_eq!(
+        page.diagnose(old.clone(), actionability::ActionKind::Click, deadline())
+            .await
+            .unwrap_err()
+            .code,
+        "browser_stale_reference"
+    );
+    assert_eq!(
         page.act(old, Action::Click, deadline())
             .await
             .unwrap_err()
@@ -108,6 +115,13 @@ async fn assertions<H: Harness>(session: &H, url: &str) -> Value {
     assert_eq!(after.url, reload.url);
     assert_ne!(after.document, reload.document);
     assert_eq!(
+        page.diagnose(stale.clone(), actionability::ActionKind::Click, deadline())
+            .await
+            .unwrap_err()
+            .code,
+        "browser_stale_reference"
+    );
+    assert_eq!(
         page.act(stale, Action::Click, deadline())
             .await
             .unwrap_err()
@@ -128,6 +142,13 @@ async fn assertions<H: Harness>(session: &H, url: &str) -> Value {
         json!({"persisted":persisted,"before":before_history,"after":restored})
     );
     assert_ne!(before_history.document, restored.document);
+    assert_eq!(
+        page.diagnose(stale.clone(), actionability::ActionKind::Click, deadline())
+            .await
+            .unwrap_err()
+            .code,
+        "browser_stale_reference"
+    );
     assert_eq!(
         page.act(stale, Action::Click, deadline())
             .await
