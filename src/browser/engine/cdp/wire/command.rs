@@ -42,7 +42,6 @@ pub enum Command {
     PageSetInterceptFileChooserDialog,
     PageStopLoading,
     RuntimeCallFunction(Effect),
-    RuntimeEnable,
     RuntimeEvaluate(Effect),
     RuntimeReleaseObject,
     RuntimeReleaseObjectGroup,
@@ -119,7 +118,6 @@ impl Command {
             }
             Self::PageStopLoading => ("Page.stopLoading", None, Block),
             Self::RuntimeCallFunction(effect) => ("Runtime.callFunctionOn", effect, Block),
-            Self::RuntimeEnable => ("Runtime.enable", None, Continue),
             Self::RuntimeEvaluate(effect) => ("Runtime.evaluate", effect, Block),
             Self::RuntimeReleaseObject => ("Runtime.releaseObject", None, Continue),
             Self::RuntimeReleaseObjectGroup => ("Runtime.releaseObjectGroup", None, Continue),

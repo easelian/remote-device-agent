@@ -50,46 +50,33 @@ impl Fixture {
         let app=Router::new().route("/",get(||async {Html("<!doctype html><meta charset=utf-8><title>D1 fixture</title><h1>Acceptance fixture</h1><button onclick=\"fetch('/record',{method:'POST'})\">Record once</button>")})).route("/record",post(move||{let count=count.clone();async move{count.fetch_add(1,Ordering::AcqRel);"recorded"}}));
         let app = app.route("/many", get(|| async {Html(format!("<!doctype html><title>Many</title>{}",(0..1001).map(|i|format!("<button>Control {i}</button>")).collect::<String>()))}))
             .route("/noise", get(|| async {Html("<!doctype html><style>body{margin:0}canvas{position:absolute;inset:0}</style><canvas id=c></canvas><h1>Noise ready</h1><script>c.width=innerWidth;c.height=innerHeight;const x=c.getContext('2d'),d=x.createImageData(c.width,c.height);let s=1234567;for(let i=0;i<d.data.length;i++){s=(Math.imul(s,1664525)+1013904223)>>>0;d.data[i]=(i%4===3)?255:s>>>24;}x.putImageData(d,0,0)</script>")}));
-        let app = app
-            .route(
-                "/downloads",
-                get(|| async {
-                    Html(format!(
-                        "<!doctype html><button>Download fixture</button>{}",
-                        (0..16)
-                            .map(|i| format!("<iframe src='/held?id={i}'></iframe>"))
-                            .collect::<String>()
-                    ))
-                }),
-            )
-            .route(
-                "/held",
-                get(move || {
-                    let held = held.clone();
-                    async move {
-                        let first = futures_util::stream::once(async {
-                            Ok::<_, std::convert::Infallible>(vec![b'x'; 4096])
-                        });
-                        let rest = futures_util::stream::once(async move {
-                            while !held.load(Ordering::Acquire) {
-                                tokio::time::sleep(Duration::from_millis(10)).await;
-                            }
-                            Ok::<_, std::convert::Infallible>(vec![b'x'; 1024 * 1024 - 4096])
-                        });
-                        let body = axum::body::Body::from_stream(futures_util::StreamExt::chain(
-                            first, rest,
-                        ));
-                        (
-                            [
-                                ("Content-Type", "application/octet-stream"),
-                                ("Content-Disposition", "attachment; filename=fixture.bin"),
-                                ("Content-Length", "1048576"),
-                            ],
-                            body,
-                        )
-                    }
-                }),
-            );
+        let app = app.route(
+            "/held",
+            get(move || {
+                let held = held.clone();
+                async move {
+                    let first = futures_util::stream::once(async {
+                        Ok::<_, std::convert::Infallible>(vec![b'x'; 4096])
+                    });
+                    let rest = futures_util::stream::once(async move {
+                        while !held.load(Ordering::Acquire) {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Ok::<_, std::convert::Infallible>(vec![b'x'; 1024 * 1024 - 4096])
+                    });
+                    let body =
+                        axum::body::Body::from_stream(futures_util::StreamExt::chain(first, rest));
+                    (
+                        [
+                            ("Content-Type", "application/octet-stream"),
+                            ("Content-Disposition", "attachment; filename=fixture.bin"),
+                            ("Content-Length", "1048576"),
+                        ],
+                        body,
+                    )
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -179,6 +166,9 @@ impl Fixture {
         assert_eq!(metrics["pending"], 0);
         assert_eq!(metrics["native_objects"], 0);
         assert_eq!(metrics["streams"], 0);
+        for key in ["objects", "streams", "reserved_objects", "reserved_streams"] {
+            assert_eq!(metrics["leases"][key], 0, "{metrics}");
+        }
         let start = Instant::now();
         self.call("browser_control", json!({"session_id":id,"action":"close"}))
             .await

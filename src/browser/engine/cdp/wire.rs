@@ -21,6 +21,9 @@ use tokio::{
 mod bounds_tests;
 mod command;
 #[cfg(test)]
+mod lease_tests;
+mod leases;
+#[cfg(test)]
 mod submission_tests;
 use command::Dialog;
 pub use command::{Command, InputPair};
@@ -28,10 +31,34 @@ pub use command::{Command, InputPair};
 #[cfg(test)]
 mod metrics;
 const MAX_MESSAGE: usize = 2 * 1024 * 1024;
+struct NativeReply {
+    value: Value,
+    leases: Vec<leases::Reap>,
+    owner: std::sync::Weak<Inner>,
+    outgoing: mpsc::WeakSender<Vec<u8>>,
+}
+impl NativeReply {
+    fn accept(mut self) -> Value {
+        self.leases.clear();
+        std::mem::take(&mut self.value)
+    }
+}
+impl Drop for NativeReply {
+    fn drop(&mut self) {
+        if !self.leases.is_empty()
+            && let Some(owner) = self.owner.upgrade()
+        {
+            owner.reap(&self.leases, &self.outgoing);
+        }
+    }
+}
+
 struct Pending {
+    lease: leases::LeaseCommand,
+    cleanup_deadline: Option<tokio::time::Instant>,
     #[cfg(test)]
     metric: metrics::Command,
-    reply: Option<oneshot::Sender<Result<Value>>>,
+    reply: Option<oneshot::Sender<Result<NativeReply>>>,
     session: Option<String>,
     dialog_blocks: bool,
     input_barrier: bool,
@@ -39,6 +66,7 @@ struct Pending {
 }
 #[derive(Default)]
 struct PendingState {
+    leases: leases::Book,
     #[cfg(test)]
     resources: metrics::Resources,
     commands: HashMap<u64, Pending>,
@@ -49,6 +77,7 @@ struct Inner {
     next: AtomicU64,
     closed: AtomicBool,
     slots: Arc<Semaphore>,
+    cleanup_slots: Arc<Semaphore>,
     stop: watch::Sender<Shutdown>,
     #[cfg(test)]
     reply_gate: Mutex<Option<ReplyGate>>,
@@ -92,7 +121,7 @@ impl Cdp {
     #[cfg(test)]
     pub fn test_metrics(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
-        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot()})
+        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot(),"leases":pending.leases.snapshot(),"cleanup_pending":pending.commands.values().filter(|c| c.cleanup_deadline.is_some()).count()})
     }
     #[cfg(test)]
     pub fn command_count(&self) -> u64 {
@@ -103,7 +132,7 @@ impl Cdp {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let (outgoing, mut requests) = mpsc::channel::<Vec<u8>>(32);
+        let (outgoing, mut requests) = mpsc::channel::<Vec<u8>>(32 + leases::CLEANUP_SLOTS);
         let (events, _) = broadcast::channel(256);
         let (stop, mut stopped) = watch::channel(Shutdown::Running);
         let inner = Arc::new(Inner {
@@ -111,17 +140,24 @@ impl Cdp {
             next: AtomicU64::new(1),
             closed: AtomicBool::new(false),
             slots: Arc::new(Semaphore::new(32)),
+            cleanup_slots: Arc::new(Semaphore::new(leases::CLEANUP_SLOTS)),
             stop,
             #[cfg(test)]
             reply_gate: Mutex::new(None),
         });
         let reader = inner.clone();
         let notifications = events.clone();
+        let cleanup_queue = outgoing.downgrade();
         tokio::spawn(async move {
             let mut frame = Vec::new();
             let mut chunk = [0u8; 16384];
+            let mut cleanup_tick = tokio::time::interval(Duration::from_millis(100));
             'reader: loop {
                 let count = tokio::select! {
+                    _ = cleanup_tick.tick() => {
+                        if reader.pending.lock().unwrap().commands.values().any(|c|c.cleanup_deadline.is_some_and(|d|tokio::time::Instant::now()>=d)) { break; }
+                        continue;
+                    },
                     _ = stopped.changed() => {
                         if *stopped.borrow_and_update() == Shutdown::Immediate { break; }
                         continue;
@@ -153,28 +189,56 @@ impl Cdp {
                                     }
                                 }
                             }
-                            let command = {
+                            let (command, created) = {
                                 let mut pending = reader.pending.lock().unwrap();
                                 let command = pending.commands.remove(&id);
-                                #[cfg(test)]
-                                if let Some(command) = &command {
+                                let created = if let Some(command) = &command {
+                                    #[cfg(test)]
                                     pending.resources.settle(&command.metric, &value);
-                                }
-                                command
+                                    pending.leases.settle(&command.lease, &value)
+                                } else {
+                                    Vec::new()
+                                };
+                                (command, created)
                             };
+                            if command.is_none() && leases::Book::unexpected_reply(&value) {
+                                break 'reader;
+                            }
                             if let Some(command) = command {
+                                if command.cleanup_deadline.is_some()
+                                    && value.get("error").is_some()
+                                {
+                                    break 'reader;
+                                }
                                 let result = if value.get("error").is_some() {
                                     Err(Failure::unknown("browser_command_failed"))
                                 } else {
-                                    Ok(value["result"].clone())
+                                    let mut reply = NativeReply {
+                                        value: value["result"].clone(),
+                                        leases: created,
+                                        owner: Arc::downgrade(&reader),
+                                        outgoing: cleanup_queue.clone(),
+                                    };
+                                    // Script exceptions are never exposed as usable native
+                                    // objects by the semantic API, even to a live caller.
+                                    if reply.value.get("exceptionDetails").is_some() {
+                                        reader.reap(&reply.leases, &cleanup_queue);
+                                        reply.leases.clear();
+                                    }
+                                    Ok(reply)
                                 };
                                 if let Some(reply) = command.reply {
+                                    // NativeReply also reaps when delivery succeeded but
+                                    // the receiver was dropped before consuming it.
                                     let _ = reply.send(result);
                                 }
                             }
                         } else {
                             #[cfg(test)]
                             reader.pending.lock().unwrap().resources.event(&value);
+                            if !reader.pending.lock().unwrap().leases.event(&value) {
+                                break 'reader;
+                            }
                             if let Some(session) = value["sessionId"].as_str() {
                                 let mut pending = reader.pending.lock().unwrap();
                                 match value["method"].as_str() {
@@ -263,12 +327,14 @@ impl Cdp {
         if !self.connected() {
             return Err(Failure::unknown("browser_lost"));
         }
-        let permit = self
-            .inner
-            .slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Failure::new("browser_busy"))?;
+        let permit = if leases::LeaseCommand::cleanup(command) {
+            &self.inner.cleanup_slots
+        } else {
+            &self.inner.slots
+        }
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Failure::new("browser_busy"))?;
         let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         let metric = metrics::Command::new(session, spec.method, &params);
@@ -293,9 +359,14 @@ impl Cdp {
             if dialog_open && spec.dialog == Dialog::Block {
                 return Err(Failure::new("browser_dialog_open"));
             }
+            let lease =
+                leases::LeaseCommand::new(command, session, &message["params"], &pending.leases);
+            pending.leases.reserve(&lease)?;
             pending.commands.insert(
                 id,
                 Pending {
+                    lease,
+                    cleanup_deadline: None,
                     #[cfg(test)]
                     metric,
                     reply: Some(reply),
@@ -306,7 +377,9 @@ impl Cdp {
                 },
             );
             if self.outgoing.try_send(frame).is_err() {
-                pending.commands.remove(&id);
+                if let Some(command) = pending.commands.remove(&id) {
+                    pending.leases.cancel_unsent(&command.lease);
+                }
                 return Err(Failure::new("browser_busy"));
             }
             Ok(dialog_open && dialog_blocks)
@@ -316,7 +389,7 @@ impl Cdp {
         }
         // Timeout never releases the outstanding command's slot or implies it stopped.
         match tokio::time::timeout_at(deadline.into(), result).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => result.map(NativeReply::accept),
             Ok(Err(_)) => Err(Failure::unknown("browser_lost")),
             Err(_) => Err(Failure::unknown("browser_timeout_unknown")),
         }
@@ -399,6 +472,69 @@ impl Cdp {
 }
 
 impl Inner {
+    fn reap(&self, resources: &[leases::Reap], outgoing: &mpsc::WeakSender<Vec<u8>>) {
+        if resources.is_empty() {
+            return;
+        }
+        // The private reader must not keep the ordinary send side alive after
+        // the last public client has gone away.
+        let Some(outgoing) = outgoing.upgrade() else {
+            self.finish();
+            return;
+        };
+        let success = (|| {
+            let mut pending = self.pending.lock().unwrap();
+            if self.closed.load(Ordering::Acquire) {
+                return true;
+            }
+            for resource in resources {
+                if !pending.leases.owns(resource) {
+                    continue;
+                }
+                let Ok(permit) = self.cleanup_slots.clone().try_acquire_owned() else {
+                    return false;
+                };
+                let (session, command, params) = resource.command();
+                let id = self.next.fetch_add(1, Ordering::Relaxed);
+                let lease = leases::LeaseCommand::new(command, session, &params, &pending.leases);
+                #[cfg(test)]
+                let metric = metrics::Command::new(session, command.spec().method, &params);
+                let mut value = json!({"id":id,"method":command.spec().method,"params":params});
+                if let Some(session) = session.filter(|s| !s.is_empty()) {
+                    value["sessionId"] = session.into();
+                }
+                let Ok(mut frame) = serde_json::to_vec(&value) else {
+                    return false;
+                };
+                frame.push(0);
+                pending.commands.insert(
+                    id,
+                    Pending {
+                        lease,
+                        cleanup_deadline: Some(
+                            tokio::time::Instant::now() + Duration::from_secs(3),
+                        ),
+                        #[cfg(test)]
+                        metric,
+                        reply: None,
+                        session: session.map(str::to_owned),
+                        dialog_blocks: false,
+                        input_barrier: false,
+                        _permit: permit,
+                    },
+                );
+                if outgoing.try_send(frame).is_err() {
+                    pending.commands.remove(&id);
+                    return false;
+                }
+            }
+            true
+        })();
+        if !success {
+            self.finish();
+        }
+    }
+
     fn finish(&self) {
         self.shutdown(Shutdown::Immediate);
     }
@@ -411,7 +547,14 @@ impl Inner {
         }
         self.stop.send_replace(how);
         self.slots.close();
-        for (_, command) in pending.commands.drain() {
+        self.cleanup_slots.close();
+        let commands: Vec<_> = pending
+            .commands
+            .drain()
+            .map(|(_, command)| command)
+            .collect();
+        for command in commands {
+            pending.leases.cancel_unsent(&command.lease);
             if let Some(reply) = command.reply {
                 let _ = reply.send(Err(Failure::unknown("browser_lost")));
             }

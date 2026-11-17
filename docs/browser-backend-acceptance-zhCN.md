@@ -164,11 +164,11 @@ Agent RSS 增长取预热后首、末各 10 次已关闭会话的空闲样本中
 | BiDi `sharedId`、CDP `BackendNodeId` | 节点身份标识，不建立需要 `disown` 或 `releaseObject` 的协议租约 | 继续使用文档代次、引用表和扫描器预算；不得与 root handle 混计 |
 | 页面内扫描器与语义引用表 | 页面对象及 JavaScript 强引用，使用既有扫描、节点和字符预算 | 与协议租约分别计数；原生句柄上限不替代 DOM 或页面内存预算 |
 
-超时、调用方取消、弹窗提前结束等待均不释放尚未返回的预留。迟到且无人接收的对象与流进入有界清理；释放未确认前继续计费。清理通道耗尽、清理响应失败或超过 3 秒时停止所属连接，不重放网页动作。释放组只清除发送释放命令时已登记的成员，不能把稍后取得的同组对象误记为已释放。连接终止后的进程与目录仍由既有所有权流程确认清理，不能把传输关闭写成进程已退出。
+超时、调用方取消、弹窗提前结束等待均不释放尚未返回的预留。迟到且无人接收的对象与流进入有界清理；释放未确认前继续计入预算。自动清理通道耗尽、自动清理响应失败或超过 3 秒时停止所属连接，不重放网页动作。释放组只清除发送释放命令时已登记的成员，不能把稍后取得的同组对象误记为已释放。连接终止后的进程与目录仍由既有所有权流程确认清理，不能把传输关闭写成进程已退出。
 
 CDP 不订阅当前功能未使用的 Runtime console、异常与 inspect 事件，避免页面主动制造未经过准入的对象句柄；仍拒绝意外携带对象所有权的事件。Runtime 求值异常通过命令响应进入账本。协议语义依据 [CDP Runtime](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/) 和 [WebDriver BiDi 脚本所有权](https://www.w3.org/TR/webdriver-bidi/#type-script-ResultOwnership)。
 
-验收必须同时覆盖对象与流的精确边界、pending 预留、错误返回、释放失败、迟到响应、取消、同组并发响应、不同 session 的同名句柄，以及普通 32 槽满时的清理路径。保留真实 v1 扫描、并发下载、CDP/BiDi 共同语义的原始峰值，并在最终 release 构建重跑 v1 原生回归。预算冻结不代表尚未运行的平台和 Server CI 已通过。
+验收必须同时覆盖对象与流的精确边界、pending 预留、错误返回、释放失败、迟到响应、取消、同组并发响应、不同 session 的同名句柄，以及普通 32 槽满时的清理路径。Agent 的 `cdp::wire::lease_tests` 和 `bidi::wire::tests::leases` 用可控 pipe/WebSocket 验证这些时序；`native_object_lease_boundary_and_unsubscribed_runtime_events` 使用真实 Chrome 验证 256 个对象、超额拒绝、异常对象回收和 console 事件边界。保留真实 v1 扫描、并发下载、CDP/BiDi 共同语义的原始峰值，并在最终 release 构建重跑 v1 原生回归。预算冻结不代表尚未运行的平台和 Server CI 已通过。
 
 ### 9.3 平台矩阵
 

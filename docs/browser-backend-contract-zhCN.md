@@ -297,13 +297,13 @@ DriverError 分开保存 Kind、Phase、EffectProgress、Scope 和 SessionHealth
 
 预算分为现有基线与后续目标，不能把目标混入 D1 的保真结论：
 
-| 资源 | D1 保留的基线 | 后续实施要求 |
+| 资源 | D1 保留的基线 | 当前约束及后续要求 |
 | --- | --- | --- |
-| 在途命令、写队列 | 各 32 个；超时/取消不提前释放槽位 | 按需增加有界控制/清理保留名额；不能承诺排在旧命令前写出的能力 |
+| 在途命令、写队列 | 各 32 个；超时/取消不提前释放槽位 | CDP 普通命令仍为 32 个，增加 4 个仅供对象、对象组和流释放的槽位，发送队列为 36 项；不保证排在已入队命令前写出 |
 | 协议消息 | 入站 2 MiB、出站 256 KiB | 保留绝对上限；必须计入完整 JSON、base64 膨胀与解析峰值 |
 | 事件 | 256 条 broadcast 容量 | D1 后续步骤为关键事件增加字节上限及丢失后的停止路径；无诊断流时不预建双队列 |
 | 截图 | viewport JPEG，宽高各不超过 1920 CSS px，base64 最多 512 KiB | 检查 DPR、实际像素和完整响应；超过上限拒绝，不能声称支持原生流式截图 |
-| 原生句柄 | 现有扫描/对象组释放方式 | D1 后续步骤盘点峰值后冻结租约上限，暂不凭空指定 2,048 个 |
+| 原生句柄 | 扫描、对象组和流按其协议释放 | CDP 每连接 256 个对象、16 个流，合计 272 个，包含待决创建预留；BiDi root handle 上限为 0。准入、迟到回收与验收见[原生句柄租约预算](browser-backend-acceptance-zhCN.md) |
 
 CDP captureScreenshot 和 BiDi captureScreenshot 都把 base64 图像放在命令结果里，不能在收到超大完整消息后再通过产品层分块补救。文件流只有在协议实际提供流句柄时分块读取。增加截图尺寸或新的大消息类别，须先定义独立且有限的完整消息预算、并发上限与拒绝测试。[CDP 截图](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-captureScreenshot)、[BiDi 截图](https://w3c.github.io/webdriver-bidi/#command-browsingContext-captureScreenshot)
 

@@ -5,6 +5,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 
 mod bounds;
 mod latency;
+mod leases;
 mod sequences;
 type Browser = WebSocketStream<DuplexStream>;
 

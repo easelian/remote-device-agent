@@ -367,7 +367,6 @@ impl SessionPort for Engine {
         .await?;
         for command in [
             Command::PageEnable,
-            Command::RuntimeEnable,
             Command::NetworkEnable,
             Command::AccessibilityEnable,
         ] {

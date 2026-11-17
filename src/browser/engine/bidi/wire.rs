@@ -54,6 +54,7 @@ pub(super) enum Fault {
     WriteTimeout,
     Closed,
     Startup,
+    NativeHandle,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ProtocolError {
@@ -400,6 +401,11 @@ impl Bidi {
             return Err(reject("browser_id_exhausted"));
         }
         let (method, params, effect) = command.encode();
+        if matches!(method, "script.evaluate" | "script.callFunction")
+            && params["resultOwnership"] != "none"
+        {
+            return Err(reject("browser_unsupported"));
+        }
         #[cfg(test)]
         let params = {
             let mut params = params;
@@ -547,6 +553,17 @@ impl Bidi {
     }
 }
 
+fn has_root_handle(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.get("handle").is_some_and(Value::is_string)
+                || fields.values().any(has_root_handle)
+        }
+        Value::Array(items) => items.iter().any(has_root_handle),
+        _ => false,
+    }
+}
+
 impl Inner {
     #[cfg(test)]
     fn take_reply_gate(&self, text: &str) -> Option<ReplyGate> {
@@ -563,6 +580,11 @@ impl Inner {
         events: &mpsc::Sender<QueuedEvent>,
     ) -> std::result::Result<(), Fault> {
         let value: Value = serde_json::from_str(text).map_err(|_| Fault::Malformed)?;
+        // The closed command vocabulary never acquires root ownership. Check
+        // before delivery, including unknown IDs, late replies and events.
+        if has_root_handle(&value) {
+            return Err(Fault::NativeHandle);
+        }
         match value["type"].as_str() {
             Some("success" | "error") => {
                 let id = value["id"]
