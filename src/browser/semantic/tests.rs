@@ -486,6 +486,7 @@ impl Port for Fake {
             self.effects.fetch_add(1, Ordering::AcqRel);
             let mut data=self.data.lock().unwrap();
             match input {
+                NativeInput::SelectFile { .. } => return Err(crate::browser::Failure::new("browser_feature_unsupported")),
                 NativeInput::Click{..}=>{
                     let row=&mut data.rows_mut(frame.context)?[click_index.unwrap()];if matches!(row.role.as_str(),"checkbox"|"radio"|"switch"){row.checked = !row.checked;}let id=row.id.clone();
                     data.events.push(json!({"type":"click","id":id,"trusted":true}));

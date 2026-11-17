@@ -12,6 +12,7 @@ pub(super) struct Slot {
     owner: String,
     user: String,
     selection: Selection,
+    profile_name: Option<String>,
     coordination: Arc<sem::Coordination>,
     control: Arc<Control>,
     closing: AtomicBool,
@@ -60,9 +61,8 @@ impl Slot {
     fn stop(&self) {
         self.pause();
         self.closing.store(true, Ordering::Release);
-        if let Ok(port) = self.port() {
-            port.stop();
-        }
+        // Fence new input immediately; native close must retain its graceful
+        // transport path so named browser databases can flush before exit.
     }
     fn listing(&self, id: &str) -> Value {
         let (epoch, paused) = self.control.snapshot();
@@ -75,18 +75,18 @@ impl Slot {
                 Err(_) => "opening",
             }
         };
-        json!({"session_id":id,"selection":self.selection,"state":state,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"profile_name":null})
+        json!({"session_id":id,"selection":self.selection,"state":state,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"profile_name":self.profile_name})
     }
 }
 fn token() -> Result<String> {
     crate::random::hex_token::<16>().map_err(crate::browser::io_error)
 }
-fn capability() -> Value {
+fn capability(settings: &Settings, backend: Backend) -> Value {
     json!({"managed_lifecycle":true,"document_identity":true,"observation":true,"input":true,"screenshot":true,
         "dialogs":true,"human_takeover":true,"navigation_policy":true,"conservative_recovery":true,
-        "max_tabs":8,"max_frames":32,"named_profiles":false,"uploads":false,"downloads":false,"native_ax":false,"devtools":false,
+        "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":false,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
-        "actions":["navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
+        "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document"})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
@@ -142,8 +142,9 @@ impl Browsers {
         }) {
             return Err(Failure::new("browser_backend_unavailable"));
         }
-        if params.get("profile_name").is_some() {
-            return Err(Failure::new("browser_feature_unsupported"));
+        let profile_name = params["profile_name"].as_str();
+        if profile_name.is_some() && !self.settings.persistent_profiles {
+            return Err(Failure::new("browser_profile_disabled"));
         }
         self.admit(&params["url"])?;
         self.prepare_storage()?;
@@ -157,6 +158,7 @@ impl Browsers {
             owner: principal.owner.clone(),
             user: principal.user.clone(),
             selection: selection.clone(),
+            profile_name: profile_name.map(str::to_owned),
             control: coordination.control(),
             coordination: coordination.clone(),
             closing: AtomicBool::new(false),
@@ -189,9 +191,11 @@ impl Browsers {
         let mut session = slot.session.lock().await;
         let result=async {
             let policy=sem::policy::Policy::new(self.settings.sites.clone());
+            let named=profile_name.map(|name|self.profiles.open_scoped(&root,principal,name,selection.backend.profile_scope())).transpose()?;
+            let data=process::SessionData {named,downloads:self.settings.downloads.then(||files::Downloads{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})};
             let native=match selection.backend {
-                Backend::Cdp=>native::Session::Cdp(crate::browser::engine::semantic_cdp::Session::launch_with(self.executable.as_deref().unwrap(),&root,&id,policy,coordination.clone(),deadline).await?),
-                Backend::Bidi=>native::Session::Bidi(crate::browser::engine::bidi::page::Session::open_with(&std::env::current_exe().map_err(crate::browser::io_error)?,self.settings.firefox_executable.as_deref().unwrap(),&root,policy,coordination).await?),
+                Backend::Cdp=>native::Session::Cdp(crate::browser::engine::semantic_cdp::Session::launch_named(self.executable.as_deref().unwrap(),&root,&id,policy,coordination.clone(),data,deadline).await?),
+                Backend::Bidi=>native::Session::Bidi(crate::browser::engine::bidi::page::Session::open_named(&std::env::current_exe().map_err(crate::browser::io_error)?,self.settings.firefox_executable.as_deref().unwrap(),&root,policy,coordination,data).await?),
             };
             let port=native.port();session.native=Some(native);*slot.port.lock().unwrap()=Some(port.clone());
             if slot.closing.load(Ordering::Acquire)||slot.control.snapshot()!=(1,false){return Err(Failure::new("browser_control_changed"));}
@@ -203,8 +207,8 @@ impl Browsers {
             if slot.control.snapshot()!=(1,false){return Err(Failure::unknown("browser_control_changed"));}
             session.active=port.tab_id()?;
             *slot.active.lock().unwrap()=session.active.clone();
-            Ok(json!({"session_id":id,"tab_id":session.active,"control_epoch":1,"state":"ready","profile":"temporary","profile_name":null,
-                "selection":selection,"capabilities":capability(),"stage":"session_ready"}))
+            Ok(json!({"session_id":id,"tab_id":session.active,"control_epoch":1,"state":"ready","profile":if profile_name.is_some(){"named"}else{"temporary"},"profile_name":profile_name,"profile_id":profile_name.map(|n|selection.backend.profile_scope().id(principal,n)),
+                "selection":selection,"capabilities":capability(&self.settings,selection.backend),"stage":"session_ready"}))
         }.await;
         if result.is_err() {
             slot.stop();
@@ -246,6 +250,7 @@ impl Browsers {
         params: &Value,
         principal: &Principal,
         deadline: Instant,
+        operation_id: Option<&str>,
     ) -> Result<Value> {
         let id = params["session_id"]
             .as_str()
@@ -327,7 +332,40 @@ impl Browsers {
             match operation {
                 "browser_observe" => observe(&mut session, &page, &port, params, deadline).await,
                 "browser_screenshot" => capture(&page.access(false)?, deadline).await.map(|v| v.0),
-                "browser_act" => act(&mut session, &page, &port, params, paused, deadline).await,
+                "browser_act" => {
+                    let attachment = if params["action"]["kind"] == "attach_file" {
+                        if !self.settings.uploads {
+                            return Err(Failure::new("browser_upload_disabled"));
+                        }
+                        Some(files::Attachment {
+                            files: self.files.clone(),
+                            owner: files::Owner {
+                                principal: principal.clone(),
+                                session: id.into(),
+                                tab: tab.clone(),
+                                origin: String::new(),
+                                control: slot.control.clone(),
+                            },
+                            grant: params["action"]["file_grant_id"].as_str().unwrap().into(),
+                            operation: operation_id
+                                .ok_or_else(|| Failure::new("browser_invalid_params"))?
+                                .into(),
+                            epoch,
+                        })
+                    } else {
+                        None
+                    };
+                    act(
+                        &mut session,
+                        &page,
+                        &port,
+                        params,
+                        paused,
+                        deadline,
+                        attachment,
+                    )
+                    .await
+                }
                 "browser_wait" => {
                     session.invalidate();
                     loop {
@@ -550,7 +588,7 @@ async fn observe(
         let facts = row.facts;
         let entries: Vec<_> = facts.record.entries.into_iter().map(|entry|json!({"tag":entry.tag,"attributes":entry.attributes,"text":entry.text,"value":entry.value,"checked":entry.checked})).collect();
         let mut node = json!({"role":facts.role,"kind":facts.kind,"tag":facts.tag,"input_type":facts.input_type,"name":facts.name,"name_source":facts.name_source,"name_quality":facts.name_quality,"frame_id":frame,
-            "enabled":facts.enabled,"readonly":facts.readonly,"editable":facts.editable,"sensitive":facts.sensitive,"checked":facts.checked,"in_view":facts.in_view,"record_complete":facts.record.complete,
+            "file_input":facts.tag=="input"&&facts.input_type=="file","enabled":facts.enabled,"readonly":facts.readonly,"editable":facts.editable,"sensitive":facts.sensitive,"checked":facts.checked,"in_view":facts.in_view,"record_complete":facts.record.complete,
             "record":{"entries":entries,"complete":facts.record.complete,"limits":facts.record.limits}});
         if let Some(value) = facts.value {
             node["value"] = value.into();
@@ -584,12 +622,10 @@ async fn act(
     params: &Value,
     paused: bool,
     deadline: Instant,
+    attachment: Option<files::Attachment>,
 ) -> Result<Value> {
     let action = &params["action"];
     let kind = action["kind"].as_str().unwrap_or("");
-    if kind == "attach_file" {
-        return Err(Failure::new("browser_feature_unsupported"));
-    }
     let reference = action["ref"]
         .as_str()
         .map(|id| {
@@ -603,6 +639,9 @@ async fn act(
     session.invalidate();
     if let Some(reference) = reference {
         let input = match kind {
+            "attach_file" => sem::Action::AttachFile(
+                attachment.ok_or_else(|| Failure::new("browser_upload_denied"))?,
+            ),
             "click" => sem::Action::Click,
             "check" => sem::Action::Check(action["checked"].as_bool().unwrap()),
             "fill" => sem::Action::ReplaceText(action["text"].as_str().unwrap().into()),
@@ -610,8 +649,13 @@ async fn act(
             "select" => sem::Action::SetFormValue(action["value"].as_str().unwrap().into()),
             _ => return Err(Failure::new("browser_feature_unsupported")),
         };
-        return serde_json::to_value(page.act(reference, input, deadline).await?)
-            .map_err(crate::browser::io_error);
+        let mut value = serde_json::to_value(page.act(reference, input, deadline).await?)
+            .map_err(crate::browser::io_error)?;
+        if kind == "attach_file" {
+            value["file_selected"] = true.into();
+            value["file_grant_id"] = action["file_grant_id"].clone();
+        }
+        return Ok(value);
     }
     match kind {
         "navigate" => {

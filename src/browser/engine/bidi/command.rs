@@ -38,6 +38,11 @@ pub(super) enum Command {
     },
     SubscribePage,
     Intercept,
+    DownloadBehavior(Option<std::path::PathBuf>),
+    Respond {
+        request: String,
+        allow: bool,
+    },
     Program {
         context: ContextId,
         program: Program,
@@ -75,6 +80,11 @@ pub(super) enum Command {
         action: Action,
     },
     ReleaseInput(ContextId),
+    SelectFile {
+        context: ContextId,
+        node: String,
+        path: std::path::PathBuf,
+    },
     Decide {
         request: String,
         allow: bool,
@@ -103,6 +113,7 @@ impl Command {
             | Self::Program { context, .. }
             | Self::Node { context, .. }
             | Self::Navigate { context, .. }
+            | Self::SelectFile { context, .. }
             | Self::Action { context, .. } => context.belongs_to(scope),
             Self::FrameOwner { context, child } => {
                 context.belongs_to(scope) && child.belongs_to(scope)
@@ -117,6 +128,15 @@ impl Command {
     }
     pub fn encode(&self) -> (&'static str, Value, Effect) {
         match self {
+            Self::SelectFile {
+                context,
+                node,
+                path,
+            } => (
+                "input.setFiles",
+                json!({"context":context.as_str(),"element":{"sharedId":node},"files":[path]}),
+                Effect::Page,
+            ),
             Self::Status => ("session.status", json!({}), Effect::None),
             Self::NewSession => (
                 "session.new",
@@ -159,9 +179,23 @@ impl Command {
                 json!({"events":super::event::PAGE_EVENTS}),
                 Effect::None,
             ),
+            Self::DownloadBehavior(path) => (
+                "browser.setDownloadBehavior",
+                json!({"downloadBehavior":path.as_ref().map_or(json!({"type":"denied"}),|p|json!({"type":"allowed","destinationFolder":p}))}),
+                Effect::None,
+            ),
+            Self::Respond { request, allow } => (
+                if *allow {
+                    "network.continueResponse"
+                } else {
+                    "network.failRequest"
+                },
+                json!({"request":request}),
+                Effect::None,
+            ),
             Self::Intercept => (
                 "network.addIntercept",
-                json!({"phases":["beforeRequestSent"]}),
+                json!({"phases":["beforeRequestSent","responseStarted"]}),
                 Effect::None,
             ),
             Self::Program { context, program } => {

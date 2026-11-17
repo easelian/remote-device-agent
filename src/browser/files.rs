@@ -21,6 +21,41 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(feature = "experimental-browser-bidi")]
+#[derive(Clone)]
+pub(crate) struct Downloads {
+    pub files: Arc<Files>,
+    pub principal: Principal,
+    pub session: String,
+    pub control: Arc<Control>,
+}
+#[cfg(feature = "experimental-browser-bidi")]
+impl Downloads {
+    pub fn owner(&self, tab: String, url: &str) -> Result<Owner> {
+        Ok(Owner {
+            principal: self.principal.clone(),
+            session: self.session.clone(),
+            tab,
+            origin: crate::browser::page::origin(url)?,
+            control: self.control.clone(),
+        })
+    }
+}
+#[cfg(feature = "experimental-browser-bidi")]
+pub(crate) fn attachment(headers: &[super::engine::Header]) -> bool {
+    headers.iter().any(|h| {
+        h.name.eq_ignore_ascii_case("content-disposition")
+            && h.value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("attachment")
+    })
+}
+mod download;
+pub(crate) use download::Download;
+
 pub const MAX_FILE: u64 = 32 * 1024 * 1024;
 pub const MAX_TOTAL: u64 = 128 * 1024 * 1024;
 pub const MAX_FILES: usize = 16;
@@ -37,6 +72,36 @@ pub struct Owner {
     pub tab: String,
     pub origin: String,
     pub control: Arc<Control>,
+}
+
+/// A private one-use upload authorization, consumed after semantic validation.
+#[cfg(feature = "experimental-browser-bidi")]
+#[derive(Clone)]
+pub struct Attachment {
+    pub files: Arc<Files>,
+    pub owner: Owner,
+    pub grant: String,
+    pub operation: String,
+    pub epoch: u64,
+}
+#[cfg(feature = "experimental-browser-bidi")]
+impl std::fmt::Debug for Attachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Attachment")
+    }
+}
+#[cfg(feature = "experimental-browser-bidi")]
+impl Attachment {
+    pub fn consume(self, origin: String) -> Result<PathBuf> {
+        let mut owner = self.owner;
+        owner.origin = origin;
+        let state = owner.control.state.lock().unwrap();
+        if *state != (self.epoch, false) {
+            return Err(Failure::new("browser_control_changed"));
+        }
+        self.files
+            .consume_upload(&owner, &self.grant, &self.operation)
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -57,6 +122,8 @@ struct Metadata {
     expires_at: u64,
     ai_visible: bool,
     upload: Option<Upload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cancellation_scope: Option<String>,
 }
 impl Metadata {
     fn allowed(&self, principal: &Principal) -> bool {
@@ -64,9 +131,15 @@ impl Metadata {
             && (principal.channel == "human" || (self.owner == principal.owner && self.ai_visible))
     }
     fn value(&self) -> Value {
-        json!({"artifact_id":self.id,"session_id":self.session_id,"tab_id":self.tab_id,
+        let mut value = json!({"artifact_id":self.id,"session_id":self.session_id,"tab_id":self.tab_id,
             "name":self.name,"source_origin":self.origin,"size_bytes":self.size_bytes,"sha256":self.sha256,
-            "state":self.state,"created_at":self.created_at,"expires_at":self.expires_at})
+            "state":self.state,"created_at":self.created_at,"expires_at":self.expires_at});
+        if self.state == "receiving"
+            && let Some(scope) = &self.cancellation_scope
+        {
+            value["cancellation_scope"] = scope.clone().into();
+        }
+        value
     }
 }
 struct Entry {
@@ -218,6 +291,10 @@ impl Files {
                 || meta.size_bytes > MAX_FILE
                 || meta.name.len() > 512
                 || meta.origin.len() > 4096
+                || meta
+                    .cancellation_scope
+                    .as_deref()
+                    .is_some_and(|s| s != "session")
                 || !matches!(
                     meta.state.as_str(),
                     "receiving" | "ready" | "staging" | "approved" | "consumed"
@@ -425,16 +502,13 @@ impl Files {
             catalog.failures.pop_front();
         }
     }
-    pub fn intercept(
+    pub(crate) fn reserve(
         self: &Arc<Self>,
-        engine: impl TransferPort,
-        params: &DocumentRequest,
+        status: Option<u64>,
+        headers: &[super::engine::Header],
         owner: Owner,
-    ) -> Result<()> {
-        let headers = params
-            .headers
-            .as_ref()
-            .ok_or_else(|| Failure::new("browser_file_incomplete"))?;
+        session_cancellation: bool,
+    ) -> Result<Download> {
         let values = |name: &str| {
             headers
                 .iter()
@@ -455,7 +529,7 @@ impl Files {
         // inserted after takeover has hidden this session's existing files.
         let control = owner.control.state.lock().unwrap();
         let created = now();
-        let mut meta = Metadata {
+        let meta = Metadata {
             version: 1,
             id: crate::random::hex_token::<16>().map_err(io_error)?,
             owner: owner.principal.owner,
@@ -471,9 +545,10 @@ impl Files {
             expires_at: created + RETENTION,
             ai_visible: !control.1,
             upload: None,
+            cancellation_scope: session_cancellation.then(|| "session".into()),
         };
         let encoding = values("content-encoding");
-        let denied = if !matches!(params.status, Some(200))
+        let denied = if !matches!(status, Some(200))
             || size.is_none()
             || encoding.iter().any(|e| !e.eq_ignore_ascii_case("identity"))
         {
@@ -519,6 +594,36 @@ impl Files {
             );
         }
         drop(control);
+        Ok(Download {
+            #[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
+            files: self.clone(),
+            meta,
+            path,
+            cancel,
+        })
+    }
+    #[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
+    pub(crate) fn track(&self, job: tokio::task::JoinHandle<()>) {
+        let mut jobs = self.jobs.lock().unwrap();
+        jobs.retain(|j| !j.is_finished());
+        jobs.push(job);
+    }
+    pub fn intercept(
+        self: &Arc<Self>,
+        engine: impl TransferPort,
+        params: &DocumentRequest,
+        owner: Owner,
+    ) -> Result<()> {
+        let headers = params
+            .headers
+            .as_ref()
+            .ok_or_else(|| Failure::new("browser_file_incomplete"))?;
+        let Download {
+            mut meta,
+            path,
+            cancel,
+            ..
+        } = self.reserve(params.status, headers, owner, false)?;
         let files = self.clone();
         let request = params.handle.clone();
         let job = tokio::spawn(async move {
@@ -695,6 +800,7 @@ mod tests {
                 expires_at: now() + 60,
                 ai_visible: true,
                 upload: None,
+                cancellation_scope: None,
             };
             let path = files.path(&meta.id).unwrap();
             crate::storage::create_private_dir(&path).unwrap();

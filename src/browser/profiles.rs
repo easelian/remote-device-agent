@@ -11,6 +11,39 @@ use std::{
 };
 
 pub const MAX_PROFILES: usize = 16;
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code)
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    V1,
+    CdpV2,
+    BidiV2,
+}
+impl Scope {
+    fn namespace(self) -> Option<&'static str> {
+        match self {
+            Self::V1 => None,
+            Self::CdpV2 => Some("rdh-browser-profile-v2-chromium"),
+            Self::BidiV2 => Some("rdh-browser-profile-v2-firefox"),
+        }
+    }
+    pub fn id(self, principal: &Principal, name: &str) -> String {
+        crate::config::sha256_hex(
+            &serde_json::to_vec(&json!([
+                self.namespace().unwrap_or("rdh-browser-profile-v1"),
+                principal.owner,
+                name
+            ]))
+            .unwrap(),
+        )
+    }
+}
 
 #[derive(Default)]
 pub struct Profiles {
@@ -45,6 +78,8 @@ impl NamedProfile {
 #[serde(deny_unknown_fields)]
 struct Metadata {
     version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
     id: String,
     owner: String,
     user: String,
@@ -73,7 +108,7 @@ fn private_dir(path: &Path) -> Result<()> {
         Err(error) => Err(io_error(error)),
     }
 }
-fn read(path: &Path) -> Result<Metadata> {
+fn read(path: &Path, scope: Scope) -> Result<Metadata> {
     storage::private_metadata(path, true).map_err(io_error)?;
     let bytes = storage::read_private(&path.join("metadata.json")).map_err(io_error)?;
     if bytes.len() > 2048 {
@@ -85,13 +120,14 @@ fn read(path: &Path) -> Result<Metadata> {
             && s.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     };
-    if meta.version != 1
+    if meta.namespace.as_deref() != scope.namespace()
+        || meta.version != 1
         || !hex(&meta.id)
         || !hex(&meta.owner)
         || !hex(&meta.user)
         || path.file_name().and_then(|s| s.to_str()) != Some(meta.id.as_str())
         || !valid_name(&meta.name)
-        || id(
+        || scope.id(
             &Principal {
                 version: 1,
                 owner: meta.owner.clone(),
@@ -118,14 +154,26 @@ impl Profiles {
         })
     }
     pub fn open(&self, root: &Path, principal: &Principal, name: &str) -> Result<NamedProfile> {
-        let id = id(principal, name);
+        self.open_scoped(root, principal, name, Scope::V1)
+    }
+    pub fn open_scoped(
+        &self,
+        root: &Path,
+        principal: &Principal,
+        name: &str,
+        scope: Scope,
+    ) -> Result<NamedProfile> {
+        if !valid_name(name) {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        let id = scope.id(principal, name);
         let lease = self.lease(id.clone())?;
         let _catalog = self.catalog.lock().unwrap();
         let directory = root.join("profiles");
         private_dir(&directory)?;
         let path = directory.join(&id);
         if path.try_exists().map_err(io_error)? {
-            let meta = read(&path)?;
+            let meta = read(&path, scope)?;
             if meta.owner != principal.owner || meta.user != principal.user || meta.name != name {
                 return Err(Failure::new("browser_profile_unavailable"));
             }
@@ -146,6 +194,7 @@ impl Profiles {
                     &path.join("metadata.json"),
                     &serde_json::to_vec(&Metadata {
                         version: 1,
+                        namespace: scope.namespace().map(str::to_owned),
                         id,
                         owner: principal.owner.clone(),
                         user: principal.user.clone(),
@@ -166,6 +215,9 @@ impl Profiles {
         })
     }
     pub fn list(&self, root: &Path, principal: &Principal) -> Result<Value> {
+        self.list_scoped(root, principal, Scope::V1)
+    }
+    pub fn list_scoped(&self, root: &Path, principal: &Principal, scope: Scope) -> Result<Value> {
         let _catalog = self.catalog.lock().unwrap();
         let directory = root.join("profiles");
         if !directory.try_exists().map_err(io_error)? {
@@ -182,17 +234,30 @@ impl Profiles {
         }
         let mut profiles = Vec::new();
         for entry in entries {
-            let meta = read(&entry.path())?;
+            let meta = read(&entry.path(), scope)?;
             if meta.owner == principal.owner && meta.user == principal.user {
                 profiles.push(json!({"profile_id":meta.id,"name":meta.name,
                     "in_use":self.leased.lock().unwrap().contains(&meta.id),"retention":"until_deleted"}));
             }
         }
         profiles.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        Ok(json!({"profiles":profiles,"max_profiles_per_device":MAX_PROFILES}))
+        if scope == Scope::V1 {
+            Ok(json!({"profiles":profiles,"max_profiles_per_device":MAX_PROFILES}))
+        } else {
+            Ok(json!({"profiles":profiles,"max_profiles_per_namespace":MAX_PROFILES}))
+        }
     }
     pub fn delete(&self, root: &Path, principal: &Principal, name: &str) -> Result<Value> {
-        let id = id(principal, name);
+        self.delete_scoped(root, principal, name, Scope::V1)
+    }
+    pub fn delete_scoped(
+        &self,
+        root: &Path,
+        principal: &Principal,
+        name: &str,
+        scope: Scope,
+    ) -> Result<Value> {
+        let id = scope.id(principal, name);
         let _lease = self.lease(id.clone())?;
         let _catalog = self.catalog.lock().unwrap();
         if !root
@@ -205,12 +270,99 @@ impl Profiles {
         }
         storage::private_metadata(&root.join("profiles"), true).map_err(io_error)?;
         let path = root.join("profiles").join(&id);
-        let meta = read(&path)?;
+        let meta = read(&path, scope)?;
         if meta.owner != principal.owner || meta.user != principal.user || meta.name != name {
             return Err(Failure::new("browser_profile_unavailable"));
         }
         // A failed recursive removal may already have removed some files.
         fs::remove_dir_all(path).map_err(|_| Failure::unknown("browser_io_error"))?;
         Ok(json!({"profile_id":id,"profile_deleted":true}))
+    }
+}
+
+#[cfg(test)]
+mod scoped_tests {
+    use super::*;
+    #[test]
+    fn named_namespaces_preserve_v1_identity_and_independent_exclusive_leases() {
+        let root = std::env::temp_dir().join(format!(
+            "rdh-scoped-profiles-{}",
+            crate::random::hex_token::<12>().unwrap()
+        ));
+        storage::create_private_dir(&root).unwrap();
+        let principal = Principal {
+            version: 1,
+            owner: "a".repeat(64),
+            user: "b".repeat(64),
+            channel: "ai".into(),
+        };
+        let other = Principal {
+            owner: "c".repeat(64),
+            ..principal.clone()
+        };
+        let profiles = Profiles::default();
+        let mut ids = HashSet::new();
+        assert_eq!(Scope::V1.id(&principal, "same"), id(&principal, "same"));
+        let mut leases = Vec::new();
+        for (directory, scope) in [
+            ("v1", Scope::V1),
+            ("chrome", Scope::CdpV2),
+            ("firefox", Scope::BidiV2),
+        ] {
+            let path = root.join(directory);
+            storage::create_private_dir(&path).unwrap();
+            let lease = profiles
+                .open_scoped(&path, &principal, "same", scope)
+                .unwrap();
+            assert!(ids.insert(scope.id(&principal, "same")));
+            assert!(
+                profiles
+                    .open_scoped(&path, &principal, "same", scope)
+                    .is_err()
+            );
+            assert!(
+                profiles
+                    .delete_scoped(&path, &principal, "same", scope)
+                    .is_err()
+            );
+            assert_eq!(
+                profiles.list_scoped(&path, &other, scope).unwrap()["profiles"],
+                json!([])
+            );
+            storage::write_private_new(&lease.data.join("sentinel"), b"persistent").unwrap();
+            leases.push((path, scope, lease));
+        }
+        for (path, scope, lease) in leases {
+            drop(lease);
+            let reopened = profiles
+                .open_scoped(&path, &principal, "same", scope)
+                .unwrap();
+            assert_eq!(
+                storage::read_private(&reopened.data.join("sentinel")).unwrap(),
+                b"persistent"
+            );
+            drop(reopened);
+            assert!(
+                profiles
+                    .list_scoped(
+                        &path,
+                        &principal,
+                        if scope == Scope::V1 {
+                            Scope::CdpV2
+                        } else {
+                            Scope::V1
+                        }
+                    )
+                    .is_err()
+            );
+            profiles
+                .delete_scoped(&path, &principal, "same", scope)
+                .unwrap();
+            assert_eq!(
+                profiles.list_scoped(&path, &principal, scope).unwrap()["profiles"],
+                json!([])
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

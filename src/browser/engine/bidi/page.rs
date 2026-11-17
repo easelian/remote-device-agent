@@ -85,13 +85,32 @@ impl Session {
         policy: Policy,
         coordination: Arc<sem::Coordination>,
     ) -> Result<Self> {
+        Self::open_named(
+            helper,
+            browser,
+            root,
+            policy,
+            coordination,
+            Default::default(),
+        )
+        .await
+    }
+    pub async fn open_named(
+        helper: &std::path::Path,
+        browser: &std::path::Path,
+        root: &std::path::Path,
+        policy: Policy,
+        coordination: Arc<sem::Coordination>,
+        data: crate::browser::process::SessionData,
+    ) -> Result<Self> {
         // This rejection precedes even native process/profile allocation.
         policy.admit(Capabilities {
             navigation_intercept: true,
             resolved_destination_check: true,
             observed_connection_address: false,
         })?;
-        let mut owner = super::session::Managed::open(helper, browser, root)
+        let transfers = data.downloads.clone();
+        let mut owner = super::session::Managed::open_named(helper, browser, root, data)
             .await
             .map_err(failure)?;
         let channel = owner.channel.clone();
@@ -123,6 +142,12 @@ impl Session {
                 },
             );
         }
+        super::downloads::behavior(&channel, owner.downloads.as_deref()).await?;
+        let mut transfers = transfers
+            .zip(owner.downloads.clone())
+            .map(|(config, directory)| {
+                super::downloads::Transfers::new(config, directory, owner.cleanup())
+            });
         let observed = tabs.clone();
         let monitor = channel.clone();
         let rules = policy.clone();
@@ -148,6 +173,24 @@ impl Session {
                                 let allow=token.allows(&rules).await;
                                 channel.call(Command::Decide{request:token.request().into(),allow},token.deadline()).await?;token.settled(allow);Ok(())
                             });
+                        },
+                        Ok(Event::Response{context,request,url,navigation,status,headers,blocked})=>{
+                            if !blocked {continue;}
+                            let headers=headers.into_iter().map(|(name,value)|crate::browser::engine::Header{name,value}).collect::<Vec<_>>();
+                            let allow=if crate::browser::files::attachment(&headers) {
+                                let tab=observed.lock().unwrap().values().find(|t|Some(&t.context)==context.as_ref()).map(|t|t.info.tab_id.clone());
+                                if let (Some(transfers),Some(context),Some(tab))=(transfers.as_mut(),context,tab) {
+                                    transfers.response(&monitor,super::downloads::Response{context,navigation,url,status},tab,&headers).await.is_ok()
+                                } else {false}
+                            } else {true};
+                            if monitor.call(Command::Respond{request,allow},Policy::deadline()).await.is_err(){monitor.stop();break;}
+                        },
+                        Ok(Event::Download{context,navigation,url,id,end,path})=>{
+                            let result=if let Some(transfers)=transfers.as_mut(){
+                                if end {transfers.end(&context,navigation.as_deref(),&url,&id,path.as_deref())}
+                                else {transfers.begin(&context,navigation.as_deref(),&url,&id)}
+                            }else{Err(Failure::new("browser_download_unsupported"))};
+                            if result.is_err(){monitor.stop();break;}
                         },
                         Ok(event@Event::Created{..})=>{
                             ledger.context_created();if !contexts.apply(&event){monitor.stop();break;}
@@ -974,6 +1017,42 @@ impl Port for Semantic {
         };
         let result = async {
             match input {
+                sem::NativeInput::SelectFile { node, path } => {
+                    let reply = owned
+                        .channel
+                        .call(
+                            Command::Node {
+                                context: context.clone(),
+                                marker: frame.marker.clone(),
+                                node,
+                            },
+                            deadline,
+                        )
+                        .await
+                        .map_err(failure)?
+                        .value;
+                    if reply["type"] != "success" || reply["result"]["type"] != "node" {
+                        return Err(sem::types::stale());
+                    }
+                    let node = reply["result"]["sharedId"]
+                        .as_str()
+                        .filter(|v| !v.is_empty() && v.len() <= 512)
+                        .ok_or_else(sem::types::stale)?
+                        .to_owned();
+                    owned
+                        .channel
+                        .call(
+                            Command::SelectFile {
+                                context: context.clone(),
+                                node,
+                                path,
+                            },
+                            deadline,
+                        )
+                        .await
+                        .map_err(failure)
+                        .map(drop)
+                }
                 sem::NativeInput::Click { node, .. } => {
                     let geometry = owned.target(frame, node, deadline).await?;
                     if !geometry.visible || !geometry.hit || !geometry.in_view {
@@ -1073,7 +1152,7 @@ fn decode_program(program: &Program, reply: Value) -> Result<Output> {
             .ok_or_else(sem::types::decode)?,
     )
 }
-fn failure(error: Error) -> Failure {
+pub(super) fn failure(error: Error) -> Failure {
     match error {
         Error::Rejected(failure) => failure,
         Error::Protocol(ProtocolError::NoSuchFrame) => sem::types::stale(),

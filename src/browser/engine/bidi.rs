@@ -1,7 +1,8 @@
-//! Internal BiDi development channel. It deliberately does not implement the
-//! public page ports or change Engine's CDP/v1 backend selection.
+//! Native WebDriver BiDi transport, lifecycle and semantic page adapter.
 #![cfg_attr(not(test), allow(dead_code))]
 mod command;
+#[cfg(target_os = "linux")]
+mod downloads;
 mod event;
 pub(in crate::browser) mod page;
 #[cfg(target_os = "linux")]

@@ -177,6 +177,7 @@ pub(crate) enum Action {
     ReplaceText(String),
     Press(Key),
     SetFormValue(String),
+    AttachFile(crate::browser::files::Attachment),
 }
 #[derive(Debug, Serialize)]
 pub(crate) struct Acknowledgement {
@@ -916,6 +917,18 @@ async fn perform<P: Port>(
         return Err(Failure::new("browser_not_actionable"));
     }
     match &action {
+        Action::AttachFile(_) => {
+            if element.frame.parent.is_some() || !element.ancestors.is_empty() {
+                return Err(Failure::new("browser_upload_frame_unsupported"));
+            }
+            if facts.tag != "input"
+                || facts.input_type != "file"
+                || facts.kind != "native"
+                || facts.readonly
+            {
+                return Err(Failure::new("browser_not_actionable"));
+            }
+        }
         Action::ReplaceText(value) => {
             if value.chars().count() > 4096 {
                 return Err(Failure::new("browser_invalid_params"));
@@ -1025,6 +1038,27 @@ async fn perform<P: Port>(
         _ => None,
     };
     let path = match action {
+        Action::AttachFile(attachment) => {
+            let Output::Surface(meta) = port
+                .program(&element.frame, Program::Surface, deadline)
+                .await?
+            else {
+                return Err(types::decode());
+            };
+            let origin = crate::browser::page::origin(&meta.url)?;
+            inspect(port, element, deadline).await?;
+            let path = attachment.consume(origin)?;
+            port.input(
+                &element.frame,
+                NativeInput::SelectFile {
+                    node: facts.node,
+                    path,
+                },
+                deadline,
+            )
+            .await?;
+            "native_file"
+        }
         Action::Click | Action::Check(_) => {
             port.input(
                 &element.frame,

@@ -5,8 +5,11 @@ pub(super) const CORE_EVENTS: [&str; 2] = [
     "browsingContext.contextCreated",
     "browsingContext.contextDestroyed",
 ];
-pub(super) const PAGE_EVENTS: [&str; 5] = [
+pub(super) const PAGE_EVENTS: [&str; 8] = [
     "network.beforeRequestSent",
+    "network.responseStarted",
+    "browsingContext.downloadWillBegin",
+    "browsingContext.downloadEnd",
     "script.realmDestroyed",
     "browsingContext.userPromptOpened",
     "browsingContext.userPromptClosed",
@@ -52,6 +55,23 @@ pub(super) enum Event {
         hop: u32,
         blocked: bool,
     },
+    Response {
+        context: Option<ContextId>,
+        request: String,
+        url: String,
+        navigation: Option<String>,
+        status: u64,
+        headers: Vec<(String, String)>,
+        blocked: bool,
+    },
+    Download {
+        context: ContextId,
+        navigation: Option<String>,
+        url: String,
+        id: String,
+        end: bool,
+        path: Option<String>,
+    },
     RealmDestroyed {
         realm: String,
     },
@@ -70,6 +90,87 @@ pub(super) enum Event {
 }
 impl Event {
     pub fn parse(scope: u64, method: &str, params: &Value) -> Option<Self> {
+        let bounded = |value: &Value, max| {
+            value
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= max)
+                .map(str::to_owned)
+        };
+        if method == "network.responseStarted" {
+            let headers = params["response"]["headers"].as_array()?;
+            if headers.len() > 128 {
+                return None;
+            }
+            let headers = headers
+                .iter()
+                .map(|h| {
+                    Some((
+                        bounded(&h["name"], 512)?,
+                        match h["value"]["type"].as_str() {
+                            Some("string") => h["value"]["value"]
+                                .as_str()
+                                .filter(|s| s.len() <= 8192)?
+                                .to_owned(),
+                            Some("base64") => {
+                                use base64::Engine;
+                                let text =
+                                    h["value"]["value"].as_str().filter(|s| s.len() <= 10924)?;
+                                let bytes = base64::engine::general_purpose::STANDARD
+                                    .decode(text)
+                                    .ok()?;
+                                if bytes.len() > 8192 {
+                                    return None;
+                                }
+                                bytes.into_iter().map(char::from).collect()
+                            }
+                            _ => return None,
+                        },
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            return Some(Self::Response {
+                context: if params["context"].is_null() {
+                    None
+                } else {
+                    Some(ContextId::parse(scope, &params["context"])?)
+                },
+                request: bounded(&params["request"]["request"], 512)?,
+                url: bounded(&params["request"]["url"], 8192)?,
+                navigation: if params["navigation"].is_null() {
+                    None
+                } else {
+                    Some(bounded(&params["navigation"], 512)?)
+                },
+                status: params["response"]["status"].as_u64()?,
+                headers,
+                blocked: params["isBlocked"].as_bool()?,
+            });
+        }
+        if matches!(
+            method,
+            "browsingContext.downloadWillBegin" | "browsingContext.downloadEnd"
+        ) {
+            let end = method == "browsingContext.downloadEnd";
+            if end && !matches!(params["status"].as_str(), Some("complete" | "canceled")) {
+                return None;
+            }
+            return Some(Self::Download {
+                context: ContextId::parse(scope, &params["context"])?,
+                navigation: if params["navigation"].is_null() {
+                    None
+                } else {
+                    Some(bounded(&params["navigation"], 512)?)
+                },
+                url: bounded(&params["url"], 8192)?,
+                id: bounded(&params["download"], 512)?,
+                end,
+                path: if end && params["status"] == "complete" {
+                    Some(bounded(&params["filepath"], 8192)?)
+                } else {
+                    None
+                },
+            });
+        }
         if method == "network.beforeRequestSent" {
             let bounded = |value: &Value, max| {
                 value
@@ -129,6 +230,25 @@ impl Event {
             _ => None,
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn response_headers_preserve_bounded_binary_bytes() {
+    let mut params = serde_json::json!({"context":"tab","request":{"request":"request","url":"https://example.test/file"},"navigation":"nav","response":{"status":200,"headers":[{"name":"Content-Length","value":{"type":"base64","value":"MTIz"}},{"name":"X-Binary","value":{"type":"base64","value":"/w=="}}]},"isBlocked":true});
+    let Some(Event::Response { headers, .. }) = Event::parse(1, "network.responseStarted", &params)
+    else {
+        panic!("valid native byte headers");
+    };
+    assert_eq!(
+        headers,
+        vec![
+            ("Content-Length".into(), "123".into()),
+            ("X-Binary".into(), "ÿ".into())
+        ]
+    );
+    params["response"]["headers"][0]["value"]["value"] = "!invalid!".into();
+    assert!(Event::parse(1, "network.responseStarted", &params).is_none());
 }
 
 /// Startup-only ownership of the initial context snapshot. Replaying the

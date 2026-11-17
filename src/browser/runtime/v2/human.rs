@@ -69,9 +69,6 @@ impl Browsers {
                 .v2_control(id, &slot, &json!({"action":"close"}), deadline)
                 .await;
         }
-        if action.starts_with("upload_") {
-            return Err(Failure::new("browser_feature_unsupported"));
-        }
         let view = string(params, "view_id")?;
         let mut session = match slot.session.try_lock() {
             Ok(s) => s,
@@ -150,10 +147,11 @@ impl Browsers {
                 });
             }
             slot.human_held.store(true, Ordering::Release);
+            self.files.disclosure(id, false)?;
             session.invalidate();
             session.touched = Instant::now();
             return Ok(
-                json!({"session_id":id,"controller":"human","profile_name":null,"selection":slot.selection,"lease":session.human.as_ref().unwrap().value()}),
+                json!({"session_id":id,"controller":"human","profile_name":slot.profile_name,"selection":slot.selection,"lease":session.human.as_ref().unwrap().value()}),
             );
         }
         let lease = session
@@ -169,11 +167,64 @@ impl Browsers {
         if !dialog_recovery && (port.pending() != 0 || page.resources().1 != 0) {
             return Err(Failure::unknown("browser_input_pending"));
         }
+        if action.starts_with("upload_") {
+            if !self.settings.uploads {
+                return Err(Failure::new("browser_upload_disabled"));
+            }
+            let result = if action == "upload_begin" {
+                if params["tab_id"] != session.active || port.dialog().is_some() {
+                    return Err(Failure::new("browser_stale_frame"));
+                }
+                let (_, meta) = page.access(true)?.metadata(deadline).await?;
+                let origin = crate::browser::page::origin(&meta.url)?;
+                let state = slot.control.state.lock().unwrap();
+                if *state != (epoch, true) {
+                    return Err(Failure::new("browser_control_changed"));
+                }
+                self.files.upload_begin(
+                    &files::Owner {
+                        principal: Principal {
+                            version: 1,
+                            owner: slot.owner.clone(),
+                            user: slot.user.clone(),
+                            channel: "ai".into(),
+                        },
+                        session: id.into(),
+                        tab: session.active.clone(),
+                        origin,
+                        control: slot.control.clone(),
+                    },
+                    principal,
+                    &lease.id,
+                    params,
+                )
+            } else {
+                let state = slot.control.state.lock().unwrap();
+                if *state != (epoch, true) {
+                    return Err(Failure::new("browser_control_changed"));
+                }
+                self.files.upload_step(principal, id, &lease.id, params)
+            }?;
+            session.human.as_mut().unwrap().until = Instant::now() + LEASE;
+            session.touched = Instant::now();
+            return Ok(result);
+        }
         if action == "release" {
             if params["share_page_with_ai"] != true {
                 return Err(Failure::new("browser_disclosure_required"));
             }
-            let epoch = page.return_to_ai(&lease.permit, true, deadline).await?;
+            page.settled(deadline).await?;
+            page.check_human(&lease.permit)?;
+            let epoch = {
+                let mut state = slot.control.state.lock().unwrap();
+                if *state != (epoch, true) {
+                    return Err(Failure::new("browser_control_changed"));
+                }
+                self.files.disclosure(id, true)?;
+                state.0 += 1;
+                state.1 = false;
+                state.0
+            };
             session.human = None;
             slot.human_held.store(false, Ordering::Release);
             session.invalidate();

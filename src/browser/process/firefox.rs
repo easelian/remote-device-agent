@@ -16,6 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod downloads;
 mod ipc;
 mod socks;
 #[cfg(test)]
@@ -30,6 +31,8 @@ const STARTUP: Duration = Duration::from_secs(10);
 struct Config {
     executable: PathBuf,
     directory: PathBuf,
+    profile: Option<PathBuf>,
+    downloads: bool,
     // Test-only barriers use the same inherited channel; no polling for stages.
     gate: Option<String>,
 }
@@ -39,7 +42,9 @@ pub(crate) struct OwnedFirefox {
     channel: tokio::io::unix::AsyncFd<OwnedFd>,
     directory: PathBuf,
     reaped: bool,
+    named: Option<crate::browser::profiles::NamedProfile>,
     egress: Option<socks::Egress>,
+    pub downloads: Option<std::sync::Arc<downloads::Directory>>,
 }
 
 pub(crate) struct Ready {
@@ -55,9 +60,28 @@ impl OwnedFirefox {
         root: &Path,
         gate: Option<&str>,
     ) -> io::Result<Self> {
+        Self::spawn_named(helper, executable, root, gate, None)
+    }
+    pub fn spawn_named(
+        helper: &Path,
+        executable: &Path,
+        root: &Path,
+        gate: Option<&str>,
+        named: Option<crate::browser::profiles::NamedProfile>,
+    ) -> io::Result<Self> {
+        Self::spawn_options(helper, executable, root, gate, named, false)
+    }
+    pub fn spawn_options(
+        helper: &Path,
+        executable: &Path,
+        root: &Path,
+        gate: Option<&str>,
+        named: Option<crate::browser::profiles::NamedProfile>,
+        downloads: bool,
+    ) -> io::Result<Self> {
         let directory = root.join(crate::random::hex_token::<16>().map_err(other)?);
         crate::storage::create_private_dir(&directory).map_err(other)?;
-        let result = Self::spawn_in(helper, executable, &directory, gate);
+        let result = Self::spawn_in(helper, executable, &directory, gate, named, downloads);
         if result.is_err() {
             // An owner record means native work may still exist. Recovery must
             // prove that it stopped; a spawn error alone is not that proof.
@@ -73,6 +97,8 @@ impl OwnedFirefox {
         executable: &Path,
         directory: &Path,
         gate: Option<&str>,
+        named: Option<crate::browser::profiles::NamedProfile>,
+        downloads: bool,
     ) -> io::Result<Self> {
         super::posix::linux::prepare()?;
         let (parent, child_end) = ipc::pair()?;
@@ -121,7 +147,9 @@ impl OwnedFirefox {
             channel,
             directory: directory.to_owned(),
             reaped: false,
+            named,
             egress: None,
+            downloads: None,
         };
         let setup = (|| {
             let start = identity?;
@@ -136,6 +164,8 @@ impl OwnedFirefox {
                 &serde_json::to_value(Config {
                     executable: executable.to_owned(),
                     directory: directory.to_owned(),
+                    profile: this.named.as_ref().map(|p| p.data.clone()),
+                    downloads,
                     gate: gate.map(str::to_owned),
                 })?,
                 &[],
@@ -155,6 +185,12 @@ impl OwnedFirefox {
                 .await
                 .map_err(|_| other("bidi_startup_timeout"))??;
             match message["kind"].as_str() {
+                Some("downloads") if fds.len() == 1 && self.downloads.is_none() => {
+                    self.downloads = Some(std::sync::Arc::new(downloads::Directory::receive(
+                        self.directory.join("downloads"),
+                        fds.remove(0),
+                    )?));
+                }
                 Some("egress") if fds.len() == 1 && self.egress.is_none() => {
                     let listener = TcpListener::from(fds.remove(0));
                     listener.set_nonblocking(true)?;
@@ -250,7 +286,10 @@ impl OwnedFirefox {
         if let Some(egress) = self.egress.take() {
             egress.finish().await;
         }
-        super::retire(&self.directory).map_err(other)
+        super::retire(&self.directory).map_err(other)?;
+        self.named = None;
+        self.downloads = None;
+        Ok(())
     }
 }
 
@@ -262,6 +301,9 @@ impl Drop for OwnedFirefox {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(named) = self.named.as_mut() {
+            named.retain();
         }
         // Keep the journal; cancellation cannot certify native-tree exit.
     }
@@ -510,15 +552,31 @@ fn namespace_init(config: &Config) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     drop(socket);
+    if config.downloads {
+        let directory = downloads::mount(&config.directory.join("downloads"))?;
+        ipc::send(
+            IPC_FD,
+            &json!({"kind":"downloads"}),
+            &[directory.as_raw_fd()],
+        )?;
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let proxy_port = listener.local_addr()?.port();
     ipc::send(IPC_FD, &json!({"kind":"egress"}), &[listener.as_raw_fd()])?;
     drop(listener);
-    let data = config.directory.join("firefox-v1");
-    crate::storage::create_private_dir(&data).map_err(other)?;
-    let preferences =
-        format!("{PREFERENCES}\nuser_pref(\"network.proxy.socks_port\", {proxy_port});\n");
-    crate::storage::write_private_new(&data.join("user.js"), preferences.as_bytes())
+    let data = config
+        .profile
+        .clone()
+        .unwrap_or_else(|| config.directory.join("firefox-v1"));
+    if config.profile.is_some() {
+        crate::storage::private_metadata(&data, true).map_err(other)?;
+    } else {
+        crate::storage::create_private_dir(&data).map_err(other)?;
+    }
+    let preferences = format!(
+        "{PREFERENCES}\nuser_pref(\"remote.experimental.enabled\", true);\nuser_pref(\"network.proxy.socks_port\", {proxy_port});\n"
+    );
+    crate::storage::write_private_replace(&data.join("user.js"), preferences.as_bytes())
         .map_err(other)?;
     stage(config, "before_browser")?;
     let stderr_path = config.directory.join("browser.stderr");

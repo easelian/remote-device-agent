@@ -300,6 +300,41 @@ impl Browsers {
         deadline: Instant,
         operation_id: Option<&str>,
     ) -> Result<Value> {
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        if (operation == "browser_profiles"
+            || operation == "browser_control" && params["action"] == "delete_profile")
+            && let Some(selection) = super::selection::parse(params)?
+        {
+            let info = self.info();
+            if info["v2"]["available"] != true && info["v2"]["reason"] != "browser_not_installed" {
+                return Err(Failure::new("browser_backend_unavailable"));
+            }
+            self.prepare_storage()?;
+            let root = crate::browser::process::prepare_v2(
+                self.root.as_deref().unwrap(),
+                selection.backend.id(),
+            )?;
+            let mut result = if operation == "browser_profiles" {
+                self.profiles
+                    .list_scoped(&root, principal, selection.backend.profile_scope())?
+            } else {
+                self.profiles.delete_scoped(
+                    &root,
+                    principal,
+                    params["profile_name"].as_str().unwrap(),
+                    selection.backend.profile_scope(),
+                )?
+            };
+            result["selection"] = serde_json::to_value(selection).unwrap();
+            return Ok(result);
+        }
+        if operation != "browser_open" && params.get("selection").is_some() {
+            return Err(Failure::new("browser_backend_unavailable"));
+        }
         if operation == "browser_open"
             && let Some(selection) = super::selection::parse(params)?
         {
@@ -329,7 +364,7 @@ impl Browsers {
         {
             if self.v2_contains(params) {
                 return self
-                    .v2_execute(operation, params, principal, deadline)
+                    .v2_execute(operation, params, principal, deadline, operation_id)
                     .await;
             }
             if operation == "browser_sessions"
@@ -339,7 +374,14 @@ impl Browsers {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
         }
-        self.prepare()?;
+        if self.info()["v2"]["available"] == true
+            && (operation == "browser_files"
+                || operation == "browser_control" && params["action"] == "delete_file")
+        {
+            self.prepare_storage()?;
+        } else {
+            self.prepare()?;
+        }
         self.expire().await;
         if operation == "browser_open" {
             return self.open(params, principal, deadline).await;
@@ -1671,7 +1713,10 @@ fn scope(params: &Value) -> page::Scope {
 }
 
 fn validate(operation: &str, params: &Value) -> Result<()> {
-    if operation == "browser_open" {
+    if matches!(
+        operation,
+        "browser_open" | "browser_profiles" | "browser_control"
+    ) {
         super::selection::parse(params)?;
     }
     let map = params
@@ -1679,7 +1724,8 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         .ok_or_else(|| Failure::new("browser_invalid_params"))?;
     let allowed: &[&str] = match operation {
         "browser_open" => &["url", "profile_name", "selection"],
-        "browser_sessions" | "browser_profiles" | "browser_files" => &[],
+        "browser_sessions" | "browser_files" => &[],
+        "browser_profiles" => &["selection"],
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
         "browser_observe" => &[
@@ -1702,6 +1748,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "text_contains",
         ],
         "browser_control" => &[
+            "selection",
             "session_id",
             "control_epoch",
             "action",
@@ -1869,8 +1916,10 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     }
     if operation == "browser_control"
         && ((params["action"] == "delete_profile"
-            && (map.len() != 2 || !map.contains_key("profile_name")))
-            || (params["action"] != "delete_profile" && map.contains_key("profile_name")))
+            && (map.len() != 2 + usize::from(map.contains_key("selection"))
+                || !map.contains_key("profile_name")))
+            || (params["action"] != "delete_profile"
+                && (map.contains_key("profile_name") || map.contains_key("selection"))))
     {
         return Err(Failure::new("browser_invalid_params"));
     }

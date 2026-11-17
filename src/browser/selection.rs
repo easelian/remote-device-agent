@@ -10,6 +10,17 @@ pub(super) enum Backend {
     Bidi,
 }
 impl Backend {
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    ))]
+    pub fn profile_scope(self) -> super::profiles::Scope {
+        match self {
+            Self::Cdp => super::profiles::Scope::CdpV2,
+            Self::Bidi => super::profiles::Scope::BidiV2,
+        }
+    }
     pub fn id(self) -> &'static str {
         match self {
             Self::Cdp => "cdp",
@@ -87,7 +98,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
     .collect();
     let available = backends.iter().any(|b| b["available"] == true);
     json!({"version":2,"available":available,"reason":if available{None}else{reason.or(Some("browser_not_installed"))},
-        "observation_profiles":["semantic_dom_v1"],"backends":backends})
+        "named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"observation_profiles":["semantic_dom_v1"],"backends":backends})
 }
 
 #[cfg(test)]

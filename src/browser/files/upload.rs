@@ -68,6 +68,7 @@ impl Files {
         }
         let created = now();
         let meta = Metadata {
+            cancellation_scope: None,
             version: 1,
             id: crate::random::hex_token::<16>().map_err(io_error)?,
             owner: owner.principal.owner.clone(),

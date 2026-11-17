@@ -76,7 +76,7 @@ pub struct Cdp {
 }
 
 impl Cdp {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "experimental-browser-bidi"))]
     pub fn hold_next_reply(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached, ready) = oneshot::channel();
         let (release, wait) = oneshot::channel();

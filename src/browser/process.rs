@@ -12,8 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Explicit internal Firefox feasibility tests; no RPC or product backend is
-// enabled until its isolation and transport contracts have independent proof.
+// Test-only helpers for direct Firefox transport and ownership probes.
 #[cfg(all(test, target_os = "linux"))]
 mod bidi_probe;
 
@@ -31,6 +30,13 @@ pub use super::engine::detect;
 use windows as platform;
 #[cfg(windows)]
 pub(super) use windows::supervisor::run as run_supervisor;
+
+#[cfg(feature = "experimental-browser-bidi")]
+#[derive(Default)]
+pub(crate) struct SessionData {
+    pub named: Option<NamedProfile>,
+    pub downloads: Option<crate::browser::files::Downloads>,
+}
 
 pub struct BrowserProcess {
     child: platform::Child,

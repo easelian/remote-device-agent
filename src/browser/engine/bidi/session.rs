@@ -16,7 +16,26 @@ enum Completion {
     CleanupPending,
 }
 
+#[derive(Clone)]
+pub(super) struct Cleanup(watch::Receiver<Completion>);
+impl Cleanup {
+    pub async fn wait(mut self) -> Result<(), Error> {
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while *self.0.borrow_and_update() == Completion::Running {
+                self.0.changed().await.map_err(|_| Error::CleanupPending)?;
+            }
+            if *self.0.borrow() == Completion::Stopped {
+                Ok(())
+            } else {
+                Err(Error::CleanupPending)
+            }
+        })
+        .await
+        .map_err(|_| Error::CleanupPending)?
+    }
+}
 pub(super) struct Managed {
+    pub downloads: Option<std::sync::Arc<crate::browser::process::firefox::downloads::Directory>>,
     pub channel: Bidi,
     pub events: Option<Events>,
     pub boot: Option<Boot>,
@@ -24,9 +43,24 @@ pub(super) struct Managed {
 }
 impl Managed {
     pub async fn open(helper: &Path, executable: &Path, root: &Path) -> Result<Self, Error> {
+        Self::open_named(helper, executable, root, Default::default()).await
+    }
+    pub async fn open_named(
+        helper: &Path,
+        executable: &Path,
+        root: &Path,
+        data: crate::browser::process::SessionData,
+    ) -> Result<Self, Error> {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut owner = OwnedFirefox::spawn(helper, executable, root, None)
-            .map_err(|_| Error::Transport(Fault::Startup))?;
+        let mut owner = OwnedFirefox::spawn_options(
+            helper,
+            executable,
+            root,
+            None,
+            data.named,
+            data.downloads.is_some(),
+        )
+        .map_err(|_| Error::Transport(Fault::Startup))?;
         let ready = match owner.ready().await {
             Ok(ready) => ready,
             Err(_) => {
@@ -56,6 +90,7 @@ impl Managed {
                 return Err(Error::Transport(Fault::Startup));
             }
         };
+        let downloads = owner.downloads.clone();
         let (channel, events) = Bidi::new(socket);
         let (finished, completion) = watch::channel(Completion::Running);
         let native_channel = channel.clone();
@@ -85,6 +120,7 @@ impl Managed {
             });
         });
         let mut this = Self {
+            downloads,
             channel,
             events: Some(events),
             boot: None,
@@ -102,6 +138,9 @@ impl Managed {
         }
     }
 
+    pub fn cleanup(&self) -> Cleanup {
+        Cleanup(self.completion.clone())
+    }
     pub async fn close(&mut self, graceful: bool) -> Result<(), Error> {
         if graceful {
             self.channel.graceful_stop();
@@ -125,6 +164,7 @@ impl Managed {
         .map_err(|_| Error::CleanupPending)??;
         self.channel.stop();
         self.events.take();
+        self.downloads.take();
         self.channel.wait_stopped(deadline).await
     }
 }

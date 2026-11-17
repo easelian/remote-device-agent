@@ -386,6 +386,7 @@ impl Batch {
 
 #[derive(Clone, Debug)]
 pub(crate) enum NativeInput {
+    SelectFile { node: u64, path: std::path::PathBuf },
     Click { node: u64, x: f64, y: f64 },
     ReplaceText(String),
     Press(Key),

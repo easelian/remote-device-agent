@@ -68,15 +68,44 @@ impl Session {
         coordination: Arc<sem::Coordination>,
         deadline: Instant,
     ) -> Result<Self> {
+        Self::launch_named(
+            browser,
+            root,
+            id,
+            policy,
+            coordination,
+            Default::default(),
+            deadline,
+        )
+        .await
+    }
+    pub async fn launch_named(
+        browser: &std::path::Path,
+        root: &std::path::Path,
+        id: &str,
+        policy: Policy,
+        coordination: Arc<sem::Coordination>,
+        data: crate::browser::process::SessionData,
+        deadline: Instant,
+    ) -> Result<Self> {
         policy.admit(Capabilities {
             navigation_intercept: true,
             resolved_destination_check: true,
             observed_connection_address: false,
         })?;
-        let mut owner =
-            crate::browser::process::BrowserProcess::launch(browser, root, id, None, deadline)
-                .await?;
-        match Self::attach(owner.engine.clone(), policy, coordination, deadline).await {
+        let mut owner = crate::browser::process::BrowserProcess::launch(
+            browser, root, id, data.named, deadline,
+        )
+        .await?;
+        match Self::attach(
+            owner.engine.clone(),
+            policy,
+            coordination,
+            data.downloads,
+            deadline,
+        )
+        .await
+        {
             Ok(mut session) => {
                 session.owner = Some(owner);
                 Ok(session)
@@ -104,6 +133,7 @@ impl Session {
         engine: Engine,
         policy: Policy,
         coordination: Arc<sem::Coordination>,
+        downloads: Option<crate::browser::files::Downloads>,
         deadline: Instant,
     ) -> Result<Self> {
         policy.admit(Capabilities {
@@ -152,10 +182,10 @@ impl Session {
                                 observed.lock().unwrap().insert(id.clone(),NativeTab{info:Tab{tab_id:id.clone(),title:info.title.clone(),url:info.url.clone(),ready:false,dialog:None},context:context.clone(),native:info.tab.clone()});
                                 Some(id)
                             } else {None};
-                            let port=monitor.clone();let all=observed.clone();
+                            let port=monitor.clone();let all=observed.clone();let receive=downloads.is_some();
                             let ready=if info.kind==ContextKind::Page{first.take()}else{None};
                             initializing.spawn(async move {
-                                port.initialize_context(&context,false,false,Instant::now()+std::time::Duration::from_secs(10)).await?;
+                                port.initialize_context(&context,receive,receive,Instant::now()+std::time::Duration::from_secs(10)).await?;
                                 if let Some(id)=tab && let Some(tab)=all.lock().unwrap().get_mut(&id){tab.info.ready=true;}
                                 if let Some(ready)=ready {let _=ready.send(context);}
                                 Ok(())
@@ -163,6 +193,20 @@ impl Session {
                         },
                         Ok(Event::DocumentPaused(request))=>{
                             if decisions.len()>=32 {monitor.stop();break;}
+                            if request.responded {
+                                let transfer=downloads.clone();let port=monitor.clone();
+                                let tab=observed.lock().unwrap().values().find(|t|Some(&t.context)==request.context.as_ref()).map(|t|t.info.tab_id.clone());
+                                decisions.spawn(async move {
+                                    if request.headers.as_ref().is_some_and(|h|crate::browser::files::attachment(h)) {
+                                        if let (Some(transfer),Some(tab))=(transfer,tab) {
+                                            let owner=transfer.owner(tab,&request.url)?;
+                                            if transfer.files.intercept(port.clone(),&request,owner).is_ok() {return Ok(());}
+                                        }
+                                        port.respond(&request.handle,RequestDecision::Abort,Policy::deadline()).await
+                                    } else {port.respond(&request.handle,RequestDecision::Continue,Policy::deadline()).await}
+                                });
+                                continue;
+                            }
                             // Fetch IDs identify an individual redirect hop;
                             // the network ID can be reused across those hops.
                             let context=request.context.as_ref().and_then(|context|monitor.backend.session(context).ok()).unwrap_or("");
@@ -991,6 +1035,12 @@ impl Port for Semantic {
         let native = self.native(frame)?;
         let session = self.adapter.session(&native.session)?;
         match input {
+            sem::NativeInput::SelectFile { node, path } => {
+                let node = self
+                    .native_node(&native, &frame.marker, node, deadline)
+                    .await?;
+                self.engine().attach_file(&node, &path, deadline).await
+            }
             sem::NativeInput::Click { node, .. } => {
                 let token = node;
                 let node = self
