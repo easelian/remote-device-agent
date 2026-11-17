@@ -13,6 +13,7 @@
 | 会话保存控制代次、frame 身份与当前段元素引用；观察支持有界续读 | [browser/runtime.rs](../src/browser/runtime.rs)、[browser/page.rs](../src/browser/page.rs)、[observe.js](../src/browser/observe.js) | 旧引用和游标不能用于控制变化后的页面；观察不是网站原子快照 |
 | 传输层与文件交付共用控制代次及暂停、恢复状态 | [browser/control.rs](../src/browser/control.rs) | 控制变化与命令入队前的最后一次授权检查串行执行 |
 | 公共页面算法通过类型化端口调用 CDP 适配器；原生命令与固定程序执行收在适配器内 | [browser/engine.rs](../src/browser/engine.rs)、[engine/cdp/page.rs](../src/browser/engine/cdp/page.rs)、[browser/page.rs](../src/browser/page.rs) | 不开放任意脚本、原始 CDP 或系统桌面输入；已发送未知输入仍保留在途记录 |
+| 显式 v2 选择使用同一个共同语义协调器，后端固定为 CDP 或 BiDi | [selection.rs](../src/browser/selection.rs)、[runtime/v2.rs](../src/browser/runtime/v2.rs)、[semantic/page.rs](../src/browser/semantic/page.rs) | 仅候选支持组合可用；每次观察重新签发 ref/frame_id，不按名称恢复旧引用 |
 | Web 提供同会话接管、会话找回与文件交付 | RDH 服务端（不在本仓库） | 只有明确接管才开放人工输入；交回前由用户确认内容分享范围 |
 | `browser_open`、`browser_act`、`browser_control` 复用操作回执和安全摘要 | [receipts.rs](../src/receipts.rs)；RDH 服务端（不在本仓库） | 去重与恢复不等于网站事务恰好一次；摘要不保存页面或输入正文 |
 | 截图通过 MCP image 块交付；文件字节通过逐块重新授权的人工通路交付 | RDH 服务端（不在本仓库）；[browser/files.rs](../src/browser/files.rs) | 图片和文件有各自预算；实际 AI 宿主渲染仍待验证 |
@@ -28,10 +29,12 @@ Core 从经过认证的请求构造操作主体，Agent 按主体隔离会话、
 
 当前产品后端为 Chromium/CDP。D1 已完成公共页面、事件和会话边界迁移，原生协议编码位于 `engine/cdp`；实现与复现方式见 [CDP D1 实现说明](browser-cdp-d1-implementation-zhCN.md)。
 
-Firefox/BiDi 的 [原生通道](browser-bidi-d2b-zhCN.md)通过 `experimental-browser-bidi` 开关提供 Linux namespace 寿命守护、私有端点、并发传输、公共提交门和迟到响应结算。[共同页面语义](browser-semantic-implementation-zhCN.md)承接观察、输入与站点策略；Linux x86_64 开发构建通过 [capability v2](browser-capability-v2-zhCN.md) 显式接入 RPC/MCP，并按本地开关提供命名资料及文件传输。默认请求继续选择 CDP/v1。平台、浏览器版本与发布资格须依据各组合的验收记录判断。[D2a 夹具](browser-bidi-d2a-zhCN.md)保留直接回环监听组合的边界验证。
+Firefox/BiDi 的 [原生通道](browser-bidi-d2b-zhCN.md)通过 `experimental-browser-bidi` 开关提供 Linux namespace 寿命守护、私有端点、并发传输、公共提交门和迟到响应结算。[共同页面语义](browser-semantic-implementation-zhCN.md)承接观察、输入与站点策略；Linux x86_64 候选构建通过 [capability v2](browser-capability-v2-zhCN.md) 显式接入 RPC/MCP，并按本地开关提供命名资料及文件传输。默认请求继续选择 CDP/v1。平台、浏览器版本与发布资格须依据各组合的验收记录判断。[D2a 夹具](browser-bidi-d2a-zhCN.md)保留直接回环监听组合的边界验证。
 
 分层边界见[原生浏览器后端规约](browser-backend-contract-zhCN.md)，场景、量化指标和阶段门槛见[后端验收指标](browser-backend-acceptance-zhCN.md)。规约与验收计划不代替具体组合的测试证据。运行时继续使用用户已有的受支持浏览器，不新增 Node、Puppeteer 或独立驱动包依赖。
 
 ## 扩展和验证
 
 修改公共行为时检查 Agent 操作契约、Core 的主体与结果披露、Business 人工接管页面，以及客户端工具结果格式。`tests/browser_session.rs` 提供原生浏览器集成场景，Server 的 `tests/core/` 和 `tests/auth/` 提供 MCP、人工接管、文件及权限场景。平台、浏览器版本和实际 AI 客户端需要各自验证。
+
+[后续规划](browser-evolution-plan-zhCN.md)依次安排 D4 发布收尾、只读可操作性诊断、按能力提供指引和可选增量观察。诊断复用共同事实但不执行滚动或输入；增量观察保留每次新签发的引用，并由接收端确定性重建。原生 AX、控制台/网络和 trace 按独立扩展评审。[后续验收指南](browser-evolution-acceptance-zhCN.md)给出新增场景、预算、跨版本矩阵、真实客户端及回退要求；这些规划不表示能力已经公开。

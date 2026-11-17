@@ -95,6 +95,7 @@ Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页
 - [分发说明](docs/distribution.md)：产物、安装器和发布准备。
 - [浏览器能力架构](docs/browser-architecture-zhCN.md)：模块职责、控制权、恢复和源码位置；浏览器能力为预览功能。
 - [原生浏览器后端规约](docs/browser-backend-contract-zhCN.md)与[验收指标](docs/browser-backend-acceptance-zhCN.md)：CDP/BiDi 抽象、行为要求和阶段门槛的设计稿。
+- [浏览器后续规划与实现方案](docs/browser-evolution-plan-zhCN.md)及[后续能力验收指南](docs/browser-evolution-acceptance-zhCN.md)：只读诊断、能力指引、可选增量观察及兼容、预算和发布门槛。
 
 ## 许可证
 

@@ -1,12 +1,8 @@
 # 原生浏览器后端规约与架构方案
 
-状态：分阶段实施规约。CDP/v1 迁移、Firefox [内部通道](browser-bidi-d2b-zhCN.md)和[共同页面语义](browser-semantic-implementation-zhCN.md)已实现。[Capability v2](browser-capability-v2-zhCN.md) 在 Linux x86_64 开发构建中提供显式选择、RPC/MCP、命名资料及上传下载，须由相应本地策略启用；完整平台与版本发布验收仍按 D4 门槛推进。
+状态：现行分层与行为规约。CDP/v1 迁移、Firefox [内部通道](browser-bidi-d2b-zhCN.md)和[共同页面语义](browser-semantic-implementation-zhCN.md)已实现。[Capability v2](browser-capability-v2-zhCN.md) 在 Linux x86_64 候选构建中提供显式选择、RPC/MCP、命名资料及上传下载，须由相应本地策略启用；发布资格按具体平台、版本和客户端的 D4 证据判断。
 
-版本：0.2，2026-11-16。评审结论及本次取舍见第 14 节。
-
-代码基线：Agent `06e43b18763292a89fe79f2df1992e4053225ff2`；配套 Server `be90380f8acde29c07d7e93c83c292ccc5bd1949`。
-
-配套文档：[验收指标与实施门槛](browser-backend-acceptance-zhCN.md)。
+配套文档：[验收指标与实施门槛](browser-backend-acceptance-zhCN.md)、[后续规划与实现方案](browser-evolution-plan-zhCN.md)、[后续能力验收指南](browser-evolution-acceptance-zhCN.md)。具体源码提交、二进制摘要及测量结果记录在各次验收产物中。
 
 ## 1. 决策与目标
 
@@ -18,20 +14,20 @@
 
 本设计先确定行为边界和可执行验收，再逐段迁移现有 CDP 实现，最后接入 BiDi。D1 保留现有 v1 页面算法、输出和限制；`semantic_dom_v1` 的新命名、指纹与引用规则在 D3 引入，不能混入“保真重构”。性能 trace、堆分析、原始控制台和任意脚本执行不属于基础后端规约；后续需要时再设计扩展。
 
-## 2. 当前代码给出的约束
+## 2. 当前实现与扩展约束
 
-以下是基线的已核实状态，不是计划中的模块名称。
+以下路径对应现有实现。新增功能沿这些职责扩展，不能重新引入协议与公共语义的耦合。
 
-| 当前实现 | 对抽象的影响 |
+| 当前实现 | 扩展约束 |
 | --- | --- |
-| [control.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/src/browser/control.rs) 已独立保存控制代次及暂停状态 | 完成了一个共享状态的提取，尚未形成后端规约 |
-| [page.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/src/browser/page.rs) 的 Frame 保存 CDP session、frame、loader，Element 保存 backend node ID | 不能直接将现有类型作为公共页面身份；需要隔离原生 ID 和生命期 |
-| page.rs 结合固定 DOM 脚本与 Accessibility.getPartialAXTree 产生名称、角色和引用 | 公共观察语义不能无条件依赖 CDP 可访问性树；需要区分公共语义与原生增强 |
-| [runtime.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/src/browser/runtime.rs) 直接处理 target、Fetch、Network、弹窗等事件 | 事件归一化、导航策略和任务调度必须一起划定边界 |
-| [cdp.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/src/browser/cdp.rs) 以命令名称识别部分输入副作用，入队后保留迟到响应及并发槽位 | 公共层应使用类型化副作用分类；不得把超时当成取消或释放工作所有权 |
-| [process.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/src/browser/process.rs) 直接持有 Cdp，并协调私有目录和原生进程回收 | 启动、通道与进程所有权要解耦；各后端仍必须经过同一回收流程 |
-| [files.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/src/browser/files.rs)、human 模块直接调用 CDP | 文件策略和人工接管属于公共层；协议侧只提供受限输入、截图、文件流原语 |
-| [browser_session.rs](https://github.com/easelian/remote-device-agent/blob/06e43b18763292a89fe79f2df1992e4053225ff2/tests/browser_session.rs) 有 24 个显式运行的真实浏览器场景 | 它们是 CDP 迁移的回归基线，不能因为抽象调整而删除断言或改成忽略 |
+| [control.rs](../src/browser/control.rs) 管理控制代次、提交门及输入进展；传输持有在途工作 | 诊断、缓存和可选事件不能另建一套输入权限或 pending 所有权 |
+| [page.rs](../src/browser/page.rs) 保留 v1 算法，通过 [engine.rs](../src/browser/engine.rs) 的类型化端口访问 CDP | 新 profile 或输出方式不得改变无 selection 请求的观察、文案和引用行为 |
+| [semantic.rs](../src/browser/semantic.rs) 与 [semantic/page.rs](../src/browser/semantic/page.rs) 为 CDP/BiDi 共用观察、引用及输入规则 | canonical 语义保持一份；原生 AX 不覆盖共同命名和动作资格 |
+| [semantic/types.rs](../src/browser/semantic/types.rs) 区分 context、document、realm 和记录事实 | URL、名称和展示索引不能替代身份；缓存不持有原生对象租约 |
+| [runtime/v2.rs](../src/browser/runtime/v2.rs) 在会话边界路由并重新签发公开 ref/frame_id | 内容差分与新绑定分离；展示 unchanged 不能延长旧引用寿命 |
+| [selection.rs](../src/browser/selection.rs) 严格验证三字段选择，候选和会话能力分别声明 | 扩展独立协商；禁止自动换后端、静默降级或重放 |
+| [process.rs](../src/browser/process.rs)、[profiles.rs](../src/browser/profiles.rs) 和 [files.rs](../src/browser/files.rs) 持有进程、资料与文件所有权 | 在原生清理得到确认前保留占用；人工授权及原始下载响应语义保持不变 |
+| [browser_session.rs](../tests/browser_session.rs) 和共同语义测试保留真实浏览器断言；Server 另有公开 MCP 路径 | 新扩展增加自己的证据，不能删除旧断言或用内部测试替代公开链路 |
 
 不采用三个容易形成长期耦合的方案：
 
@@ -59,18 +55,18 @@ flowchart TD
     K --> C
 ```
 
-建议逐步形成以下源码职责，目录本身不是验收目标。
+当前源码按以下职责组织；目录名称不代替边界审查，也不要求为符合示意名称而搬迁代码。
 
 | 模块 | 独占职责 | 禁止承担的职责 |
 | --- | --- | --- |
-| `browser/contract/` | ID、请求/结果、事件、错误、能力及预算类型 | CDP/BiDi JSON、MCP wire schema、平台进程操作 |
-| `browser/session/` | 控制权、在途工作、回执关联、结果披露、关闭顺序 | 原生节点定位、协议错误字符串匹配 |
-| `browser/page/` | 观察分页、记录指纹、引用注册、动作前置检查、等待条件 | 依据 backend kind 分支选择行为 |
-| `browser/page/programs/` | 随二进制交付的固定 DOM 采集、校验和表单算法 | 调用者提供的 JavaScript、任意方法名、动态下载代码 |
-| `browser/backend/cdp/`、`bidi/` | 协议编码、原生 ID 映射、realm、原生输入、事件归一化 | 创建 AI 引用、修改权限、静默重试未知动作 |
-| `browser/backend/transport/` | 有界读写、请求关联、关闭和协议解码错误 | 通过命令名称猜测业务副作用 |
-| `browser/process/` | 进程树所有权、启动记录、停止和资料回收 | 将通道断开当成进程已停止 |
-| `browser/files/` | 授权、一次性上传许可、私有暂存、配额、交付 | 向后端交付任意调用者路径 |
+| `browser/selection.rs`、`semantic/types.rs`、`engine.rs` | 各边界的类型化选择、身份、事实与预算 | 向公共调用者暴露原生协议 ID 或任意命令 |
+| `browser/runtime.rs`、`runtime/v2.rs`、`control.rs` | 会话、控制权、回执关联、结果披露、关闭顺序 | 在公共流程中按原生协议错误字符串分派 |
+| `browser/page.rs`、`semantic/page.rs` | v1 兼容算法及 v2 共同观察、记录、引用与动作检查 | 按 backend kind 改变同一 profile 的行为 |
+| `browser/engine/programs.rs`、`semantic/program.rs`、`semantic/program.js` | 随二进制交付的固定 DOM 算法及类型化结果 | 调用者脚本、任意方法名、动态下载代码 |
+| `browser/engine/cdp/`、`engine/bidi/` | 协议编码、原生 ID、realm、输入及事件映射 | 创建 AI 引用、修改权限、静默重试未知动作 |
+| `browser/engine/cdp/wire.rs`、`engine/bidi/wire.rs` 及各自子模块 | 有界传输、请求关联、原生租约与迟到响应结算 | 通过任意协议字符串猜测业务副作用 |
+| `browser/process.rs`、`process/`、`profiles.rs` | 进程树所有权、启动记录、停止和资料回收 | 将通道断开当成进程已停止 |
+| `browser/files.rs`、`files/` | 授权、一次性上传许可、私有暂存、配额、交付 | 向后端交付任意调用者路径 |
 
 固定 DOM 算法由两种后端复用。后端负责在正确隔离环境执行固定程序、编码参数及解析原生对象；公共页层负责组合结果、签发引用和决定动作。程序使用具体的类型化方法或封闭枚举，构建时嵌入；无需为了统一调用再建设脚本注册框架。内部静态程序可以拼接已验证参数，Engine 不接受调用者脚本、原生对象 ID 或任意协议方法。D1 可把旧算法保留在明确的兼容模块中，D3 再提取共同算法，不能把整个旧 page 模块改名为 adapter 后就声称完成公共语义抽象。
 
@@ -301,7 +297,7 @@ DriverError 分开保存 Kind、Phase、EffectProgress、Scope 和 SessionHealth
 | --- | --- | --- |
 | 在途命令、写队列 | 各 32 个；超时/取消不提前释放槽位 | CDP 普通命令仍为 32 个，增加 4 个仅供对象、对象组和流释放的槽位，发送队列为 36 项；不保证排在已入队命令前写出 |
 | 协议消息 | 入站 2 MiB、出站 256 KiB | 保留绝对上限；必须计入完整 JSON、base64 膨胀与解析峰值 |
-| 事件 | 256 条 broadcast 容量 | D1 后续步骤为关键事件增加字节上限及丢失后的停止路径；无诊断流时不预建双队列 |
+| 事件 | CDP 为 256 条 broadcast，单消息受 2 MiB 入站限制；消费端发现缺口后停止 | BiDi 已有独立条数/字节预算与入队失败停止；CDP 的聚合字节账本和源头关闭准入按[后续方案 D4-R1](browser-evolution-plan-zhCN.md)补齐，未完成时不将该子项记作通过 |
 | 截图 | viewport JPEG，宽高各不超过 1920 CSS px，base64 最多 512 KiB | 检查 DPR、实际像素和完整响应；超过上限拒绝，不能声称支持原生流式截图 |
 | 原生句柄 | 扫描、对象组和流按其协议释放 | CDP 每连接 256 个对象、16 个流，合计 272 个，包含待决创建预留；BiDi root handle 上限为 0。准入、迟到回收与验收见[原生句柄租约预算](browser-backend-acceptance-zhCN.md) |
 
@@ -331,13 +327,13 @@ v2 的 JSON schema、错误目录和协商字段由 [Agent/Server 契约](browse
 
 保持每阶段可回退。D1 不迁移用户资料格式；D2/D3 使用独立开发开关和测试资料；D4 的新元数据必须允许旧程序拒绝不认识的格式，不能误删或误打开。不得通过放宽输入门、删掉断言、增加无限等待或静默禁用失败用例使阶段通过。
 
-D1 分成可独立审查的步骤，每步单独提交并执行受影响回归，阶段总验收仍在全部迁移完成后执行：
+D1 的迁移证据按以下提交分段组织；每步执行受影响回归，阶段总验收在全部迁移完成后执行：
 
 1. **D1a 提交与命令分类。** 公共控制模块拥有准入检查及入队临界区；CDP 使用封闭命令类型和显式副作用/弹窗策略；保持 wire 数据、并发上限、迟到响应及既有错误状态。测试覆盖 fence、入队失败、超时/取消和迟到响应。此步仍有旧页面代码直接依赖 CDP，不计作 BC-01 整体通过。
-2. **D1b 页面与事件边界。** 从旧代码提取上下文、节点/脚本句柄、固定程序及原生输入端口，迁移公共分页、引用和动作检查；规范化事件、导航决策及关键事件丢失处置。以 Fake/CDP 运行同一公共测试，不要求尚未实现的 BiDi。
+2. **D1b 页面与事件边界。** 从旧代码提取上下文、节点/脚本句柄、固定程序及原生输入端口，迁移公共分页、引用和动作检查；规范化事件、导航决策及关键事件丢失处置。以 Fake/CDP 运行同一公共测试，不要求这一步同时引入 BiDi 页面语义。
 3. **D1c 会话与配套边界。** 迁移启动/关闭通道、截图、文件和人工控制，删除公共代码残留的协议分派；确认独占的状态所有者和资源预算，执行 24 项浏览器回归、v1 契约及基线性能比较。
 
-发现基线缺陷须单列，例如当前普通 fill 使用固定 Ctrl 修饰键，不能据 Linux 结果宣称 macOS 行为已正确。保真步骤不顺带修改这些行为；确需修复时使用独立提交、对应平台证据，并标明它是行为修复。
+平台主修饰键、DPR 和原生输入等行为修复使用独立提交及对应平台证据；不能用 Linux 通过推导 macOS 或 Windows 行为正确，也不把行为修复混入仅承诺保真的迁移结论。
 
 ## 13. 尚需实施证据的问题
 
@@ -353,21 +349,8 @@ D1 分成可独立审查的步骤，每步单独提交并执行受影响回归�
 
 协议参考以查阅日的官方资料为依据，实施时还须固定浏览器版本及使用的定义版本：[CDP DOM](https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/domains/DOM.pdl)、[CDP Fetch](https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/domains/Fetch.pdl)、[WebDriver BiDi](https://w3c.github.io/webdriver-bidi/)。协议定义存在某个命令，不等于目标浏览器版本已经实现或满足 RDH 的行为规约。
 
-## 14. 0.2 评审结论与取舍
+## 14. 后续实施路线
 
-评审依据为第 2 节代码基线、2026-11-13 的 BiDi 编辑草案及查阅日 CDP/Mozilla 官方定义。总体分层可保留，但 0.1 不能直接作为实施清单，以下问题已在正文及配套验收表修订。
+[后续规划与实现方案](browser-evolution-plan-zhCN.md)在现有分层上安排 D4-R1 事件接纳边界补齐，以及 D5 只读诊断、D6 能力指引、D7 可选增量观察和 D8 独立检查扩展。新增能力不能把内容展示状态变成动作权限，也不能扩大旧请求的默认行为。
 
-| 问题 | 影响 | 本次决定 |
-| --- | --- | --- |
-| D1 要求 BiDi/Fake 三路测试及新 canonical 语义 | 形成阶段循环依赖，重构同时改变行为 | D1 只验证 CDP/Fake 和 v1；新公共语义放在 D3 |
-| 预定大型 sealed trait、boxed future、全局身份注册及脚本分派框架 | 在第二个后端出现前固化猜测，增加维护成本 | 具体类型优先，按真实消费面提取端口；身份表归 backend session |
-| NodeLease 一律绑定 realm | 混淆节点与脚本对象寿命，扩大无效范围 | 分离 NodeLease、ScriptHandle 与 ScanLease |
-| 导航与文档、事件与命令关联过强 | 同文档导航、BFCache、乱序可能错误换代或恢复旧引用 | 独立身份；关联信息可缺失，禁止凭空补全 |
-| 输入事件要求未界定 | CDP insertText 与 BiDi actions 无法按同一事件计数验收 | 固定最终值及必要事件/禁止效果；原始差异保留，表单合成路径单列 |
-| 公共提交门与传输各自可能维护工作状态 | 取消、迟到响应和交接时存在双重释放风险 | 在途表独占票据/槽位，公共进展单调，不复制 pending 表 |
-| 导航策略缺决定入口，创建通知被当成执行屏障 | 有死锁或首个请求绕过保护的风险 | 增加一次性决定端口与首请求计数验收 |
-| 响应地址检查被读成连接前隔离 | 超出两协议提供的保证 | 明确检查阶段与请求是否已发出，严格前置隔离另需证据 |
-| 2 MiB 消息配合“截图分块”，新增预算缺基线 | 原生截图结果不能按产品分块规避解析上限 | 保留实际上限，区分完整消息、编码图像和文件流预算 |
-| 10,000 序列、精细百分位直接作所有阶段门槛 | 数量不能证明覆盖，环境噪声可能主导结果 | 按阶段指定不变量、调度点、原始样本和完整放行门槛 |
-
-本次允许开始 D1a，不等于 D1 全部完成；Firefox 文本编辑、首请求拦截、连接证据与本机端点隔离仍是 D2/D3 的实证门槛。公开 v2 的具体 schema 和完整命名语料在相应阶段进入实现前冻结，不能在实现后按结果改写期望。
+[后续能力验收指南](browser-evolution-acceptance-zhCN.md)补充 EX 场景、资源预算、完整结果重建、跨版本组合和真实客户端要求。D4 发布资格继续按各声明组合的实际证据判断；原有 BC-01～40、性能/RSS门槛及回退边界不因增加新阶段而放宽。
