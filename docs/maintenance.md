@@ -21,6 +21,12 @@ run; inspect [Agent CI](../.github/workflows/ci.yml) for platform-specific comma
 Native Rust builds and tests do not require npm; npm packaging checks require
 Node and npm. A passing cross-build does not establish runtime behavior.
 
+Release builds use full LTO and `opt-level = "s"` for the Agent package;
+dependencies retain their normal release optimization. Debug information is
+stripped while symbol names remain available. The `ci` profile disables LTO for
+iteration. Compare performance and executable size with identical profile
+settings for the baseline and candidate, and retain their executable hashes.
+
 Focused lifecycle and bootstrap checks are:
 
 ```sh

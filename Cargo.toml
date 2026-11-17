@@ -17,8 +17,13 @@ rust-version = "1.93"
 license = "Apache-2.0"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 strip = "debuginfo"
+
+# Keep the optional browser implementation within the deployment size budget;
+# dependencies retain their normal release optimization.
+[profile.release.package.rdh-agent]
+opt-level = "s"
 
 # Test harnesses keep release optimization without linking every test with LTO.
 # CLI integration tests still execute the verified release artifact built by xtask.
