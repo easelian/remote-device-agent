@@ -92,7 +92,7 @@ impl Cdp {
     #[cfg(test)]
     pub fn test_metrics(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
-        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len()})
+        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot()})
     }
     #[cfg(test)]
     pub fn command_count(&self) -> u64 {
@@ -173,6 +173,8 @@ impl Cdp {
                                 }
                             }
                         } else {
+                            #[cfg(test)]
+                            reader.pending.lock().unwrap().resources.event(&value);
                             if let Some(session) = value["sessionId"].as_str() {
                                 let mut pending = reader.pending.lock().unwrap();
                                 match value["method"].as_str() {

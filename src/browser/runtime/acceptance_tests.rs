@@ -16,6 +16,7 @@ struct Fixture {
     clicks: Arc<AtomicUsize>,
     server: tokio::task::JoinHandle<()>,
     log: Mutex<fs::File>,
+    release_downloads: Arc<AtomicBool>,
 }
 impl Fixture {
     async fn new(suffix: &str) -> Self {
@@ -26,6 +27,7 @@ impl Fixture {
         crate::storage::create_private_dir(&root).unwrap();
         let settings = Settings {
             enabled: true,
+            downloads: suffix == "handles",
             executable: Some(std::env::var_os("RDH_BROWSER_EXECUTABLE").unwrap().into()),
             ..Settings::default()
         };
@@ -43,9 +45,51 @@ impl Fixture {
         };
         let clicks = Arc::new(AtomicUsize::new(0));
         let count = clicks.clone();
+        let release_downloads = Arc::new(AtomicBool::new(false));
+        let held = release_downloads.clone();
         let app=Router::new().route("/",get(||async {Html("<!doctype html><meta charset=utf-8><title>D1 fixture</title><h1>Acceptance fixture</h1><button onclick=\"fetch('/record',{method:'POST'})\">Record once</button>")})).route("/record",post(move||{let count=count.clone();async move{count.fetch_add(1,Ordering::AcqRel);"recorded"}}));
         let app = app.route("/many", get(|| async {Html(format!("<!doctype html><title>Many</title>{}",(0..1001).map(|i|format!("<button>Control {i}</button>")).collect::<String>()))}))
             .route("/noise", get(|| async {Html("<!doctype html><style>body{margin:0}canvas{position:absolute;inset:0}</style><canvas id=c></canvas><h1>Noise ready</h1><script>c.width=innerWidth;c.height=innerHeight;const x=c.getContext('2d'),d=x.createImageData(c.width,c.height);let s=1234567;for(let i=0;i<d.data.length;i++){s=(Math.imul(s,1664525)+1013904223)>>>0;d.data[i]=(i%4===3)?255:s>>>24;}x.putImageData(d,0,0)</script>")}));
+        let app = app
+            .route(
+                "/downloads",
+                get(|| async {
+                    Html(format!(
+                        "<!doctype html><button>Download fixture</button>{}",
+                        (0..16)
+                            .map(|i| format!("<iframe src='/held?id={i}'></iframe>"))
+                            .collect::<String>()
+                    ))
+                }),
+            )
+            .route(
+                "/held",
+                get(move || {
+                    let held = held.clone();
+                    async move {
+                        let first = futures_util::stream::once(async {
+                            Ok::<_, std::convert::Infallible>(vec![b'x'; 4096])
+                        });
+                        let rest = futures_util::stream::once(async move {
+                            while !held.load(Ordering::Acquire) {
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
+                            Ok::<_, std::convert::Infallible>(vec![b'x'; 1024 * 1024 - 4096])
+                        });
+                        let body = axum::body::Body::from_stream(futures_util::StreamExt::chain(
+                            first, rest,
+                        ));
+                        (
+                            [
+                                ("Content-Type", "application/octet-stream"),
+                                ("Content-Disposition", "attachment; filename=fixture.bin"),
+                                ("Content-Length", "1048576"),
+                            ],
+                            body,
+                        )
+                    }
+                }),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -63,6 +107,7 @@ impl Fixture {
             clicks,
             server,
             log,
+            release_downloads,
         };
         this.record(json!({"kind":"environment","label":label,"pid":std::process::id(),"affinity":fs::read_to_string("/proc/self/status").unwrap().lines().find(|l|l.starts_with("Cpus_allowed_list:")).unwrap(),"cgroup":fs::read_to_string("/proc/self/cgroup").unwrap(),"limits":cgroup_limits(),"loadavg":fs::read_to_string("/proc/loadavg").unwrap()}));
         this
@@ -425,5 +470,82 @@ async fn frozen_session_tab_reference_and_image_budgets() {
         }
     }
     fixture.close_session(&first).await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit native lease inventory with held authenticated response streams"]
+async fn native_handle_inventory_during_concurrent_downloads() {
+    let fixture = Fixture::new("handles").await;
+    let id = fixture.open().await;
+    for _ in 1..8 {
+        fixture
+            .call(
+                "browser_act",
+                json!({"session_id":id,"control_epoch":1,"action":{"kind":"new_tab"}}),
+            )
+            .await
+            .unwrap();
+    }
+    let slot = fixture.browsers.sessions.lock().unwrap()[&id].clone();
+    let (engine, targets) = {
+        let session = slot.session.lock().await;
+        (
+            session.process.as_ref().unwrap().engine.clone(),
+            session
+                .targets
+                .lock()
+                .unwrap()
+                .values()
+                .map(|t| t.session.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(targets.len(), 8);
+    let mut navigations = Vec::new();
+    for (index, target) in targets.into_iter().enumerate() {
+        let engine = engine.clone();
+        let url = format!("{}held?id={index}", fixture.url);
+        navigations.push(tokio::spawn(async move {
+            engine
+                .navigate(&target, &url, Instant::now() + Duration::from_secs(40))
+                .await
+        }));
+    }
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (metrics, _, _) = fixture.snapshot(&id).await;
+        if metrics["streams"].as_u64().unwrap() >= 6 {
+            fixture.record(json!({"kind":"held-download-peak","metrics":metrics}));
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "stream inventory timed out: {metrics}; files: {}",
+            fixture.call("browser_files", json!({})).await.unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    fixture.release_downloads.store(true, Ordering::Release);
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let files = fixture.call("browser_files", json!({})).await.unwrap();
+        if files["files"].as_array().unwrap().len() == 8
+            && files["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v["state"] == "ready")
+            && fixture.snapshot(&id).await.0["streams"] == 0
+        {
+            break;
+        }
+        assert!(Instant::now() < until, "download inventory did not finish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for navigation in navigations {
+        let _ = navigation.await.unwrap().unwrap();
+    }
+    fixture.close_session(&id).await;
     fixture.finish().await;
 }

@@ -733,6 +733,7 @@ async fn cdp_native_shared_oracle() {
         "cdp-dispatch-race.json",
         &race::assert_dispatch_race(session.port.clone()).await,
     );
+    record("cdp-handle-inventory.json", &session.port.test_metrics());
     session.close().await.unwrap();
     server.abort();
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
@@ -779,6 +780,7 @@ async fn bidi_native_shared_oracle() {
         "bidi-dispatch-race.json",
         &race::assert_dispatch_race(session.port.clone()).await,
     );
+    record("bidi-handle-inventory.json", &session.port.test_metrics());
     session.close().await.unwrap();
     server.abort();
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);

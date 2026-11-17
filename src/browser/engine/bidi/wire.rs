@@ -148,6 +148,10 @@ struct PendingState {
     late_success: u64,
     late_error: u64,
     ignored_replies: u64,
+    #[cfg(test)]
+    root_handles_returned: u64,
+    #[cfg(test)]
+    shared_ids_returned: u64,
 }
 #[cfg(test)]
 struct ReplyGate {
@@ -536,9 +540,10 @@ impl Bidi {
         .await
         .map_err(|_| Error::CleanupPending)?
     }
+    #[cfg(test)]
     pub fn snapshot(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
-        json!({"pending":pending.commands.len(),"effects":pending.commands.values().filter(|c|c.effect==Effect::Page).count(),"free_slots":self.inner.slots.available_permits(),"event_bytes":EVENT_BYTES-self.inner.bytes.available_permits(),"late_success":pending.late_success,"late_error":pending.late_error,"ignored_replies":pending.ignored_replies,"workers":*self.inner.workers.borrow()})
+        json!({"pending":pending.commands.len(),"effects":pending.commands.values().filter(|c|c.effect==Effect::Page).count(),"free_slots":self.inner.slots.available_permits(),"event_bytes":EVENT_BYTES-self.inner.bytes.available_permits(),"late_success":pending.late_success,"late_error":pending.late_error,"ignored_replies":pending.ignored_replies,"workers":*self.inner.workers.borrow(),"handle_inventory":{"root_handles_returned":pending.root_handles_returned,"shared_ids_returned":pending.shared_ids_returned}})
     }
 }
 
@@ -584,6 +589,21 @@ impl Inner {
                 };
                 let mut pending = self.pending.lock().unwrap();
                 if let Some(command) = pending.commands.remove(&id) {
+                    #[cfg(test)]
+                    {
+                        let payload = &value["result"];
+                        let mut remotes = vec![
+                            &payload["result"],
+                            &payload["exceptionDetails"]["exception"],
+                        ];
+                        if let Some(nodes) = payload["nodes"].as_array() {
+                            remotes.extend(nodes);
+                        }
+                        pending.root_handles_returned +=
+                            remotes.iter().filter(|v| v["handle"].is_string()).count() as u64;
+                        pending.shared_ids_returned +=
+                            remotes.iter().filter(|v| v["sharedId"].is_string()).count() as u64;
+                    }
                     let status = match &result {
                         Ok(_) => Settlement::Success,
                         Err(Error::Protocol(code)) => Settlement::ProtocolError(*code),
