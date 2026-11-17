@@ -32,18 +32,17 @@
 
 `capabilities.browser.version` 继续为 `1`，v2 的 `selection` 继续仅包含 `version`、`observation_profile`、`backend`。扩展通过独立字段声明，不向 `selection` 添加诊断、缓存或自动回退开关。
 
-建议在候选后端和打开后的会话 `capabilities` 中分别增加 `extensions`。下列为结构草案，当前实现不提供这些字段：
+诊断扩展的发现位置固定为 `capabilities.browser.v2.backends[].extensions.actionability` 和打开结果的 `capabilities.extensions.actionability`。字段为 `version: 1`、布尔值 `available` 和可空的 `reason`；候选不可用时沿用对应后端的构建、平台、策略或浏览器缺失原因。当前实现尚不提供这些字段，下面仅表示待实现的接口形状：
 
 ```json
 {
   "extensions": {
-    "actionability": {"version": 1, "available": true},
-    "observation_delta": {"version": 1, "available": false, "reason": "disabled_by_local_policy"}
+    "actionability": {"version": 1, "available": true, "reason": null}
   }
 }
 ```
 
-Core 判断自身工具 schema 与在线 Agent 候选是否支持请求；Agent 再根据会话固定的后端、profile、扩展版本和本地策略验证。打开结果仅声明本次已启用的扩展，候选可用不能替代握手。新的内容读取仍在完成后检查披露权限和控制代次。
+诊断扩展仅用于显式 v2 / `semantic_dom_v1`，复用现有 v2 构建和本地策略门。Core 判断自身工具 schema 与在线 Agent 候选是否支持请求；Agent 再根据会话固定的后端、profile、扩展版本和本地策略验证。打开结果仅声明本次已启用的扩展，候选可用不能替代握手。新的内容读取仍在完成后检查披露权限和控制代次。
 
 兼容处理固定如下：
 
@@ -63,7 +62,7 @@ Server 同步修改 `contracts/mcp/v1/tools-list.json`、`apps/core/src/mcp_tool
 
 现有 `Failure` 只有错误码和执行状态，Core 再映射固定文案。首版采用独立的 `browser_inspect`，不让诊断正文穿过所有错误和回执路径。工具检查一个现有 ref 对指定动作种类的当前前置条件，不接收脚本、选择器、坐标、文件路径或实际输入文本。
 
-以下为拟议请求，不能发送给当前版本：
+`browser_inspect` 的参数固定如下；该工具尚未实现，示例不能发送给当前版本。`device_id`、`session_id`、`control_epoch`、`ref` 和 `action_kind` 必填；可选 `tab_id` 沿用当前会话的活动 tab 规则。引用必须是非空字符串且不超过 128 个 UTF-8 字节，其余身份字段沿用既有边界，未知字段拒绝。
 
 ```json
 {
@@ -75,7 +74,7 @@ Server 同步修改 `contracts/mcp/v1/tools-list.json`、`apps/core/src/mcp_tool
 }
 ```
 
-结果包含 `diagnostic_version`、当前会话/控制代次、`status`、有界 `reasons` 和 `content_trust`。首版 `action_kind` 限定为现有的 click、press、fill、check、select、attach_file；对输入值、按键参数和上传授权的检查仍在真实动作执行时完成。
+结果固定包含 `diagnostic_version: 1`、`session_id`、`tab_id`、`control_epoch`、既有 `selection`、`action_kind`、`status`、`reasons`、`conditions` 和 `content_trust: untrusted_page`。`action_kind` 仅接受 `click`、`press`、`fill`、`check`、`select`、`attach_file`，并在结果中原样返回。输入值、按键参数、上传授权和幂等无操作判断仍由真实动作完成；`attach_file` 诊断只检查控件类型、可操作性和主文档限制，不查阅或消耗文件授权。
 
 首版只检查当前仍有效的动作 ref，不为所有观察行另建诊断引用表。现有 `Facts::eligible` 不给禁用或隐藏目标签发 ref；这类状态由完整观察中的已有事实说明。目标在观察后变为禁用、隐藏或记录已变化时，检查继续返回既有 stale 错误，不能为了给出详细原因而放宽指纹校验。没有 ref 的节点不能通过名称、索引或选择器送入此工具。
 
@@ -86,7 +85,9 @@ Server 同步修改 `contracts/mcp/v1/tools-list.json`、`apps/core/src/mcp_tool
 | `blocked` | 有效引用下已确定只读、遮挡、敏感输入限制或动作类型不适用 |
 | `indeterminate` | 无法在期限或现有几何保证内完成判断；不能当作可操作 |
 
-原因采用封闭枚举，例如 `read_only`、`covered`、`outside_viewport`、`unstable_geometry`、`unsupported_geometry`、`sensitive_target`、`unsupported_action`。首版只返回原因与类型化布尔事实，不返回遮挡元素的页面文本、DOM 路径或原生 ID。过期引用、文档变化、错误主体和控制权变化仍走现有错误路径，不能借诊断重新匹配目标。
+原因枚举固定为 `read_only`、`covered`、`outside_viewport`、`unstable_geometry`、`unsupported_geometry`、`sensitive_target`、`unsupported_action`，去重后最多 8 项。原因按请求的动作种类判断；只读文本框仍可能接受 click，不能把 `read_only` 一概视为所有动作的拒绝原因。
+
+`conditions` 固定包含布尔值 `read_only`、`sensitive`、`editable`，以及可空布尔值 `in_view`、`hit`、`stable`。后面三项未采集或无法证明时为 `null`，不能用 `false` 伪装缺少的证据；有两次采样时报告最后一次位置/命中事实及两次是否稳定。结果不返回页面文本、值、DOM 路径、坐标或原生 ID。过期引用、文档变化、错误主体和控制权变化仍走现有错误路径，不能借诊断重新匹配目标。
 
 ### 5.2 公共实现与副作用边界
 
@@ -94,7 +95,9 @@ Server 同步修改 `contracts/mcp/v1/tools-list.json`、`apps/core/src/mcp_tool
 
 诊断不得调用 `perform` 的完整流程，不执行 Scroll、Focus、输入、表单设置或上传授权消耗。检查不续期 ref/cursor，不签发新 ref，不把 `ready_now` 保存成下一动作的授权令牌。每个真实动作继续独立检查文档、记录、控制代次及提交门。
 
-检查任务受绝对 deadline、既有原生命令与对象预算约束。取消、超时和迟到响应沿现有租约结算；人工接管能立即关闭旧代次准入，不等待诊断持有普通锁。仅靠错误字符串分类不满足此阶段要求。
+诊断的绝对 deadline 在 Agent 接纳该调用时固定为调用剩余期限与 1 秒的较小值，包含普通锁等待、身份刷新、几何采集和两次采样之间的 50 ms 间隔。原生命令继续使用这个 deadline，不重新延长。已确定类型不支持、只读、敏感限制、视口外或遮挡时可提前返回；准备返回 `ready_now` 时必须完成第二次身份与几何校验。
+
+包括会话标识、控制代次和 selection 的 Agent 诊断正文，UTF-8 JSON 编码后不得超过 4 KiB；该上限不包含既有 MCP 传输封装，传输自身上限继续生效。检查不创建第二套节点表或缓存。取消、超时和迟到响应沿现有租约结算；人工接管能立即关闭旧代次准入，不等待诊断持有普通锁。仅靠错误字符串分类不满足此阶段要求。
 
 ### 5.3 验收
 
@@ -222,9 +225,9 @@ EX-11 的公共 oracle 不接受按 backend kind 的忽略规则。至少覆盖�
 
 ## 8. 新增预算草案
 
-以下是新增能力的初始设计预算，须在实现前的契约提交中固定。它们不替换既有消息、引用、命令、句柄、性能及 RSS 门槛；实现同时满足两组限制。未达到收益目标时不公开优化能力，不在看到结果后放宽目标。
+单次诊断的一个 ref、8 项原因、4 KiB 正文和 1 秒总期限已作为第 5 节的接口契约固定；其余能力仍使用下表中的初始设计预算，须在各自实现前的契约提交中固定。新增预算不替换既有消息、引用、命令、句柄、性能及 RSS 门槛；实现同时满足两组限制。未达到收益目标时不公开优化能力，不在看到结果后放宽目标。
 
-| 对象 | 草案预算 | 超限处理 |
+| 对象 | 预算 | 超限处理 |
 | --- | --- | --- |
 | 单次诊断 | 一个 ref；最多 8 个原因；Agent 诊断正文 UTF-8 JSON ≤ 4 KiB；总期限不超过调用剩余期限与 1 秒的较小值 | 不循环等待；检查不足返回 indeterminate 或现有期限错误，不输入 |
 | 单次指引 | 一个主题；正文 UTF-8 JSON ≤ 16 KiB | 返回受限主题或明确拒绝；不隐式拉取后续内容 |
