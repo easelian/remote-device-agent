@@ -89,11 +89,13 @@ Core 单元测试逐个校验模板参数及输出 schema，并重算摘要。Se
 
 ## 7. 可选增量观察
 
-### 7.1 为什么不能直接比较现有 JSON
+### 7.1 显式请求与接收端声明
 
-当前 `runtime/v2.rs::observe` 每次都会清空并重建公开 `ref`、`frame_id` 和游标映射。页面内容相同，新的结果也会包含不同的不透明标识。直接缓存整个结果会产生大量无意义差分；为了得到 `unchanged` 而保留旧 ref，又会改变已冻结的引用寿命。
+`browser_observe.presentation` 是封闭对象，仅接收 `version: 1`、`mode: delta` 和可选的 `base_revision`。revision 使用既有不透明标识的 1～128 字节 ASCII 语法；Agent 签发 32 位十六进制随机值。它与 `cursor` 互斥。设备候选和实际 v2 会话均通过 `extensions.observation_delta` 声明版本与可用状态；v1、缺失或未知版本在页面工作前明确拒绝。该扩展随现有 v2 构建和本地策略启用，不增加默认开启的客户端行为。
 
-首版增量观察作为 `browser_observe` 的显式展示方式。省略 `presentation` 时，参数和结果完全沿用当前格式。拟议参数为：
+Core 的 MCP 服务按请求鉴权，不依赖初始化握手保存客户端状态。受控适配器必须在每次 `tools/call` 的外层 `params._meta` 中提供 `com.easelian/browser-observation-delta: {"version": 1, "reducer": "rdh-observation-v1"}`。该声明不属于工具 arguments，不授予设备或页面权限；缺失、未知版本或格式错误时，Core 在普通准入和页面读取前返回现有 `browser_feature_unsupported`。工具描述不引导没有 reducer 的模型直接开启 presentation。接收端仍须实际通过重建验收，声明本身不是已验证的客户端证据。
+
+首次请求省略 base_revision 时返回本展示方式的 full。以下仅展示工具 arguments 中的展示参数，外层元数据由适配器设置：
 
 ```json
 {
@@ -105,37 +107,33 @@ Core 单元测试逐个校验模板参数及输出 schema，并重算摘要。Se
 }
 ```
 
-首次请求可以省略 `base_revision`，得到该展示方式的 `full` 结果。`presentation` 与 `cursor` 不能同时提供；需要续页时沿用普通完整观察。此参数需要 Core 工具 schema、Agent 扩展和接收端重建能力同时就绪。
+### 7.2 投影、绑定与完整响应选择
 
-### 7.2 投影格式与引用更新
+省略展示参数时保留当前参数和完整结果。显式请求时，`observation_profile`、`page`、`coverage`、`content_trust`、会话、控制代次和 selection 保持原含义；节点和临时绑定放入封闭的 `presentation` 对象。该对象固定返回 `version`、`kind`、`revision`、十进制字符串 `sequence`、`node_count`、`cacheable` 和 `bindings`。full 带 `nodes`；delta 带 `base_revision` 和唯一一段 `splice: {start, delete_count, items}`；unchanged 只带 `base_revision`。`nodes` 与 `items` 保留每个节点的全部 canonical 字段，仅将 `frame_id` 替换为展示用整数 `frame_slot`，移除 ref。
 
-每次调用仍执行真实观察、身份校验和现有引用替换。结果分成三部分：
+`bindings.references` 是与完整当前节点数组等长的数组，每项为当前 ref 或 null；`bindings.frames` 按槽顺序保存当前 frame_id；受限 full 若产生续页，将原游标放在可选的 `bindings.next_cursor`。序号从 1 开始，单会话单调增加且不超过 u64，溢出明确拒绝。不同响应的 seq 可以不连续；任何 kind 都替换全部绑定。page 与 coverage 每次完整返回，元数据变化也不能冒充 unchanged。
 
-1. 内容投影：有序节点及完整 canonical 字段、记录材料、页面内容和覆盖信息。移除动作 ref、公开 frame_id、游标及其他每次签发的标识；用展示用 frame 槽关联节点。
-2. 当前绑定：本次所有可执行节点的 `node_index → ref`、展示 frame 槽到本次 `frame_id` 的完整映射，以及当前会话、tab 和控制代次。绑定每次全部更新；无 ref 的节点明确为空。
-3. 版本封装：`kind: full | delta | unchanged`、不透明 `revision`、需要时的 `base_revision`、本会话单调递增的观察序号、结果节点数和固定的 `content_trust: untrusted_page`。观察序号按最多 20 位十进制字符串传输，溢出明确拒绝，不环绕复用。
+Agent 对每次展示请求仍执行一次正常观察，并只传输一份本次完整节点投影。命中可用基线时，内部附加有界候选描述：已验证的 base_revision、共同前缀/后缀决定的替换范围，以及内容是否完全相同；不另传第二份节点树。Core 完成原有授权、披露及 support_id/human_url 装饰后，使用实际 JSON-RPC ID 和当前 rmcp 编码构造 full 与候选响应，按 UTF-8 JSON 字节精确计算。计算包含 content 中的 JSON 文本、structuredContent、元数据及 JSON-RPC 封装。仅在候选大小的十倍不大于 full 大小的七倍时选择 delta/unchanged，否则返回 full；两种结果使用同一当前 revision。内部候选字段不得进入公开 schema、回执或长期日志。该机制减少 MCP 输出，首版不承诺减少 Agent 到 Core 的完整观察字节。
 
-`unchanged` 仅表示内容投影相同，仍返回新的完整绑定。展示索引和 frame 槽不能传给 `browser_act` 或当作 `within`；客户端必须使用当前绑定中的新 ID。不得按 role/name、文本或位置重新激活旧 ref。
+无论最终选哪一种 kind，现有 RPC/MCP 大小拒绝仍生效。Core 不建立内容基线或第二套页面身份；它只从本次经过授权的完整投影选取要输出的范围。未知内部版本、超界范围、重复绑定或格式不一致按既有解码错误拒绝，不能返回部分成功。
 
-首版采用有界数组 splice：以共同前缀和后缀确定一段替换区，逐行保留所有 canonical 字段。页面元数据变化完整替换对应小对象。节点插入、删除、排序、文本、checked/value、记录结构及名称质量变化都必须能精确重建。无需实现通用 JSON Patch 解释器或不受限的最短编辑距离算法。
+### 7.3 基线存储与控制 fence
 
-### 7.3 缓存、失效与拒绝
+基线只保存已脱敏内容的编码字节、节点字节范围、frame 槽边界、随机 revision、创建时刻和固定大小的内部键摘要。摘要由已验证的内部 frame/document/realm 集合、tab、查询、实际节点/字符预算及控制代次编码计算；主体、Agent 实例、后端和 profile 由所属会话固定。frame 槽按内部 Context 的稳定顺序建立；公开 frame_id 不进入键。序列化采用计数后一次有界分配，长期不保留解码 JSON 树。
 
-缓存归 Agent 会话所有，键包含认证主体、Agent 实例/会话、后端、profile、tab、完整 frame/document/realm 身份集合、控制代次、查询条件以及节点/字符预算。`within` 使用验证后的内部 Context 作为查询范围，不把每次重新签发的公开 frame_id 当成稳定键。身份使用内部已验证类型，不接受调用者提供的原生 ID。URL 相同不能证明文档相同。
+存储投影每份至多 256 KiB，每会话两份、Agent 两个会话合计至多 1 MiB；节点索引和 frame 索引仍分别限制为 4,000 和 128 项。新增构造暂存至多 512 KiB，包含编码缓冲、范围索引和新绑定，不能把构造副本藏在“缓存以外”。新版本在纳入已存总量前淘汰所需旧版本。TTL 为创建后 60 秒且不续期；获取 ref 的既有 300 秒上限不因缓存改变。过期版本只可被有界回收，不得命中。
 
-仅当扫描完成、没有续页、没有读取中变化及资源截断时建立基线。profile 固定声明的 closed shadow、canvas 和浏览器 UI 范围限制继续随结果保留；它们不等于支持完整浏览器内容。分页、动态页面或受限观察返回新鲜 `full`，不偷偷继续扫描到完整，也不以删掉 coverage 获得可缓存结果。
+普通输入仍使旧动作引用失效；内容基线不授予任何动作权限，可以在同一控制代次保留到下一次真实观察重新验证全部身份。导航、同 URL reload、BFCache、realm/frame、查询或预算变化使键失配、清空原基线并返回新鲜 full。暂停、人工接管、关闭、失联或策略更新使旧代次立即不可访问；回收不要求人工 fence 等待异步 session 锁。省略 presentation 的普通观察清空展示基线，避免跨展示方式保留隐式客户端状态。
 
-新文档、同 URL reload、BFCache、realm/frame 替换、控制权换代、人工接管、关闭、失联、重启、策略改变、查询改变和 TTL 到期均使基线失效。控制门同步使缓存不可访问；有界回收不阻塞人工 fence。展示缓存不延长任何原生租约。
+Agent 仅在本次最终控制代次检查与同步发布共用的控制锁内将准备好的基线置为可用；发布后再推进的控制代次使其不可访问。被取消的采集不发布，迟到任务不能重新插入旧代次。Core 随后的权限或完成检查仍可拒绝披露；这时 Agent 的未获客户端确认版本不等于成功交付，客户端只能在下一请求中明确携带自己成功应用的 revision。未知 revision 始终只在当前会话检索。
 
-缺基线、版本不匹配、被淘汰或差分无收益时，允许在同一次已授权观察中返回 `full`。权限失败、暂停、失联和身份无法证明时返回原错误，不能以“回退到 full”绕过拒绝。未知 revision 在当前会话内按未命中处理，不查询其他主体缓存，不透露命中关系。
+只有完整扫描、无续页、无读取中变化、无记录资源限制且在缓存预算内的投影可以作为基线。既有 closed shadow、canvas 和浏览器 UI 的 profile 范围说明继续保留。受限观察返回新鲜 full，清空旧展示基线，不为了缓存继续扫描；大小上限仍不足以交付时按现有错误拒绝。控制或披露失败不回退为 full。
 
-响应丢失不等于客户端接受了 revision。客户端每次携带自己最后成功应用的版本；服务端不假定交付成功。并发调用、乱序响应和过期 epoch 必须由接收端拒绝原子替换，必要时重新请求完整结果。缓存只能在本次最终披露检查成功后成为可用版本，迟到结果不能重新插入已失效代次。
+### 7.4 受控接收端
 
-### 7.4 接收端与收益条件
+提供无需浏览器自动化依赖的 JavaScript reducer 作为可运行受控适配器。调用方绑定预期设备、会话、tab 和控制代次；断线或新连接重置基线。reducer 校验版本、序号、base、splice 范围、节点数与完整绑定；在临时值中重建普通观察，逐节点恢复 ref/frame_id 和原 next_cursor，通过后才原子替换状态。失败保持原状态并要求新鲜 full。展示索引不成为工具参数，旧序号或旧代次响应不能覆盖新状态。普通 AI 宿主若没有运行该 reducer 的受控能力，保持完整观察。
 
-增量输出默认关闭。普通 MCP 客户端继续接收完整观察；先实现一个可验证的接收端 reducer，按 base/revision、会话/控制代次和观察序号校验，检查 splice 范围及结果节点数，再原子替换全部引用和 frame 绑定。模型对历史文本的记忆不能代替这一步。首版不增加跨语言 canonical JSON 散列协议；以同一次采集生成的完整结果作为测试 oracle，逐字段比较重建结果。实际 AI 宿主或受控适配器无法保留并验证基线时，该客户端不启用 delta。
-
-比较收益时计入完整 MCP 响应，包括绑定、元数据和可能同时存在的文本/结构化内容。只比较删掉 ref 后的页面文本会夸大收益。原生观察和身份检查仍执行，因此输出字节减少不代表原生命令或观察时延减少。
+reducer 使用同次采集生成的 full 作为 oracle，逐字段比较重建后的普通观察；不依赖模型对历史文本的记忆，也不新增跨语言 canonical JSON 摘要协议。提供共享语料和可执行适配器测试。客户端断线后丢弃基线，重新发现能力并从 full 开始。
 
 ### 7.5 正确性与失效矩阵
 
@@ -173,9 +171,9 @@ EX-11 的公共 oracle 不接受按 backend kind 的忽略规则。至少覆盖�
 
 拟新增 Agent `src/browser/semantic/tests/presentation.rs` 和 Server `tests/core/test_browser_observation_delta.py`，并提供接收端 reducer 的共用语料。若没有能运行 reducer 的真实客户端/受控适配器，EX-18 保持 `not_run`，不向该客户端启用增量。
 
-## 8. 新增预算草案
+## 8. 增量观察预算
 
-下表只列待实现能力的初始设计预算，须在各自实现前的契约提交中固定。已实现的诊断与指引预算见[实现现状](browser-implementation-zhCN.md#7-已实现的资源上限)。新增预算不替换既有消息、引用、命令、句柄、性能及 RSS 门槛；实现同时满足两组限制。未达到收益目标时不公开优化能力，不在看到结果后放宽目标。
+下表固定第 7 节增量观察的数值预算；实现和验收不得放宽。已实现的诊断与指引预算见[实现现状](browser-implementation-zhCN.md#7-已实现的资源上限)。新增预算不替换既有消息、引用、命令、句柄、性能及 RSS 门槛；实现同时满足两组限制。未达到收益目标时不公开优化能力，不在看到结果后放宽目标。
 
 | 对象 | 预算 | 超限处理 |
 | --- | --- | --- |
