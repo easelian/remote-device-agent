@@ -43,6 +43,7 @@ async fn truncated_script_batches_fail_instead_of_becoming_empty_observations() 
         let (client, browser) = tokio::io::duplex(8192);
         let (read, write) = tokio::io::split(client);
         let engine = Engine::from_private_channel(read, write);
+        engine.test_sessions(&["page"]);
         let ids = Ids::for_engine(&engine);
         let scan = ids.scan(&ids.context("page"), "scan");
         let reply = async {
@@ -75,6 +76,7 @@ async fn foreign_handles_and_revoked_scans_never_submit_a_command() {
     let (client, _browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    engine.test_sessions(&["page"]);
     let foreign = Ids::new();
     let deadline = Instant::now() + Duration::from_secs(2);
     assert_eq!(
@@ -116,6 +118,7 @@ async fn critical_event_gap_closes_the_engine_before_more_input_or_disclosure() 
     let (client, mut browser) = tokio::io::duplex(128 * 1024);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    engine.test_sessions(&["page"]);
     let mut events = engine.events();
     for _ in 0..257 {
         browser.write_all(b"{\"method\":\"Target.targetInfoChanged\",\"params\":{\"targetInfo\":{\"targetId\":\"tab\"}}}\0").await.unwrap();
@@ -154,6 +157,7 @@ async fn viewport_image_budget_refuses_the_first_excess_encoded_byte() {
         let (client, browser) = tokio::io::duplex(1024 * 1024);
         let (read, write) = tokio::io::split(client);
         let engine = Engine::from_private_channel(read, write);
+        engine.test_sessions(&["page"]);
         let ids = Ids::for_engine(&engine);
         let context = ids.context("page");
         let reply = async {
@@ -196,6 +200,7 @@ async fn missing_native_core_command_fails_initialization_without_retry_or_paylo
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    engine.test_sessions(&["page"]);
     let _events = engine.events();
     let reply = async {
         let mut browser = BufReader::new(browser);
@@ -225,6 +230,7 @@ async fn initialization_requires_a_registered_consumer_before_enabling_native_ev
     let (client, _browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    engine.test_sessions(&["page"]);
     let error = engine
         .initialize(Instant::now() + Duration::from_secs(1))
         .await
@@ -240,6 +246,7 @@ async fn decoded_request_clones_retain_the_event_after_the_delivery_is_dropped()
     let (client, mut browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    engine.test_sessions(&["page"]);
     let mut events = engine.events();
     let value = json!({"method":"Fetch.requestPaused","sessionId":"page","params":{
         "requestId":"request","frameId":"tab","request":{"url":"https://fixture.invalid/file"},

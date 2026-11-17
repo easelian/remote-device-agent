@@ -6,6 +6,7 @@ async fn elements_are_described_together_and_each_has_its_own_outcome() {
     let (client, browser) = tokio::io::duplex(65536);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    engine.test_sessions(&["session"]);
     let ids = Ids::for_engine(&engine);
     let frame = ids.frame("session", "top", "1", "https://shop.test/orders");
     let reader = ids.scan(&frame.session, "reader");

@@ -24,6 +24,7 @@ async fn cancelled_human_insertion_keeps_input_handoff_blocked_until_reply() {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let cdp = Engine::from_private_channel(read, write);
+    cdp.test_sessions(&["page"]);
     let control = Arc::new(Control::new());
     let epoch = control.change(true);
     let (human, effects) = cdp.human(control, epoch).track_effects();

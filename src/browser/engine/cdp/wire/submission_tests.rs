@@ -6,7 +6,11 @@ use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream};
 fn fixture() -> (Cdp, BufReader<DuplexStream>) {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
-    (Cdp::new(read, write), BufReader::new(browser))
+    {
+        let cdp = Cdp::new(read, write);
+        cdp.test_sessions(&["page"]);
+        (cdp, BufReader::new(browser))
+    }
 }
 
 fn deadline() -> Instant {

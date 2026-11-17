@@ -9,8 +9,10 @@ impl Peer {
     fn new() -> Self {
         let (client, browser) = tokio::io::duplex(64 * 1024);
         let (read, write) = tokio::io::split(client);
+        let wire = Cdp::new(read, write);
+        wire.test_sessions(&["page"]);
         Self {
-            wire: Cdp::new(read, write),
+            wire,
             browser: BufReader::new(browser),
         }
     }

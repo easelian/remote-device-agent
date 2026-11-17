@@ -28,6 +28,9 @@ pub(in crate::browser::engine) use events::{EventLease, EventReceiver};
 mod lease_tests;
 mod leases;
 #[cfg(test)]
+mod session_tests;
+mod sessions;
+#[cfg(test)]
 mod submission_tests;
 use command::Dialog;
 pub use command::{Command, InputPair};
@@ -60,6 +63,7 @@ impl Drop for NativeReply {
 struct Pending {
     lease: leases::LeaseCommand,
     cleanup_deadline: Option<tokio::time::Instant>,
+    retired_deadline: Option<tokio::time::Instant>,
     #[cfg(test)]
     metric: metrics::Command,
     reply: Option<oneshot::Sender<Result<NativeReply>>>,
@@ -71,6 +75,7 @@ struct Pending {
 #[derive(Default)]
 struct PendingState {
     leases: leases::Book,
+    sessions: sessions::Sessions,
     #[cfg(test)]
     resources: metrics::Resources,
     commands: HashMap<u64, Pending>,
@@ -119,6 +124,11 @@ pub struct Cdp {
     submission: Submission,
 }
 
+enum Admission {
+    Sent { blocked_release: bool },
+    RetiredObject,
+}
+
 impl Cdp {
     #[cfg(all(test, feature = "experimental-browser-bidi"))]
     pub fn hold_next_reply(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
@@ -136,7 +146,7 @@ impl Cdp {
     #[cfg(test)]
     pub fn test_metrics(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
-        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"barriers":self.inner.barriers.load(Ordering::Acquire),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot(),"leases":pending.leases.snapshot(),"cleanup_pending":pending.commands.values().filter(|c| c.cleanup_deadline.is_some()).count(),"events":{"count":events::MAX_EVENTS-self.inner.event_slots.available_permits(),"bytes":events::MAX_EVENT_BYTES-self.inner.event_bytes.available_permits(),"peak_count":pending.event_peak.0,"peak_bytes":pending.event_peak.1,"receivers":pending.event_receivers,"sequence":pending.event_sequence,"fenced":self.inner.fenced.load(Ordering::Acquire)}})
+        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"barriers":self.inner.barriers.load(Ordering::Acquire),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot(),"leases":pending.leases.snapshot(),"cleanup_pending":pending.commands.values().filter(|c| c.cleanup_deadline.is_some()).count(),"retired_pending":pending.commands.values().filter(|c| c.retired_deadline.is_some()).count(),"sessions":pending.sessions.snapshot(),"events":{"count":events::MAX_EVENTS-self.inner.event_slots.available_permits(),"bytes":events::MAX_EVENT_BYTES-self.inner.event_bytes.available_permits(),"peak_count":pending.event_peak.0,"peak_bytes":pending.event_peak.1,"receivers":pending.event_receivers,"sequence":pending.event_sequence,"fenced":self.inner.fenced.load(Ordering::Acquire)}})
     }
     #[cfg(test)]
     pub fn command_count(&self) -> u64 {
@@ -175,9 +185,14 @@ impl Cdp {
             'reader: loop {
                 let count = tokio::select! {
                     _ = cleanup_tick.tick() => {
-                        let pending = reader.pending.lock().unwrap();
+                        let mut pending = reader.pending.lock().unwrap();
                         let now = tokio::time::Instant::now();
                         if pending.event_deadline.is_some_and(|d| now >= d) || pending.commands.values().any(|c|c.cleanup_deadline.is_some_and(|d|now>=d)) { break; }
+                        if pending.commands.values().any(|c| c.retired_deadline.is_some_and(|d| now >= d)) {
+                            // Local retirement cannot free unacknowledged work.
+                            // Escalate to the existing owned-browser close path.
+                            reader.fence_events(&mut pending);
+                        }
                         continue;
                     },
                     _ = stopped.changed() => {
@@ -218,7 +233,16 @@ impl Cdp {
                                 let created = if let Some(command) = &command {
                                     #[cfg(test)]
                                     pending.resources.settle(&command.metric, &value);
-                                    pending.leases.settle(&command.lease, &value)
+                                    let mut created = pending.leases.settle(&command.lease, &value);
+                                    if command.retired_deadline.is_some()
+                                        && let Some(session) = command.session.as_deref()
+                                    {
+                                        pending.leases.retire_objects(session);
+                                        #[cfg(test)]
+                                        pending.resources.retire_objects(session);
+                                        created.retain(|resource| pending.leases.owns(resource));
+                                    }
+                                    created
                                 } else {
                                     Vec::new()
                                 };
@@ -230,6 +254,8 @@ impl Cdp {
                             if let Some(command) = command {
                                 if command.cleanup_deadline.is_some()
                                     && value.get("error").is_some()
+                                    && !(command.retired_deadline.is_some()
+                                        && command.lease.object_cleanup())
                                 {
                                     break 'reader;
                                 }
@@ -266,7 +292,9 @@ impl Cdp {
                             pending.resources.event(&value);
                             // Native ownership is checked even for events that no
                             // semantic consumer uses, and after admission closes.
-                            if !pending.leases.event(&value) {
+                            if !pending.leases.event(&value)
+                                || !reader.session_event(&mut pending, &value)
+                            {
                                 reader.fence_events(&mut pending);
                                 continue;
                             }
@@ -365,10 +393,34 @@ impl Cdp {
         }
         frame.push(0);
         let (reply, result) = oneshot::channel();
-        let blocked_release = self.submission.enqueue(spec.effect, || {
+        let admission = self.submission.enqueue(spec.effect, || {
             let mut pending = self.inner.pending.lock().unwrap();
             if !self.connected() {
                 return Err(Failure::unknown("browser_lost"));
+            }
+            if let Some(session) = session
+                && !pending.sessions.contains(session)
+            {
+                if matches!(
+                    command,
+                    Command::RuntimeReleaseObject | Command::RuntimeReleaseObjectGroup
+                ) {
+                    // RemoteObject IDs belong to the detached debugging session.
+                    // No such object remains usable, even after a late reply.
+                    return Ok(Admission::RetiredObject);
+                }
+                if matches!(command, Command::IoClose)
+                    && pending.leases.owns(&leases::Reap::Stream {
+                        session: session.into(),
+                        id: message["params"]["handle"].as_str().unwrap_or("").into(),
+                    })
+                {
+                    // IO storage is target-owned, not proof of session-owned
+                    // cleanup. Keep its charge and recover the owned browser.
+                    self.inner.fence_events(&mut pending);
+                    return Err(Failure::unknown("browser_cleanup_pending"));
+                }
+                return Err(Failure::new("browser_stale_frame"));
             }
             let dialog_blocks = spec.dialog != Dialog::Continue;
             let dialog_open = session.is_some_and(|s| pending.dialogs.contains(s));
@@ -383,6 +435,7 @@ impl Cdp {
                 Pending {
                     lease,
                     cleanup_deadline: None,
+                    retired_deadline: None,
                     #[cfg(test)]
                     metric,
                     reply: Some(reply),
@@ -398,10 +451,18 @@ impl Cdp {
                 }
                 return Err(Failure::new("browser_busy"));
             }
-            Ok(dialog_open && dialog_blocks)
+            Ok(Admission::Sent {
+                blocked_release: dialog_open && dialog_blocks,
+            })
         })?;
-        if blocked_release {
-            return Err(Failure::unknown("browser_dialog_open"));
+        match admission {
+            Admission::RetiredObject => return Ok(json!({})),
+            Admission::Sent {
+                blocked_release: true,
+            } => return Err(Failure::unknown("browser_dialog_open")),
+            Admission::Sent {
+                blocked_release: false,
+            } => {}
         }
         // Timeout never releases the outstanding command's slot or implies it stopped.
         match tokio::time::timeout_at(deadline.into(), result).await {
@@ -505,6 +566,13 @@ impl Inner {
                 if !pending.leases.owns(resource) {
                     continue;
                 }
+                if let leases::Reap::Stream { session, .. } = resource
+                    && !session.is_empty()
+                    && !pending.sessions.contains(session)
+                {
+                    self.fence_events(&mut pending);
+                    return true;
+                }
                 let Ok(permit) = self.cleanup_slots.clone().try_acquire_owned() else {
                     return false;
                 };
@@ -528,6 +596,7 @@ impl Inner {
                         cleanup_deadline: Some(
                             tokio::time::Instant::now() + Duration::from_secs(3),
                         ),
+                        retired_deadline: None,
                         #[cfg(test)]
                         metric,
                         reply: None,
@@ -574,6 +643,7 @@ impl Inner {
             }
         }
         pending.dialogs.clear();
+        pending.sessions.clear();
     }
 }
 

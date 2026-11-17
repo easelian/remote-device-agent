@@ -6,6 +6,7 @@ async fn a_document_the_site_policy_refuses_is_failed_and_noted_on_its_tab() {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let cdp = Engine::from_private_channel(read, write);
+    cdp.test_sessions(&["page"]);
     let ids = Ids::for_engine(&cdp);
     let tab = Target {
         id: "tab".into(),
@@ -118,6 +119,7 @@ async fn where_private_networks_are_refused_the_address_reached_decides() {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let cdp = Engine::from_private_channel(read, write);
+    cdp.test_sessions(&["page"]);
     let ids = Ids::for_engine(&cdp);
     let tab = Target {
         id: "tab".into(),
@@ -254,6 +256,7 @@ async fn suspended_non_page_target_cannot_block_page_request_progress() {
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let cdp = Engine::from_private_channel(read, write);
+    cdp.test_sessions(&["page"]);
     let task = guard(
         cdp.clone(),
         Arc::new(Mutex::new(HashMap::new())),

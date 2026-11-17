@@ -104,6 +104,11 @@ impl Adapter {
 }
 impl Engine {
     #[cfg(test)]
+    pub(in crate::browser) fn test_sessions(&self, sessions: &[&str]) {
+        self.backend.wire.test_sessions(sessions);
+    }
+
+    #[cfg(test)]
     pub(in crate::browser) fn test_metrics(&self) -> Value {
         self.backend.wire.test_metrics()
     }

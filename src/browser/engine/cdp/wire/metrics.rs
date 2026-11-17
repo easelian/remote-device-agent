@@ -56,6 +56,9 @@ pub(super) struct Resources {
     pub unsolicited_objects: usize,
 }
 impl Resources {
+    pub fn retire_objects(&mut self, session: &str) {
+        self.objects.retain(|(s, _), _| s != session);
+    }
     fn object(&mut self, session: &str, group: &str, remote: &Value) {
         if let Some(id) = remote["objectId"].as_str() {
             if self

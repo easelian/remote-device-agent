@@ -212,6 +212,12 @@ CDP 命令为封闭枚举，类型元数据显式区分页面副作用、读取�
 
 事件停止把在途调用通知为 `unknown`，但保留已接纳命令的待决项、槽位和原生租约预留；已提交输入不重放。连接在最长 3 秒内继续处理迟到响应及相应原生回收，再结束传输；原生所有者关闭、EOF 或传输失败可提前结束。传输结束仍不能代替所属进程和磁盘目录的清理证明。
 
+[原生 session 注册表](../src/browser/engine/cdp/wire/sessions.rs)由 reader 在发布附着和退出事件前更新，与命令准入共用待决表锁。表内只保存当前 attachment 及其父 session，最多 128 项；每个 ID 最多 256 个 UTF-8 字节，ID 与父 ID 合计最多 32 KiB。复制前检查计数、字节和父关联。空值、畸形或重复附着、未知父 session、超限、与未结算旧命令重用 ID 都关闭连接准入。父 session 退出递归撤销后代；同一 target 的独立 attachment 保持自己的准入。重复退出不累计历史集合。
+
+session 退出后，新普通命令在入队和设置 effect 前返回 `browser_stale_frame/not_sent`。已接纳命令，包括仍在 writer 队列中的命令，继续由原通道结算；等待者立即收到 `browser_lost/unknown`，槽位、创建预留和已提交输入屏障保留。其他 session 可以使用剩余额度。退出 3 秒后仍有未结算命令时，关闭整个连接的新准入并进入上述有界清理；这一恢复会影响同连接的其他 session。退出不是 JavaScript 取消或页面副作用撤销。
+
+RemoteObject 随所属调试 session 退出失效，迟到响应不能恢复其可用性；仅针对失效对象或对象组的释放可以不发送原生命令。`IO.close` 和 keyUp 不适用该处理：已登记流无法通过退出的 session 清理时，保留占用并进入所属浏览器恢复，不改发到根通道或另一个 session；已提交按下操作也不能因释放未发送而变为 `not_sent`。
+
 ### 6.2 Firefox/BiDi
 
 `process/firefox.rs` 启动同一 Agent 二进制的内部监督入口。入口在 Tokio 初始化前运行，通过继承的匿名 Unix `SOCK_SEQPACKET` 接收配置，并在独立的 user、network、PID 和 mount namespace 中启动 Firefox。该路径不分配 CDP 管道描述符。
@@ -238,7 +244,7 @@ BiDi 使用封闭命令和固定程序，原生 context、document、realm 与 s
 
 ### 6.3 原生租约
 
-CDP 每连接的对象和流账本在创建命令入队前按最坏返回类型预留。对象/对象组及流仅在释放成功后结算；超时、取消和弹窗提前结束等待不释放预留。迟到且无人接收的对象、流进入有界清理；清理通道耗尽、失败或超过 3 秒停止连接。组释放只处理发出命令时已登记的成员，不误释放随后取得的同组对象。
+CDP 每连接的对象和流账本在创建命令入队前按最坏返回类型预留。对象/对象组及流在释放成功后结算；调试 session 退出使其 RemoteObject 失效，但不证明流已经关闭。超时、取消和弹窗提前结束等待不释放预留。迟到且无人接收的对象、流进入有界清理；清理通道耗尽、失败或超过 3 秒停止连接。组释放只处理发出命令时已登记的成员，不误释放随后取得的同组对象。
 
 CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝意外携带对象所有权的事件；求值异常对象由命令响应进入账本。BiDi 使用 `resultOwnership: none`，允许的 root handle 为 0，意外 root handle 使传输停止。BiDi `sharedId`、CDP `BackendNodeId` 是节点身份，不是需要 disown/releaseObject 的协议租约；页面内强引用与协议租约分别计数。
 
@@ -257,6 +263,7 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 人工控制 | 公开视图租约 120 秒；内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
+| CDP 原生 session | 每连接 128 个 attachment；单 ID 256 字节；ID 与父 ID 合计 32 KiB；退出后未结算工作最多保留 3 秒局部宽限，再关闭连接准入并恢复 | [CDP sessions](../src/browser/engine/cdp/wire/sessions.rs) |
 | 协议租约 | CDP 对象 256、流 16，分类不可借用；包括 pending 预留；BiDi root handle 0 | [CDP leases](../src/browser/engine/cdp/wire/leases.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 事件 | CDP 256 条/合计 8 MiB 已编码字节/最多两个关键消费者，单消息受 2 MiB 限制；BiDi 256 条/合计 1 MiB/单事件 64 KiB | [CDP events](../src/browser/engine/cdp/wire/events.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 导航决定 | 32 个并发、4,096 个去重项、2 秒期限 | [policy](../src/browser/semantic/policy.rs) |

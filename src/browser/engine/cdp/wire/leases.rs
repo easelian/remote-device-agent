@@ -84,6 +84,9 @@ impl LeaseCommand {
             Command::RuntimeReleaseObject | Command::RuntimeReleaseObjectGroup | Command::IoClose
         )
     }
+    pub fn object_cleanup(&self) -> bool {
+        matches!(self, Self::Release { .. } | Self::Group { .. })
+    }
 }
 struct Object {
     group: String,
@@ -117,6 +120,9 @@ pub(super) struct Book {
     peak: usize,
 }
 impl Book {
+    pub fn retire_objects(&mut self, session: &str) {
+        self.objects.retain(|(s, _), _| s != session);
+    }
     pub fn owns(&self, resource: &Reap) -> bool {
         match resource {
             Reap::Object { session, id } => {

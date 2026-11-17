@@ -11,8 +11,10 @@ impl Peer {
     fn new() -> Self {
         let (agent, browser) = tokio::io::duplex(64 * 1024);
         let (read, write) = tokio::io::split(agent);
+        let cdp = Cdp::new(read, write);
+        cdp.test_sessions(&["s", "a", "b"]);
         Self {
-            cdp: Cdp::new(read, write),
+            cdp,
             browser: BufReader::new(browser),
         }
     }
