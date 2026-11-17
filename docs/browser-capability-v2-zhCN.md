@@ -78,6 +78,19 @@ Firefox 下载开始及结束事件必须匹配已接纳的主 frame、navigatio
 
 严格站点策略需要实际连接地址证据时，当前两个 v2 后端均拒绝打开。文档 HTTP 请求被拦截不等于没有 TCP 预连接。引用最终检查与原生输入派发之间仍有竞态；不能将输入确认解释为目标业务对象已经成功更新。
 
-资料位于原有私有 browser 根目录的 `v2/chromium-temporary-v1` 或 `v2/firefox-temporary-v1`。旧程序不认识 `v2` 时拒绝恢复和打开，不会接管或删除该目录。回退前须用支持该格式的程序关闭并完成回收；不得仅删除所有权记录来解除拒绝。
+资料位于原有私有 browser 根目录的 `v2/chromium-temporary-v1` 或 `v2/firefox-temporary-v1`；命名资料保存在各自目录下的独立命名空间。旧程序不认识 `v2` 时返回 `browser_cleanup_pending`，拒绝恢复和打开，不会接管或删除目录。关闭最后一个 v2 会话不会移除这些空目录，直接替换成旧程序仍可能被拒绝。
 
-Server 的 `tests/core/test_browser_v2.py` 使用 `RDH_TEST_CLUSTER_AGENT`、`RDH_TEST_BROWSER_EXECUTABLE` 和 `RDH_TEST_FIREFOX_EXECUTABLE` 指定同一候选的 Agent、Chrome 与 Firefox。测试通过真实 Auth/Gate/Core/Agent 和独立 PostgreSQL 夹具执行；人工控制还经过 Business 网页会话认证。该入口之外继续运行原有 v1 测试及共同页面语义测试。
+### 回退前处理浏览器资料
+
+回退会影响新格式资料和文件的可用性。先清点所有认证主体的 v2 资料与下载；需要保留新资料时继续使用支持它们的版本，并按既有私有数据备份流程处理。以下步骤适用于已明确决定退役相应 v2 资料和文件的设备，不能用来绕过 `browser_cleanup_pending`：
+
+1. 使用支持 v2 的 Agent 关闭会话，并核对原生进程、待决下载及清理状态。清理未确定时停止回退。
+2. 按完整 `selection` 列举并显式删除已确认退役的 v2 命名资料；通过原有文件接口删除已确认退役的下载。Firefox 的 `cancellation_scope` 元数据不属于旧文件格式，不能只处理资料目录而留下这些文件。
+3. 停止 Agent，确认没有所属浏览器进程或有效所有权记录。从最深层开始，仅用非递归 `rmdir` 移除已核实为空的 v2 目录，最后移除 `v2` 本身。任何文件、符号链接或非空目录都使此步骤停止；不删除所有权记录或递归清空目录。
+4. 使用旧版接受的本地配置启动旧 Agent；旧版配置不包含 `capability_v2` 和 `firefox_executable`。重新打开原有 v1 命名资料，验证资料 ID 和合成持久状态；实际业务数据按设备的验收流程核对。
+
+Server 回退是独立步骤：停止并排空受影响的 Core，再用目标版本的迁移器离线安装其 Runtime 函数契约，执行目标 Core 的 `check-storage` 后才恢复服务。旧 Core 不接受新的 `selection` 参数。程序和 SQL 函数来自不同版本时不能继续启动；Agent 的资料清理不会修复 Server 契约不一致。
+
+Server 的 `tests/core/test_browser_v2.py` 使用 `RDH_TEST_CLUSTER_AGENT`、`RDH_TEST_BROWSER_EXECUTABLE` 和 `RDH_TEST_FIREFOX_EXECUTABLE` 指定同一候选的 Agent、Chrome 与 Firefox。测试通过真实 Auth/Gate/Core/Agent 和独立 PostgreSQL 夹具执行；人工控制还经过 Business 网页会话认证。`test_browser_v2_files.py` 覆盖命名资料与文件；`test_browser_v2_readiness.py` 使用独立构建的固定旧版本和默认构建，验证升级/回退及公开会话、标签页、frame 限额。回退场景只退役测试自行创建的合成资料。
+
+兼容测试还要求 `RDH_TEST_OLD_AGENT`、`RDH_TEST_DEFAULT_AGENT`、`RDH_TEST_OLD_CORE` 和 `RDH_TEST_OLD_MIGRATE`；未指定时跳过相应场景，发布验收须拒绝这些跳过结果。新旧源码使用不同 Cargo target 目录，避免把共享增量产物误记为旧版本证据。以上入口之外继续运行原有 v1 测试及共同页面语义测试。资源循环、受限性能和平台原生运行分别记录，不能从短用例通过推导为 D4 整体完成。

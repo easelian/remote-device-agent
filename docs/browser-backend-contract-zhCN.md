@@ -1,6 +1,6 @@
 # 原生浏览器后端规约与架构方案
 
-状态：分阶段实施规约。CDP/v1 迁移、Firefox [内部通道](browser-bidi-d2b-zhCN.md)和[共同页面语义](browser-semantic-implementation-zhCN.md)已实现。[Capability v2](browser-capability-v2-zhCN.md) 在 Linux x86_64 开发构建中提供显式选择及 RPC/MCP 接入，须由本地策略启用；完整平台发布验收与文件等扩展能力仍按 D4 门槛推进。
+状态：分阶段实施规约。CDP/v1 迁移、Firefox [内部通道](browser-bidi-d2b-zhCN.md)和[共同页面语义](browser-semantic-implementation-zhCN.md)已实现。[Capability v2](browser-capability-v2-zhCN.md) 在 Linux x86_64 开发构建中提供显式选择、RPC/MCP、命名资料及上传下载，须由相应本地策略启用；完整平台与版本发布验收仍按 D4 门槛推进。
 
 版本：0.2，2026-11-16。评审结论及本次取舍见第 14 节。
 
@@ -80,7 +80,7 @@ flowchart TD
 
 Engine 是内部接口，不是新网络协议，也不直接对应 MCP 工具。公共接口只接受约定类型；JSON 仅存在于 MCP 边界、协议编解码和经过校验的固定程序返回值中。
 
-Engine 是对能力边界的命名，不要求一次性实现一个大型 trait。当前仅有一个真实后端，先提供具体的内部类型和异步方法；第二个后端接入时优先使用封闭枚举分派。公共算法需要替身测试时，为已存在的调用面提取小 trait。没有动态装载需求，不预先要求对象安全、boxed future、插件 ABI 或通用命令总线。以下方法按上下文/观察、输入、策略/事件三个职责实现，不增加三套会话状态。
+Engine 是对能力边界的命名，不要求实现一个大型 trait。CDP 和 BiDi 通过封闭枚举建立会话，公共页面算法依赖已有调用面的小 trait，并使用替身测试。没有动态装载需求，不要求对象安全、boxed future、插件 ABI 或通用命令总线。以下方法按上下文/观察、输入、策略/事件三个职责实现，不增加三套会话状态。
 
 以下是异步操作目录，不是可直接编译的 Rust 或已经冻结的方法签名；具体类型随 CDP 提取和替身测试逐步确定。每个方法返回类型化 Result，错误遵守第 10 节。
 
