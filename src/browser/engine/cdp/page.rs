@@ -535,9 +535,14 @@ impl PageActionPort for Engine {
     }
     async fn select_all(&self, context: &Context, deadline: Instant) -> Result<()> {
         let a = &self.backend;
-        // D1 preserves the existing Ctrl+A path; platform modifier changes have
-        // their own runtime acceptance and are not hidden in this refactor.
-        a.wire.input_pair(Some(a.session(context)?),InputPair::Key,json!({"type":"keyDown","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),json!({"type":"keyUp","key":"a","code":"KeyA","modifiers":2,"windowsVirtualKeyCode":65}),deadline).await
+        let modifiers = if cfg!(target_os = "macos") { 4 } else { 2 };
+        let mut press = json!({"type":"keyDown","key":"a","code":"KeyA","modifiers":modifiers,"windowsVirtualKeyCode":65});
+        // macOS CDP key events need an explicit native editing command; Meta+A
+        // alone does not perform the platform shortcut.
+        if cfg!(target_os = "macos") {
+            press["commands"] = json!(["selectAll"]);
+        }
+        a.wire.input_pair(Some(a.session(context)?),InputPair::Key,press,json!({"type":"keyUp","key":"a","code":"KeyA","modifiers":modifiers,"windowsVirtualKeyCode":65}),deadline).await
     }
     async fn press(&self, context: &Context, key: &str, deadline: Instant) -> Result<()> {
         let code = match key {

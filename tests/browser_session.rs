@@ -1746,10 +1746,13 @@ async fn bounded_page_continuation_preserves_text_and_reports_changed_documents(
 
 const REJECTIONS: &str = r#"<!doctype html><meta charset="utf-8"><title>Rejection fixture</title>
 <h1>Rejections</h1><label>Name <input id="name" value="old"></label><label>Secret <input type="password"></label>
+<label>Notes <textarea id="notes">old first line
+old second line</textarea></label>
 <button type="button">Plain button</button>
 <label>Color <select><option value="red">Red</option><option value="green">Green</option></select></label>
 <label><input type="checkbox" checked> Agree</label>
-<input readonly value="2026-01-01" aria-label="Pick date" onclick="document.getElementById('picked').textContent='Date picker opened'"><p id="picked"></p>"#;
+<input readonly value="2026-01-01" aria-label="Pick date" onclick="document.getElementById('picked').textContent='Date picker opened'"><p id="picked"></p>
+<p id="edited"></p><script>document.addEventListener('input',e=>{const name={name:'Name',notes:'Notes'}[e.target.id];if(name)document.getElementById('edited').textContent='Filled '+name+': '+JSON.stringify(e.target.value)+'; trusted='+e.isTrusted;});</script>"#;
 
 // A fixed banner lies over the whole page until its own button removes it.
 const BANNER: &str = r#"<!doctype html><meta charset="utf-8"><title>Banner</title>
@@ -1872,6 +1875,25 @@ async fn rejections_without_input_keep_the_session_running() {
         field["value"], "new",
         "fill replaces the earlier value: {observed}"
     );
+    for (name, text) in [
+        ("Name", "\u{5ba2}\u{6237} \u{1f600} e\u{301}"),
+        ("Name", ""),
+        ("Notes", "\u{7b2c}\u{4e00}\u{884c}\nsecond \u{1f600}"),
+        ("Notes", ""),
+    ] {
+        let observed = peer.observe_named(&id, 1, "Plain button").await;
+        let filled = peer.call("browser_act", json!({"session_id":id,"control_epoch":1,"action":{"kind":"fill","text":text,"ref":reference(&observed,name)}})).await;
+        assert_eq!(filled["result"]["input_acknowledged"], true, "{filled}");
+        let observed = peer.observe_named(&id, 1, "Plain button").await;
+        let value = &node_named(&observed, name)["value"];
+        // Native AX may omit an empty value; the page event independently
+        // confirms the complete DOM value and that a native edit occurred.
+        assert_eq!(value.as_str().unwrap_or(""), text, "{observed}");
+        assert!(
+            names_of(&observed).contains(&format!("Filled {name}: {}; trusted=true", json!(text))),
+            "{observed}"
+        );
+    }
     assert_running(&mut peer, &id).await;
 
     // A read-only field takes a click, but not text.
@@ -2801,7 +2823,7 @@ async fn an_owner_who_refuses_private_networks_names_the_local_sites_that_open()
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     // This machine's own name leads to an address of its own, which is not public.
     // Two sites answer under that name: one the owner lists, one the owner does not.
-    let name = String::from_utf8(
+    let mut name = String::from_utf8(
         std::process::Command::new("hostname")
             .output()
             .unwrap()
@@ -2810,11 +2832,19 @@ async fn an_owner_who_refuses_private_networks_names_the_local_sites_that_open()
     .unwrap()
     .trim()
     .to_ascii_lowercase();
-    let own = (name.as_str(), 0)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut found| found.find(|address| address.is_ipv4()))
-        .map(|address| address.ip());
+    let resolve = |name: &str| {
+        (name, 0)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut found| found.find(|address| address.is_ipv4()))
+            .map(|address| address.ip())
+    };
+    let mut own = resolve(&name);
+    // macOS may publish its unqualified host name only through Bonjour.
+    if own.is_none() && cfg!(target_os = "macos") && !name.ends_with(".local") {
+        name.push_str(".local");
+        own = resolve(&name);
+    }
     let named = match own {
         Some(address) => Some((
             counting_site(address, "Listed page").await,

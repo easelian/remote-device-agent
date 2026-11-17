@@ -257,7 +257,7 @@ Core 的离线函数切换入口是目标版本的 `rdh-migrate activate-runtime
 
 当前 v2 的 `network_isolation` 和 `observed_connection_address` 均为 `false`。要求严格私网连接检查的策略在创建浏览器和资料前拒绝。受支持 DOM 之外的 closed shadow、canvas 和浏览器 UI 不在观察范围；不能证明的输入几何拒绝。已安装浏览器、候选声明、通道就绪、公开会话成功及产品发布分别判断。
 
-v1 的 [select_all](../src/browser/engine/cdp/page.rs) 仍固定发送 Ctrl+A（`modifiers: 2`），没有按 macOS 转换主修饰键。v2 的 CDP 原生编辑路径有相应平台分支，但公开 v2 目前仅在 Linux x86_64 启用，不能据此视为 v1 macOS 填写行为已经修正或验证。
+v1 的 [select_all](../src/browser/engine/cdp/page.rs) 在 macOS 发送 Command+A（`modifiers: 4`），并在 keyDown 上附带原生编辑命令 `commands: ["selectAll"]`；仅改变修饰键不能在 macOS CDP 中执行全选。其他平台沿用 Ctrl+A（`modifiers: 2`）。公开 v2 目前仍仅在 Linux x86_64 启用，不能从 v1 的平台行为推导 v2 的支持范围。
 
 | 现有测试/工具 | 覆盖范围；存在不等于本轮已执行 |
 | --- | --- |
