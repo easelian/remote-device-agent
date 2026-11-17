@@ -24,6 +24,26 @@ use std::{
     time::Duration,
 };
 
+// The GNU native fixture embeds the production library rather than the CLI.
+// Enter its real private supervisor before libtest parses arguments. Rust's
+// GNU argv initializer uses priority 00099; this fixture runs immediately after.
+// This entry is confined to this test executable and adds no production hook.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[used]
+#[unsafe(link_section = ".init_array.00100")]
+static SUPERVISOR_ENTRY: extern "C" fn() = {
+    extern "C" fn enter() {
+        if let Some(result) = rdh_agent::browser::run_internal_supervisor() {
+            if let Err(error) = result {
+                eprintln!("Browser fixture supervisor: {error}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+    }
+    enter
+};
+
 const PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>RDH browser fixture</title>
 <h1>Test customer</h1><form id="form"><label>Name <input id="name" name="name"></label><button>Save customer</button></form><p id="result"></p>
 <label>Secret <input type="password" value="MUST_NOT_DISCLOSE"></label><a href="/next">Next page</a>
@@ -130,7 +150,12 @@ async fn abrupt_runtime_exit_reclaims_owned_browser_without_replaying_input() {
         let run = fs::read_dir(root.join(".rdh-browser"))
             .unwrap()
             .filter_map(|e| e.ok())
-            .map(|e| e.path().join(id))
+            .map(|e| {
+                let path = e.path();
+                #[cfg(target_os = "linux")]
+                let path = path.join("chromium-supervised-v1");
+                path.join(id)
+            })
             .find(|p| p.is_dir())
             .unwrap();
         if missing_owner {

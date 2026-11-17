@@ -55,6 +55,10 @@ pub const OPERATIONS: &[&str] = &[
 /// Internal process entry, recognized before public CLI arguments are parsed.
 #[doc(hidden)]
 pub fn run_internal_supervisor() -> Option<crate::error::Result<()>> {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = process::run_posix_supervisor() {
+        return Some(result.map_err(crate::error::Error::from));
+    }
     #[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
     if let Some(result) = process::firefox::run_helper() {
         return Some(result.map_err(crate::error::Error::from));

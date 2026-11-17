@@ -1,11 +1,14 @@
 //! Linux process-group observation; errors never mean an empty group.
-use std::{fs, io};
+#[cfg(any(test, feature = "experimental-browser-bidi"))]
+use std::fs;
+use std::io;
 pub fn prepare() -> io::Result<()> {
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) } != 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
 }
+#[cfg(any(test, feature = "experimental-browser-bidi"))]
 fn members(group: u32) -> io::Result<Vec<(u32, char)>> {
     let mut members = Vec::new();
     for entry in fs::read_dir("/proc")? {
@@ -44,6 +47,7 @@ fn members(group: u32) -> io::Result<Vec<(u32, char)>> {
     }
     Ok(members)
 }
+#[cfg(any(test, feature = "experimental-browser-bidi"))]
 pub fn reap(group: u32) {
     if let Ok(members) = members(group) {
         for (pid, _) in members {
@@ -55,6 +59,7 @@ pub fn reap(group: u32) {
         }
     }
 }
+#[cfg(any(test, feature = "experimental-browser-bidi"))]
 pub fn stopped(group: u32) -> io::Result<bool> {
     let list = members(group)?;
     if !list.iter().any(|(pid, _)| *pid == group) {
@@ -68,11 +73,6 @@ pub fn stopped(group: u32) -> io::Result<bool> {
     // zombie cannot use the profile, but it still belongs to this supervisor.
     reap(group);
     Ok(members(group)?.iter().all(|(pid, _)| *pid == group))
-}
-pub fn retired(group: u32) -> io::Result<bool> {
-    Ok(members(group)?
-        .iter()
-        .all(|(_, state)| matches!(state, 'Z' | 'X')))
 }
 
 #[cfg(test)]

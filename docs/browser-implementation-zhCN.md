@@ -228,7 +228,13 @@ contenteditable 的编辑值采用显示文本并将 CRLF 规范为 LF；没有�
 
 ### 6.1 CDP
 
-Chromium 通过受管启动器、私有 remote-debugging pipe 和独立资料启动。平台相关进程所有权分别由 POSIX/Linux/macOS 和 Windows supervisor 实现；关闭及恢复核对进程启动身份，无法确认时保留记录。原生生命周期的公共规则另见[生命周期说明](native-lifecycle-zhCN.md)。
+Chromium 通过受管启动器、私有 remote-debugging pipe 和独立资料启动。Linux 为每个会话启动同一 Agent 二进制的独立 subreaper；macOS 保留进程组监督，Windows 使用 Job 与独立 supervisor。关闭及恢复核对平台所有权证据，无法确认时保留记录。原生生命周期的公共规则另见[生命周期说明](native-lifecycle-zhCN.md)。
+
+Linux supervisor 通过匿名 Unix socket 接收最多 32 KiB 的启动配置，Agent 持久化所有者身份后才发送配置。浏览器保持原有 CDP 管道及网络环境，不增加 namespace 前置条件。浏览器退出、Agent 退出、父端关闭 lifeline 或 supervisor 收到 `SIGTERM`/`SIGINT`/`SIGHUP` 后，supervisor 逐层终止并回收自己的直接子进程；脱离进程组的 Crashpad 等后代在父进程退出后由该 subreaper 收养。发送信号前用 `waitid(WNOWAIT)` 核对其仍为未回收的直接子进程，不能按名称或过期 PID 批量终止进程。[Linux subreaper 语义](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)。
+
+supervisor 只有在 `waitpid` 返回 `ECHILD` 后才写入完成凭据，凭据绑定其 PID、启动身份和随机 nonce。正常关闭必须验证凭据并回收 supervisor；恢复必须同时验证凭据和原 supervisor 已停止。supervisor 被强制杀死、凭据缺失或不匹配时保持 `browser_cleanup_pending`；通道断开、浏览器主进程退出或原进程组为空都不能代替整棵进程树的完成证明。配置与原生主进程身份写入失败时，同样不能提前释放目录或命名资料租约。
+
+Linux CDP 临时运行目录位于 `chromium-supervised-v1/<session>`；关闭最后一个会话或成功恢复后移除空的格式目录。旧 Agent 会拒绝尚存的未知目录，不能误用新所有权记录；回退须先完成新会话的清理。没有整树完成凭据的旧 Linux 进程组记录保留为 `browser_cleanup_pending`，不通过迁移伪造退出证明。公开 v1 请求与响应格式不变。
 
 CDP 命令为封闭枚举，类型元数据显式区分页面副作用、读取及弹窗行为。Runtime 求值异常按失败解码，不能成为成功的空观察。固定程序可在内部执行 JavaScript，但没有向调用者开放 evaluate、任意方法名、原生对象 ID 或调试端点。
 

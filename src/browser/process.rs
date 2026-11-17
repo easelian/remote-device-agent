@@ -23,6 +23,8 @@ pub(crate) mod firefox;
 mod posix;
 #[cfg(unix)]
 use posix as platform;
+#[cfg(target_os = "linux")]
+pub(super) use posix::run_helper as run_posix_supervisor;
 #[cfg(windows)]
 mod windows;
 pub use super::engine::detect;
@@ -55,6 +57,22 @@ impl BrowserProcess {
         named: Option<NamedProfile>,
         deadline: Instant,
     ) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let owned_root = {
+            let path = root.join("chromium-supervised-v1");
+            match crate::storage::create_private_dir(&path) {
+                Ok(_) => {}
+                Err(crate::error::Error::Io(error))
+                    if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
+                    crate::storage::private_metadata(&path, true).map_err(io_error)?;
+                }
+                Err(error) => return Err(io_error(error)),
+            }
+            path
+        };
+        #[cfg(target_os = "linux")]
+        let root = owned_root.as_path();
         let profile = root.join(id);
         crate::storage::create_private_dir(&profile).map_err(io_error)?;
         let launch = Launch::native(
@@ -138,6 +156,12 @@ impl BrowserProcess {
             .map_err(io_error)?;
         }
         retire(&self.profile)?;
+        #[cfg(target_os = "linux")]
+        if let Some(parent) = self.profile.parent() {
+            // An empty family no longer needs to block an older Agent. A
+            // concurrent session keeps it present via remove_dir's atomic check.
+            let _ = fs::remove_dir(parent);
+        }
         self.closed = true;
         self.named = None;
         Ok(())
@@ -208,6 +232,13 @@ pub fn recover(root: &Path) -> Result<()> {
         #[cfg(all(target_os = "linux", feature = "experimental-browser-bidi"))]
         if id == "v2" {
             recover_v2(&entry.path())?;
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        if id == "chromium-supervised-v1" {
+            crate::storage::private_metadata(&entry.path(), true).map_err(io_error)?;
+            recover(&entry.path())?;
+            fs::remove_dir(entry.path()).map_err(cleanup_pending)?;
             continue;
         }
         if matches!(id, "profiles" | "artifacts") {
