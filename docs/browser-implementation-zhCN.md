@@ -124,11 +124,11 @@ Core 绑定已认证的连接 ID 和 Agent 实例，向该连接发送带原认�
 | --- | --- |
 | `open` | 明确选择 v1 或已声明可用的 v2 后端；丢失打开响应时先恢复原操作，不重复创建 |
 | `observe` | 从当前会话取得 tab 与代次，再观察；诊断示例还要求实际 actionability 扩展版本 1 |
-| `recover` | 查询原 `operation_id` 和会话；pending/running/unknown 不授权重放；公开回执状态字段为 `execution_state` |
-| `handoff` | 暂停后提供认证 `human_url`；用户显式交回并允许披露，再取新代次并重新观察 |
+| `recover` | 查询原 `operation_id`、会话及 tab；普通暂停在连接可用、输入与必要清理已结算且没有人工控制/披露阻塞时，用当前 epoch 恢复，再按 observe 模板取得新 tab/epoch 和观察；pending/running/unknown 不授权重放 |
+| `handoff` | 仅敏感信息输入或必须由本人完成的验证需要人工接管；暂停后提供认证 `human_url`，用户明确交回并允许披露，再取新代次并重新观察 |
 | `files` | 只给启用能力的示例；文件通过人工页面交付，上传示例使用当前会话/tab/origin 的一次性授权 |
 
-当前 `handoff` 模板以用户希望接管现有会话为前提，尚未把敏感信息输入或本人验证设为限定条件；`recover` 模板将继续观察与用户复核并列提供。这些文字不表示系统会自动创建人工控制租约。当前人工接口也不接受用途字段；产品用途的待完善约束见[能力指引回归](browser-design-zhCN.md#6-能力指引回归)。
+`recover` 的能力准入要求 `browser_sessions`、`browser_tabs`、`browser_control` 和 `browser_observe`，不依赖人工接管能力；原操作回执仍使用 `get_operation_status`，状态字段为 `execution_state`。模板把普通页面、脚本、网络和性能故障交给 AI 取证和恢复，能力不足、连接不可用或检查被拒绝时明确说明缺失证据及待决工作，不自动转为人工排障。`succeeded` 只代表 Agent 结果，业务成功须另外核对。指引不自动执行这些步骤，Agent 继续独立检查恢复条件；人工接口没有用途参数，当前用途限制由模板前提表达。
 
 包含 `support_id` 和适用时 `human_url` 的 Core 结果正文最多 16 KiB，完整 MCP 封装继续受原有上限约束。实例变化、关闭或能力变化后，旧指引只能作为说明；下一次工具调用重新校验当前状态。旧 Core 未提供该工具时，客户端继续按已有 schema 使用原工具。
 
