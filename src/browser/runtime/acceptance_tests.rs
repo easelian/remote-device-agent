@@ -518,19 +518,29 @@ async fn native_handle_inventory_during_concurrent_downloads() {
     }
     fixture.release_downloads.store(true, Ordering::Release);
     let until = Instant::now() + Duration::from_secs(30);
+    let mut last_inventory = Value::Null;
     loop {
         let files = fixture.call("browser_files", json!({})).await.unwrap();
+        let metrics = fixture.snapshot(&id).await.0;
+        let inventory = json!({"files":files,"metrics":metrics});
+        if inventory != last_inventory {
+            fixture.record(json!({"kind":"download-settlement","inventory":inventory}));
+            last_inventory = inventory;
+        }
         if files["files"].as_array().unwrap().len() == 8
             && files["files"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .all(|v| v["state"] == "ready")
-            && fixture.snapshot(&id).await.0["streams"] == 0
+            && metrics["streams"] == 0
         {
             break;
         }
-        assert!(Instant::now() < until, "download inventory did not finish");
+        assert!(
+            Instant::now() < until,
+            "download inventory did not finish: {last_inventory}"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     for navigation in navigations {

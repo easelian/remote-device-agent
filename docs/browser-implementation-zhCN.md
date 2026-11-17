@@ -243,6 +243,8 @@ session 退出后，新普通命令在入队和设置 effect 前返回 `browser_
 
 RemoteObject 随所属调试 session 退出失效，迟到响应不能恢复其可用性；仅针对失效对象或对象组的释放可以不发送原生命令。`IO.close` 和 keyUp 不适用该处理：已登记流无法通过退出的 session 清理时，保留占用并进入所属浏览器恢复，不改发到根通道或另一个 session；已提交按下操作也不能因释放未发送而变为 `not_sent`。
 
+并发下载完成时，各传输任务在调用者原有 deadline 内等待四个保留清理槽。`IO.close` 仅在返回 `browser_busy/not_sent`、尚未进入原生命令队列时重新尝试准入；已提交调用超时后保持 `unknown`，继续由原命令 ID 结算，不重复发送。期限到达但仍未提交时保留流租约；调用者结束不代表浏览器已经关闭流。
+
 ### 6.2 Firefox/BiDi
 
 `process/firefox.rs` 启动同一 Agent 二进制的内部监督入口。入口在 Tokio 初始化前运行，通过继承的匿名 Unix `SOCK_SEQPACKET` 接收配置，并在独立的 user、network、PID 和 mount namespace 中启动 Firefox。该路径不分配 CDP 管道描述符。

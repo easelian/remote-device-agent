@@ -405,6 +405,8 @@ Agent RSS 增长取预热后首、末各 10 次已关闭会话的空闲样本中
 
 验收必须同时覆盖对象与流的精确边界、pending 预留、错误返回、释放失败、迟到响应、取消、同组并发响应、不同 session 的同名句柄，以及普通 32 槽满时的清理路径。Agent 的 `cdp::wire::lease_tests` 和 `bidi::wire::tests::leases` 用可控 pipe/WebSocket 验证这些时序；`native_object_lease_boundary_and_unsubscribed_runtime_events` 使用真实 Chrome 验证 256 个对象、超额拒绝、异常对象回收和 console 事件边界。保留真实 v1 扫描、并发下载、CDP/BiDi 共同语义的原始峰值，并在最终 release 构建重跑 v1 原生回归。预算冻结不代表尚未运行的平台和 Server CI 已通过。
 
+并发关闭流时，用可控 pipe 暂停四个 `IO.close` 响应，再请求关闭其余已登记流；等待任务仍持有原租约，清理 pending 不超过四项，收到响应后每个流只提交一次关闭并归零。分别覆盖等待容量时到期、已提交后超时及迟到响应：未提交到期保持 `not_sent` 和租约，已提交超时保持 `unknown` 且不重放。真实 Chrome 的八个并发附件下载连续运行 20 次，记录文件完成和流计数归零；保留首次失败，不能用单次重跑代替根因与修复验证。
+
 ### 11.3 平台矩阵
 
 首个可对比开发组合为 Linux x86_64 原生 Chromium/CDP 与 Firefox/BiDi。它用于验证抽象是否成立，不代表其他平台自动获得支持。

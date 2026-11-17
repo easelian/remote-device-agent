@@ -93,6 +93,160 @@ impl Drop for Peer {
 }
 
 #[tokio::test]
+async fn concurrent_stream_closes_wait_for_the_same_four_reserved_slots_without_losing_ownership() {
+    let mut peer = Peer::new();
+    for index in 0..8 {
+        peer.call(
+            "s",
+            Command::FetchTakeResponseBodyAsStream,
+            json!({}),
+            json!({"stream":format!("stream-{index}")}),
+        )
+        .await;
+    }
+    let mut calls = Vec::new();
+    for index in 0..8 {
+        let wire = peer.cdp.clone();
+        calls.push(tokio::spawn(async move {
+            wire.close_stream(
+                Some("s"),
+                &format!("stream-{index}"),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+        }));
+    }
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        held.push(peer.request().await);
+    }
+    tokio::task::yield_now().await;
+    assert_eq!(peer.cdp.test_metrics()["pending"], 4);
+    assert_eq!(peer.leases()["streams"], 8);
+    assert!(
+        calls.iter().all(|call| !call.is_finished()),
+        "Reserved-slot pressure must not discard an owned stream close"
+    );
+    let mut sent = std::collections::BTreeSet::new();
+    for request in held {
+        assert_eq!(request["method"], "IO.close");
+        sent.insert(request["params"]["handle"].as_str().unwrap().to_owned());
+        peer.reply(&request, json!({})).await;
+    }
+    for _ in 0..4 {
+        let request = peer.request().await;
+        assert_eq!(request["method"], "IO.close");
+        assert!(sent.insert(request["params"]["handle"].as_str().unwrap().to_owned()));
+        assert!(peer.cdp.test_metrics()["pending"].as_u64().unwrap() <= 4);
+        peer.reply(&request, json!({})).await;
+    }
+    for call in calls {
+        call.await.unwrap().unwrap();
+    }
+    assert_eq!(sent.len(), 8);
+    assert_eq!(peer.leases()["streams"], 0);
+    assert_eq!(peer.cdp.test_metrics()["streams"], 0);
+}
+
+#[tokio::test]
+async fn stream_close_waiting_for_capacity_expires_without_submission_or_losing_its_lease() {
+    let mut peer = Peer::new();
+    for index in 0..5 {
+        peer.call(
+            "s",
+            Command::FetchTakeResponseBodyAsStream,
+            json!({}),
+            json!({"stream":format!("stream-{index}")}),
+        )
+        .await;
+    }
+    let mut calls = Vec::new();
+    let mut held = Vec::new();
+    for index in 0..4 {
+        let wire = peer.cdp.clone();
+        calls.push(tokio::spawn(async move {
+            wire.close_stream(
+                Some("s"),
+                &format!("stream-{index}"),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .await
+        }));
+        held.push(peer.request().await);
+    }
+    let error = peer
+        .cdp
+        .close_stream(
+            Some("s"),
+            "stream-4",
+            Instant::now() + Duration::from_millis(40),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!((error.code, error.state), ("browser_deadline", "not_sent"));
+    assert_eq!(peer.cdp.test_metrics()["pending"], 4);
+    assert_eq!(peer.leases()["streams"], 5);
+    for request in held {
+        assert_ne!(request["params"]["handle"], "stream-4");
+        peer.reply(&request, json!({})).await;
+    }
+    for call in calls {
+        call.await.unwrap().unwrap();
+    }
+    peer.barrier().await;
+    assert_eq!(peer.leases()["streams"], 1);
+    let wire = peer.cdp.clone();
+    let close = tokio::spawn(async move {
+        wire.close_stream(
+            Some("s"),
+            "stream-4",
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+    });
+    let request = peer.request().await;
+    assert_eq!(request["method"], "IO.close");
+    assert_eq!(request["params"]["handle"], "stream-4");
+    peer.reply(&request, json!({})).await;
+    close.await.unwrap().unwrap();
+    peer.barrier().await;
+    assert_eq!(peer.leases()["streams"], 0);
+}
+
+#[tokio::test]
+async fn submitted_stream_close_timeout_is_not_replayed_and_retains_the_lease_until_settlement() {
+    let mut peer = Peer::new();
+    peer.call(
+        "s",
+        Command::FetchTakeResponseBodyAsStream,
+        json!({}),
+        json!({"stream":"held"}),
+    )
+    .await;
+    let wire = peer.cdp.clone();
+    let call = tokio::spawn(async move {
+        wire.close_stream(
+            Some("s"),
+            "held",
+            Instant::now() + Duration::from_millis(40),
+        )
+        .await
+    });
+    let request = peer.request().await;
+    let error = call.await.unwrap().unwrap_err();
+    assert_eq!(
+        (error.code, error.state),
+        ("browser_timeout_unknown", "unknown")
+    );
+    assert_eq!(peer.leases()["streams"], 1);
+    assert_eq!(peer.cdp.test_metrics()["pending"], 1);
+    peer.reply(&request, json!({})).await;
+    peer.barrier().await;
+    assert_eq!(peer.leases()["streams"], 0);
+    assert_eq!(peer.cdp.test_metrics()["streams"], 0);
+}
+
+#[tokio::test]
 async fn exact_object_stream_and_combined_limits_refuse_before_submission() {
     let mut peer = Peer::new();
     for n in 0..256 {

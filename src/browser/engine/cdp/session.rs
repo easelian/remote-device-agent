@@ -495,15 +495,6 @@ impl TransferPort for Engine {
     async fn close_stream(&self, stream: Stream, deadline: Instant) -> Result<()> {
         let a = &self.backend;
         let session = stream.context.as_ref().map(|s| a.session(s)).transpose()?;
-        a.wire
-            .cleanup()
-            .call(
-                session,
-                Command::IoClose,
-                json!({"handle":stream.key}),
-                deadline,
-            )
-            .await
-            .map(drop)
+        a.wire.close_stream(session, &stream.key, deadline).await
     }
 }

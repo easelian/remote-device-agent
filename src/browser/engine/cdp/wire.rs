@@ -517,6 +517,39 @@ impl Cdp {
             .filter(|p| p.input_barrier)
             .count()
     }
+    pub async fn close_stream(
+        &self,
+        session: Option<&str>,
+        handle: &str,
+        deadline: Instant,
+    ) -> Result<()> {
+        let wire = self.cleanup();
+        loop {
+            let result = wire
+                .call(
+                    session,
+                    Command::IoClose,
+                    json!({"handle":handle}),
+                    deadline,
+                )
+                .await;
+            match result {
+                // Bounded transfer jobs retain their stream while waiting for
+                // the four existing cleanup slots. Only failed admission is
+                // retried; an admitted close, including unknown completion,
+                // must settle under its original command ID.
+                Err(error) if error.code == "browser_busy" && error.state == "not_sent" => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(Failure::new("browser_deadline"));
+                    }
+                    tokio::time::sleep(remaining.min(Duration::from_millis(1))).await;
+                }
+                result => return result.map(drop),
+            }
+        }
+    }
+
     pub fn stop(&self) {
         self.inner.finish();
     }
