@@ -2,7 +2,7 @@
 
 English | [简体中文](browser-zhCN.md)
 
-Use a connected AI client to read and interact with websites from a bound Linux, macOS or Windows device, sign in through the same remote browser, and retrieve supported files. This preview feature is disabled by default. This guide applies to Agent builds reporting `capabilities.browser.version = 1` and the matching Gate, Core and Business web builds. The [architecture guide](browser-architecture-zhCN.md) maps the implementation to its source modules.
+Use a connected AI client to read and interact with websites from a bound Linux, macOS or Windows device, sign in through the same remote browser, and retrieve supported files. This preview feature is disabled by default. This guide applies to Agent builds reporting `capabilities.browser.version = 1` and the matching Gate, Core and Business web builds. The [implementation guide](browser-implementation-zhCN.md) maps the implementation to its source modules.
 
 For Server operators, set Core's `http.browser_user_url` to the user website's
 origin, allow `browser:control` in Gate's web actions, and apply the matching Auth
@@ -10,7 +10,7 @@ application-access contract with the `device-browser` purpose. The Server exampl
 configurations contain these settings. The Agent release does not deploy the
 matching services.
 
-Linux x86_64 development builds can explicitly select `semantic_dom_v1` and CDP/BiDi using the [capability v2 configuration and contract](browser-capability-v2-zhCN.md). Requests without a selection retain the v1 behavior described here.
+Linux x86_64 development builds can explicitly select `semantic_dom_v1` and CDP/BiDi using the [current v2 configuration and behavior](browser-implementation-zhCN.md). Requests without a selection retain the v1 behavior described here.
 
 ## Enable browser sessions
 
@@ -168,4 +168,4 @@ With `uploads` enabled, take human control, choose a local file and explicitly a
 - Agent restart discards unfinished downloads and all uploads and does not resume old sessions or replay website actions. POSIX recovery checks the original process group. On Windows, an independent cleanup child terminates the browser Job after Agent death, confirms that its active process count is zero, and records completion. The next browser request uses that record to clean up the old run and permit reopening the profile. Cleanup in progress returns `browser_cleanup_pending`. If both the Agent and cleanup child are killed, or reliable completion evidence is missing, the data remains quarantined and cannot be reused or deleted by unbinding. An OS restart alone does not supply that proof.
 - `.rdh-browser` is private Agent storage, excluded from file reads, writes, listings, searches and configured roots. Matching ignores case; Windows also checks normalized directory paths to reject short-name aliases. Shell permission still grants the Agent OS user's authority; this exclusion is not a shell sandbox or a boundary against that same OS account.
 
-See the [architecture guide](browser-architecture-zhCN.md) for source ownership. Validate image rendering, task continuation, performance and usability with the intended AI host, operating system and browser. The result of `browser_open` names the browser product and version that the session runs on. First-use permission configuration and browser installation are currently local steps; the web page reports readiness and recovers existing sessions.
+See the [implementation guide](browser-implementation-zhCN.md) for source ownership. Validate image rendering, task continuation, performance and usability with the intended AI host, operating system and browser. The result of `browser_open` names the browser product and version that the session runs on. First-use permission configuration and browser installation are currently local steps; the web page reports readiness and recovers existing sessions.
