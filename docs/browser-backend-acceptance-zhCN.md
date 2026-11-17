@@ -152,7 +152,25 @@ Agent RSS 增长取预热后首、末各 10 次已关闭会话的空闲样本中
 
 公开预算测试与原生传输测试分别记录拒绝位置。Server 的 `test_browser_v2_budgets.py` 覆盖分页、50,000 项遍历待处理队列、截图压缩率、资料与文件容量；`test_browser_v2_stress.py` 覆盖公开异常恢复及交接重复；`test_browser_v2_rss.py` 与冻结的 `browser-rss-protocol.json` 执行上述内存测量。`scripts/summarize_browser_rss.py` 从四组完整原始样本重新计算增长、基线漂移和后端空闲开销，缺样或门槛未通过时返回非零退出码。协议层使用真实 pipe/WebSocket 端点填满命令、完整 JSON 和事件字节预算，并保留固定种子序列及控制权 fence 样本。节点与字符预算同时生效时，报告实际首先触发的预算，不能把“接受 1,000 节点参数”写成“实际保留了 1,000 个引用”。
 
-### 9.2 平台矩阵
+### 9.2 原生句柄租约预算
+
+预算按浏览器连接计算，包含已返回的租约和已提交、尚未返回的创建命令预留。CDP 对象上限为 256，下载流上限为 16，合计上限为 272；各分类不能借用另一分类的额度。对象预算覆盖 v1 单次 200 节点批次及扫描器，流预算对齐文件目录的 16 项上限。普通命令仍为 32 个槽位，另有 4 个仅供对象、对象组和流释放使用的槽位。容量不足在入队前返回既有的 `browser_busy`、`not_sent`，不记录网页动作已发送。
+
+| 类型 | 所有权与释放 | 验收边界 |
+| --- | --- | --- |
+| CDP `RemoteObjectId` | 连接及附着 session 内的对象，按 `releaseObject` 或 `releaseObjectGroup` 的成功响应结算 | 包含扫描器、观察批次、输入与几何临时对象、脚本异常对象；按返回类型最坏情况预留 |
+| CDP `IO.StreamHandle` | 附件响应流，以 `IO.close` 成功响应结算 | 16 个流与第 17 个创建请求；关闭失败不能先扣除占用 |
+| BiDi root `handle` | 当前命令使用 `resultOwnership: none`，允许的 root 租约数为 0 | 收到意外 root handle 时终止所属传输，并由现有进程所有权流程清理 |
+| BiDi `sharedId`、CDP `BackendNodeId` | 节点身份标识，不建立需要 `disown` 或 `releaseObject` 的协议租约 | 继续使用文档代次、引用表和扫描器预算；不得与 root handle 混计 |
+| 页面内扫描器与语义引用表 | 页面对象及 JavaScript 强引用，使用既有扫描、节点和字符预算 | 与协议租约分别计数；原生句柄上限不替代 DOM 或页面内存预算 |
+
+超时、调用方取消、弹窗提前结束等待均不释放尚未返回的预留。迟到且无人接收的对象与流进入有界清理；释放未确认前继续计费。清理通道耗尽、清理响应失败或超过 3 秒时停止所属连接，不重放网页动作。释放组只清除发送释放命令时已登记的成员，不能把稍后取得的同组对象误记为已释放。连接终止后的进程与目录仍由既有所有权流程确认清理，不能把传输关闭写成进程已退出。
+
+CDP 不订阅当前功能未使用的 Runtime console、异常与 inspect 事件，避免页面主动制造未经过准入的对象句柄；仍拒绝意外携带对象所有权的事件。Runtime 求值异常通过命令响应进入账本。协议语义依据 [CDP Runtime](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/) 和 [WebDriver BiDi 脚本所有权](https://www.w3.org/TR/webdriver-bidi/#type-script-ResultOwnership)。
+
+验收必须同时覆盖对象与流的精确边界、pending 预留、错误返回、释放失败、迟到响应、取消、同组并发响应、不同 session 的同名句柄，以及普通 32 槽满时的清理路径。保留真实 v1 扫描、并发下载、CDP/BiDi 共同语义的原始峰值，并在最终 release 构建重跑 v1 原生回归。预算冻结不代表尚未运行的平台和 Server CI 已通过。
+
+### 9.3 平台矩阵
 
 首个可对比开发组合为 Linux x86_64 原生 Chromium/CDP 与 Firefox/BiDi。它用于验证抽象是否成立，不代表其他平台自动获得支持。
 
