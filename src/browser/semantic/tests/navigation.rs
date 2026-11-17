@@ -359,6 +359,73 @@ async fn duplicate_hops_capacity_and_unattributed_requests_are_fenced() {
             .is_ok()
     );
 }
+
+#[test]
+fn policy_history_capacity_stays_fenced_after_all_active_tokens_settle() {
+    let ledger = Decisions::default();
+    for request in 0..4096 {
+        ledger
+            .claim(
+                "context",
+                &request.to_string(),
+                0,
+                "http://example.com/",
+                true,
+                true,
+            )
+            .unwrap()
+            .settled(true);
+        assert_eq!(ledger.metrics().active, 0);
+    }
+    assert_eq!(ledger.metrics().admitted, 4096);
+    assert_eq!(ledger.metrics().allowed, 4096);
+    for request in ["4096", "0"] {
+        let error = ledger
+            .claim("context", request, 0, "http://example.com/", true, true)
+            .err()
+            .expect("completed tokens cannot be evicted to admit more work");
+        assert_eq!(error.code, "browser_policy_capacity");
+    }
+    assert_eq!(ledger.metrics().active, 0);
+    assert_eq!(ledger.metrics().admitted, 4096);
+    let replacement_session = Decisions::default();
+    replacement_session
+        .claim("context", "0", 0, "http://example.com/", true, true)
+        .unwrap()
+        .settled(true);
+    assert_eq!(replacement_session.metrics().active, 0);
+    assert_eq!(replacement_session.metrics().admitted, 1);
+}
+
+#[test]
+fn policy_identifier_and_url_bounds_refuse_before_acquiring_a_lease() {
+    let ledger = Decisions::default();
+    let context = "c".repeat(512);
+    let request = "r".repeat(512);
+    let url = format!("http://example.com/{}", "a".repeat(8192 - 19));
+    assert_eq!(url.len(), 8192);
+    ledger
+        .claim(&context, &request, 0, &url, true, true)
+        .unwrap()
+        .settled(true);
+    for (context, request, url) in [
+        (format!("{context}c"), request.clone(), url.clone()),
+        (context.clone(), format!("{request}r"), url.clone()),
+        (context.clone(), request.clone(), format!("{url}a")),
+        (context.clone(), String::new(), url.clone()),
+    ] {
+        assert_eq!(
+            ledger
+                .claim(&context, &request, 0, &url, true, true)
+                .err()
+                .unwrap()
+                .code,
+            "browser_policy_token_invalid"
+        );
+    }
+    assert_eq!(ledger.metrics().active, 0);
+    assert_eq!(ledger.metrics().admitted, 1);
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicit native Chrome and evidence directory"]
 async fn cdp_native_navigation_policy() {
