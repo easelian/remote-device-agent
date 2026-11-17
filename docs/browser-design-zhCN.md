@@ -90,6 +90,35 @@ Core 单元测试逐个校验模板参数及输出 schema，并重算摘要。Se
 
 纯指引调用的可控 Agent 端点只能收到带认证主体的 `browser_sessions` 元数据读取。实际浏览器检查会话数与页面请求/提交计数不变；执行示例是单独步骤，其导航、人工交接和文件选择不能混入只读指引的副作用统计。
 
+### 6.1 独立文件授权契约（待实现）
+
+独立文件授权继续使用经认证的 Business → Gate → Core → Agent `browser_human` 链路，但不调用 `claim`、`release`，不创建或续期人工控制租约，也不暂停、恢复、切换标签页或改变控制代次。文件选择和批准是用户动作；AI 只能取得授权元数据并按现有 `attach_file` 使用一次。现有 `upload_*` 接口及租约语义继续服务旧客户端。
+
+设备在 `capabilities.browser.extensions.file_authorization` 显式声明 `version: 1`、`available` 和可空 `reason`；可用性要求原上传策略、存储及浏览器条件成立。新增人工接口先检查此版本。旧 Agent 缺少声明时，新页面明确显示独立文件授权不可用，不隐式接管或退回租约上传。原有 v1 打开和观察格式不增加必填字段；新增会话上下文接口返回本次会话实际支持情况，不以设备候选替代运行时检查。
+
+新增动作的参数对象封闭，不接受调用者主体或设备路径：
+
+| 动作 | 参数（均另含 `action`） | 行为 |
+| --- | --- | --- |
+| `file_upload_context` | `session_id`、`view_id` | 读取当前活动 tab、HTTP(S) origin、控制代次及独立授权版本；不改变活动 tab，不读取截图或正文 |
+| `file_upload_begin` | 上述字段及 `tab_id`、`source_origin`、`control_epoch`、`name`、`size_bytes`、`sha256`、`approved: true` | 再读实际 tab/origin，批准显示范围与实际范围一致才预留配额，返回新 `file_grant_id` 和仅人工页面可持有的 `approval_token` |
+| `file_upload_chunk` | `session_id`、`view_id`、`file_grant_id`、`approval_token`、`control_epoch`、`offset`、`data` | 身份、授权代次和精确 offset 匹配后追加有界数据；不发送网页输入 |
+| `file_upload_finish` | `session_id`、`view_id`、`file_grant_id`、`approval_token`、`control_epoch` | 校验完整大小和 SHA-256，再核对当前活动 tab/origin 与授权目标，最后在控制 fence 内发布这一份授权 |
+| `file_upload_status` | `session_id`、`view_id`、`file_grant_id`、`approval_token` | 查询原暂存的状态、已收到字节和固定到期时间；不延长授权、不重试追加或发布 |
+| `file_upload_cancel` | 与 status 相同 | 撤销尚未使用的同一份暂存/批准；关闭、换页或人工接管后仍可凭原授权清理，不依赖恢复浏览器控制 |
+
+`view_id` 使用页面生成的 32 位十六进制随机值；`approval_token` 由 Agent 生成同等长度的独立随机值，仅返回 begin 响应，私有元数据保存其 SHA-256。授权绑定已认证用户、批准页面的主体和 view、原 AI 主体、Agent 实例内的 session、tab、origin、控制代次及文件元数据。token 不进入 AI 元数据、变更回执、审计内容或 URL。status/cancel 只查询或撤销该身份的原授权，不能用来读取文件内容或继续旧控制代次的上传。
+
+context/begin/chunk/finish 只在 AI 持有控制、没有人工持有或待披露确认、连接可用且相关输入和必要清理已结算时执行；拒绝不会改变这些条件。begin/finish 使用当前元数据读取和最终控制 fence，切换控制后不发布旧结果。上传期间 AI 不被自动暂停；tab、origin 或控制代次变化会使 finish 明确拒绝。成功 finish 只令该文件授权的元数据对原 AI 主体可见，不把会话中其他文件改为可见，也不代表整个页面已获新的披露许可。原 `attach_file` 仍验证当前 ref 和 session/tab/origin，并在原生提交前持久化消费状态；unknown 不恢复使用次数。
+
+沿用单文件 32 MiB、总计 128 MiB、16 项、64 KiB 数据块、创建后 600 秒且不续期的预算。新旧上传与下载共用原文件配额和回收任务；新增请求沿用人工接口的 20 秒上限，状态输出不超过 4 KiB。context 返回 origin 不含路径、查询串或凭据；与旧上传相同，只允许 HTTP(S) 目标。人工页面保留有限本地文件缓冲，不把字节发送给 AI。
+
+独立授权写入 `metadata.version: 2`，记录独立授权类型及上述绑定；旧租约上传保持版本 1。新程序能读取旧格式，新旧上传均不跨 Agent 实例继续使用。新程序重启时按已有归属和私有存储规则清理上传暂存；旧程序遇到版本 2 或未知字段必须拒绝并保留原目录，不能自动转换、忽略授权绑定或删除文件。回退前用支持该格式的程序完成清理，再确认旧程序可用。
+
+Business 提供独立文件批准入口，经现有 `files_url` 和会话列表进入；页面先读取目标，再由用户选择文件并勾选一次授权。界面同时显示目标 origin、文件名/大小、一次使用、选择可能立即上传以及后续提交不在本授权内。加载页面、读取上下文、上传失败和缺少能力都不触发人工接管。结果未知时保留原授权身份，使用 status 查询或明确取消；不自动重新 begin、追加块或 finish。控制变化后清除尚未提交的同意状态；遗失 begin 响应时明确保留未知暂存到原到期时间，不宣称已经撤销。
+
+EX-09/26 的分离验收覆盖 v1、v2/CDP、v2/BiDi；开始到完成期间 controller/epoch 不变且无 claim/release 或网页输入；人工控制/披露未完成拒绝；跨用户/view/token/session、目标变化、失联、超时、重复块、摘要错误和容量边界；同一授权只能消费一次且 unknown 不复活。增加当前/旧页面与当前/旧 Agent 组合、版本 1/2 私有元数据重启及回退保留检查，并从真实页面核对请求序列、同意复位和文件字节不进入 AI 输出。原租约上传、下载、人工输入及披露回归保持通过。
+
 ## 7. 可选增量观察
 
 ### 7.1 显式请求与接收端声明

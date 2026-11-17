@@ -307,7 +307,7 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 
 列举 v2 资料时，向 `browser_profiles` 传入打开时的完整 `selection`；删除时，向 `browser_control` 传入 `action: "delete_profile"`、`profile_name` 和相同 `selection`。省略 `selection` 只访问 v1 资料。其它会话操作不接受 `selection`，以 `session_id` 确定后端。资料列举和删除不消耗任务配额。
 
-上传沿用人工网页中的分块暂存和显式授权。当前 `upload_begin`、`upload_chunk`、`upload_finish` 均经 `browser_human` 通道，并要求有效的人工控制租约及匹配的 view、lease 和控制代次；创建上传授权前需要先接管浏览器。用户交还控制并允许披露后，AI 才能重新观察并使用该授权。文件授权和浏览器接管目前没有分离，不能将其描述为无需接管的独立文件批准流程。
+上传沿用人工网页中的分块暂存和显式授权。当前 `upload_begin`、`upload_chunk`、`upload_finish` 均经 `browser_human` 通道，并要求有效的人工控制租约及匹配的 view、lease 和控制代次；创建上传授权前需要先接管浏览器。用户交还控制并允许披露后，AI 才能重新观察并使用该授权。文件授权和浏览器接管目前没有分离，不能将其描述为无需接管的独立文件批准流程。独立批准的待实现接口、版本兼容和资源边界见[独立文件授权契约](browser-design-zhCN.md#61-独立文件授权契约待实现)。
 
 批准的文件绑定 AI 主体、用户、会话、标签页、来源站点和一次使用次数。AI 的 `attach_file` 必须提供新观察中的 `ref` 和 `file_grant_id`。Agent 在共同输入租约内重新验证文档、主 frame、原生文件输入框、几何和站点，并在原生派发前持久化授权消耗。CDP 使用 `DOM.setFileInputFiles`，BiDi 使用 `input.setFiles`；调用者不能指定设备路径。结果不明时不恢复授权或自动重试。上传字节不进入模型观察、文件列表或操作回执。
 
