@@ -48,6 +48,9 @@ impl Browsers {
         deadline: Instant,
     ) -> Result<Value> {
         let action = string(params, "action")?;
+        if action.starts_with("file_upload_") {
+            return self.file_approval(params, principal, deadline).await;
+        }
         let keys: &[&str] = match action {
             "list" | "files_list" => &["action"],
             "file_read" => &["action", "artifact_id", "offset"],

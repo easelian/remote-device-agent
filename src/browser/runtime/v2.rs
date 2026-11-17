@@ -5,6 +5,7 @@ use crate::browser::{
     semantic::{self as sem, Port as _},
 };
 use sem::surface::{Focus, Metadata};
+mod file_approval;
 mod human;
 mod native;
 
@@ -99,7 +100,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
-        "extensions":{"actionability":crate::browser::selection::actionability(None)}})
+        "extensions":{"actionability":crate::browser::selection::extension(None)}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))

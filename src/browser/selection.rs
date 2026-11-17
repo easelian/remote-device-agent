@@ -63,7 +63,7 @@ fn installed(path: &std::path::Path) -> bool {
         true
     }
 }
-pub(super) fn actionability(reason: Option<&str>) -> Value {
+pub(super) fn extension(reason: Option<&str>) -> Value {
     json!({"version":1,"available":reason.is_none(),"reason":reason})
 }
 pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: bool) -> Value {
@@ -97,7 +97,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
         let why = reason.or((!exists).then_some("browser_not_installed"));
         json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
                 "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"],
-                "extensions":{"actionability":actionability(why)}})
+                "extensions":{"actionability":extension(why)}})
     })
     .collect();
     let available = backends.iter().any(|b| b["available"] == true);

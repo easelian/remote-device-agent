@@ -16,11 +16,10 @@
 
 | 顺序 | 工作 | 完成条件 |
 | --- | --- | --- |
-| 1 | 分离文件授权和浏览器接管 | 按第 6.1 节实现独立批准；保留原范围与一次性语义，持续回归 AI 恢复和人工接管边界，EX-09、EX-26 |
-| 2 | 核对平台行为并按实际声明范围完成发布验收 | 固定产物、真实客户端、平台/浏览器、托管 CI 和回退证据；未安排项保持 `not_run` |
-| 3 | 可选增量观察 | 内容与引用分离、有界缓存、客户端确定性重建、收益和资源门槛，EX-11～18 |
-| 4 | 面向 AI 的 DOM/原生 AX、控制台/网络、性能诊断与结果验证 | 每项先固定 schema、权限、所有权和数值预算，支持按需取得证据，EX-19～24 |
-| 5 | AI 恢复操作与按需运行时调试 | 依赖相应诊断能力和已验证的 session 生命周期；逐项定义副作用、互斥、暂停/恢复和收尾，EX-25～26 |
+| 1 | 核对平台行为并按实际声明范围完成发布验收 | 固定产物、真实客户端、平台/浏览器、托管 CI 和回退证据；未安排项保持 `not_run` |
+| 2 | 可选增量观察 | 内容与引用分离、有界缓存、客户端确定性重建、收益和资源门槛，EX-11～18 |
+| 3 | 面向 AI 的 DOM/原生 AX、控制台/网络、性能诊断与结果验证 | 每项先固定 schema、权限、所有权和数值预算，支持按需取得证据，EX-19～24 |
+| 4 | AI 恢复操作与按需运行时调试 | 依赖相应诊断能力和已验证的 session 生命周期；逐项定义副作用、互斥、暂停/恢复和收尾，EX-25～26 |
 
 后续能力可在固定候选之外独立开发；正在验收的候选不混入新功能。发布范围按 OS/CPU/浏览器/profile/策略/客户端的具体组合判断，构建成功不代替原生运行。本方案本身不触发推送、合并、托管 CI 或部署。
 
@@ -90,34 +89,13 @@ Core 单元测试逐个校验模板参数及输出 schema，并重算摘要。Se
 
 纯指引调用的可控 Agent 端点只能收到带认证主体的 `browser_sessions` 元数据读取。实际浏览器检查会话数与页面请求/提交计数不变；执行示例是单独步骤，其导航、人工交接和文件选择不能混入只读指引的副作用统计。
 
-### 6.1 独立文件授权契约（待实现）
+### 6.1 独立文件批准回归
 
-独立文件授权继续使用经认证的 Business → Gate → Core → Agent `browser_human` 链路，但不调用 `claim`、`release`，不创建或续期人工控制租约，也不暂停、恢复、切换标签页或改变控制代次。文件选择和批准是用户动作；AI 只能取得授权元数据并按现有 `attach_file` 使用一次。现有 `upload_*` 接口及租约语义继续服务旧客户端。
+当前接口、能力声明、身份绑定、旧租约兼容及数值预算见[独立文件批准](browser-implementation-zhCN.md#81-独立文件批准)。EX-09/26 继续要求文件批准不取得浏览器人工控制；新增文件路径或 UI 不能隐式调用 claim、release、pause 或 resume。
 
-设备在 `capabilities.browser.extensions.file_authorization` 显式声明 `version: 1`、`available` 和可空 `reason`；可用性要求原上传策略、存储及浏览器条件成立。新增人工接口先检查此版本。旧 Agent 缺少声明时，新页面明确显示独立文件授权不可用，不隐式接管或退回租约上传。原有 v1 打开和观察格式不增加必填字段；新增会话上下文接口返回本次会话实际支持情况，不以设备候选替代运行时检查。
+Server `tests/core/test_browser_file_approval.py` 从真实 Business、Gate、Core 和 v1/CDP/BiDi 验证 controller/epoch 不变、暂存不触发目标站点上传、一次使用及 AI 输出中不包含载荷或批准 token。持续覆盖跨身份/view/token/session、控制与 origin 变化、重复块、摘要错误、容量限制、失联与超时；未知结果只查询或取消原授权，不自动重放。Agent 的 [上传存储测试](../src/browser/files/upload.rs)与[最终发布测试](../src/browser/runtime/file_approval.rs)分别约束格式、配额、消费持久化和控制切换；整页披露不得发布尚未通过最终检查的批准。
 
-新增动作的参数对象封闭，不接受调用者主体或设备路径：
-
-| 动作 | 参数（均另含 `action`） | 行为 |
-| --- | --- | --- |
-| `file_upload_context` | `session_id`、`view_id` | 读取当前活动 tab、HTTP(S) origin、控制代次及独立授权版本；不改变活动 tab，不读取截图或正文 |
-| `file_upload_begin` | 上述字段及 `tab_id`、`source_origin`、`control_epoch`、`name`、`size_bytes`、`sha256`、`approved: true` | 再读实际 tab/origin，批准显示范围与实际范围一致才预留配额，返回新 `file_grant_id` 和仅人工页面可持有的 `approval_token` |
-| `file_upload_chunk` | `session_id`、`view_id`、`file_grant_id`、`approval_token`、`control_epoch`、`offset`、`data` | 身份、授权代次和精确 offset 匹配后追加有界数据；不发送网页输入 |
-| `file_upload_finish` | `session_id`、`view_id`、`file_grant_id`、`approval_token`、`control_epoch` | 校验完整大小和 SHA-256，再核对当前活动 tab/origin 与授权目标，最后在控制 fence 内发布这一份授权 |
-| `file_upload_status` | `session_id`、`view_id`、`file_grant_id`、`approval_token` | 查询原暂存的状态、已收到字节和固定到期时间；不延长授权、不重试追加或发布 |
-| `file_upload_cancel` | 与 status 相同 | 撤销尚未使用的同一份暂存/批准；关闭、换页或人工接管后仍可凭原授权清理，不依赖恢复浏览器控制 |
-
-`view_id` 使用页面生成的 32 位十六进制随机值；`approval_token` 由 Agent 生成同等长度的独立随机值，仅返回 begin 响应，私有元数据保存其 SHA-256。授权绑定已认证用户、批准页面的主体和 view、原 AI 主体、Agent 实例内的 session、tab、origin、控制代次及文件元数据。token 不进入 AI 元数据、变更回执、审计内容或 URL。status/cancel 只查询或撤销该身份的原授权，不能用来读取文件内容或继续旧控制代次的上传。
-
-context/begin/chunk/finish 只在 AI 持有控制、没有人工持有或待披露确认、连接可用且相关输入和必要清理已结算时执行；拒绝不会改变这些条件。begin/finish 使用当前元数据读取和最终控制 fence，切换控制后不发布旧结果。上传期间 AI 不被自动暂停；tab、origin 或控制代次变化会使 finish 明确拒绝。成功 finish 只令该文件授权的元数据对原 AI 主体可见，不把会话中其他文件改为可见，也不代表整个页面已获新的披露许可。校验、落盘和载荷准备在最终控制临界区外完成；临界区只核对并发布内存中的可见性。上传不会跨 Agent 实例保留，消费仍在原生提交前持久化。status/finish 返回 `available_to_ai`；已准备但未通过最终发布的文件保持 false，后续整页披露也不能代替这一检查。上传过程的控制代次约束不改变成功发布后原有 session/tab/origin 与一次使用范围。原 `attach_file` 仍验证当前 ref 和 session/tab/origin，并在原生提交前持久化消费状态；unknown 不恢复使用次数。
-
-沿用单文件 32 MiB、总计 128 MiB、16 项、64 KiB 数据块、创建后 600 秒且不续期的预算。新旧上传与下载共用原文件配额和回收任务；新增请求沿用人工接口的 20 秒上限，状态输出不超过 4 KiB。context 返回 origin 不含路径、查询串或凭据；与旧上传相同，只允许 HTTP(S) 目标。人工页面保留有限本地文件缓冲，不把字节发送给 AI。
-
-独立授权写入 `metadata.version: 2`，记录独立授权类型及上述绑定；旧租约上传保持版本 1。新程序能读取旧格式，新旧上传均不跨 Agent 实例继续使用。新程序重启时按已有归属和私有存储规则清理上传暂存；旧程序遇到版本 2 或未知字段必须拒绝并保留原目录，不能自动转换、忽略授权绑定或删除文件。回退前用支持该格式的程序完成清理，再确认旧程序可用。
-
-Business 提供独立文件批准入口，经现有 `files_url` 和会话列表进入；页面先读取目标，再由用户选择文件并勾选一次授权。界面同时显示目标 origin、文件名/大小、一次使用、选择可能立即上传以及后续提交不在本授权内。加载页面、读取上下文、上传失败和缺少能力都不触发人工接管。结果未知时保留原授权身份，使用 status 查询或明确取消；不自动重新 begin、追加块或 finish。控制变化后清除尚未提交的同意状态；遗失 begin 响应时明确保留未知暂存到原到期时间，不宣称已经撤销。
-
-EX-09/26 的分离验收覆盖 v1、v2/CDP、v2/BiDi；开始到完成期间 controller/epoch 不变且无 claim/release 或网页输入；人工控制/披露未完成拒绝；跨用户/view/token/session、目标变化、失联、超时、重复块、摘要错误和容量边界；同一授权只能消费一次且 unknown 不复活。增加当前/旧页面与当前/旧 Agent 组合、版本 1/2 私有元数据重启及回退保留检查，并从真实页面核对请求序列、同意复位和文件字节不进入 AI 输出。原租约上传、下载、人工输入及披露回归保持通过。
+当前页面配旧 Agent 必须明确拒绝独立批准；旧租约页面配当前 Agent 继续通过原用例。使用已固定的前一版二进制检查版本 2 私有元数据及载荷被拒绝且保留，再以当前二进制检查版本 1/2 上传均不跨实例继续。真实页面分别丢失已完成 begin、chunk、finish 的响应，验证无重放、原授权状态查询/取消、同意复位及没有 claim/release。原租约上传、下载、人工输入和披露套件持续回归。
 
 ## 7. 可选增量观察
 
@@ -221,7 +199,7 @@ EX-11 的公共 oracle 不接受按 backend kind 的忽略规则。至少覆盖�
 
 AI 按“观察现象 → 读取证据 → 判断原因 → 执行处理 → 验证结果”完成任务。普通页面故障不触发人工调试流程；敏感输入或本人验证完成后，按现有交还和披露规则重新观察，由 AI 继续原任务。无法取得足够证据时返回已知事实、缺失范围和可继续的操作，不编造原因或成功结果。
 
-文件选择与批准仍需用户参与时，通过独立文件授权流程完成，不以取得浏览器人工控制权作为默认前提。该分离尚待实现；保留原有本地文件选择、主体/会话/tab/origin 绑定、一次使用和消耗持久化规则，不增加 AI 任意读取设备文件的权限。AI 在授权就绪后负责定位文件输入、执行上传并验证页面结果；只有敏感输入或本人验证才进入浏览器人工接管。
+文件选择与批准需要用户参与时，使用[现有独立文件批准](browser-implementation-zhCN.md#81-独立文件批准)，保持本地文件选择、主体/会话/tab/origin 绑定、一次使用和消耗持久化规则，不增加 AI 任意读取设备文件的权限。AI 在授权就绪后负责定位文件输入、执行上传并验证页面结果；只有敏感输入或本人验证才进入浏览器人工接管。
 
 诊断先返回与当前问题相关的有界摘要，必要时按不透明证据标识读取细节。Agent 在内部关联原操作、会话、tab、文档/realm 身份和控制代次；公开结果保留适用的上下文、采集时间范围、来源、截断、未完成状态及 `gap/dropped_count`，不暴露原生 ID。时间接近不能单独证明因果；观测事实、原因推断和处理建议分别表述。CDP/BiDi 的增强能力按实际后端声明，不以原生 AX 差异改变 `semantic_dom_v1`，首版不从 AX 节点签发动作引用。
 
@@ -274,7 +252,7 @@ AI 按“观察现象 → 读取证据 → 判断原因 → 执行处理 → 验
 | EX-23 | 遮挡及 CSS 覆盖、脚本异常、网络失败、HTTP 200 业务拒绝、页面卡顿、操作引起导航/popup/弹窗 | AI 能关联原任务从摘要按 ID 取得必要细节；事实与推断分开，失败保留已授权的部分证据，缺口/截断明示；导航/DOM 稳定/业务结果分别验证，未验证不报成功 |
 | EX-24 | 必要请求字段、响应字段/正文片段和调用栈读取、敏感内容、跨主体/文档/代次请求 | 先摘要后细查，范围和字节有界；只交付已授权证据，脱敏发生在进入缓存、日志或制品前；失效代次结果不再披露 |
 | EX-25 | AI 调试暂停/步进/恢复期间的普通动作、取消、超时、session detach、Agent/浏览器退出 | 调试互斥及影响范围明确，控制暂停与 VM 暂停分开；输入、对象与流保持真实所有权并有界收尾；不能确认恢复时不授予普通输入，旧身份不复活 |
-| EX-26 | 敏感输入/本人验证、普通网页故障、能力不足、未知写结果、文件选择与批准 | handoff 指引仅用于敏感输入或本人验证，完成后明确交还并重新观察；普通排障由 AI 处理，缺能力明确报告；未知写操作不自动重放；文件授权分离完成后，不要求建立浏览器人工租约，原授权范围、一次使用与披露规则保持不变；分离前的租约依赖仍以实现现状为准 |
+| EX-26 | 敏感输入/本人验证、普通网页故障、能力不足、未知写结果、文件选择与批准 | handoff 指引仅用于敏感输入或本人验证，完成后明确交还并重新观察；普通排障由 AI 处理，缺能力明确报告；未知写操作不自动重放；独立文件批准不建立浏览器人工租约，原授权范围、一次使用与披露规则保持不变；旧租约上传的兼容行为以实现现状为准 |
 
 对每个分段分别运行公开 MCP、权限/计量、v1 共存、真实客户端及资源回归。故障场景先冻结页面、预期证据及允许的处理和验证路径，分别验证工具契约与真实 AI 客户端的任务完成情况；工具能返回数据不等于 AI 已完成排障。没有这些证据，不得通过启用原始事件订阅来扩大已声明能力。
 
@@ -490,9 +468,9 @@ Agent RSS 增长取预热后首、末各 10 次已关闭会话的空闲样本中
 
 先执行契约/纯函数与可控传输测试，再执行两个真实浏览器的受影响场景，最后执行完整本地 Server/MCP、重复恢复、独立性能比较和 RSS。只改文档时验证引用、结构和示例；不把规划中的新用例伪报成已运行，也不为文档改动启动整套原生压力测试。
 
-现有 Server 仓库入口为 `scripts/run_browser_acceptance.py`。以下命令执行已有测试组，不包含尚未实现的扩展用例。先准备专用 PostgreSQL 和最小权限测试配置，配置文件包含实际的 `RDH_TEST_*` 可执行路径、Node、authority probe、浏览器和旧版本兼容产物；不得指向生产数据库。缺项造成 skip 时必须补齐环境，不能删掉用例。
+现有 Server 仓库入口为 `scripts/run_browser_acceptance.py`。以下命令执行已有测试组，不包含尚未实现的扩展用例。先准备专用 PostgreSQL 和最小权限测试配置。同一 PostgreSQL 实例内的验收阶段串行执行；并行阶段须使用不同 PostgreSQL 实例，不能仅靠不同数据库或 schema 隔离。迁移会读取实例级角色目录，另一夹具删除角色可使权限迁移失败。配置文件包含实际的 `RDH_TEST_*` 可执行路径、Node、authority probe、浏览器和旧版本兼容产物；不得指向生产数据库。缺项造成 skip 时必须补齐环境，不能删掉用例。
 
-原生场景使用 `RDH_TEST_CLUSTER_AGENT`、`RDH_TEST_BROWSER_EXECUTABLE`、`RDH_TEST_FIREFOX_EXECUTABLE`；兼容场景另需 `RDH_TEST_OLD_AGENT`、`RDH_TEST_DEFAULT_AGENT`、`RDH_TEST_OLD_CORE`、`RDH_TEST_OLD_MIGRATE`。新旧源码使用不同 Cargo target 目录。公开恢复场景对每个后端执行 100 次原生所有者丢失、20 次 Agent 丢失和 20 次人工交接，保持独立会话与持久资料断言；测试账户额度由一次性夹具配置，不改变产品计量。
+原生场景使用 `RDH_TEST_CLUSTER_AGENT`、`RDH_TEST_BROWSER_EXECUTABLE`、`RDH_TEST_FIREFOX_EXECUTABLE`；兼容场景另需 `RDH_TEST_OLD_AGENT`、`RDH_TEST_DEFAULT_AGENT`、`RDH_TEST_OLD_CORE`、`RDH_TEST_OLD_MIGRATE`。独立文件批准的 `file-approval` 阶段另需 `RDH_TEST_OLD_APPROVAL_AGENT`，必须固定为尚未实现该扩展、已支持原租约上传的实际旧二进制，用于新元数据的回退保留检查。新旧源码使用不同 Cargo target 目录。公开恢复场景对每个后端执行 100 次原生所有者丢失、20 次 Agent 丢失和 20 次人工交接，保持独立会话与持久资料断言；测试账户额度由一次性夹具配置，不改变产品计量。
 
 在 Server 仓库根目录、已配置本项目测试依赖的 Python 环境中执行；`python3` 必须指向含 pytest 及本仓库测试依赖的解释器。先将两个变量替换为私有环境 JSON 的实际绝对路径和一个尚不存在的证据目录：
 
@@ -503,7 +481,7 @@ RDH_ACCEPT_OUT=/private/browser-acceptance-new
 test -f "$RDH_ACCEPT_ENV"
 test ! -e "$RDH_ACCEPT_OUT"
 mkdir -m 700 "$RDH_ACCEPT_OUT"
-for phase in contracts v1 v2 budgets recovery linux-tls; do
+for phase in contracts v1 v2 file-approval budgets recovery linux-tls; do
   python3 scripts/run_browser_acceptance.py --phase "$phase" \
     --env-json "$RDH_ACCEPT_ENV" --output "$RDH_ACCEPT_OUT/$phase"
 done
@@ -518,7 +496,7 @@ python3 scripts/run_browser_acceptance.py --phase rss \
   --rss-protocol /private/frozen-browser-rss-protocol.json
 ```
 
-期望每阶段生成 `acceptance-start.json`、`collected.json`、JUnit、日志和 `acceptance-complete.json`，状态为 passed 且退出码为零。RSS 还生成测量前后协议清单、四组原始样本和汇总。性能使用 Agent 的 release harness 与 `scripts/browser-d1-report.py`，报告与功能测试分开。新场景实现时扩展收集入口并增加其自身的校验测试，不能靠手工挑选少量用例称作完整阶段验收。
+期望每阶段生成 `acceptance-start.json`、`collected.json`、JUnit、日志和 `acceptance-complete.json`，状态为 passed 且退出码为零。清单同时记录并复核可执行文件、源码、测试辅助程序及 Business 构建产物的摘要；任一输入在运行中变化即拒绝通过。RSS 还生成测量前后协议清单、四组原始样本和汇总。性能使用 Agent 的 release harness 与 `scripts/browser-d1-report.py`，报告与功能测试分开。新场景实现时扩展收集入口并增加其自身的校验测试，不能靠手工挑选少量用例称作完整阶段验收。
 
 ### 13.1 Agent 原生与可控测试
 

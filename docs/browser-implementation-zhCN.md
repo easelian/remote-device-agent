@@ -16,6 +16,7 @@ Agent 使用 Rust 单二进制和设备上已安装的浏览器。运行时不�
 | 命名资料、上传、下载 | v1 与两个 v2 后端均有实现，各自按策略声明 | `persistent_profiles`、`uploads`、`downloads` 默认分别关闭；实际可用性随设备和会话返回 |
 | 只读可操作性诊断 | `browser_inspect` 检查一个当前 ref 的动作前置条件 | 仅显式 v2 / `semantic_dom_v1`，要求候选与打开结果均声明 `actionability` 扩展版本 1 |
 | 能力指引 | Core `browser_guidance` 返回当前设备或会话适用的一个主题 | 根据明确能力选择静态模板；只读取会话元数据，按普通请求计量 |
+| 独立文件批准 | 用户在独立页面批准一次文件选择，AI 保留浏览器控制 | v1 与两个 v2 后端；要求 `uploads` 策略及 `file_authorization` 扩展版本 1，原租约上传继续可用 |
 | 观察差分、独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
 
 v2 的编译、策略及后端门槛见[选择解析与能力声明](../src/browser/selection.rs)和[会话实际能力](../src/browser/runtime/v2.rs)。`candidate` 仅表示允许尝试；成功打开并返回 `session_ready` 才表示本次启动、文档身份和截图检查完成。最低浏览器版本、Firefox ESR、其他 Chromium 品牌及其他 OS/CPU 的支持需要独立证据，不能由协议名称或交叉构建推导。
@@ -126,7 +127,7 @@ Core 绑定已认证的连接 ID 和 Agent 实例，向该连接发送带原认�
 | `observe` | 从当前会话取得 tab 与代次，再观察；诊断示例还要求实际 actionability 扩展版本 1 |
 | `recover` | 查询原 `operation_id`、会话及 tab；普通暂停在连接可用、输入与必要清理已结算且没有人工控制/披露阻塞时，用当前 epoch 恢复，再按 observe 模板取得新 tab/epoch 和观察；pending/running/unknown 不授权重放 |
 | `handoff` | 仅敏感信息输入或必须由本人完成的验证需要人工接管；暂停后提供认证 `human_url`，用户明确交回并允许披露，再取新代次并重新观察 |
-| `files` | 只给启用能力的示例；文件通过人工页面交付，上传示例使用当前会话/tab/origin 的一次性授权 |
+| `files` | 只给启用能力的示例；独立批准扩展及人工接口明确可用时，引导用户通过 `files_url` 选择会话批准文件，AI 不暂停或接管浏览器；上传示例使用当前会话/tab/origin 的一次性授权 |
 
 `recover` 的能力准入要求 `browser_sessions`、`browser_tabs`、`browser_control` 和 `browser_observe`，不依赖人工接管能力；原操作回执仍使用 `get_operation_status`，状态字段为 `execution_state`。模板把普通页面、脚本、网络和性能故障交给 AI 取证和恢复，能力不足、连接不可用或检查被拒绝时明确说明缺失证据及待决工作，不自动转为人工排障。`succeeded` 只代表 Agent 结果，业务成功须另外核对。指引不自动执行这些步骤，Agent 继续独立检查恢复条件；人工接口没有用途参数，当前用途限制由模板前提表达。
 
@@ -288,6 +289,7 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 命名与记录 | 名称 512 Unicode 标量、32 关联、16 层、256 命名节点；记录 256 节点/4,096 标量 | [program](../src/browser/semantic/program.js)、[types](../src/browser/semantic/types.rs) |
 | 可操作性诊断 | 一个有效 ref、最多 8 项原因、Agent 正文最多 4 KiB、总期限最多 1 秒；稳定性采样间隔 50 ms | [actionability](../src/browser/semantic/actionability.rs)、[page](../src/browser/semantic/page.rs)、[v2](../src/browser/runtime/v2.rs) |
 | 能力指引 | 每次一个封闭主题，最多 3 个 variant、每个最多 3 个示例；含 `support_id`/`human_url` 的 Core 正文最多 16 KiB | Server `apps/core/src/browser/guidance.rs`、`mcp_tools.rs` |
+| 独立文件批准 | 创建后 600 秒、不续期、一次选择；64 KiB 数据块；接口期限 20 秒，状态正文 4 KiB；与原文件共用配额 | [file approval](../src/browser/runtime/file_approval.rs)、[upload](../src/browser/files/upload.rs) |
 | 人工控制 | 公开视图租约 120 秒；内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
@@ -307,9 +309,42 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 
 列举 v2 资料时，向 `browser_profiles` 传入打开时的完整 `selection`；删除时，向 `browser_control` 传入 `action: "delete_profile"`、`profile_name` 和相同 `selection`。省略 `selection` 只访问 v1 资料。其它会话操作不接受 `selection`，以 `session_id` 确定后端。资料列举和删除不消耗任务配额。
 
-上传沿用人工网页中的分块暂存和显式授权。当前 `upload_begin`、`upload_chunk`、`upload_finish` 均经 `browser_human` 通道，并要求有效的人工控制租约及匹配的 view、lease 和控制代次；创建上传授权前需要先接管浏览器。用户交还控制并允许披露后，AI 才能重新观察并使用该授权。文件授权和浏览器接管目前没有分离，不能将其描述为无需接管的独立文件批准流程。独立批准的待实现接口、版本兼容和资源边界见[独立文件授权契约](browser-design-zhCN.md#61-独立文件授权契约待实现)。
+### 8.1 独立文件批准
+
+独立文件授权继续使用经认证的 Business → Gate → Core → Agent `browser_human` 链路，但不调用 `claim`、`release`，不创建或续期人工控制租约，也不暂停、恢复、切换标签页或改变控制代次。文件选择和批准是用户动作；AI 只能取得授权元数据并按现有 `attach_file` 使用一次。现有 `upload_*` 接口及租约语义继续服务旧客户端。
+
+设备在 `capabilities.browser.extensions.file_authorization` 显式声明 `version: 1`、`available` 和可空 `reason`；可用性要求原上传策略、存储及浏览器条件成立。独立批准接口先检查此版本。旧 Agent 缺少声明时，新页面明确显示独立文件授权不可用，不隐式接管或退回租约上传。原有 v1 打开和观察格式不增加必填字段；会话上下文接口返回本次会话实际支持情况，不以设备候选替代运行时检查。
+
+以下动作的参数对象封闭，不接受调用者主体或设备路径：
+
+| 动作 | 参数（均另含 `action`） | 行为 |
+| --- | --- | --- |
+| `file_upload_context` | `session_id`、`view_id` | 读取当前活动 tab、HTTP(S) origin、控制代次及独立授权版本；不改变活动 tab，不读取截图或正文 |
+| `file_upload_begin` | 上述字段及 `tab_id`、`source_origin`、`control_epoch`、`name`、`size_bytes`、`sha256`、`approved: true` | 再读实际 tab/origin，批准显示范围与实际范围一致才预留配额，返回新 `file_grant_id` 和仅人工页面可持有的 `approval_token` |
+| `file_upload_chunk` | `session_id`、`view_id`、`file_grant_id`、`approval_token`、`control_epoch`、`offset`、`data` | 身份、授权代次和精确 offset 匹配后追加有界数据；不发送网页输入 |
+| `file_upload_finish` | `session_id`、`view_id`、`file_grant_id`、`approval_token`、`control_epoch` | 校验完整大小和 SHA-256，再核对当前活动 tab/origin 与授权目标，最后在控制 fence 内发布这一份授权 |
+| `file_upload_status` | `session_id`、`view_id`、`file_grant_id`、`approval_token` | 查询原暂存的状态、已收到字节和固定到期时间；不延长授权、不重试追加或发布 |
+| `file_upload_cancel` | 与 status 相同 | 撤销尚未使用的同一份暂存/批准；关闭、换页或人工接管后仍可凭原授权清理，不依赖恢复浏览器控制 |
+
+`view_id` 使用页面生成的 32 位十六进制随机值；`approval_token` 由 Agent 生成同等长度的独立随机值，仅返回 begin 响应，私有元数据保存其 SHA-256。授权绑定已认证用户、批准页面的主体和 view、原 AI 主体、Agent 实例内的 session、tab、origin、控制代次及文件元数据。token 不进入 AI 元数据、变更回执、审计内容或 URL。status/cancel 只查询或撤销该身份的原授权，不能用来读取文件内容或继续旧控制代次的上传。
+
+context/begin/chunk/finish 只在 AI 持有控制、没有人工持有或待披露确认、连接可用且相关输入和必要清理已结算时执行；拒绝不会改变这些条件。begin/finish 使用当前元数据读取和最终控制 fence，切换控制后不发布旧结果。上传期间 AI 不被自动暂停；tab、origin 或控制代次变化会使 finish 明确拒绝。成功 finish 只令该文件授权的元数据对原 AI 主体可见，不把会话中其他文件改为可见，也不代表整个页面已获新的披露许可。校验、落盘和载荷准备在最终控制临界区外完成；临界区只核对并发布内存中的可见性。上传不会跨 Agent 实例保留，消费仍在原生提交前持久化。status/finish 返回 `available_to_ai`；已准备但未通过最终发布的文件保持 false，后续整页披露也不能代替这一检查。上传过程的控制代次约束不改变成功发布后原有 session/tab/origin 与一次使用范围。原 `attach_file` 仍验证当前 ref 和 session/tab/origin，并在原生提交前持久化消费状态；unknown 不恢复使用次数。
+
+沿用单文件 32 MiB、总计 128 MiB、16 项、64 KiB 数据块、创建后 600 秒且不续期的预算。新旧上传与下载共用原文件配额和回收任务；请求沿用人工接口的 20 秒上限，状态输出不超过 4 KiB。context 返回 origin 不含路径、查询串或凭据；与旧上传相同，只允许 HTTP(S) 目标。人工页面保留有限本地文件缓冲，不把字节发送给 AI。
+
+独立授权写入 `metadata.version: 2`，记录独立授权类型及上述绑定；旧租约上传保持版本 1。新程序能读取旧格式，新旧上传均不跨 Agent 实例继续使用。新程序重启时按已有归属和私有存储规则清理上传暂存；旧程序遇到版本 2 或未知字段必须拒绝并保留原目录，不能自动转换、忽略授权绑定或删除文件。回退前用支持该格式的程序完成清理，再确认旧程序可用。
+
+Business 提供独立文件批准入口，经现有 `files_url` 和会话列表进入；页面先读取目标，再由用户选择文件并勾选一次授权。界面同时显示目标 origin、文件名/大小、一次使用、选择可能立即上传以及后续提交不在本授权内。加载页面、读取上下文、上传失败和缺少能力都不触发人工接管。结果未知时保留原授权身份，使用 status 查询或明确取消；不自动重新 begin、追加块或 finish。控制变化后清除尚未提交的同意状态；遗失 begin 响应时明确保留未知暂存到原到期时间，不宣称已经撤销。
+
+实现入口为 [file_approval.rs](../src/browser/runtime/file_approval.rs)、[v2/file_approval.rs](../src/browser/runtime/v2/file_approval.rs) 和 [files/upload.rs](../src/browser/files/upload.rs)。Server 的 `apps/business/web/src/BrowserFileApproval.vue` 提供独立页面，`product-path.ts` 与前端 router 同时允许 `/auth/browser/upload`；Business、Gate 和 Core 分别校验参数、认证及能力，不把人工接口暴露为 AI 工具。
+
+### 8.2 一次性选择与原有上传兼容
+
+原有 `upload_begin`、`upload_chunk`、`upload_finish` 和 `upload_cancel` 保持人工控制租约语义，继续校验 view、lease 和控制代次。旧页面仍在人工接管期间暂存文件，用户明确交还并允许披露后，AI 才能使用原授权。新页面不把缺失的独立批准能力解释为可以自动建立租约；当前页面和旧 Agent 的组合明确拒绝独立批准。
 
 批准的文件绑定 AI 主体、用户、会话、标签页、来源站点和一次使用次数。AI 的 `attach_file` 必须提供新观察中的 `ref` 和 `file_grant_id`。Agent 在共同输入租约内重新验证文档、主 frame、原生文件输入框、几何和站点，并在原生派发前持久化授权消耗。CDP 使用 `DOM.setFileInputFiles`，BiDi 使用 `input.setFiles`；调用者不能指定设备路径。结果不明时不恢复授权或自动重试。上传字节不进入模型观察、文件列表或操作回执。
+
+### 8.3 下载与披露
 
 下载只接收 HTTP 200 attachment 响应，必须有唯一的 `Content-Length`，且未使用压缩编码。单文件最多 32 MiB，全部文件及上传暂存共用 128 MiB 和 16 项配额，完成文件保留 24 小时。读取每块最多 64 KiB，并校验完整长度与 SHA-256。文件列表只返回元数据，实际字节通过认证人工文件接口读取。人工接管立即隐藏该会话的文件；显式返回并披露后才重新对 AI 可见。
 
@@ -327,6 +362,8 @@ Firefox 下载开始及结束事件必须匹配已接纳的主 frame、navigatio
 2. 按完整 `selection` 列举并显式删除已确认退役的 v2 命名资料；通过原有文件接口删除已确认退役的下载。Firefox 的 `cancellation_scope` 元数据不属于旧文件格式，不能只处理资料目录而留下这些文件。
 3. 停止 Agent，确认没有所属浏览器进程或有效所有权记录。从最深层开始，仅用非递归 `rmdir` 移除已核实为空的 v2 目录，最后移除 `v2` 本身。任何文件、符号链接或非空目录都使此步骤停止；不删除所有权记录或递归清空目录。
 4. 使用旧版接受的本地配置启动旧 Agent；旧版配置不包含 `capability_v2` 和 `firefox_executable`。重新打开原有 v1 命名资料，验证资料 ID 和合成持久状态；实际业务数据按设备的验收流程核对。
+
+独立批准的私有上传元数据为版本 2，原租约上传仍为版本 1。支持新格式的 Agent 在重启准备文件存储时清理两种上传记录，不恢复旧实例的批准或使用次数。旧程序遇到版本 2 拒绝读取并保留该目录与载荷。回退前应通过当前程序取消未使用的批准，或在已确认结束相关上传任务后由当前程序完成重启清理；确认新格式记录已移除后再启动旧程序，不能直接修改版本号或去掉授权字段。
 
 新增工具的 Gate/Core 目录须保持配套。旧 Gate 会在路由层拒绝未知工具；旧 Core 不认识新工具或参数时，客户端继续使用其已支持的完整观察，不隐式重试输入。
 
@@ -348,6 +385,7 @@ v1 的 [select_all](../src/browser/engine/cdp/page.rs) 在 macOS 发送 Command+
 | [Firefox process tests](../src/browser/process/firefox/tests)、[BiDi session tests](../src/browser/engine/bidi/session/tests.rs) | namespace、监督链、端点、出站和原生恢复 |
 | [diagnostics.rs](../src/browser/semantic/tests/diagnostics.rs)、Server `tests/core/test_browser_diagnostics.py` | 判定和预算、原生只读采集、人工接管、迟到响应、公开权限/计量和一次性上传授权 |
 | Server `apps/core/src/browser/guidance.rs` 单元测试、`tests/core/test_browser_guidance*.py` | 模板/schema/摘要、真实 v1/CDP/BiDi 示例、旧 Agent/默认构建、计量与连接/撤权披露边界 |
+| [files/upload.rs](../src/browser/files/upload.rs)、[runtime/file_approval.rs](../src/browser/runtime/file_approval.rs)、Server `tests/core/test_browser_file_approval.py` | 独立批准的身份、控制 fence、一次使用、未知结果、真实 UI、旧 Agent 能力及实际二进制元数据回退/重启 |
 | Server `tests/core/test_browser_v2*.py`、`tests/runtime/test_single_call_transactions.py` | 公开 MCP、两个后端、文件、版本回退、预算、重复恢复、RSS、回执白名单 |
 | Server `scripts/run_browser_acceptance.py`、`scripts/summarize_browser_rss.py` | 严格收集/JUnit 对照、产物摘要及四组 RSS 汇总；不自动构建、重试、部署或启动托管 CI |
 

@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex as AsyncMutex;
+mod file_approval;
 mod human;
 #[cfg(all(
     target_os = "linux",
@@ -220,6 +221,16 @@ impl Browsers {
             reason.filter(|r| *r != "browser_not_installed"),
             self.executable.is_some(),
         );
+        let available = value["available"] == true || value["v2"]["available"] == true;
+        let approval_reason = if !self.settings.uploads {
+            Some("browser_upload_disabled")
+        } else if !available {
+            Some("browser_unavailable")
+        } else {
+            None
+        };
+        value["extensions"] =
+            json!({"file_authorization":super::selection::extension(approval_reason)});
         value
     }
     fn prepare(&self) -> Result<&Path> {

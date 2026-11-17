@@ -284,8 +284,10 @@ impl Files {
                 &crate::storage::read_private(&path.join("metadata.json")).map_err(io_error)?,
             )
             .map_err(io_error)?;
-            if meta.version != 1
-                || meta.id != id
+            if !match &meta.upload {
+                Some(upload) => upload.format_matches(meta.version),
+                None => meta.version == 1,
+            } || meta.id != id
                 || !hash_valid(&meta.owner)
                 || !hash_valid(&meta.user)
                 || meta.size_bytes > MAX_FILE
@@ -461,7 +463,8 @@ impl Files {
             .filter(|e| e.meta.session_id == session)
         {
             let mut persisted = entry.meta.clone();
-            persisted.ai_visible = visible;
+            persisted.ai_visible =
+                visible && persisted.upload.as_ref().is_none_or(Upload::disclosable);
             if let Err(error) = self.save(&persisted) {
                 failure.get_or_insert(error);
             }
@@ -475,7 +478,7 @@ impl Files {
                 .values_mut()
                 .filter(|e| e.meta.session_id == session)
             {
-                entry.meta.ai_visible = true;
+                entry.meta.ai_visible = entry.meta.upload.as_ref().is_none_or(Upload::disclosable);
             }
             for (meta, _) in &mut catalog.failures {
                 if meta.session_id == session {
