@@ -131,7 +131,11 @@ impl Browsers {
                     s.owner == principal.owner
                 }
             })
-            .map(|(id, s)| s.listing(id))
+            .map(|(id, s)| {
+                let mut value = s.listing(id);
+                value["capabilities"] = capability(&self.settings, s.selection.backend);
+                value
+            })
             .collect()
     }
     pub(super) fn v2_contains(&self, params: &Value) -> bool {

@@ -15,7 +15,8 @@ Agent 使用 Rust 单二进制和设备上已安装的浏览器。运行时不�
 | v2/BiDi | 同一共同页面算法驱动 Firefox/BiDi；Linux namespace 内启动和连接 | 与 v2/CDP 相同的编译/策略门槛，另需配置 Firefox 绝对路径及可用的 namespace/pidfd 能力 |
 | 命名资料、上传、下载 | v1 与两个 v2 后端均有实现，各自按策略声明 | `persistent_profiles`、`uploads`、`downloads` 默认分别关闭；实际可用性随设备和会话返回 |
 | 只读可操作性诊断 | `browser_inspect` 检查一个当前 ref 的动作前置条件 | 仅显式 v2 / `semantic_dom_v1`，要求候选与打开结果均声明 `actionability` 扩展版本 1 |
-| 能力指引工具、观察差分、独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
+| 能力指引 | Core `browser_guidance` 返回当前设备或会话适用的一个主题 | 根据明确能力选择静态模板；只读取会话元数据，按普通请求计量 |
+| 观察差分、独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
 
 v2 的编译、策略及后端门槛见[选择解析与能力声明](../src/browser/selection.rs)和[会话实际能力](../src/browser/runtime/v2.rs)。`candidate` 仅表示允许尝试；成功打开并返回 `session_ready` 才表示本次启动、文档身份和截图检查完成。最低浏览器版本、Firefox ESR、其他 Chromium 品牌及其他 OS/CPU 的支持需要独立证据，不能由协议名称或交叉构建推导。
 
@@ -49,7 +50,7 @@ flowchart TD
 | [process.rs](../src/browser/process.rs)、[process](../src/browser/process)、[profiles.rs](../src/browser/profiles.rs) | 进程树与启动身份、独占资料租约、恢复和关闭；通道断开不作为进程退出证明 |
 | [files.rs](../src/browser/files.rs)、[files](../src/browser/files) | 人工上传授权、私有暂存、配额、原始附件响应及交付 |
 
-Server 对应源码为 `apps/core/src/browser.rs`、`mcp_tools.rs`、`mcp.rs`，MCP schema 和错误目录位于 `contracts/mcp/v1/`。Core 处理认证、准入、计量、封装及披露，Agent 持有页面身份与原生资源。Runtime Rust 与 PostgreSQL 结算函数共同约束恢复摘要。Server 的协议/维护文档只提供入口，不复制这两份浏览器文档。
+Server 对应源码为 `apps/core/src/browser.rs`、`browser/guidance.rs`、`mcp_tools.rs`、`mcp.rs`，MCP schema 和错误目录位于 `contracts/mcp/v1/`。Core 处理认证、准入、计量、封装及披露，Agent 持有页面身份与原生资源。Runtime Rust 与 PostgreSQL 结算函数共同约束恢复摘要。Server 的协议/维护文档只提供入口，不复制这两份浏览器文档。
 
 ## 3. 能力发现、选择与公开会话
 
@@ -89,7 +90,7 @@ Server 先验证选择结构，再检查设备的 v2 声明和目标后端，满
 
 `capabilities.browser.v2.backends[].extensions.actionability` 声明 `version: 1`、布尔值 `available` 和可空 `reason`；可用性沿用对应后端的构建、平台、本地策略和浏览器检查。成功打开后的 `capabilities.extensions.actionability` 声明本次实际启用的诊断扩展。扩展不增加 `selection` 字段，也不新增本地开关。
 
-打开成功返回原有 `session_id`、`tab_id`、`control_epoch`、`state`，并增加实际 `selection`、`capabilities` 和 `stage: "session_ready"`。选择在会话内固定；后续会话请求通过会话 ID 路由，不再接受选择参数；资料列举和删除单独接受 `selection`。核心能力在运行中丢失时暂停或关闭，不降级成 v1，也不更换后端。
+打开成功返回原有 `session_id`、`tab_id`、`control_epoch`、`state`，并增加实际 `selection`、`capabilities` 和 `stage: "session_ready"`。`browser_sessions` 的 v2 条目也包含与打开结果相同的 `capabilities`；v1 条目的格式保持原样。选择在会话内固定；后续会话请求通过会话 ID 路由，不再接受选择参数；资料列举和删除单独接受 `selection`。核心能力在运行中丢失时暂停或关闭，不降级成 v1，也不更换后端。
 
 v2 复用 `browser_sessions`、`browser_tabs`、`browser_observe`、`browser_act`、`browser_wait`、`browser_screenshot` 和 `browser_control`，继续使用经过认证的 `browser_principal`、操作回执和控制 epoch。人工接口继续由 Server 绑定用户主体，并用 view、lease、epoch、sequence 和截图 frame 约束输入。人工输入内容不进入操作回执。
 
@@ -106,6 +107,28 @@ v1 与 v2 共用每设备 2 个会话的上限，每个 v2 会话最多 8 个标
 弹窗可能使触发它的原生输入返回 `unknown`，会话随之暂停，原生命令仍由通道持有。客户端从 `browser_tabs` 获取当前 epoch 和 `dialog_id`，明确处理弹窗，再在待决输入结算后恢复并重新观察；不能重放触发弹窗的点击。输入执行前拒绝与已提交但结果不明分别保持 `not_sent` 和 `unknown`。
 
 回执仅保存已有的有界会话标识及严格的三字段 `selection`。Agent、Server Rust 和 PostgreSQL 结算函数执行同一白名单；URL、标题、页面内容、输入文本和未知选择字段不进入恢复摘要。Server 的数据库函数契约须与服务二进制一起更新，启动时的契约哈希检查会拒绝不一致的组合。
+
+### 3.1 按能力提供操作指引
+
+`browser_guidance` 是 Core 工具，输入为必填 `device_id`、必填 `topic` 和可选 `session_id`。主题只接受 `open`、`observe`、`recover`、`handoff`、`files`；未知字段拒绝，不接受外部模板、脚本、路径或版本选择参数。工具沿用设备权限、浏览器功能开关、普通准入与计量，不创建变更回执。
+
+Core 绑定已认证的连接 ID 和 Agent 实例，向该连接发送带原认证主体的 `browser_sessions`，只读取元数据。计量、指纹和调用记录的操作名仍是 `browser_guidance`。构造结果前核对连接；完成记录和授权检查后，再核对连接仍有效，避免数据库等待期间断开的连接继续披露旧指引。Core 不请求页面观察、会话创建、文件操作或原生输入。Agent 仍执行 `browser_sessions` 原有的存储准备与过期回收；指引不建立跨请求缓存。
+
+设备级结果最多包含 v1、v2/CDP、v2/BiDi 三个明确可用的候选。提供 `session_id` 时，列表必须有唯一的本主体会话；v2 模板取连接声明与该会话实际能力的交集。旧 v1 保持可用；旧 v2 列表缺少实际能力或选择未知时返回 `browser_feature_unsupported`。缺失或未知 actionability 版本时不出现 `browser_inspect` 示例，不按 Agent 版本字符串猜测功能。
+
+结果固定为 `guidance_version: 1`、`schema_version: "mcp/v1"` 和 `content_trust: "server_template"`。`context` 仅包含设备/实例 ID、范围，以及请求会话时的会话 ID、封闭状态、控制者和代次。`variants` 给出选择、已知扩展和文件/人工控制条件，以及版本化 `template_id`、固定模板和模板 UTF-8 JSON 的 SHA-256。名称、URL、页面正文和任意 Agent 字符串不进入模板。
+
+每个模板最多包含三个示例，每个示例包含工具名、通过当前 schema 的参数占位值、字段来源 `bindings` 和执行前提 `when`。调用者须用当前认证结果替换占位值；指引不冻结能力，也不授权后续动作。返回的候选不能证明会话一定打开成功，诊断不能证明页面业务操作成功。
+
+| 主题 | 示例及执行前提 |
+| --- | --- |
+| `open` | 明确选择 v1 或已声明可用的 v2 后端；丢失打开响应时先恢复原操作，不重复创建 |
+| `observe` | 从当前会话取得 tab 与代次，再观察；诊断示例还要求实际 actionability 扩展版本 1 |
+| `recover` | 查询原 `operation_id` 和会话；pending/running/unknown 不授权重放；公开回执状态字段为 `execution_state` |
+| `handoff` | 暂停后提供认证 `human_url`；用户显式交回并允许披露，再取新代次并重新观察 |
+| `files` | 只给启用能力的示例；文件通过人工页面交付，上传示例使用当前会话/tab/origin 的一次性授权 |
+
+包含 `support_id` 和适用时 `human_url` 的 Core 结果正文最多 16 KiB，完整 MCP 封装继续受原有上限约束。实例变化、关闭或能力变化后，旧指引只能作为说明；下一次工具调用重新校验当前状态。旧 Core 未提供该工具时，客户端继续按已有 schema 使用原工具。
 
 ## 4. 提交、控制权与错误进展
 
@@ -260,6 +283,7 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 扫描与引用 | 每 frame 一个扫描、每扫描最多 1,000 强节点；空闲期 300 秒 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 命名与记录 | 名称 512 Unicode 标量、32 关联、16 层、256 命名节点；记录 256 节点/4,096 标量 | [program](../src/browser/semantic/program.js)、[types](../src/browser/semantic/types.rs) |
 | 可操作性诊断 | 一个有效 ref、最多 8 项原因、Agent 正文最多 4 KiB、总期限最多 1 秒；稳定性采样间隔 50 ms | [actionability](../src/browser/semantic/actionability.rs)、[page](../src/browser/semantic/page.rs)、[v2](../src/browser/runtime/v2.rs) |
+| 能力指引 | 每次一个封闭主题，最多 3 个 variant、每个最多 3 个示例；含 `support_id`/`human_url` 的 Core 正文最多 16 KiB | Server `apps/core/src/browser/guidance.rs`、`mcp_tools.rs` |
 | 人工控制 | 公开视图租约 120 秒；内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
@@ -317,6 +341,7 @@ v1 的 [select_all](../src/browser/engine/cdp/page.rs) 在 macOS 发送 Command+
 | [CDP wire](../src/browser/engine/cdp/wire)、[BiDi wire tests](../src/browser/engine/bidi/wire/tests) | 准入、迟到响应、取消、预算、原生租约和控制 fence |
 | [Firefox process tests](../src/browser/process/firefox/tests)、[BiDi session tests](../src/browser/engine/bidi/session/tests.rs) | namespace、监督链、端点、出站和原生恢复 |
 | [diagnostics.rs](../src/browser/semantic/tests/diagnostics.rs)、Server `tests/core/test_browser_diagnostics.py` | 判定和预算、原生只读采集、人工接管、迟到响应、公开权限/计量和一次性上传授权 |
+| Server `apps/core/src/browser/guidance.rs` 单元测试、`tests/core/test_browser_guidance*.py` | 模板/schema/摘要、真实 v1/CDP/BiDi 示例、旧 Agent/默认构建、计量与连接/撤权披露边界 |
 | Server `tests/core/test_browser_v2*.py`、`tests/runtime/test_single_call_transactions.py` | 公开 MCP、两个后端、文件、版本回退、预算、重复恢复、RSS、回执白名单 |
 | Server `scripts/run_browser_acceptance.py`、`scripts/summarize_browser_rss.py` | 严格收集/JUnit 对照、产物摘要及四组 RSS 汇总；不自动构建、重试、部署或启动托管 CI |
 
