@@ -66,21 +66,20 @@ async fn cancelled_human_insertion_keeps_input_handoff_blocked_until_reply() {
     // the caller cannot prove the browser stopped editing the field.
     assert_eq!(cdp.pending(), 1);
     assert!(effects.load(Ordering::Acquire));
-    let mut events = cdp.raw_test_events();
+    let barriers = cdp.test_metrics()["barriers"].as_u64().unwrap();
     send(
         &mut browser,
         json!({"id":insert["id"],"result":{"result":{"value":"inserted"}}}),
     )
     .await;
-    send(
-        &mut browser,
-        json!({"method":"Page.lifecycleEvent","params":{"name":"test_barrier"}}),
-    )
-    .await;
-    assert_eq!(
-        events.recv().await.unwrap()["params"]["name"],
-        "test_barrier"
-    );
+    send(&mut browser, json!({"id":0,"result":{}})).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while cdp.test_metrics()["barriers"].as_u64().unwrap() == barriers {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(cdp.pending(), 0);
     assert!(effects.load(Ordering::Acquire));
     cdp.stop();

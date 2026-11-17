@@ -26,19 +26,18 @@ async fn send(browser: &mut BufReader<DuplexStream>, value: Value) {
     browser.get_mut().write_all(&frame).await.unwrap();
 }
 
-// Observing this event proves the reader processed every preceding reply.
+// The reserved id-zero response proves all preceding replies were processed;
+// this needs neither a command slot nor a temporary essential event consumer.
 async fn processed(cdp: &Cdp, browser: &mut BufReader<DuplexStream>) {
-    let mut events = cdp.events();
-    send(
-        browser,
-        json!({"method":"Page.lifecycleEvent","params":{"name":"test_barrier"}}),
-    )
-    .await;
-    loop {
-        if events.recv().await.unwrap()["params"]["name"] == "test_barrier" {
-            break;
+    let previous = cdp.inner.barriers.load(Ordering::Acquire);
+    send(browser, json!({"id":0,"result":{}})).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while cdp.inner.barriers.load(Ordering::Acquire) == previous {
+            tokio::task::yield_now().await;
         }
-    }
+    })
+    .await
+    .unwrap();
 }
 
 fn call(cdp: Cdp, command: Command, params: Value) -> tokio::task::JoinHandle<Result<Value>> {
@@ -217,6 +216,7 @@ async fn failed_enqueue_rolls_back_pending_and_does_not_mark_an_effect() {
 #[tokio::test(start_paused = true)]
 async fn dialog_blocks_new_input_but_keeps_release_ownership_until_reply() {
     let (cdp, mut browser) = fixture();
+    let _events = cdp.events();
     send(
         &mut browser,
         json!({"sessionId":"page","method":"Page.javascriptDialogOpening","params":{}}),
@@ -534,15 +534,26 @@ async fn thousand_fences_remain_prompt_with_full_queue_and_event_ring() {
         tokio::task::yield_now().await;
     }
     assert_eq!(cdp.outgoing.capacity(), 0);
-    let _events = cdp.events();
+    let mut events = cdp.events();
     let mut samples = Vec::new();
     for index in 0..1000 {
         for _ in 0..256 {
-            let _ = cdp.events.send(json!({"method":"fixture.pressure"}));
+            let value = json!({"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"pressure"}}});
+            let bytes = serde_json::to_vec(&value).unwrap().len();
+            cdp.inner.publish_event(
+                &mut cdp.inner.pending.lock().unwrap(),
+                &cdp.events,
+                value,
+                bytes,
+            );
         }
         let start = Instant::now();
         let epoch = control.change(index % 2 == 0);
         samples.push(start.elapsed().as_nanos() as u64);
+        for _ in 0..256 {
+            drop(events.recv().await.unwrap());
+        }
+        assert_eq!(cdp.test_metrics()["events"]["count"], 0);
         assert_eq!(control.snapshot().0, epoch);
         assert_eq!(cdp.pending(), 32);
         assert_eq!(cdp.outgoing.capacity(), 0);

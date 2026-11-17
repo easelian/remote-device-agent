@@ -459,7 +459,7 @@ async fn native_object_lease_boundary_and_unsubscribed_runtime_events() {
     engine.initialize(deadline()).await.unwrap();
     let context = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Event::Attached { context, .. } = events.recv().await.unwrap() {
+            if let Event::Attached { context, .. } = events.recv().await.unwrap().event {
                 break context;
             }
         }

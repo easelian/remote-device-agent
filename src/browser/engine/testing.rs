@@ -67,6 +67,7 @@ impl Ids {
     }
     pub fn request(&self, context: &Context, key: &str) -> Request {
         Request {
+            _event: super::EventRetention::default(),
             context: Some(context.clone()),
             key: key.into(),
         }

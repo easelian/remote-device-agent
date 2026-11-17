@@ -148,6 +148,7 @@ pub struct NetworkId {
 }
 #[derive(Clone)]
 pub struct Request {
+    _event: EventRetention,
     context: Option<Context>,
     key: String,
 }
@@ -223,11 +224,29 @@ pub enum FocusOutcome {
     Stale,
     Changed,
 }
+/// The payload stays charged while an event handler or derived request owns it.
+#[derive(Clone, Default)]
+pub struct EventRetention {
+    _lease: Option<cdp::EventLease>,
+}
+pub struct EventDelivery {
+    pub event: Event,
+    pub retention: EventRetention,
+}
+#[cfg(test)]
+impl From<Event> for EventDelivery {
+    fn from(event: Event) -> Self {
+        Self {
+            event,
+            retention: EventRetention::default(),
+        }
+    }
+}
 pub struct Events {
     backend: cdp::Events,
 }
 impl Events {
-    pub async fn recv(&mut self) -> Result<Event> {
+    pub async fn recv(&mut self) -> Result<EventDelivery> {
         self.backend.recv().await
     }
 }

@@ -165,7 +165,11 @@ Chromium 通过受管启动器、私有 remote-debugging pipe 和独立资料启
 
 CDP 命令为封闭枚举，类型元数据显式区分页面副作用、读取及弹窗行为。Runtime 求值异常按失败解码，不能成为成功的空观察。固定程序可在内部执行 JavaScript，但没有向调用者开放 evaluate、任意方法名、原生对象 ID 或调试端点。
 
-CDP 事件使用 256 条 `broadcast<Value>`，完整入站消息上限为 2 MiB。消费端发现积压丢失或关闭后停止连接；当前没有聚合事件字节账本，也没有在广播发送侧同步完成关键事件丢失判定与新命令准入关闭。这是现存缺口，补齐方案和 EX-00 位于设计与验收，不能写作已经具备的保证。
+[CDP 事件通道](../src/browser/engine/cdp/wire/events.rs)最多保留 256 条、8 MiB 已编码事件字节，完整入站消息仍受 2 MiB 限制。事件载荷通过 `Arc` 共享；条数和字节许可随事件传到解码结果、导航决定、目标初始化及附件任务，直到队列和最后一个消费者都释放后才归还。字节账本计量接收帧中的 UTF-8 JSON，包括空白，不等同于 Rust 解码结构和进程 RSS。
+
+启用事件域前必须注册关键消费者，每个连接最多两个，任一已注册消费者退出都会触发停止。读取侧仅向业务消费者投递目标附着、目标移除、目标信息变化、暂停请求、响应附加信息和弹窗开闭这七类事件；过滤之前仍校验原生对象所有权。条数/字节超限、消费者缺失、发送失败或消费序列缺口与普通命令准入共用待决表锁，判定后立即禁止新命令，不等待消费者恢复读取。
+
+事件停止把在途调用通知为 `unknown`，但保留已接纳命令的待决项、槽位和原生租约预留；已提交输入不重放。连接在最长 3 秒内继续处理迟到响应及相应原生回收，再结束传输；原生所有者关闭、EOF 或传输失败可提前结束。传输结束仍不能代替所属进程和磁盘目录的清理证明。
 
 ### 6.2 Firefox/BiDi
 
@@ -212,7 +216,7 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 协议租约 | CDP 对象 256、流 16，分类不可借用；包括 pending 预留；BiDi root handle 0 | [CDP leases](../src/browser/engine/cdp/wire/leases.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
-| 事件 | CDP 256 条、单消息受 2 MiB 限制，暂无聚合字节账本；BiDi 256 条/合计 1 MiB/单事件 64 KiB | 两种 wire |
+| 事件 | CDP 256 条/合计 8 MiB 已编码字节/最多两个关键消费者，单消息受 2 MiB 限制；BiDi 256 条/合计 1 MiB/单事件 64 KiB | [CDP events](../src/browser/engine/cdp/wire/events.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 导航决定 | 32 个并发、4,096 个去重项、2 秒期限 | [policy](../src/browser/semantic/policy.rs) |
 | BiDi 启动上下文与写入 | 128 活动项、128 销毁标记、深度 32；写入 3 秒；启动日志 64 KiB | [BiDi](../src/browser/engine/bidi)、[Firefox process](../src/browser/process/firefox.rs) |
 | 截图 | viewport JPEG，宽高各不超过 1920 CSS px，base64 最多 512 KiB；完整响应另外受限 | [image](../src/browser/image.rs)、[v2 native](../src/browser/runtime/v2/native.rs) |

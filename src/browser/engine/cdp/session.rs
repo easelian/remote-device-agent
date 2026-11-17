@@ -2,11 +2,11 @@ use super::*;
 use base64::Engine as _;
 
 pub(in crate::browser::engine) struct Events {
-    raw: tokio::sync::broadcast::Receiver<Value>,
+    raw: wire::EventReceiver,
     adapter: Adapter,
 }
 impl Events {
-    pub(in crate::browser::engine) async fn recv(&mut self) -> Result<Event> {
+    pub(in crate::browser::engine) async fn recv(&mut self) -> Result<EventDelivery> {
         loop {
             let raw = match self.raw.recv().await {
                 Ok(value) => value,
@@ -15,8 +15,14 @@ impl Events {
                     return Err(Failure::unknown("browser_lost"));
                 }
             };
-            match decode(&self.adapter, raw) {
-                Ok(Some(event)) => return Ok(event),
+            match decode(&self.adapter, &raw) {
+                Ok(Some(mut event)) => {
+                    let retention = EventRetention { _lease: Some(raw) };
+                    if let Event::DocumentPaused(request) = &mut event {
+                        request.handle._event = retention.clone();
+                    }
+                    return Ok(EventDelivery { event, retention });
+                }
                 Ok(None) => {}
                 Err(error) => {
                     self.adapter.stop();
@@ -50,7 +56,7 @@ fn info(a: &Adapter, value: &Value) -> TargetInfo {
             .collect(),
     }
 }
-fn decode(a: &Adapter, event: Value) -> Result<Option<Event>> {
+fn decode(a: &Adapter, event: &Value) -> Result<Option<Event>> {
     let params = &event["params"];
     let context = event["sessionId"].as_str().map(|s| Context(a.handle(s)));
     let e = match event["method"].as_str().unwrap_or("") {
@@ -89,6 +95,7 @@ fn decode(a: &Adapter, event: Value) -> Result<Option<Event>> {
         "Target.targetInfoChanged" => Event::TargetChanged(info(a, &params["targetInfo"])),
         "Fetch.requestPaused" => Event::DocumentPaused(DocumentRequest {
             handle: Request {
+                _event: EventRetention::default(),
                 context: context.clone(),
                 key: params["requestId"]
                     .as_str()
@@ -178,6 +185,7 @@ impl Engine {
     }
     pub async fn initialize(&self, deadline: Instant) -> Result<()> {
         let wire = &self.backend.wire;
+        wire.require_event_consumer()?;
         wire.call(
             None,
             Command::BrowserSetDownloadBehavior,

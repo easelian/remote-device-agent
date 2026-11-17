@@ -15,6 +15,7 @@ mod session;
 mod support;
 mod wire;
 pub(super) use session::Events;
+pub(super) use wire::EventLease;
 use wire::{Cdp, Command, InputPair};
 
 #[derive(Clone)]
@@ -106,10 +107,7 @@ impl Engine {
     pub(in crate::browser) fn test_metrics(&self) -> Value {
         self.backend.wire.test_metrics()
     }
-    #[cfg(test)]
-    pub(in crate::browser) fn raw_test_events(&self) -> tokio::sync::broadcast::Receiver<Value> {
-        self.backend.wire.events()
-    }
+
     #[cfg(test)]
     pub(in crate::browser) fn focus_program() -> &'static str {
         programs::INSERT

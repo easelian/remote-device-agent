@@ -2,8 +2,8 @@ use super::{
     Failure, Principal, Result, Settings, Shell,
     control::Control,
     engine::{
-        Context, DocumentRequest, Engine, Event, FrameId, Navigation, NetworkId, RequestDecision,
-        SessionPort, TabId, TransferPort,
+        Context, DocumentRequest, Engine, Event, EventDelivery, FrameId, Navigation, NetworkId,
+        RequestDecision, SessionPort, TabId, TransferPort,
     },
     files::{self, Files},
     page::{self, Element},
@@ -1367,8 +1367,9 @@ async fn handle_event(
     downloads: Option<&DownloadContext>,
     gate: &Arc<Gate>,
     work: &mut Work,
-    event: Event,
+    delivery: impl Into<EventDelivery>,
 ) -> Result<()> {
+    let EventDelivery { event, retention } = delivery.into();
     let deadline = Instant::now() + Duration::from_secs(3);
     match event {
         Event::Attached {
@@ -1383,6 +1384,7 @@ async fn handle_event(
                 }
                 let (engine, session) = (engine.clone(), session.clone());
                 work.initializers.spawn(async move {
+                    let _retention = retention;
                     // Resuming a worker can itself wait for a page request.
                     // Keep Fetch processing available to resolve that dependency,
                     // just as for page/iframe initialization below.
@@ -1434,6 +1436,7 @@ async fn handle_event(
             let downloads = downloads.is_some();
             let responses = downloads || gate.sites.strict();
             work.initializers.spawn(async move {
+                let _retention = retention;
                 // A popup can have no renderer document until its attachment
                 // finishes. The event pump must keep serving Fetch meanwhile.
                 let result = engine

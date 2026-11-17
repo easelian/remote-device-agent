@@ -117,22 +117,17 @@ async fn critical_event_gap_closes_the_engine_before_more_input_or_disclosure() 
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
     let mut events = engine.events();
-    let mut raw = engine.raw_test_events();
-    for _ in 0..300 {
+    for _ in 0..257 {
         browser.write_all(b"{\"method\":\"Target.targetInfoChanged\",\"params\":{\"targetInfo\":{\"targetId\":\"tab\"}}}\0").await.unwrap();
     }
-    // A marker from the same reader establishes that the ring was overrun.
-    browser
-        .write_all(b"{\"method\":\"fixture.marker\"}\0")
-        .await
-        .unwrap();
-    loop {
-        match raw.recv().await {
-            Ok(v) if v["method"] == "fixture.marker" => break,
-            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(e) => panic!("{e}"),
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.connected() {
+            tokio::task::yield_now().await;
         }
-    }
+    })
+    .await
+    .unwrap();
+    // The producer has already fenced admission without either consumer recv.
     assert_eq!(events.recv().await.err().unwrap().code, "browser_lost");
     assert!(!engine.connected());
     let ids = Ids::for_engine(&engine);
@@ -201,6 +196,7 @@ async fn missing_native_core_command_fails_initialization_without_retry_or_paylo
     let (client, browser) = tokio::io::duplex(8192);
     let (read, write) = tokio::io::split(client);
     let engine = Engine::from_private_channel(read, write);
+    let _events = engine.events();
     let reply = async {
         let mut browser = BufReader::new(browser);
         let mut frame = Vec::new();
@@ -221,5 +217,50 @@ async fn missing_native_core_command_fails_initialization_without_retry_or_paylo
     assert!(!format!("{error:?}").contains("SYNTHETIC_PRIVATE_NATIVE_ERROR"));
     assert_eq!(engine.test_metrics()["commands"], 1);
     assert_eq!(engine.test_metrics()["pending"], 0);
+    engine.stop();
+}
+
+#[tokio::test]
+async fn initialization_requires_a_registered_consumer_before_enabling_native_events() {
+    let (client, _browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let engine = Engine::from_private_channel(read, write);
+    let error = engine
+        .initialize(Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "browser_lost");
+    assert!(!engine.connected());
+    assert_eq!(engine.test_metrics()["commands"], 0);
+    engine.stop();
+}
+
+#[tokio::test]
+async fn decoded_request_clones_retain_the_event_after_the_delivery_is_dropped() {
+    let (client, mut browser) = tokio::io::duplex(8192);
+    let (read, write) = tokio::io::split(client);
+    let engine = Engine::from_private_channel(read, write);
+    let mut events = engine.events();
+    let value = json!({"method":"Fetch.requestPaused","sessionId":"page","params":{
+        "requestId":"request","frameId":"tab","request":{"url":"https://fixture.invalid/file"},
+        "responseStatusCode":200,"responseHeaders":[{"name":"content-disposition","value":"attachment; filename=fixture.bin"}]}});
+    let mut frame = serde_json::to_vec(&value).unwrap();
+    let bytes = frame.len();
+    frame.push(0);
+    browser.write_all(&frame).await.unwrap();
+    let delivery = events.recv().await.unwrap();
+    let Event::DocumentPaused(request) = &delivery.event else {
+        panic!("paused request")
+    };
+    let clone = request.clone();
+    let handle = request.handle.clone();
+    drop(delivery);
+    assert_eq!(engine.test_metrics()["events"]["bytes"], bytes);
+    drop(clone);
+    assert_eq!(engine.test_metrics()["events"]["count"], 1);
+    // DNS decisions and download tasks own this same request handle.
+    drop(handle);
+    assert_eq!(engine.test_metrics()["events"]["count"], 0);
+    assert_eq!(engine.test_metrics()["events"]["bytes"], 0);
     engine.stop();
 }

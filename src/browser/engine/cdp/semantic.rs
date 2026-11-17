@@ -162,8 +162,10 @@ impl Session {
                     completed=initializing.join_next(),if !initializing.is_empty()=>{
                         if !matches!(completed,Some(Ok(Ok(())))) {monitor.stop();break;}
                     },
-                    event=events.recv()=>match event {
-                        Ok(Event::Attached{context,info})=>{
+                    event=events.recv()=>{
+                        let EventDelivery {event, retention} = match event {Ok(event)=>event,Err(_)=>{monitor.stop();break;}};
+                        match event {
+                        Event::Attached{context,info}=>{
                             ledger.context_created();
                             if !matches!(info.kind,ContextKind::Page|ContextKind::Frame) {
                                 if monitor.discard_tab(&info.tab,Policy::deadline()).await.is_err(){monitor.stop();break;}
@@ -185,13 +187,14 @@ impl Session {
                             let port=monitor.clone();let all=observed.clone();let receive=downloads.is_some();
                             let ready=if info.kind==ContextKind::Page{first.take()}else{None};
                             initializing.spawn(async move {
+                                let _retention = retention;
                                 port.initialize_context(&context,receive,receive,Instant::now()+std::time::Duration::from_secs(10)).await?;
                                 if let Some(id)=tab && let Some(tab)=all.lock().unwrap().get_mut(&id){tab.info.ready=true;}
                                 if let Some(ready)=ready {let _=ready.send(context);}
                                 Ok(())
                             });
                         },
-                        Ok(Event::DocumentPaused(request))=>{
+                        Event::DocumentPaused(request)=>{
                             if decisions.len()>=32 {monitor.stop();break;}
                             if request.responded {
                                 let transfer=downloads.clone();let port=monitor.clone();
@@ -218,16 +221,17 @@ impl Session {
                                 port.respond(&request.handle,if allowed{RequestDecision::Continue}else{RequestDecision::Deny},token.deadline()).await?;token.settled(allowed);Ok(())
                             });
                         },
-                        Ok(Event::Detached(context))=>{observed.lock().unwrap().retain(|_,tab|tab.context!=context);},
-                        Ok(Event::TargetChanged(info))=>{for tab in observed.lock().unwrap().values_mut().filter(|t|t.native==info.tab){tab.info.title=info.title.chars().take(4096).collect();tab.info.url=info.url.chars().take(8192).collect();}},
-                        Ok(Event::DialogOpened{context,kind,message})=>{
+                        Event::Detached(context)=>{observed.lock().unwrap().retain(|_,tab|tab.context!=context);},
+                        Event::TargetChanged(info)=>{for tab in observed.lock().unwrap().values_mut().filter(|t|t.native==info.tab){tab.info.title=info.title.chars().take(4096).collect();tab.info.url=info.url.chars().take(8192).collect();}},
+                        Event::DialogOpened{context,kind,message}=>{
                             let dialog=match Dialog::new(kind.as_str().unwrap_or(""),&message){Ok(d)=>d,Err(_)=>{monitor.stop();break;}};
                             let mut all=observed.lock().unwrap();
                             let Some(tab)=all.values_mut().find(|t|Some(&t.context)==context.as_ref())else{monitor.stop();break;};
                             tab.info.dialog=Some(dialog);
                         },
-                        Ok(Event::DialogClosed{context})=>{for tab in observed.lock().unwrap().values_mut().filter(|t|Some(&t.context)==context.as_ref()){tab.info.dialog=None;}},
-                        Ok(_)=>{},Err(_)=>{monitor.stop();break;}
+                        Event::DialogClosed{context}=>{for tab in observed.lock().unwrap().values_mut().filter(|t|Some(&t.context)==context.as_ref()){tab.info.dialog=None;}},
+                        _=>{},
+                    }
                     }
                 }
             }

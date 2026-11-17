@@ -21,6 +21,10 @@ use tokio::{
 mod bounds_tests;
 mod command;
 #[cfg(test)]
+mod event_tests;
+mod events;
+pub(in crate::browser::engine) use events::{EventLease, EventReceiver};
+#[cfg(test)]
 mod lease_tests;
 mod leases;
 #[cfg(test)]
@@ -71,16 +75,26 @@ struct PendingState {
     resources: metrics::Resources,
     commands: HashMap<u64, Pending>,
     dialogs: HashSet<String>,
+    event_sequence: u64,
+    #[cfg(test)]
+    event_peak: (usize, usize),
+    event_receivers: usize,
+    event_deadline: Option<tokio::time::Instant>,
 }
 struct Inner {
     pending: Mutex<PendingState>,
     next: AtomicU64,
     closed: AtomicBool,
+    fenced: AtomicBool,
+    event_slots: Arc<Semaphore>,
+    event_bytes: Arc<Semaphore>,
     slots: Arc<Semaphore>,
     cleanup_slots: Arc<Semaphore>,
     stop: watch::Sender<Shutdown>,
     #[cfg(test)]
     reply_gate: Mutex<Option<ReplyGate>>,
+    #[cfg(test)]
+    barriers: AtomicU64,
 }
 #[cfg(test)]
 struct ReplyGate {
@@ -92,6 +106,7 @@ struct ReplyGate {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shutdown {
     Running,
+    Fenced,
     Graceful,
     Immediate,
 }
@@ -100,7 +115,7 @@ enum Shutdown {
 pub struct Cdp {
     inner: Arc<Inner>,
     outgoing: mpsc::Sender<Vec<u8>>,
-    events: broadcast::Sender<Value>,
+    events: broadcast::Sender<Arc<events::Envelope>>,
     submission: Submission,
 }
 
@@ -121,7 +136,7 @@ impl Cdp {
     #[cfg(test)]
     pub fn test_metrics(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
-        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot(),"leases":pending.leases.snapshot(),"cleanup_pending":pending.commands.values().filter(|c| c.cleanup_deadline.is_some()).count()})
+        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"barriers":self.inner.barriers.load(Ordering::Acquire),"native_objects":pending.resources.objects.len(),"streams":pending.resources.streams.len(),"handle_inventory":pending.resources.snapshot(),"leases":pending.leases.snapshot(),"cleanup_pending":pending.commands.values().filter(|c| c.cleanup_deadline.is_some()).count(),"events":{"count":events::MAX_EVENTS-self.inner.event_slots.available_permits(),"bytes":events::MAX_EVENT_BYTES-self.inner.event_bytes.available_permits(),"peak_count":pending.event_peak.0,"peak_bytes":pending.event_peak.1,"receivers":pending.event_receivers,"sequence":pending.event_sequence,"fenced":self.inner.fenced.load(Ordering::Acquire)}})
     }
     #[cfg(test)]
     pub fn command_count(&self) -> u64 {
@@ -133,17 +148,22 @@ impl Cdp {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let (outgoing, mut requests) = mpsc::channel::<Vec<u8>>(32 + leases::CLEANUP_SLOTS);
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(events::MAX_EVENTS);
         let (stop, mut stopped) = watch::channel(Shutdown::Running);
         let inner = Arc::new(Inner {
             pending: Mutex::new(PendingState::default()),
             next: AtomicU64::new(1),
             closed: AtomicBool::new(false),
+            fenced: AtomicBool::new(false),
+            event_slots: Arc::new(Semaphore::new(events::MAX_EVENTS)),
+            event_bytes: Arc::new(Semaphore::new(events::MAX_EVENT_BYTES)),
             slots: Arc::new(Semaphore::new(32)),
             cleanup_slots: Arc::new(Semaphore::new(leases::CLEANUP_SLOTS)),
             stop,
             #[cfg(test)]
             reply_gate: Mutex::new(None),
+            #[cfg(test)]
+            barriers: AtomicU64::new(0),
         });
         let reader = inner.clone();
         let notifications = events.clone();
@@ -155,7 +175,9 @@ impl Cdp {
             'reader: loop {
                 let count = tokio::select! {
                     _ = cleanup_tick.tick() => {
-                        if reader.pending.lock().unwrap().commands.values().any(|c|c.cleanup_deadline.is_some_and(|d|tokio::time::Instant::now()>=d)) { break; }
+                        let pending = reader.pending.lock().unwrap();
+                        let now = tokio::time::Instant::now();
+                        if pending.event_deadline.is_some_and(|d| now >= d) || pending.commands.values().any(|c|c.cleanup_deadline.is_some_and(|d|now>=d)) { break; }
                         continue;
                     },
                     _ = stopped.changed() => {
@@ -169,6 +191,7 @@ impl Cdp {
                         let Ok(value) = serde_json::from_slice::<Value>(&frame) else {
                             break 'reader;
                         };
+                        let encoded_bytes = frame.len();
                         frame.clear();
                         if let Some(id) = value["id"].as_u64() {
                             #[cfg(test)]
@@ -233,35 +256,26 @@ impl Cdp {
                                     let _ = reply.send(result);
                                 }
                             }
-                        } else {
                             #[cfg(test)]
-                            reader.pending.lock().unwrap().resources.event(&value);
-                            if !reader.pending.lock().unwrap().leases.event(&value) {
-                                break 'reader;
+                            if id == 0 {
+                                reader.barriers.fetch_add(1, Ordering::Release);
                             }
-                            if let Some(session) = value["sessionId"].as_str() {
-                                let mut pending = reader.pending.lock().unwrap();
-                                match value["method"].as_str() {
-                                    Some("Page.javascriptDialogOpening") => {
-                                        pending.dialogs.insert(session.into());
-                                        for command in pending.commands.values_mut().filter(|c| {
-                                            c.session.as_deref() == Some(session) && c.dialog_blocks
-                                        }) {
-                                            // Keep the command and its permit until the real reply.
-                                            if let Some(reply) = command.reply.take() {
-                                                let _ = reply.send(Err(Failure::unknown(
-                                                    "browser_dialog_open",
-                                                )));
-                                            }
-                                        }
-                                    }
-                                    Some("Page.javascriptDialogClosed") => {
-                                        pending.dialogs.remove(session);
-                                    }
-                                    _ => {}
-                                }
+                        } else {
+                            let mut pending = reader.pending.lock().unwrap();
+                            #[cfg(test)]
+                            pending.resources.event(&value);
+                            // Native ownership is checked even for events that no
+                            // semantic consumer uses, and after admission closes.
+                            if !pending.leases.event(&value) {
+                                reader.fence_events(&mut pending);
+                                continue;
                             }
-                            let _ = notifications.send(value);
+                            reader.publish_event(
+                                &mut pending,
+                                &notifications,
+                                value,
+                                encoded_bytes,
+                            );
                         }
                     } else {
                         if frame.len() == MAX_MESSAGE {
@@ -280,7 +294,9 @@ impl Cdp {
                 let frame = tokio::select! {
                     biased;
                     _ = stopped.changed() => {
-                        let graceful = *stopped.borrow_and_update() == Shutdown::Graceful;
+                        let state = *stopped.borrow_and_update();
+                        if state == Shutdown::Fenced { continue; }
+                        let graceful = state == Shutdown::Graceful;
                         if graceful {
                             // Fence ordinary commands immediately, but retain the read
                             // pipe while Chromium flushes profile state and exits.
@@ -351,7 +367,7 @@ impl Cdp {
         let (reply, result) = oneshot::channel();
         let blocked_release = self.submission.enqueue(spec.effect, || {
             let mut pending = self.inner.pending.lock().unwrap();
-            if self.inner.closed.load(Ordering::Acquire) {
+            if !self.connected() {
                 return Err(Failure::unknown("browser_lost"));
             }
             let dialog_blocks = spec.dialog != Dialog::Continue;
@@ -394,9 +410,7 @@ impl Cdp {
             Err(_) => Err(Failure::unknown("browser_timeout_unknown")),
         }
     }
-    pub fn events(&self) -> broadcast::Receiver<Value> {
-        self.events.subscribe()
-    }
+
     /// Release only a press that may have reached the browser. Any failure after
     /// that point describes an uncertain input outcome, including failed cleanup.
     pub async fn input_pair(
@@ -430,7 +444,7 @@ impl Cdp {
         })
     }
     pub fn connected(&self) -> bool {
-        !self.inner.closed.load(Ordering::Acquire)
+        !self.inner.closed.load(Ordering::Acquire) && !self.inner.fenced.load(Ordering::Acquire)
     }
     pub fn pending(&self) -> usize {
         self.inner
