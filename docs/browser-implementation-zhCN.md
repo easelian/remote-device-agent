@@ -128,6 +128,8 @@ Core 绑定已认证的连接 ID 和 Agent 实例，向该连接发送带原认�
 | `handoff` | 暂停后提供认证 `human_url`；用户显式交回并允许披露，再取新代次并重新观察 |
 | `files` | 只给启用能力的示例；文件通过人工页面交付，上传示例使用当前会话/tab/origin 的一次性授权 |
 
+当前 `handoff` 模板以用户希望接管现有会话为前提，尚未把敏感信息输入或本人验证设为限定条件；`recover` 模板将继续观察与用户复核并列提供。这些文字不表示系统会自动创建人工控制租约。当前人工接口也不接受用途字段；产品用途的待完善约束见[能力指引回归](browser-design-zhCN.md#6-能力指引回归)。
+
 包含 `support_id` 和适用时 `human_url` 的 Core 结果正文最多 16 KiB，完整 MCP 封装继续受原有上限约束。实例变化、关闭或能力变化后，旧指引只能作为说明；下一次工具调用重新校验当前状态。旧 Core 未提供该工具时，客户端继续按已有 schema 使用原工具。
 
 ## 4. 提交、控制权与错误进展
@@ -303,7 +305,9 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 
 列举 v2 资料时，向 `browser_profiles` 传入打开时的完整 `selection`；删除时，向 `browser_control` 传入 `action: "delete_profile"`、`profile_name` 和相同 `selection`。省略 `selection` 只访问 v1 资料。其它会话操作不接受 `selection`，以 `session_id` 确定后端。资料列举和删除不消耗任务配额。
 
-上传沿用人工网页中的分块暂存和显式授权：批准的文件绑定 AI 主体、用户、会话、标签页、来源站点和一次使用次数。AI 的 `attach_file` 必须提供新观察中的 `ref` 和 `file_grant_id`。Agent 在共同输入租约内重新验证文档、主 frame、原生文件输入框、几何和站点，并在原生派发前持久化授权消耗。CDP 使用 `DOM.setFileInputFiles`，BiDi 使用 `input.setFiles`；调用者不能指定设备路径。结果不明时不恢复授权或自动重试。上传字节不进入模型观察、文件列表或操作回执。
+上传沿用人工网页中的分块暂存和显式授权。当前 `upload_begin`、`upload_chunk`、`upload_finish` 均经 `browser_human` 通道，并要求有效的人工控制租约及匹配的 view、lease 和控制代次；创建上传授权前需要先接管浏览器。用户交还控制并允许披露后，AI 才能重新观察并使用该授权。文件授权和浏览器接管目前没有分离，不能将其描述为无需接管的独立文件批准流程。
+
+批准的文件绑定 AI 主体、用户、会话、标签页、来源站点和一次使用次数。AI 的 `attach_file` 必须提供新观察中的 `ref` 和 `file_grant_id`。Agent 在共同输入租约内重新验证文档、主 frame、原生文件输入框、几何和站点，并在原生派发前持久化授权消耗。CDP 使用 `DOM.setFileInputFiles`，BiDi 使用 `input.setFiles`；调用者不能指定设备路径。结果不明时不恢复授权或自动重试。上传字节不进入模型观察、文件列表或操作回执。
 
 下载只接收 HTTP 200 attachment 响应，必须有唯一的 `Content-Length`，且未使用压缩编码。单文件最多 32 MiB，全部文件及上传暂存共用 128 MiB 和 16 项配额，完成文件保留 24 小时。读取每块最多 64 KiB，并校验完整长度与 SHA-256。文件列表只返回元数据，实际字节通过认证人工文件接口读取。人工接管立即隐藏该会话的文件；显式返回并披露后才重新对 AI 可见。
 
