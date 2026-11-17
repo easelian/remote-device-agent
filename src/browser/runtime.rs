@@ -390,8 +390,10 @@ impl Browsers {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
         }
-        if operation == "browser_inspect" {
-            // Only the explicitly selected v2 branch above can inspect refs.
+        if operation == "browser_inspect"
+            || operation == "browser_observe" && params.get("presentation").is_some()
+        {
+            // Only the explicitly selected v2 branch supports these extensions.
             // Refuse before preparing storage or touching a legacy session.
             return Err(Failure::new("browser_feature_unsupported"));
         }
@@ -1769,6 +1771,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "filter",
             "within",
             "find",
+            "presentation",
         ],
         "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
         "browser_wait" => &[
@@ -1790,6 +1793,27 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     };
     if map.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err(Failure::new("browser_invalid_params"));
+    }
+    if let Some(presentation) = map.get("presentation") {
+        let valid = presentation.as_object().is_some_and(|object| {
+            object
+                .keys()
+                .all(|key| ["version", "mode", "base_revision"].contains(&key.as_str()))
+                && object.get("version").and_then(Value::as_u64) == Some(1)
+                && object.get("mode").and_then(Value::as_str) == Some("delta")
+                && object.get("base_revision").is_none_or(|base| {
+                    base.as_str().is_some_and(|id| {
+                        !id.is_empty()
+                            && id.len() <= 128
+                            && id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    })
+                })
+        });
+        if !valid || map.contains_key("cursor") {
+            return Err(Failure::new("browser_invalid_params"));
+        }
     }
     if operation == "browser_inspect"
         && (params["session_id"].as_str().is_none()
@@ -2000,6 +2024,44 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delta_presentation_is_explicit_closed_and_incompatible_with_a_cursor() {
+        let plain = json!({"session_id":"session","control_epoch":1});
+        assert!(validate("browser_observe", &plain).is_ok());
+        let valid = json!({"version":1,"mode":"delta","base_revision":"r".repeat(128)});
+        let mut request = plain.clone();
+        request["presentation"] = valid.clone();
+        assert!(validate("browser_observe", &request).is_ok());
+        request["presentation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("base_revision");
+        assert!(validate("browser_observe", &request).is_ok());
+        for presentation in [
+            Value::Null,
+            json!({}),
+            json!({"version":2,"mode":"delta"}),
+            json!({"version":1,"mode":"full"}),
+            json!({"version":1,"mode":"delta","extra":true}),
+            json!({"version":1,"mode":"delta","base_revision":null}),
+            json!({"version":1,"mode":"delta","base_revision":""}),
+            json!({"version":1,"mode":"delta","base_revision":"r".repeat(129)}),
+            json!({"version":1,"mode":"delta","base_revision":"é"}),
+        ] {
+            request["presentation"] = presentation;
+            assert_eq!(
+                validate("browser_observe", &request).unwrap_err().code,
+                "browser_invalid_params"
+            );
+        }
+        request["presentation"] = valid;
+        request["cursor"] = "0123456789abcdef0123456789abcdef".into();
+        assert_eq!(
+            validate("browser_observe", &request).unwrap_err().code,
+            "browser_invalid_params"
+        );
+    }
 
     #[test]
     fn diagnostics_accept_only_a_complete_bounded_read_request() {

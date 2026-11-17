@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "sequences": 20,
+  "updates_per_sequence": 20,
+  "first_row_count": 40,
+  "row_count_increment": 0,
+  "max_nodes": 1000,
+  "max_chars": 64000,
+  "sparse_changes_max_percent": 5,
+  "distributed_update_every": 5,
+  "frames_every": 5,
+  "full_oracle": "same read captured immediately before projection",
+  "kinds": [
+    "form",
+    "table",
+    "list",
+    "mixed_text",
+    "unicode_frames"
+  ]
+}

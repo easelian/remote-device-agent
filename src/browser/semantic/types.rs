@@ -10,7 +10,7 @@ pub(crate) const MAX_FRAMES: usize = 32;
 pub(crate) const MAX_NODES: usize = 1000;
 pub(crate) const MAX_CHARACTERS: usize = 64_000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(crate) struct Context {
     scope: u64,
     index: u64,

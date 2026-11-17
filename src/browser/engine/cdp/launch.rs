@@ -24,6 +24,10 @@ pub(in crate::browser::engine) fn arguments(data: &Path) -> Vec<OsString> {
         "--disable-sync",
         "--disable-default-apps",
         "--disable-extensions",
+        // Managed headless sessions do not use background component extensions
+        // or the browser's omnibox UI. Both otherwise start extra renderers.
+        "--disable-component-extensions-with-background-pages",
+        "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup,WebUIOmniboxFullPopup",
         "--disable-breakpad",
         "--disable-crash-reporter",
         "--site-per-process",

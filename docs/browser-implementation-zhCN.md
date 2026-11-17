@@ -17,7 +17,8 @@ Agent 使用 Rust 单二进制和设备上已安装的浏览器。运行时不�
 | 只读可操作性诊断 | `browser_inspect` 检查一个当前 ref 的动作前置条件 | 仅显式 v2 / `semantic_dom_v1`，要求候选与打开结果均声明 `actionability` 扩展版本 1 |
 | 能力指引 | Core `browser_guidance` 返回当前设备或会话适用的一个主题 | 根据明确能力选择静态模板；只读取会话元数据，按普通请求计量 |
 | 独立文件批准 | 用户在独立页面批准一次文件选择，AI 保留浏览器控制 | v1 与两个 v2 后端；要求 `uploads` 策略及 `file_authorization` 扩展版本 1，原租约上传继续可用 |
-| 观察差分、独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
+| 可选增量观察 | 完整观察后将内容与当前引用绑定分开，受控 reducer 重建普通结果 | 仅 v2，显式 `presentation` 与每次 MCP 调用的 reducer 元数据；默认完整观察 |
+| 独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
 
 v2 的编译、策略及后端门槛见[选择解析与能力声明](../src/browser/selection.rs)和[会话实际能力](../src/browser/runtime/v2.rs)。`candidate` 仅表示允许尝试；成功打开并返回 `session_ready` 才表示本次启动、文档身份和截图检查完成。最低浏览器版本、Firefox ESR、其他 Chromium 品牌及其他 OS/CPU 的支持需要独立证据，不能由协议名称或交叉构建推导。
 
@@ -89,7 +90,7 @@ Server 对应源码为 `apps/core/src/browser.rs`、`browser/guidance.rs`、`mcp
 
 Server 先验证选择结构，再检查设备的 v2 声明和目标后端，满足后才分配或执行变更操作。旧 Agent 缺少 v2 时返回 `browser_capability_unsupported`。Agent 独立重复验证。未知选择返回 `browser_selection_invalid`，后端候选不可用返回 `browser_backend_unavailable`。严格策略在能力声明中以 `reason: browser_policy_unsupported` 标为不可用，公开打开因此被拒绝；内部共同语义入口也保留策略校验。这些公开拒绝发生在进程、临时资料和页面副作用之前。
 
-`capabilities.browser.v2.backends[].extensions.actionability` 声明 `version: 1`、布尔值 `available` 和可空 `reason`；可用性沿用对应后端的构建、平台、本地策略和浏览器检查。成功打开后的 `capabilities.extensions.actionability` 声明本次实际启用的诊断扩展。扩展不增加 `selection` 字段，也不新增本地开关。
+`capabilities.browser.v2.backends[].extensions.actionability` 和 `extensions.observation_delta` 分别声明 `version: 1`、布尔值 `available` 和可空 `reason`；可用性沿用对应后端的构建、平台、本地策略和浏览器检查。成功打开后的 `capabilities.extensions` 声明本次实际启用的对应扩展。扩展不增加 `selection` 字段，也不新增本地开关。
 
 打开成功返回原有 `session_id`、`tab_id`、`control_epoch`、`state`，并增加实际 `selection`、`capabilities` 和 `stage: "session_ready"`。`browser_sessions` 的 v2 条目也包含与打开结果相同的 `capabilities`；v1 条目的格式保持原样。选择在会话内固定；后续会话请求通过会话 ID 路由，不再接受选择参数；资料列举和删除单独接受 `selection`。核心能力在运行中丢失时暂停或关闭，不降级成 v1，也不更换后端。
 
@@ -224,11 +225,61 @@ contenteditable 的编辑值采用显示文本并将 CRLF 规范为 LF；没有�
 
 普通诊断锁不参与同步控制 fence。人工接管可立即换代，旧代次结果不能披露；纯读取不占用输入交接屏障。已提交读取在调用取消或超时后仍由原生通道持有待决槽及适用租约，迟到响应结算后才释放，不能由调用 future 的销毁伪造归零。
 
+### 5.6 可选增量观察
+
+**显式请求与接收端声明。**
+
+`browser_observe.presentation` 是封闭对象，仅接收 `version: 1`、`mode: delta` 和可选的 `base_revision`。revision 使用既有不透明标识的 1～128 字节 ASCII 语法；Agent 签发 32 位十六进制随机值。它与 `cursor` 互斥。设备候选和实际 v2 会话均通过 `extensions.observation_delta` 声明版本与可用状态；v1、缺失或未知版本在页面工作前明确拒绝。该扩展随现有 v2 构建和本地策略启用，不增加默认开启的客户端行为。
+
+Core 的 MCP 服务按请求鉴权，不依赖初始化握手保存客户端状态。受控适配器必须在每次 `tools/call` 的外层 `params._meta` 中提供 `com.easelian/browser-observation-delta: {"version": 1, "reducer": "rdh-observation-v1"}`。该声明不属于工具 arguments，不授予设备或页面权限；缺失、未知版本或格式错误时，Core 在普通准入和页面读取前返回现有 `browser_feature_unsupported`。工具描述不引导没有 reducer 的模型直接开启 presentation。接收端仍须实际通过重建验收，声明本身不是已验证的客户端证据。
+
+首次请求省略 base_revision 时返回本展示方式的 full。以下仅展示工具 arguments 中的展示参数，外层元数据由适配器设置：
+
+```json
+{
+  "presentation": {
+    "version": 1,
+    "mode": "delta",
+    "base_revision": "opaque-revision-from-last-received-result"
+  }
+}
+```
+
+**投影、绑定与完整响应选择。**
+
+省略展示参数时保留当前参数和完整结果。显式请求时，`observation_profile`、`page`、`coverage`、`content_trust`、会话、控制代次和 selection 保持原含义；节点和临时绑定放入封闭的 `presentation` 对象。该对象固定返回 `version`、`kind`、`revision`、十进制字符串 `sequence`、`node_count`、`cacheable` 和 `bindings`。full 带 `nodes`；delta 带 `base_revision` 和唯一一段 `splice: {start, delete_count, items}`；unchanged 只带 `base_revision`。`nodes` 与 `items` 保留每个节点的全部 canonical 字段，仅将 `frame_id` 替换为展示用整数 `frame_slot`，移除 ref。
+
+`bindings.references` 是与完整当前节点数组等长的数组，每项为当前 ref 或 null；`bindings.frames` 按槽顺序保存当前 frame_id；受限 full 若产生续页，将原游标放在可选的 `bindings.next_cursor`。序号从 1 开始，单会话单调增加且不超过 u64，溢出明确拒绝。不同响应的 seq 可以不连续；任何 kind 都替换全部绑定。page 与 coverage 每次完整返回，元数据变化也不能冒充 unchanged。
+
+Agent 对每次展示请求仍执行一次正常观察，并只传输一份本次完整节点投影。命中可用基线时，内部附加有界候选描述：已验证的 base_revision、共同前缀/后缀决定的替换范围，以及内容是否完全相同；不另传第二份节点树。Core 完成原有授权、披露及 support_id/human_url 装饰后，使用实际 JSON-RPC ID 和当前 rmcp 编码构造 full 与候选响应，按 UTF-8 JSON 字节精确计算。计算包含 content 中的 JSON 文本、structuredContent、元数据及 JSON-RPC 封装。仅在候选大小的十倍不大于 full 大小的七倍时选择 delta/unchanged，否则返回 full；两种结果使用同一当前 revision。内部候选字段不得进入公开 schema、回执或长期日志。该机制减少 MCP 输出，首版不承诺减少 Agent 到 Core 的完整观察字节。
+
+无论最终选哪一种 kind，现有 RPC/MCP 大小拒绝仍生效。Core 不建立内容基线或第二套页面身份；它只从本次经过授权的完整投影选取要输出的范围。未知内部版本、超界范围、重复绑定或格式不一致按既有解码错误拒绝，不能返回部分成功。
+
+**基线存储与控制 fence。**
+
+基线只保存已脱敏内容的编码字节、节点字节范围、frame 槽边界、随机 revision、创建时刻和固定大小的内部键摘要。摘要由已验证的内部 frame/document/realm 集合、tab、查询、实际节点/字符预算及控制代次编码计算；主体、Agent 实例、后端和 profile 由所属会话固定。frame 槽按内部 Context 的稳定顺序建立；公开 frame_id 不进入键。序列化采用计数后一次有界分配，长期不保留解码 JSON 树。
+
+存储投影每份至多 256 KiB，每会话两份、Agent 两个会话合计至多 1 MiB；节点索引和 frame 索引仍分别限制为 4,000 和 128 项。新增构造暂存至多 512 KiB，包含编码缓冲、范围索引和新绑定，不能把构造副本藏在“缓存以外”。新版本在纳入已存总量前淘汰所需旧版本。TTL 为创建后 60 秒且不续期；获取 ref 的既有 300 秒上限不因缓存改变。过期版本只可被有界回收，不得命中。
+
+普通输入仍使旧动作引用失效；内容基线不授予任何动作权限，可以在同一控制代次保留到下一次真实观察重新验证全部身份。导航、同 URL reload、BFCache、realm/frame、查询或预算变化使键失配、清空原基线并返回新鲜 full。暂停、人工接管、关闭、失联或策略更新使旧代次立即不可访问；回收不要求人工 fence 等待异步 session 锁。省略 presentation 的普通观察清空展示基线，避免跨展示方式保留隐式客户端状态。
+
+Agent 仅在本次最终控制代次检查与同步发布共用的控制锁内将准备好的基线置为可用；发布后再推进的控制代次使其不可访问。被取消的采集不发布，迟到任务不能重新插入旧代次。Core 随后的权限或完成检查仍可拒绝披露；这时 Agent 的未获客户端确认版本不等于成功交付，客户端只能在下一请求中明确携带自己成功应用的 revision。未知 revision 始终只在当前会话检索。
+
+只有完整扫描、无续页、无读取中变化、无记录资源限制且在缓存预算内的投影可以作为基线。既有 closed shadow、canvas 和浏览器 UI 的 profile 范围说明继续保留。受限观察返回新鲜 full，清空旧展示基线，不为了缓存继续扫描；大小上限仍不足以交付时按现有错误拒绝。控制或披露失败不回退为 full。
+
+**受控接收端。**
+
+Server `clients/browser-observation-delta.mjs` 提供无需浏览器自动化依赖的 JavaScript reducer，公开格式由 `contracts/browser/observation-v1.json` 固定。调用方绑定预期设备、会话、tab 和控制代次；断线或新连接重置基线。reducer 校验版本、序号、base、splice 范围、节点数与完整绑定；在临时值中重建普通观察，逐节点恢复 ref/frame_id 和原 next_cursor，通过后才原子替换状态。失败保持原状态并要求新鲜 full。展示索引不成为工具参数，旧序号或旧代次响应不能覆盖新状态。普通 AI 宿主若没有运行该 reducer 的受控能力，保持完整观察。
+
+reducer 使用同次采集生成的 full 作为 oracle，逐字段比较重建后的普通观察；不依赖模型对历史文本的记忆，也不新增跨语言 canonical JSON 摘要协议。共享语料位于 Agent `tests/fixtures/observation-delta-v1/`，适配器测试为 Server `clients/browser-observation-delta.test.mjs`。客户端断线后丢弃基线，重新发现能力并从 full 开始。
+
+Agent 的[展示投影与缓存](../src/browser/runtime/v2/presentation.rs)在真实观察之后准备基线，Server `apps/core/src/browser/presentation.rs` 选择完整 MCP 输出。二者不修改页面算法、动作回执或数据库函数契约。当前仅受控适配器实现自动重建；未集成 reducer 的 AI 宿主继续请求普通完整观察。
+
 ## 6. 原生连接、进程和资源所有权
 
 ### 6.1 CDP
 
-Chromium 通过受管启动器、私有 remote-debugging pipe 和独立资料启动。Linux 为每个会话启动同一 Agent 二进制的独立 subreaper；macOS 保留进程组监督，Windows 使用 Job 与独立 supervisor。关闭及恢复核对平台所有权证据，无法确认时保留记录。原生生命周期的公共规则另见[生命周期说明](native-lifecycle-zhCN.md)。
+Chromium 通过受管启动器、私有 remote-debugging pipe 和独立资料启动。无头会话禁用带后台页或 worker 的内置组件扩展，以及 WebUI 地址栏弹出界面，避免为这些非任务界面启动额外 renderer；保留 `--site-per-process`、页面 worker 和浏览器沙箱。Linux 为每个会话启动同一 Agent 二进制的独立 subreaper；macOS 保留进程组监督，Windows 使用 Job 与独立 supervisor。关闭及恢复核对平台所有权证据，无法确认时保留记录。原生生命周期的公共规则另见[生命周期说明](native-lifecycle-zhCN.md)。
 
 Linux supervisor 通过匿名 Unix socket 接收最多 32 KiB 的启动配置，Agent 持久化所有者身份后才发送配置。浏览器保持原有 CDP 管道及网络环境，不增加 namespace 前置条件。浏览器退出、Agent 退出、父端关闭 lifeline 或 supervisor 收到 `SIGTERM`/`SIGINT`/`SIGHUP` 后，supervisor 逐层终止并回收自己的直接子进程；脱离进程组的 Crashpad 等后代在父进程退出后由该 subreaper 收养。发送信号前用 `waitid(WNOWAIT)` 核对其仍为未回收的直接子进程，不能按名称或过期 PID 批量终止进程。[Linux subreaper 语义](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)。
 
@@ -296,6 +347,8 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 可操作性诊断 | 一个有效 ref、最多 8 项原因、Agent 正文最多 4 KiB、总期限最多 1 秒；稳定性采样间隔 50 ms | [actionability](../src/browser/semantic/actionability.rs)、[page](../src/browser/semantic/page.rs)、[v2](../src/browser/runtime/v2.rs) |
 | 能力指引 | 每次一个封闭主题，最多 3 个 variant、每个最多 3 个示例；含 `support_id`/`human_url` 的 Core 正文最多 16 KiB | Server `apps/core/src/browser/guidance.rs`、`mcp_tools.rs` |
 | 独立文件批准 | 创建后 600 秒、不续期、一次选择；64 KiB 数据块；接口期限 20 秒，状态正文 4 KiB；与原文件共用配额 | [file approval](../src/browser/runtime/file_approval.rs)、[upload](../src/browser/files/upload.rs) |
+| 增量观察基线 | 每份编码投影 256 KiB；每会话 2 份，Agent 合计 1 MiB；节点索引 4,000 项、frame 索引 128 项；创建后 60 秒、不续期 | [presentation](../src/browser/runtime/v2/presentation.rs) |
+| 增量观察构造与选择 | 单会话新增暂存 512 KiB；O(N) 前后缀比较、最多一段 splice；含新绑定与 MCP 双输出的候选不超过同次 full 的 70% 才采用 | [presentation](../src/browser/runtime/v2/presentation.rs)、Server `apps/core/src/browser/presentation.rs` |
 | 人工控制 | 公开视图租约 120 秒；内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
@@ -392,6 +445,7 @@ v1 的 [select_all](../src/browser/engine/cdp/page.rs) 在 macOS 发送 Command+
 | [diagnostics.rs](../src/browser/semantic/tests/diagnostics.rs)、Server `tests/core/test_browser_diagnostics.py` | 判定和预算、原生只读采集、人工接管、迟到响应、公开权限/计量和一次性上传授权 |
 | Server `apps/core/src/browser/guidance.rs` 单元测试、`tests/core/test_browser_guidance*.py` | 模板/schema/摘要、真实 v1/CDP/BiDi 示例、旧 Agent/默认构建、计量与连接/撤权披露边界 |
 | [files/upload.rs](../src/browser/files/upload.rs)、[runtime/file_approval.rs](../src/browser/runtime/file_approval.rs)、Server `tests/core/test_browser_file_approval.py` | 独立批准的身份、控制 fence、一次使用、未知结果、真实 UI、旧 Agent 能力及实际二进制元数据回退/重启 |
+| [presentation tests](../src/browser/runtime/v2/presentation_tests.rs)及同目录原生/资源/性能/内存测试，Server `tests/core/test_browser_observation_delta.py`、`test_browser_delta_native_corpus.py`、`clients/browser-observation-delta.test.mjs` | 同次完整 oracle 重建、MCP 实际字节选择、权限与披露、基线失效、满载缓存和独立会话资源/性能对照 |
 | Server `tests/core/test_browser_v2*.py`、`tests/runtime/test_single_call_transactions.py` | 公开 MCP、两个后端、文件、版本回退、预算、重复恢复、RSS、回执白名单 |
 | Server `scripts/run_browser_acceptance.py`、`scripts/summarize_browser_rss.py` | 严格收集/JUnit 对照、产物摘要及四组 RSS 汇总；不自动构建、重试、部署或启动托管 CI |
 

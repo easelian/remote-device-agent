@@ -549,7 +549,7 @@ impl Bidi {
     #[cfg(test)]
     pub fn snapshot(&self) -> Value {
         let pending = self.inner.pending.lock().unwrap();
-        json!({"pending":pending.commands.len(),"effects":pending.commands.values().filter(|c|c.effect==Effect::Page).count(),"free_slots":self.inner.slots.available_permits(),"event_bytes":EVENT_BYTES-self.inner.bytes.available_permits(),"late_success":pending.late_success,"late_error":pending.late_error,"ignored_replies":pending.ignored_replies,"workers":*self.inner.workers.borrow(),"handle_inventory":{"root_handles_returned":pending.root_handles_returned,"shared_ids_returned":pending.shared_ids_returned}})
+        json!({"commands":self.inner.next.load(Ordering::Relaxed)-1,"pending":pending.commands.len(),"effects":pending.commands.values().filter(|c|c.effect==Effect::Page).count(),"free_slots":self.inner.slots.available_permits(),"event_bytes":EVENT_BYTES-self.inner.bytes.available_permits(),"late_success":pending.late_success,"late_error":pending.late_error,"ignored_replies":pending.ignored_replies,"workers":*self.inner.workers.borrow(),"handle_inventory":{"root_handles_returned":pending.root_handles_returned,"shared_ids_returned":pending.shared_ids_returned}})
     }
 }
 

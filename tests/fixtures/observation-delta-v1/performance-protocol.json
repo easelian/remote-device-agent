@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "batches": 3,
+  "mode_order": ["off", "on"],
+  "warmup_observations": 20,
+  "measured_observations": 100,
+  "page": "capacity.html with the frozen native parameters in memory-protocol.json",
+  "boundary": "production v2 observation including projection preparation and publication; no oracle clone; output recording excluded",
+  "p50_relative_limit": 0.10,
+  "p50_absolute_limit_ms": 5,
+  "p95_relative_limit": 0.15,
+  "p95_absolute_limit_ms": 10,
+  "command_ratio_limit": 1.0,
+  "cpu_quota": 2,
+  "memory_bytes": 4294967296,
+  "scope": "additional cache overhead comparison for each backend, separate from the original CDP baseline and Firefox experience gates"
+}

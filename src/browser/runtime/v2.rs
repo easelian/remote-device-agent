@@ -8,6 +8,7 @@ use sem::surface::{Focus, Metadata};
 mod file_approval;
 mod human;
 mod native;
+mod presentation;
 
 pub(super) struct Slot {
     owner: String,
@@ -30,11 +31,16 @@ struct Session {
     reference_tab: Option<String>,
     frames: HashMap<String, sem::Context>,
     cursor: Option<(String, sem::Continuation, sem::Query)>,
+    presentation: presentation::Cache,
     human: Option<human::Lease>,
     touched: Instant,
 }
 impl Session {
     fn invalidate(&mut self) {
+        self.clear_references();
+        self.presentation.clear();
+    }
+    fn clear_references(&mut self) {
         self.references.clear();
         self.reference_tab = None;
         self.frames.clear();
@@ -100,7 +106,8 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
-        "extensions":{"actionability":crate::browser::selection::extension(None)}})
+        "extensions":{"actionability":crate::browser::selection::extension(None),
+            "observation_delta":crate::browser::selection::extension(None)}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
@@ -189,6 +196,7 @@ impl Browsers {
                 reference_tab: None,
                 frames: HashMap::new(),
                 cursor: None,
+                presentation: presentation::Cache::default(),
                 human: None,
                 touched: Instant::now(),
             }),
@@ -246,6 +254,7 @@ impl Browsers {
                         break;
                     };
                     if let Ok(mut s) = slot.session.try_lock() {
+                        s.presentation.expire(Instant::now());
                         if s.native.is_none() {
                             break;
                         }
@@ -346,9 +355,15 @@ impl Browsers {
         if !dialog && (port.pending() != 0 || page.resources().1 != 0) {
             return Err(Failure::unknown("browser_input_pending"));
         }
+        let mut prepared_presentation = None;
         let result = async {
             match operation {
-                "browser_observe" => observe(&mut session, &page, &port, params, deadline).await,
+                "browser_observe" => {
+                    let (value, prepared) =
+                        observe(&mut session, &page, &port, params, epoch, deadline).await?;
+                    prepared_presentation = prepared;
+                    Ok(value)
+                }
                 "browser_inspect" => {
                     if params["action_kind"] == "attach_file" && !self.settings.uploads {
                         return Err(Failure::new("browser_upload_disabled"));
@@ -449,6 +464,16 @@ impl Browsers {
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
         if operation == "browser_inspect" {
             sem::actionability::check_size(&value)?;
+        }
+        if let Some(prepared) = prepared_presentation {
+            let retired = {
+                let state = slot.control.state.lock().unwrap();
+                if *state != (epoch, paused) {
+                    return Err(Failure::unknown("browser_control_changed"));
+                }
+                session.presentation.publish(prepared)?
+            };
+            drop(retired);
         }
         Ok(value)
     }
@@ -558,8 +583,12 @@ async fn observe(
     page: &sem::Page<native::Port>,
     port: &native::Port,
     params: &Value,
+    epoch: u64,
     deadline: Instant,
-) -> Result<Value> {
+) -> Result<(Value, Option<presentation::Prepared>)> {
+    if params.get("presentation").is_none() {
+        session.presentation.clear();
+    }
     let continuation = if let Some(cursor) = params["cursor"].as_str() {
         let previous = session
             .cursor
@@ -603,10 +632,7 @@ async fn observe(
             deadline,
         )
         .await?;
-    session.references.clear();
-    session.reference_tab = None;
-    session.cursor = None;
-    session.frames.clear();
+    session.clear_references();
     let mut nodes = Vec::new();
     for row in result.rows {
         let frame = if let Some((id, _)) = session
@@ -646,10 +672,29 @@ async fn observe(
     value["page"]["tab_id"] = port.tab_id()?.into();
     if let Some(cursor) = result.cursor {
         let id = token()?;
-        session.cursor = Some((id.clone(), cursor, query));
+        session.cursor = Some((id.clone(), cursor, query.clone()));
         value["next_cursor"] = id.into();
     }
-    Ok(value)
+    let prepared = if let Some(request) = params.get("presentation") {
+        let key = presentation::key(
+            &before,
+            &query,
+            &port.tab_id()?,
+            epoch,
+            params["max_nodes"].as_u64().unwrap_or(200) as usize,
+            params["max_chars"].as_u64().unwrap_or(20000) as usize,
+        )?;
+        Some(session.presentation.prepare(
+            &mut value,
+            &session.frames,
+            key,
+            request["base_revision"].as_str(),
+            Instant::now(),
+        )?)
+    } else {
+        None
+    };
+    Ok((value, prepared))
 }
 async fn act(
     session: &mut Session,
@@ -666,7 +711,7 @@ async fn act(
         .as_str()
         .map(|id| session.reference(id, &port.tab_id()?))
         .transpose()?;
-    session.invalidate();
+    session.clear_references();
     if let Some(reference) = reference {
         let input = match kind {
             "attach_file" => sem::Action::AttachFile(
