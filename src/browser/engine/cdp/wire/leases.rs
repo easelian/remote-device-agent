@@ -84,7 +84,7 @@ impl LeaseCommand {
             | Command::RuntimeReleaseObjectGroup
             | Command::IoClose => true,
             #[cfg(feature = "experimental-browser-bidi")]
-            Command::CssDisable | Command::DomDisable => true,
+            Command::CssDisable | Command::DomDisable | Command::TargetDetachFromTarget => true,
             _ => false,
         }
     }

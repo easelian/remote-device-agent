@@ -67,16 +67,20 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 
 #### 动作期间的事件
 
-v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。Chromium 支持 `network`，Firefox 支持 `network` 与 `console`。AI 在操作前调用 `browser_capture` 开窗，等待返回后执行一次已授权操作，再用 `browser_evidence` 读窗口。两种工具都要求 `version: 1`、同一会话、tab 和当前控制代次。启停使用独立的操作回执，启动响应丢失时按原操作 ID 找回 `capture_id`。动作本身继续使用原有的输入回执。
+v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。当前两个后端均可声明 `console` 和 `network`。客户端只请求所选会话公布的类别，旧版 CDP Agent 可继续使用 `network`。AI 在操作前调用 `browser_capture` 开窗，等待返回后执行一次已授权操作，再用 `browser_evidence` 读窗口。两种工具都要求 `version: 1`、同一会话、tab 和当前控制代次。启停使用独立的操作回执，启动响应丢失时按原操作 ID 找回 `capture_id`。动作本身继续使用原有的输入回执。
 
 窗口只保存下列事实。每条都有从 1 开始的 `sequence` 和相对开窗时间 `elapsed_ms`。
 
 | 事件 | 可读信息 |
 | --- | --- |
 | `response`、`failed` | HTTP 状态码，或受限的传输错误类别。CDP 以目标 tab 的原生 session 归属，可能包括同一进程的子 frame。BiDi 只接收可归属该顶层 context 的事件 |
-| `console`、`exception` | Firefox 的日志级别和脚本异常标记。日志正文、参数、错误文本、请求地址和认证信息均不进入窗口 |
+| `console`、`exception` | 来自顶层页面的控制台级别和浏览器上报的 JavaScript 异常标记。CDP 只接受顶层文档默认执行环境，BiDi 按顶层 context 过滤。日志正文、参数、错误文本、请求地址和认证信息均不进入窗口 |
 
 `read_events` 的 `after_sequence` 为排他下界。首次读取返回 `through_sequence`，续页原样传回并用 `next_sequence` 接着读。达到末序号后，可省略 `through_sequence` 读取新增事件。`read_event` 使用同一窗口和序号复查一条摘要。窗口最长采集 30 秒，按序保留最近 128 条固定大小的记录。覆盖旧记录时，`dropped_count` 给出累计丢弃数；读到空页也可能是所查区间已全部淘汰。主动停止或到期后最多保留 30 秒，开始新窗口会替换旧窗口。控制权变化或文档替换会使旧窗口失效。人工操作结束后须重新开窗。
+
+仅请求网络事实时，Chromium 沿用页面的网络订阅。请求控制台时，Agent 额外挂接一个 browser session 及其页面子 session。订阅启用前的回放和早于窗口起点的事件均不交付。对于当前文档的 `console.error`，AI 收到 `kind: console` 和 `level: error`。收到 `Runtime.exceptionThrown` 时，AI 收到 `kind: exception`。停止、换页、换代、超时和取消都由会话所有者收尾。[订阅与回收](../src/browser/engine/cdp/wire/console.rs) · [事件归属](../src/browser/engine/cdp/wire/console_route.rs)
+
+每条控制台消息最多检查 16 个参数和 8 个不同原生对象，回收队列最多容纳 16 个句柄。超出预算时，Agent 终止该诊断窗口，主页面可以继续操作。超过 2 MiB 的私有 Runtime 通知只有在能按原生消息格式核实其子 session 时才允许流式丢弃，最长 2 秒、最多 16 MiB。其他超限消息沿用连接级故障处理。窗口返回 `browser_capture_unavailable` 时，AI 应重新观察并核对网站结果。若新窗口仍受历史大消息影响，可继续使用网络和页面证据。[大消息归属与丢弃](../src/browser/engine/cdp/wire/oversized_console.rs)
 
 脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。更多样式来源、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)
 
@@ -155,7 +159,7 @@ coverage 保留同次 DOM 名称读取的计数，并增加 native_ax_nodes（0�
 | 诊断节点身份 | 每会话 128 项/32 KiB、两会话 64 KiB。创建后 60 秒不续期。每 realm 独立 128 个 WeakRef | [evidence registry](../src/browser/runtime/v2/evidence.rs)、[DOM program](../src/browser/semantic/evidence.js) |
 | 人工控制 | 公开视图租约 120 秒。内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB。出站完整 JSON 256 KiB。BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
-| 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36。BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
+| 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个供对象、流、诊断域和诊断会话清理的槽，发送队列 36。BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | CDP 原生 session | 每连接 128 个 attachment。单 ID 256 字节。ID 与父 ID 合计 32 KiB。退出后未结算工作最多保留 3 秒局部宽限，再关闭连接准入并恢复 | [CDP sessions](../src/browser/engine/cdp/wire/sessions.rs) |
 | 协议租约 | CDP 对象 256、流 16，分类不可借用。包括 pending 预留。BiDi root handle 0 | [CDP leases](../src/browser/engine/cdp/wire/leases.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 事件 | CDP 256 条/合计 8 MiB 已编码字节/最多两个关键消费者，单消息受 2 MiB 限制。BiDi 256 条/合计 1 MiB/单事件 64 KiB | [CDP events](../src/browser/engine/cdp/wire/events.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |

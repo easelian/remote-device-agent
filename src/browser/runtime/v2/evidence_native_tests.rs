@@ -279,3 +279,5 @@ async fn native_dom_evidence_pending_bidi() {
 mod accessibility;
 #[path = "styles_native_tests.rs"]
 mod styles_native_tests;
+#[path = "console_native_tests.rs"]
+mod console_native_tests;

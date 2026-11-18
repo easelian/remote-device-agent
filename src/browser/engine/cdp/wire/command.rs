@@ -62,6 +62,14 @@ pub enum Command {
     RuntimeReleaseObject,
     RuntimeReleaseObjectGroup,
     RuntimeRunIfWaitingForDebugger,
+    #[cfg(feature = "experimental-browser-bidi")]
+    TargetAttachToBrowserTarget,
+    #[cfg(feature = "experimental-browser-bidi")]
+    TargetAttachToTarget,
+    #[cfg(feature = "experimental-browser-bidi")]
+    TargetDetachFromTarget,
+    #[cfg(feature = "experimental-browser-bidi")]
+    RuntimeEnable,
     TargetCloseTarget,
     TargetCreateTarget,
     TargetSetAutoAttach,
@@ -156,6 +164,14 @@ impl Command {
             Self::RuntimeRunIfWaitingForDebugger => {
                 ("Runtime.runIfWaitingForDebugger", None, Continue)
             }
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::TargetAttachToBrowserTarget => ("Target.attachToBrowserTarget", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::TargetAttachToTarget => ("Target.attachToTarget", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::TargetDetachFromTarget => ("Target.detachFromTarget", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::RuntimeEnable => ("Runtime.enable", None, Continue),
             Self::TargetCloseTarget => ("Target.closeTarget", Page, Continue),
             Self::TargetCreateTarget => ("Target.createTarget", Page, Continue),
             Self::TargetSetAutoAttach => ("Target.setAutoAttach", None, Continue),

@@ -103,6 +103,14 @@ impl Sink {
         }))
     }
 
+    pub(crate) fn wants_console(&self) -> bool {
+        self.0.console
+    }
+
+    pub(crate) fn wants_network(&self) -> bool {
+        self.0.network
+    }
+
     pub(crate) fn active(&self) -> bool {
         let now = Instant::now();
         let authority = self.0.control.state.lock().unwrap();
@@ -117,6 +125,14 @@ impl Sink {
         let mut w = self.0.window.lock().unwrap();
         w.invalid = true;
         w.entries.clear();
+    }
+
+    pub(crate) fn invalidate_active(&self) {
+        let mut window = self.0.window.lock().unwrap();
+        if window.stopped.is_none() && self.0.started.elapsed() < WINDOW {
+            window.invalid = true;
+            window.entries.clear();
+        }
     }
 
     pub(crate) fn stop(&self) {

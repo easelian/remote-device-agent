@@ -290,14 +290,38 @@ impl Session {
     }
 }
 impl Semantic {
+    #[cfg(test)]
+    pub fn hold_console_enable(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.adapter
+            .wire
+            .hold_next_reply_for(Command::RuntimeEnable)
+    }
     pub async fn enable_task_events(
         &self,
         sink: crate::browser::semantic::task_events::Sink,
         deadline: std::time::Instant,
     ) -> crate::browser::Result<()> {
         self.adapter
-            .enable_task_events(&self.root, sink, deadline)
-            .await
+            .enable_task_events(&self.root, sink.clone(), deadline)
+            .await?;
+        if sink.wants_console() {
+            let target = self
+                .tabs
+                .lock()
+                .unwrap()
+                .values()
+                .find(|tab| tab.context == self.root)
+                .map(|tab| self.adapter.key(&tab.native.0).map(str::to_owned))
+                .transpose()?
+                .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
+            self.adapter.start_console(&target, sink, deadline).await?;
+        }
+        Ok(())
     }
 
     pub fn tab_id(&self) -> Result<String> {

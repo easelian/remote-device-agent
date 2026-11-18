@@ -30,9 +30,6 @@ impl Capture {
             .ok_or_else(|| Failure::new("browser_invalid_params"))?;
         let console = categories.iter().any(|v| v == "console");
         let network = categories.iter().any(|v| v == "network");
-        if console && slot.selection.backend != Backend::Bidi {
-            return Err(Failure::new("browser_feature_unsupported"));
-        }
         let (frame, _) = port.metadata(deadline).await?;
         if let Some(old) = &session.task_events
             && old.sink.active()

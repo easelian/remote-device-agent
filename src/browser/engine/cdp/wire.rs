@@ -22,6 +22,14 @@ use tokio::{
 #[cfg(test)]
 mod bounds_tests;
 mod command;
+#[cfg(feature = "experimental-browser-bidi")]
+mod console;
+#[cfg(feature = "experimental-browser-bidi")]
+mod console_event;
+#[cfg(feature = "experimental-browser-bidi")]
+mod console_route;
+#[cfg(feature = "experimental-browser-bidi")]
+mod oversized_console;
 #[cfg(test)]
 mod event_tests;
 mod events;
@@ -101,6 +109,10 @@ struct Inner {
     event_bytes: Arc<Semaphore>,
     #[cfg(feature = "experimental-browser-bidi")]
     task_events: Mutex<Option<(String, Sink)>>,
+    #[cfg(feature = "experimental-browser-bidi")]
+    console: Mutex<Option<Arc<console_route::Route>>>,
+    #[cfg(feature = "experimental-browser-bidi")]
+    console_gate: Arc<tokio::sync::Mutex<()>>,
     slots: Arc<Semaphore>,
     cleanup_slots: Arc<Semaphore>,
     stop: watch::Sender<Shutdown>,
@@ -196,6 +208,10 @@ impl Cdp {
             event_bytes: Arc::new(Semaphore::new(events::MAX_EVENT_BYTES)),
             #[cfg(feature = "experimental-browser-bidi")]
             task_events: Mutex::new(None),
+            #[cfg(feature = "experimental-browser-bidi")]
+            console: Mutex::new(None),
+            #[cfg(feature = "experimental-browser-bidi")]
+            console_gate: Arc::default(),
             slots: Arc::new(Semaphore::new(32)),
             cleanup_slots: Arc::new(Semaphore::new(leases::CLEANUP_SLOTS)),
             stop,
@@ -209,9 +225,15 @@ impl Cdp {
         let cleanup_queue = outgoing.downgrade();
         tokio::spawn(async move {
             let mut frame = Vec::new();
+            #[cfg(feature = "experimental-browser-bidi")]
+            let mut discarding: Option<(oversized_console::Discard, Arc<console_route::Route>, Instant)> = None;
             let mut chunk = [0u8; 16384];
             let mut cleanup_tick = tokio::time::interval(Duration::from_millis(100));
             'reader: loop {
+                #[cfg(feature = "experimental-browser-bidi")]
+                if discarding.as_ref().is_some_and(|(_, _, deadline)| Instant::now() >= *deadline) {
+                    break;
+                }
                 let count = tokio::select! {
                     _ = cleanup_tick.tick() => {
                         let mut pending = reader.pending.lock().unwrap();
@@ -231,6 +253,15 @@ impl Cdp {
                     result = read.read(&mut chunk) => match result { Ok(0) | Err(_) => break, Ok(n) => n },
                 };
                 for byte in &chunk[..count] {
+                    #[cfg(feature = "experimental-browser-bidi")]
+                    if let Some((message, route, _)) = discarding.as_mut() {
+                        if *byte == 0 {
+                            if !message.owned() { break 'reader; }
+                            route.fail();
+                            discarding = None;
+                        } else if !message.push(*byte) { break 'reader; }
+                        continue;
+                    }
                     if *byte == 0 {
                         let Ok(value) = serde_json::from_slice::<Value>(&frame) else {
                             break 'reader;
@@ -316,6 +347,15 @@ impl Cdp {
                                 reader.barriers.fetch_add(1, Ordering::Release);
                             }
                         } else {
+                            // Private inspector events still update native session ownership.
+                            // Their handles and lifecycle never enter the primary page consumers.
+                            #[cfg(feature = "experimental-browser-bidi")]
+                            let diagnostic = {
+                                let route = reader.console.lock().unwrap().clone();
+                                route.is_some_and(|route| route.consume(&value))
+                            };
+                            #[cfg(not(feature = "experimental-browser-bidi"))]
+                            let diagnostic = false;
                             #[cfg(feature = "experimental-browser-bidi")]
                             let task_fact;
                             {
@@ -323,10 +363,13 @@ impl Cdp {
                                 #[cfg(test)]
                                 pending.resources.event(&value);
                                 // Validate ownership even for messages that no consumer retains.
-                                if !pending.leases.event(&value)
+                                if (!diagnostic && !pending.leases.event(&value))
                                     || !reader.session_event(&mut pending, &value)
                                 {
                                     reader.fence_events(&mut pending);
+                                    continue;
+                                }
+                                if diagnostic {
                                     continue;
                                 }
                                 #[cfg(feature = "experimental-browser-bidi")]
@@ -347,6 +390,21 @@ impl Cdp {
                         }
                     } else {
                         if frame.len() == MAX_MESSAGE {
+                            #[cfg(feature = "experimental-browser-bidi")]
+                            {
+                                let route = reader.console.lock().unwrap().clone();
+                                if let Some(route) = route
+                                    && let Some(child) = route.child()
+                                    && let Some(mut message) = oversized_console::Discard::begin(&frame, &child)
+                                    && message.push(*byte)
+                                {
+                                    // No more payload is retained or decoded. The native session
+                                    // suffix must confirm ownership before normal reads resume.
+                                    frame.clear();
+                                    discarding = Some((message, route, Instant::now() + Duration::from_secs(2)));
+                                    continue;
+                                }
+                            }
                             break 'reader;
                         }
                         frame.push(*byte);

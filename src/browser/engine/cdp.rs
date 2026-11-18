@@ -97,11 +97,24 @@ impl Adapter {
         deadline: Instant,
     ) -> Result<()> {
         let session = self.session(context)?;
-        self.wire.set_task_events(session, sink)?;
-        self.wire
-            .call(Some(session), Command::NetworkEnable, json!({}), deadline)
-            .await
-            .map(drop)
+        self.wire.set_task_events(session, sink.clone())?;
+        if sink.wants_network() {
+            self.wire
+                .call(Some(session), Command::NetworkEnable, json!({}), deadline)
+                .await
+                .map(drop)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub(super) async fn start_console(
+        &self,
+        target_id: &str,
+        sink: crate::browser::semantic::task_events::Sink,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.wire.start_console(target_id, sink, deadline).await
     }
 
     pub(super) fn connected(&self) -> bool {
