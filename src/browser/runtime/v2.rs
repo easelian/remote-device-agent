@@ -116,6 +116,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
             "observation_delta":crate::browser::selection::extension(None),
             "scoped_scroll":crate::browser::selection::extension(None), "ref_hover":crate::browser::selection::extension(None),
             "dom_evidence":crate::browser::selection::extension(None),
+            "form_validation":crate::browser::selection::extension(None),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {

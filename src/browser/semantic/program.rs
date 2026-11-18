@@ -108,12 +108,7 @@ impl Program {
                 let mut args = serde_json::to_value(query).unwrap();
                 args["realm"] = marker.realm.clone().into();
                 args["restoration"] = marker.restoration.into();
-                let operation = match query.kind.as_str() {
-                    "find_nodes" => "find_nodes",
-                    "read_node" => "read_node",
-                    _ => "read_layout",
-                };
-                (operation, args)
+                (query.kind, args)
             }
             Self::Stamp => ("stamp", json!({})),
             Self::Surface => ("surface", json!({})),

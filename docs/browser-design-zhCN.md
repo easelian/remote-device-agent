@@ -35,7 +35,7 @@ AI 应能在一次会话中找到目标、执行操作、解释失败，并用�
 | 顺序 | 交付内容 | 可以进入下一步的证据 |
 | --- | --- | --- |
 | 1. 确定操作基线 | 固定双后端观察、`inspect`、DOM/局部布局、控制权和回执的共同语料。用 CDP 单节点原生无障碍（AX）用例复核对象回收和撤权后的披露。首个样例覆盖重复行、节点替换、遮挡和输入后结果不明 | 同名行不会被误操作，替换节点后旧 ref 失效，诊断不改变输入计数，响应丢失时网站只收到一次提交 |
-| 2. 解释一次失败 | 用已实现的 `task_events` 开窗，按序号读取类别与状态，结合 `recover` 和同一记录核对业务结果。下一步按失败样例补齐两种后端的诊断覆盖 | AI 可区分本地校验失败、脚本异常、请求失败、HTTP 成功但业务拒绝，或明确指出证据不足。普通故障无需人工接管 |
+| 2. 解释一次失败 | 用已实现的 `task_events` 开窗，按序号读取类别与状态，对未发出请求的原生表单，用 `read_validation` 查看目标字段的约束原因，再核对同一记录的业务结果。下一步按失败样例补齐两种后端的诊断覆盖 | AI 可区分本地校验失败、脚本异常、请求失败、HTTP 成功但业务拒绝，或明确指出证据不足。普通故障无需人工接管 |
 | 3. 扩大可操作页面范围 | 已支持容器定向滚动和对控件引用的原生悬停。下一步使用虚拟列表、组合控件与有明确起终点的拖放样例补足动作。复用 ref、frame 身份、命中检查和最后提交门。配套增加按目标状态或记录等待的条件 | AI 能独立操作菜单、虚拟列表和 iframe 中的目标。遮罩、页面缩放、目标移动或控制换代后，过期输入被拒绝。动作成功以目标记录的变化判定 |
 | 4. 按问题深入诊断 | 根据前两阶段的问题频率，增加匹配 CSS 规则和有限的性能采样。为脚本错误提供有限栈位置，为网络错误提供失败阶段和重定向关系。每种细查单独协商 | 能从“不可见”追到负责的规则，或从“长时间无响应”定位到任务/请求区间。未采集、来源不可判定都保留在结果中 |
 | 5. 验证真实使用范围 | 在目标 AI 客户端验证工具发现、图片呈现、长任务续接、人工交还、文件批准与错误恢复。按 OS、CPU、浏览器产品/版本和客户端分别登记实测结果，再决定默认开启哪些扩展 | 同一任务从建立会话到核对业务结果可重复完成，回退后旧客户端仍可完整观察。性能、关闭清理与披露门槛同时通过 |
@@ -54,7 +54,9 @@ Agent 通过 CDP 读取单节点原生 AX，Core 校验返回内容，Server 的
 
 下一步由失败用例决定补哪些事实。Chromium 的控制台订阅会出现带原生对象的消息。先证明旧消息不会回放、对象配额与释放可结算、日志洪峰不会阻塞导航和人工接管，再向 CDP 会话声明 `console`。网络时间窗也可能包含页面后台请求；跨重定向识别、失败阶段和有限的脚本栈位置需要独立定义来源与覆盖范围。两种后端都应保持普通输入回执和诊断内容分离，优先用目标记录判断网站业务结果。
 
-匹配样式应区分计算值、已读取的匹配规则，以及能够证明的层叠来源。性能先给任务耗时、长任务与资源阶段摘要，需要进一步定位时再提供有期限的 trace 私有制品和受限查询。将来若提供 VM 暂停、步进等会改变页面执行的能力，须与普通输入互斥，并证明超时或断连后能恢复执行。Agent 的控制暂停和 JavaScript VM 暂停分别记录状态。[CDP CSS](https://chromedevtools.github.io/devtools-protocol/tot/CSS/)
+样式诊断从单个证据节点开始。先用 `read_layout` 查看计算值和遮挡，再为 CDP 单独协商匹配规则读取。Agent 应验证同一 frame 和文档的节点绑定，负责 DOM/CSS domain 的启停、临时节点和取消后的清理。首批样例覆盖 `display`、`visibility`、`pointer-events` 及 `!important`。返回筛选后的属性、规则来源类别与覆盖范围；无法证明层叠胜者时标明原因未知。验收应包含外部样式表、导航、迟到回包和人工接管。
+
+性能先给任务耗时、长任务与资源阶段摘要，需要进一步定位时再提供有期限的 trace 私有制品和受限查询。将来若提供 VM 暂停、步进等会改变页面执行的能力，须与普通输入互斥，并证明超时或断连后能恢复执行。Agent 的控制暂停和 JavaScript VM 暂停分别记录状态。[CDP CSS](https://chromedevtools.github.io/devtools-protocol/tot/CSS/)
 
 ## 人工接管与续接
 
@@ -72,7 +74,7 @@ Agent 通过 CDP 读取单节点原生 AX，Core 校验返回内容，Server 的
 | 人工边界能否维持？ | Server `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
 | 新诊断是否帮助 AI 作出正确判断？ | 为遮挡、JS 异常、HTTP 失败、HTTP 200 业务拒绝、响应丢失、本人验证分别固定页面终态和提交计数。记录任务完成率、误报成功率、普通故障人工接管数、诊断调用数/字节数。纳入事件洪峰、跨主体、换代与双后端能力不对称。普通任务与必须本人验证的任务分别计数。基准语料中重复提交、敏感内容披露和无证据宣称成功均为阻断项 |
 | 增量与新能力能否独立关闭？ | Server `clients/browser-observation-delta.test.mjs`、`tests/core/test_browser_observation_delta.py`。用同一次采集的完整观察验证重建。稀疏组实际 MCP 总字节不超过始终 full 的 70%。覆盖未知扩展、旧客户端、重连、乱序及基线淘汰 |
-| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`scoped-scroll`、`hover`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
+| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`form-validation`、`scoped-scroll`、`hover`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
 
 在 Server 根目录核对 `python3 scripts/run_browser_acceptance.py --help`。例如，在准备好专用测试环境后运行下面的 DOM 证据阶段。`RDH_ACCEPT_ENV` 指向包含配套测试产物与数据库设置的私有 JSON，`RDH_ACCEPT_OUT` 指向一个尚不存在的输出目录。成功时退出码为 0，目录中的 `acceptance-complete.json` 记录通过状态。
 

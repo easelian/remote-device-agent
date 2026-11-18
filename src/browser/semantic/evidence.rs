@@ -77,6 +77,9 @@ pub(crate) enum Query {
     ReadAccessibility {
         node_id: String,
     },
+    ReadValidation {
+        node_id: String,
+    },
 }
 fn default_limit() -> usize {
     16
@@ -128,7 +131,8 @@ impl Query {
             }
             Self::ReadNode { node_id: id }
             | Self::ReadLayout { node_id: id }
-            | Self::ReadAccessibility { node_id: id } => {
+            | Self::ReadAccessibility { node_id: id }
+            | Self::ReadValidation { node_id: id } => {
                 if !node_id(id) {
                     return Err(invalid());
                 }
@@ -141,7 +145,8 @@ impl Query {
             Self::FindNodes { .. } => None,
             Self::ReadNode { node_id }
             | Self::ReadLayout { node_id }
-            | Self::ReadAccessibility { node_id } => Some(node_id),
+            | Self::ReadAccessibility { node_id }
+            | Self::ReadValidation { node_id } => Some(node_id),
         }
     }
     pub fn kind(&self) -> &'static str {
@@ -150,6 +155,7 @@ impl Query {
             Self::ReadNode { .. } => "read_node",
             Self::ReadLayout { .. } => "read_layout",
             Self::ReadAccessibility { .. } => "read_accessibility",
+            Self::ReadValidation { .. } => "read_validation",
         }
     }
     pub fn native_ax(&self) -> bool {
@@ -171,7 +177,7 @@ impl Query {
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct NativeQuery {
-    pub kind: String,
+    pub kind: &'static str,
     pub tag: Option<String>,
     pub role: Option<String>,
     pub text: Option<String>,
@@ -359,6 +365,34 @@ pub(crate) struct Layout {
     pub hit: Hit,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ValidationState {
+    Valid,
+    Invalid,
+    NotApplicable,
+    Omitted,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ValidationReason {
+    ValueMissing,
+    TypeMismatch,
+    PatternMismatch,
+    TooLong,
+    TooShort,
+    RangeUnderflow,
+    RangeOverflow,
+    StepMismatch,
+    BadInput,
+    CustomError,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Validation {
+    pub state: ValidationState,
+    pub reasons: Vec<ValidationReason>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Raw {
     FindNodes {
@@ -375,6 +409,10 @@ pub(crate) enum Raw {
     },
     ReadAccessibility {
         accessibility: super::accessibility::Snapshot,
+        coverage: Coverage,
+    },
+    ReadValidation {
+        validation: Validation,
         coverage: Coverage,
     },
 }
@@ -399,7 +437,8 @@ impl Raw {
             Self::FindNodes { coverage, .. }
             | Self::ReadNode { coverage, .. }
             | Self::ReadLayout { coverage, .. }
-            | Self::ReadAccessibility { coverage, .. } => coverage,
+            | Self::ReadAccessibility { coverage, .. }
+            | Self::ReadValidation { coverage, .. } => coverage,
         }
     }
     pub fn decode(text: &str, query: &NativeQuery) -> Result<Self> {
@@ -438,6 +477,14 @@ impl Raw {
                     && (!node.facts.sensitive || node.text_excerpt.is_empty())
             }
             Self::ReadAccessibility { .. } => false,
+            Self::ReadValidation { validation, .. } => {
+                query.kind == "read_validation"
+                    && validation.reasons.len() <= 10
+                    && validation.reasons.iter().collect::<BTreeSet<_>>().len()
+                        == validation.reasons.len()
+                    && (matches!(validation.state, ValidationState::Invalid)
+                        != validation.reasons.is_empty())
+            }
             Self::ReadLayout { layout, .. } => {
                 let b = &layout.r#box;
                 let v = &layout.viewport;
@@ -606,8 +653,7 @@ pub(crate) async fn capture<P: Port>(
                 "read_node"
             } else {
                 query.kind()
-            }
-            .into(),
+            },
             tag,
             role,
             text,

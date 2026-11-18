@@ -53,14 +53,32 @@ function(operation, args) {
   const normalized = (value, maximum, reason) => prefix(value,maximum,reason)
     .replace(/[\t\n\f\r ]+/g,' ').trim();
   const parent = node => node.parentElement || node.getRootNode().host || null;
-  const sensitive = node => {
-    if (node.localName !== 'input') return false;
+  const sensitiveControl = node => {
     const fields=[node.getAttribute('name'),node.getAttribute('id'),node.getAttribute('autocomplete')];
     // An oversized sensitivity hint cannot be declared non-sensitive after
     // truncating away the suffix that identifies it.
     if(fields.some(value=>value && value.length>256)) { limits.add('attribute_limit'); return true; }
     return ['password','file'].includes(node.type) || /(?:pass(?:word|code)?|secret|token|one-time-code|cc-number|cc-csc)/i.test(fields.join(' '));
   };
+  const sensitive = node => node.localName === 'input' && sensitiveControl(node);
+  function nativeValidation(node) {
+    if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement)) {
+      return {state:'not_applicable',reasons:[]};
+    }
+    if (sensitiveControl(node)) return {state:'omitted',reasons:[]};
+    if (!node.willValidate) return {state:'not_applicable',reasons:[]};
+    // Reading validity flags does not dispatch an invalid event or reveal the site-provided message.
+    const validity = node.validity;
+    if (validity.valid) return {state:'valid',reasons:[]};
+    const flags = [
+      ['valueMissing','value_missing'], ['typeMismatch','type_mismatch'],
+      ['patternMismatch','pattern_mismatch'], ['tooLong','too_long'], ['tooShort','too_short'],
+      ['rangeUnderflow','range_underflow'], ['rangeOverflow','range_overflow'],
+      ['stepMismatch','step_mismatch'], ['badInput','bad_input'], ['customError','custom_error']
+    ];
+    const reasons = flags.filter(([flag]) => validity[flag]).map(([,reason]) => reason);
+    return {state:reasons.length ? 'invalid' : 'omitted',reasons};
+  }
   const excludesText = node => ['input','textarea','select','script','style','template','noscript'].includes(node.localName) || node.isContentEditable;
   function textAllowed(node) {
     for (let item=node,depth=0; item; item=parent(item),depth++) {
@@ -210,6 +228,8 @@ function(operation, args) {
           readonly:!!node.readOnly||node.getAttribute('aria-readonly')==='true',
           editable:node.isContentEditable||node.localName==='textarea'||node.localName==='input'&&!['button','submit','reset','checkbox','radio','file','hidden','image'].includes(node.type)},attributes};
       output={kind:operation,node:detail,coverage:coverage()};
+    } else if (operation==='read_validation') {
+      output={kind:operation,validation:nativeValidation(node),coverage:coverage()};
     } else if (operation==='read_layout') {
       const rect=node.getBoundingClientRect(),style=getComputedStyle(node),computed={};
       for (const key of ['display','visibility','opacity','pointer-events','position','z-index','overflow-x','overflow-y','width','height','transform','font-size','line-height','color','background-color']) {

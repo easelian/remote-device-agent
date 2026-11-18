@@ -74,7 +74,13 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。样式规则归属、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)
 
-#### 单节点原生无障碍证据
+#### 表单提交前的字段校验
+
+提交后页面留在原处时，可以先检查目标记录中的字段。设备和会话都声明 `extensions.form_validation` 版本 1 后，使用 `browser_evidence.find_nodes` 取得字段的 `node_id`，再向同一工具传入 `{"kind":"read_validation","node_id":"…"}` 作为 `query`。该读取覆盖 Chromium 和 Firefox 的原生 input、select 和 textarea。字段处于 `invalid` 时，`reasons` 列出浏览器报告的原因，例如必填项为空（`value_missing`）、电子邮件格式不符（`type_mismatch`）或站点设置了自定义错误（`custom_error`）。客户端可以据此定位字段，再核对页面给出的操作提示。
+
+`valid` 表示当前字段通过原生约束。禁用字段以及普通页面元素返回 `not_applicable`，敏感控件返回 `omitted`。读取不提交表单，也不触发 `invalid` 事件。输入值、站点自定义错误文字和密码状态不进入诊断。自绘表单和服务端业务规则仍需观察目标记录，必要时结合请求与异常摘要判断。
+
+## 单节点原生无障碍证据
 
 原生 AX 使用独立的 `extensions.native_ax: {version: 1, available, reason}`。当前只在显式 v2/CDP 会话提供；BiDi 明确返回 `available: false`、`reason: browser_feature_unsupported`，不以 DOM 推导替代 Firefox 原生树。构建、平台和本地策略拒绝仍优先保留其原因。实际会话原有的布尔字段 `capabilities.native_ax` 同步表示本次 CDP 支持状态，BiDi 仍为 false；工具准入使用独立版本化扩展，不把布尔值当作完整契约。候选与实际会话分别声明；旧 Agent、v1、缺失或未知扩展及不支持的后端在原生 AX 读取前拒绝。
 

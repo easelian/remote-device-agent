@@ -87,7 +87,7 @@ fn evidence_identity_digest_covers_realm_document_url_and_ancestry() {
 #[test]
 fn evidence_decoder_rejects_extra_content_and_false_coverage() {
     let request = dom::NativeQuery {
-        kind: "find_nodes".into(),
+        kind: "find_nodes",
         tag: Some("div".into()),
         role: None,
         text: None,
@@ -115,6 +115,38 @@ fn evidence_decoder_rejects_extra_content_and_false_coverage() {
     wrong["nodes"][0]["name"] = "😀".repeat(257).into();
     assert!(dom::Raw::decode(&wrong.to_string(), &request).is_err());
 }
+#[test]
+fn validation_reads_the_requested_operation_and_only_discloses_fixed_reasons() {
+    let query = dom::NativeQuery {
+        kind: "read_validation",
+        node: Some(1),
+        tag: None,
+        role: None,
+        text: None,
+        limit: 1,
+        elements: 8,
+        other_nodes: 8,
+        text_nodes: 8,
+    };
+    let program = sem::program::Program::Evidence {
+        marker: frame().marker,
+        query: query.clone(),
+    };
+    assert_eq!(program.encode().0, "read_validation");
+    let mut raw = json!({"kind":"read_validation","validation":{"state":"invalid","reasons":["value_missing"]},
+        "coverage":{"visited_elements":1,"visited_text_nodes":0,"visited_other_nodes":0,"truncated":false,"limits":[],"omitted":[]}});
+    assert!(dom::Raw::decode(&raw.to_string(), &query).is_ok());
+    for bad in [
+        json!({"state":"valid","reasons":["custom_error"]}),
+        json!({"state":"invalid","reasons":["value_missing","value_missing"]}),
+        json!({"state":"invalid","reasons":["private-site-message"]}),
+        json!({"state":"omitted","reasons":[],"message":"secret"}),
+    ] {
+        raw["validation"] = bad;
+        assert!(dom::Raw::decode(&raw.to_string(), &query).is_err());
+    }
+}
+
 #[test]
 fn evidence_output_byte_limit_drops_matching_unpublished_bindings() {
     let frame = frame();

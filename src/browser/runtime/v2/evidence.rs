@@ -122,6 +122,14 @@ pub(super) fn prepare(
                 facts["main_frame"] = main.into();
                 value["accessibility"] = facts;
             }
+            Raw::ReadValidation { validation, .. } => {
+                let mut result =
+                    serde_json::to_value(validation).map_err(|_| sem::types::decode())?;
+                result["node_id"] = query.id().ok_or_else(sem::types::stale)?.into();
+                result["frame_index"] = index.into();
+                result["main_frame"] = main.into();
+                value["validation"] = result;
+            }
             Raw::ReadLayout { layout, .. } => {
                 let hit = layout.hit.node;
                 let mut layout = serde_json::to_value(layout).map_err(|_| sem::types::decode())?;
