@@ -7,6 +7,7 @@ pub(crate) mod evidence;
 mod page;
 pub(crate) mod policy;
 pub(crate) mod program;
+pub(crate) mod styles;
 pub(crate) mod surface;
 pub(crate) mod task_events;
 pub(crate) mod types;
@@ -55,6 +56,15 @@ pub(crate) trait Port: Clone + Send + Sync + 'static {
         _coverage: &mut evidence::Coverage,
         _deadline: Instant,
     ) -> impl Future<Output = Result<accessibility::Snapshot>> + Send {
+        async { Err(super::Failure::new("browser_feature_unsupported")) }
+    }
+    fn native_styles(
+        &self,
+        _frame: &Frame,
+        _node: u64,
+        _property: styles::StyleProperty,
+        _deadline: Instant,
+    ) -> impl Future<Output = Result<styles::StyleSnapshot>> + Send {
         async { Err(super::Failure::new("browser_feature_unsupported")) }
     }
     /// Own the entire native input sequence and release its held sources before

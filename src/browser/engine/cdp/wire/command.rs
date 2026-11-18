@@ -8,7 +8,21 @@ pub enum Command {
     AccessibilityGetPartialAXTree,
     BrowserGetVersion,
     BrowserSetDownloadBehavior,
+    #[cfg(feature = "experimental-browser-bidi")]
+    CssDisable,
+    #[cfg(feature = "experimental-browser-bidi")]
+    CssEnable,
+    #[cfg(feature = "experimental-browser-bidi")]
+    CssGetMatchedStylesForNode,
+    #[cfg(feature = "experimental-browser-bidi")]
+    DomDisable,
+    #[cfg(feature = "experimental-browser-bidi")]
+    DomEnable,
     DomDescribeNode,
+    #[cfg(feature = "experimental-browser-bidi")]
+    DomGetDocument,
+    #[cfg(feature = "experimental-browser-bidi")]
+    DomRequestNode,
     DomFocus,
     DomGetContentQuads,
     DomGetFrameOwner,
@@ -79,6 +93,20 @@ impl Command {
             Self::AccessibilityGetPartialAXTree => {
                 ("Accessibility.getPartialAXTree", None, Continue)
             }
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::CssDisable => ("CSS.disable", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::CssEnable => ("CSS.enable", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::CssGetMatchedStylesForNode => ("CSS.getMatchedStylesForNode", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::DomDisable => ("DOM.disable", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::DomEnable => ("DOM.enable", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::DomGetDocument => ("DOM.getDocument", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::DomRequestNode => ("DOM.requestNode", None, Continue),
             Self::BrowserGetVersion => ("Browser.getVersion", None, Continue),
             Self::BrowserSetDownloadBehavior => ("Browser.setDownloadBehavior", None, Continue),
             Self::DomDescribeNode => ("DOM.describeNode", None, Block),

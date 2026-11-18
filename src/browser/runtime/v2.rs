@@ -119,6 +119,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
             "form_validation":crate::browser::selection::extension(None),
             "virtual_list":crate::browser::selection::extension(None),
             "record_wait":crate::browser::selection::extension(None),
+            "matched_styles":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
@@ -454,7 +455,9 @@ impl Browsers {
                 }
                 "browser_evidence" => {
                     let query = sem::evidence::Query::parse(&params["query"])?;
-                    if query.native_ax() && slot.selection.backend != Backend::Cdp {
+                    if (query.native_ax() || query.native_css())
+                        && slot.selection.backend != Backend::Cdp
+                    {
                         return Err(Failure::new("browser_feature_unsupported"));
                     }
                     let target = query

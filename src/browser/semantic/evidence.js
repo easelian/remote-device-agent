@@ -265,6 +265,9 @@ function(operation, args) {
     if (!node || !node.isConnected || node.ownerDocument!==document) return result(null);
     if (operation==='match_record') {
       output={kind:operation,matched:matchesRecord(node),coverage:coverage()};
+    } else if (operation==='style_target') {
+      const formControl = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement;
+      output={kind:operation,sensitive:formControl && sensitiveControl(node),coverage:coverage()};
     } else if (!visit(node)) {
       return result(null);
     } else if (operation==='read_node') {

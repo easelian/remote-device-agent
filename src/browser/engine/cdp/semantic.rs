@@ -12,6 +12,10 @@ use std::{collections::HashMap, sync::Mutex};
 
 #[path = "accessibility.rs"]
 mod accessibility;
+#[path = "styles.rs"]
+mod styles;
+#[path = "styles_project.rs"]
+mod styles_project;
 
 #[derive(Clone)]
 struct NativeTab {
@@ -26,6 +30,7 @@ pub(in crate::browser) struct Semantic {
     root: Context,
     identity: Arc<Mutex<Identities>>,
     routes: Arc<Mutex<HashMap<String, Frame>>>,
+    style_domains: Arc<tokio::sync::Mutex<()>>,
     coordination: Arc<sem::Coordination>,
     tabs: Arc<Mutex<HashMap<String, NativeTab>>>,
     policy: Policy,
@@ -262,6 +267,7 @@ impl Session {
             root,
             identity: Arc::new(Mutex::new(Identities::new())),
             routes: Arc::new(Mutex::new(HashMap::new())),
+            style_domains: Arc::new(tokio::sync::Mutex::new(())),
             coordination,
             tabs,
             policy: policy.clone(),
@@ -1053,6 +1059,15 @@ impl Port for Semantic {
     ) -> Result<sem::accessibility::Snapshot> {
         self.read_accessibility(frame, node, facts, coverage, deadline)
             .await
+    }
+    async fn native_styles(
+        &self,
+        frame: &sem::Frame,
+        node: u64,
+        property: sem::styles::StyleProperty,
+        deadline: Instant,
+    ) -> Result<sem::styles::StyleSnapshot> {
+        styles::read(self, frame, node, property, deadline).await
     }
     async fn input(
         &self,

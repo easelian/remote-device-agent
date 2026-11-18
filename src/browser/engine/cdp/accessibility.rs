@@ -5,7 +5,7 @@ use sem::{
     evidence::{Coverage, Limit, Omitted},
 };
 
-const NODE: &str = r#"function(serialized) {
+pub(super) const NODE: &str = r#"function(serialized) {
   const a=JSON.parse(serialized),c=globalThis.__rdhSemanticDomV1,s=globalThis.__rdhDomEvidenceV1;
   if(!c||!s||c.document!==document||s.document!==document||c.realm!==a.realm||
      s.realm!==a.realm||c.restoration!==a.restoration||s.restoration!==a.restoration)return null;
@@ -228,6 +228,17 @@ impl Semantic {
         self.adapter
             .wire
             .hold_next_reply_for(Command::AccessibilityGetPartialAXTree)
+    }
+    #[cfg(test)]
+    pub fn hold_styles_reply(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.adapter
+            .wire
+            .hold_next_reply_for(Command::CssGetMatchedStylesForNode)
     }
 }
 

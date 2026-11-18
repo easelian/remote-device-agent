@@ -78,7 +78,15 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 `read_events` 的 `after_sequence` 为排他下界。首次读取返回 `through_sequence`，续页原样传回并用 `next_sequence` 接着读。达到末序号后，可省略 `through_sequence` 读取新增事件。`read_event` 使用同一窗口和序号复查一条摘要。窗口最长采集 30 秒，按序保留最近 128 条固定大小的记录。覆盖旧记录时，`dropped_count` 给出累计丢弃数；读到空页也可能是所查区间已全部淘汰。主动停止或到期后最多保留 30 秒，开始新窗口会替换旧窗口。控制权变化或文档替换会使旧窗口失效。人工操作结束后须重新开窗。
 
-脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。样式规则归属、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)
+脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。更多样式来源、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)
+
+#### 定位影响控件的样式
+
+设备和 CDP 会话都声明 `extensions.matched_styles` 版本 1 时，客户端可以定位影响当前任务的 CSS 声明。先取 `find_nodes` 的证据 `node_id`。用 `read_layout` 检查计算值，再对同一节点传入 `{"kind":"read_styles","node_id":"…","property":"pointer-events"}`。属性还可选 `display`、`visibility`。BiDi 会话可继续使用自己的布局证据。
+
+从 `styles.candidates` 查看来源、字面值和 `important`。有源码位置时，`line`、`column` 从 1 开始，`sheet` 是单次结果内的样式表编号。`value: null` 表示声明使用了此接口不展开的值，例如 CSS 变量。候选只覆盖目标元素自身，行内声明先取样，随后从原生匹配列表末端取样。最多检查 32 条规则、128 项属性，最多返回 16 项候选。到达边界时读取 `styles.truncated`。结合计算值和命中测试解释候选，`cascade` 目前固定为 `undetermined`。
+
+Agent 在隔离执行环境中复查证据节点和敏感标记。敏感节点返回空候选和 `coverage.omitted` 中的 `sensitive_style_rules`。Chrome 需要先以 `DOM.getDocument(depth=0)` 登记当前文档，再用 `DOM.requestNode` 为已绑定的包装对象取得临时前端 ID，才能调用 `CSS.getMatchedStylesForNode`。同一浏览器连接的样式读取等待上一次 DOM/CSS domain 关闭确认。取消、控制变更和迟到回包要覆盖包装对象释放、后续读取与旧结果拒绝。[原生读取](../src/browser/engine/cdp/styles.rs) · [结果投影](../src/browser/engine/cdp/styles_project.rs)
 
 #### 表单提交前的字段校验
 

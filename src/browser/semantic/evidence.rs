@@ -80,6 +80,10 @@ pub(crate) enum Query {
     ReadValidation {
         node_id: String,
     },
+    ReadStyles {
+        node_id: String,
+        property: super::styles::StyleProperty,
+    },
     // Internal-only query used by record_wait after resolving an evidence binding.
     #[serde(skip_deserializing)]
     MatchRecord {
@@ -139,7 +143,8 @@ impl Query {
             Self::ReadNode { node_id: id }
             | Self::ReadLayout { node_id: id }
             | Self::ReadAccessibility { node_id: id }
-            | Self::ReadValidation { node_id: id } => {
+            | Self::ReadValidation { node_id: id }
+            | Self::ReadStyles { node_id: id, .. } => {
                 if !node_id(id) {
                     return Err(invalid());
                 }
@@ -157,6 +162,7 @@ impl Query {
             | Self::ReadLayout { node_id }
             | Self::ReadAccessibility { node_id }
             | Self::ReadValidation { node_id }
+            | Self::ReadStyles { node_id, .. }
             | Self::MatchRecord { node_id, .. } => Some(node_id),
         }
     }
@@ -167,14 +173,24 @@ impl Query {
             Self::ReadLayout { .. } => "read_layout",
             Self::ReadAccessibility { .. } => "read_accessibility",
             Self::ReadValidation { .. } => "read_validation",
+            Self::ReadStyles { .. } => "read_styles",
             Self::MatchRecord { .. } => "match_record",
         }
     }
     pub fn native_ax(&self) -> bool {
         matches!(self, Self::ReadAccessibility { .. })
     }
+    pub fn native_css(&self) -> bool {
+        matches!(self, Self::ReadStyles { .. })
+    }
     pub fn source(&self) -> &'static str {
-        if self.native_ax() { "native_ax" } else { "dom" }
+        if self.native_ax() {
+            "native_ax"
+        } else if self.native_css() {
+            "native_css"
+        } else {
+            "dom"
+        }
     }
     pub fn scope(&self) -> &'static str {
         match self {
@@ -253,6 +269,8 @@ pub(crate) enum Omitted {
     NativeAxName,
     UnrecognizedAxProperty,
     UnrecognizedAxReason,
+    #[serde(rename = "sensitive_style_rules")]
+    SensitiveStyleRules,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -431,8 +449,16 @@ pub(crate) enum Raw {
         validation: Validation,
         coverage: Coverage,
     },
+    ReadStyles {
+        styles: super::styles::StyleSnapshot,
+        coverage: Coverage,
+    },
     MatchRecord {
         matched: bool,
+        coverage: Coverage,
+    },
+    StyleTarget {
+        sensitive: bool,
         coverage: Coverage,
     },
 }
@@ -459,7 +485,9 @@ impl Raw {
             | Self::ReadLayout { coverage, .. }
             | Self::ReadAccessibility { coverage, .. }
             | Self::ReadValidation { coverage, .. }
-            | Self::MatchRecord { coverage, .. } => coverage,
+            | Self::ReadStyles { coverage, .. }
+            | Self::MatchRecord { coverage, .. }
+            | Self::StyleTarget { coverage, .. } => coverage,
         }
     }
     pub fn decode(text: &str, query: &NativeQuery) -> Result<Self> {
@@ -506,6 +534,8 @@ impl Raw {
                     && (matches!(validation.state, ValidationState::Invalid)
                         != validation.reasons.is_empty())
             }
+            Self::ReadStyles { .. } => false,
+            Self::StyleTarget { .. } => query.kind == "style_target" && query.node.is_some(),
             Self::MatchRecord { matched, .. } => {
                 query.kind == "match_record"
                     && query.node.is_some()
@@ -613,6 +643,67 @@ fn now_ms() -> u64 {
         .as_millis()
         .min(u64::MAX as u128) as u64
 }
+async fn native_facts<P: Port>(
+    port: &P,
+    frame: &Frame,
+    query: NativeQuery,
+    deadline: Instant,
+) -> Result<Raw> {
+    match port
+        .program(
+            frame,
+            Program::Evidence {
+                marker: frame.marker.clone(),
+                query,
+            },
+            deadline,
+        )
+        .await?
+    {
+        Output::Evidence(raw) => Ok(raw),
+        _ => Err(types::decode()),
+    }
+}
+
+async fn capture_styles<P: Port>(
+    port: &P,
+    frame: &Frame,
+    request: NativeQuery,
+    property: super::styles::StyleProperty,
+    deadline: Instant,
+) -> Result<Raw> {
+    let node = request.node.ok_or_else(types::stale)?;
+    let Raw::StyleTarget {
+        sensitive,
+        mut coverage,
+    } = native_facts(port, frame, request.clone(), deadline).await?
+    else {
+        return Err(types::decode());
+    };
+    if !sensitive {
+        let snapshot = port.native_styles(frame, node, property, deadline).await?;
+        let Raw::StyleTarget {
+            sensitive,
+            coverage: after,
+        } = native_facts(port, frame, request, deadline).await?
+        else {
+            return Err(types::decode());
+        };
+        coverage.merge(&after);
+        if !sensitive {
+            return Ok(Raw::ReadStyles {
+                styles: snapshot,
+                coverage,
+            });
+        }
+    }
+    coverage.omitted.insert(Omitted::SensitiveStyleRules);
+    Ok(Raw::ReadStyles {
+        styles: super::styles::StyleSnapshot::new(property, Vec::new(), false),
+        coverage,
+    })
+}
+
 pub(crate) async fn capture<P: Port>(
     port: &P,
     query: &Query,
@@ -679,6 +770,8 @@ pub(crate) async fn capture<P: Port>(
         let request = NativeQuery {
             kind: if query.native_ax() {
                 "read_node"
+            } else if query.native_css() {
+                "style_target"
             } else {
                 query.kind()
             },
@@ -699,18 +792,10 @@ pub(crate) async fn capture<P: Port>(
                 _ => None,
             },
         };
-        let Output::Evidence(mut raw) = port
-            .program(
-                frame,
-                Program::Evidence {
-                    marker: frame.marker.clone(),
-                    query: request,
-                },
-                deadline,
-            )
-            .await?
-        else {
-            return Err(types::decode());
+        let mut raw = if let Query::ReadStyles { property, .. } = query {
+            capture_styles(port, frame, request, *property, deadline).await?
+        } else {
+            native_facts(port, frame, request, deadline).await?
         };
         if query.native_ax() {
             let Raw::ReadNode { node, mut coverage } = raw else {

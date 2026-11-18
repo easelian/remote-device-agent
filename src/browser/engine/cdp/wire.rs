@@ -587,6 +587,10 @@ impl Cdp {
             error
         })
     }
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub(super) fn session_active(&self, id: &str) -> bool {
+        self.connected() && self.inner.pending.lock().unwrap().sessions.contains(id)
+    }
     pub fn connected(&self) -> bool {
         !self.inner.closed.load(Ordering::Acquire) && !self.inner.fenced.load(Ordering::Acquire)
     }

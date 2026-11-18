@@ -97,6 +97,18 @@ impl sem::Port for Port {
     ) -> Result<sem::accessibility::Snapshot> {
         asynchronous!(self, native_accessibility(f, n, facts, coverage, d))
     }
+    async fn native_styles(
+        &self,
+        f: &sem::Frame,
+        n: u64,
+        property: sem::styles::StyleProperty,
+        d: Instant,
+    ) -> Result<sem::styles::StyleSnapshot> {
+        match self {
+            Self::Cdp(p) => p.native_styles(f, n, property, d).await,
+            Self::Bidi(_) => Err(crate::browser::Failure::new("browser_feature_unsupported")),
+        }
+    }
     async fn input(&self, f: &sem::Frame, i: sem::NativeInput, d: Instant) -> Result<()> {
         asynchronous!(self, input(f, i, d))
     }

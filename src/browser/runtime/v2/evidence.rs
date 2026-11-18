@@ -131,6 +131,14 @@ pub(super) fn prepare(
                 value["validation"] = result;
             }
             Raw::MatchRecord { .. } => return Err(sem::types::decode()),
+            Raw::StyleTarget { .. } => return Err(sem::types::decode()),
+            Raw::ReadStyles { styles, .. } => {
+                let mut styles = serde_json::to_value(styles).map_err(|_| sem::types::decode())?;
+                styles["node_id"] = query.id().ok_or_else(sem::types::stale)?.into();
+                styles["frame_index"] = index.into();
+                styles["main_frame"] = main.into();
+                value["styles"] = styles;
+            }
             Raw::ReadLayout { layout, .. } => {
                 let hit = layout.hit.node;
                 let mut layout = serde_json::to_value(layout).map_err(|_| sem::types::decode())?;

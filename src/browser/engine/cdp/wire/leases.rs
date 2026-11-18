@@ -79,10 +79,14 @@ impl LeaseCommand {
         }
     }
     pub fn cleanup(command: Command) -> bool {
-        matches!(
-            command,
-            Command::RuntimeReleaseObject | Command::RuntimeReleaseObjectGroup | Command::IoClose
-        )
+        match command {
+            Command::RuntimeReleaseObject
+            | Command::RuntimeReleaseObjectGroup
+            | Command::IoClose => true,
+            #[cfg(feature = "experimental-browser-bidi")]
+            Command::CssDisable | Command::DomDisable => true,
+            _ => false,
+        }
     }
     pub fn object_cleanup(&self) -> bool {
         matches!(self, Self::Release { .. } | Self::Group { .. })
