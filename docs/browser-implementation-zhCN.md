@@ -59,7 +59,16 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 
 向 `browser_act` 传入 `{"kind":"drag","ref":"<源 ref>","target_ref":"<目标 ref>"}`。Agent 在按下前及最后一次移动后复核两端的文档、记录和命中位置。Chromium 确认指针移动后，Agent 还会在隔离环境中等待可信的原生拖动进入事件，确保接管时能够取消已经启动的拖动。端点发生变化或控制权被收回时，Agent 取消尚未释放的拖动。释放已经送出而回执丢失时，按原 `operation_id` 查询，恢复控制后读取同一条记录及目标列。人工交还后使用新控制代次和新观察。
 
-排查同一操作在不同路径上的差异时，可在测试机使用独立会话和同一 Chromium 二进制复现。先保存 Easelian 的观察、动作回执、业务记录和提交计数。在重置后的合成页面运行 `~/.local/bin/agent-browser --session <独立名称> --executable-path <Chromium> open <测试页>`，再用同一会话执行 `snapshot`、`drag`、`reload` 和 `close`。分别记录快照是否给两端分配 ref、选择器路径是否成功、页面重载后的记录和写入次数。独立会话使用自己的引用。实际业务中的未知写入按原回执和只读结果排查。
+排查同一操作在不同路径上的差异时，可在测试机使用独立会话和同一 Chromium 二进制复现。先保存 Easelian 的观察、动作回执、业务记录和提交计数。在重置后的合成页面使用测试专属的会话名。每次调用都传入同一会话名和 Chromium 路径。先将 `chromium` 和 `fixture_url` 设为测试机的浏览器绝对路径和合成页面地址。以下示例适用于 Linux 测试机的 Bash。
+
+```bash
+session="easelian-compare-$(cat /proc/sys/kernel/random/uuid)"
+compare() { ~/.local/bin/agent-browser --session "$session" --executable-path "$chromium" --json "$@"; }
+compare open "$fixture_url"
+compare snapshot
+```
+
+根据当前快照的角色和名称选择 ref，执行一次目标操作。拖动问题记录两端是否都有 ref。页面异常用 `compare errors` 读取异常。将 agent-browser 0.43.0 JSON 中的 `line` 和 `column` 各加一，再与 Easelian 的行列比较。执行 `compare reload` 后读取同一条业务记录，并核对测试服务端的写入次数。最后用 `compare close` 关闭该命名会话。实际业务中的未知写入按原回执和只读结果排查。
 
 ### 在虚拟列表中确认目标记录
 
