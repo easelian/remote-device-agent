@@ -81,8 +81,9 @@ compare snapshot
 | --- | --- | --- |
 | 相邻订单已经批准，目标订单仍待处理 | 用 `compare wait --fn` 检查目标订单自身的状态元素，限定等待时间。嵌套订单使用独立的状态元素 | 等待超时后读回原订单。只读刷新后再检查同一条件，核对期间的写入数 |
 | 站点已记账，HTTP 回复丢失 | 用 `compare network requests --method POST` 核对提交次数，读取页面提示。只点击站点提供的只读刷新控件，再查看对应的 GET 和原订单状态 | 页面可以先显示结果不明。刷新读到该订单已批准、站点计数为一次写入和一次读取，即可确认提交生效 |
+| 邮箱格式错误，提交后页面未跳转 | 在独立合成表单上用 CLI 的 `eval` 读取目标输入框的 `validity.typeMismatch` 和 `validity.valid`，用 `compare network requests` 核对请求。Easelian 侧在修改字段前读取同一字段的 `read_validation` | 错误状态应为 `invalid/type_mismatch`，当时没有提交请求。修正后再核对一次目标写入和原订单的新状态 |
 | 原生拖放 | 从当前快照定位源和目标，调用 `compare drag`。记录两端的 ref、网页收到的投放和目标列 | 重新观察原卡片所在的列，并核对站点写入次数 |
-| 控制台报错 | 用 `compare errors` 看未处理异常，用 `compare console` 看站点调用 `console.error` 的消息。比较异常位置时，将 0.43.0 返回的 `line` 和 `column` 各加一 | 核对同一次动作和对应源位置，再判断错误是否解释了页面现象 |
+| 控制台报错 | 在单次保存后用 `compare errors` 看未处理异常，`compare console` 查站点日志，`compare network requests` 查是否发出保存请求。对齐 Easelian 的一基位置时，把 CLI 0.43.0 的顶层 `line` 和 `column` 各加一 | 核对同一次动作和对应源位置，再判断错误是否解释了页面现象 |
 
 结束时执行 `compare close`。Easelian 独有的回执和控制权仍通过公开 MCP 验证。工具回复丢失时按原 `operation_id` 查询，人工交还后取得新的观察，再核对原记录。Firefox 专属行为使用原生 BiDi 会话验证。
 
@@ -155,7 +156,7 @@ Agent 在隔离执行环境中复查证据节点和敏感标记。敏感节点�
 
 #### 表单提交前的字段校验
 
-提交后页面留在原处时，可以先检查目标记录中的字段。设备和会话都声明 `extensions.form_validation` 版本 1 后，使用 `browser_evidence.find_nodes` 取得字段的 `node_id`，再向同一工具传入 `{"kind":"read_validation","node_id":"…"}` 作为 `query`。该读取覆盖 Chromium 和 Firefox 的原生 input、select 和 textarea。字段处于 `invalid` 时，`reasons` 列出浏览器报告的原因，例如必填项为空（`value_missing`）、电子邮件格式不符（`type_mismatch`）或站点设置了自定义错误（`custom_error`）。客户端可以据此定位字段，再核对页面给出的操作提示。
+提交后页面留在原处时，可以先检查目标记录中的字段。设备和会话都声明 `extensions.form_validation` 版本 1 后，使用 `browser_evidence.find_nodes` 取得字段的 `node_id`，再向同一工具传入 `{"kind":"read_validation","node_id":"…"}` 作为 `query`。该读取覆盖 Chromium 和 Firefox 的原生 input、select 和 textarea。字段处于 `invalid` 时，`reasons` 列出浏览器报告的原因，例如必填项为空（`value_missing`）、电子邮件格式不符（`type_mismatch`）或站点设置了自定义错误（`custom_error`）。客户端可以据此定位字段，再核对页面给出的操作提示。 如果要向维护者解释上一次提交被拦截的原因，应先保留该字段的校验原因，再修改字段。输入新值后，原状态就无法从当前字段读回。
 
 `valid` 表示当前字段通过原生约束。禁用字段以及普通页面元素返回 `not_applicable`，敏感控件返回 `omitted`。读取不提交表单，也不触发 `invalid` 事件。输入值、站点自定义错误文字和密码状态不进入诊断。自绘表单和服务端业务规则仍需观察目标记录，必要时结合请求与异常摘要判断。
 

@@ -170,6 +170,73 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
 }
+const WAIT_RELOAD_BACKOFF: Duration = Duration::from_millis(25);
+
+fn can_retry_wait(error: &Failure, retries: u8, remaining: Duration) -> bool {
+    retries < 4
+        && remaining > WAIT_RELOAD_BACKOFF
+        && matches!(
+            error.code,
+            "browser_stale_reference" | "browser_command_failed"
+        )
+}
+
+#[cfg(test)]
+#[test]
+fn wait_retries_only_transient_reads_with_time_left() {
+    let time = Duration::from_secs(1);
+    for code in ["browser_stale_reference", "browser_command_failed"] {
+        let error = Failure::new(code);
+        assert!(can_retry_wait(&error, 3, time));
+        assert!(!can_retry_wait(&error, 4, time));
+        assert!(!can_retry_wait(&error, 0, WAIT_RELOAD_BACKOFF));
+    }
+    for code in [
+        "browser_lost",
+        "browser_control_changed",
+        "browser_deadline",
+    ] {
+        assert!(!can_retry_wait(&Failure::new(code), 0, time));
+    }
+}
+
+async fn sample_wait_condition(
+    page: &sem::Page<native::Port>,
+    params: &Value,
+    deadline: Instant,
+) -> Result<Option<Value>> {
+    let (_, meta) = page.access(false)?.metadata(deadline).await?;
+    if let Some(expected) = params["url_contains"].as_str() {
+        return Ok(meta
+            .url
+            .contains(expected)
+            .then(|| json!({"condition_observed":true,"url":meta.url})));
+    }
+    let Some(text) = params["text_contains"].as_str() else {
+        return Ok(None);
+    };
+    let observation = page
+        .observe(
+            sem::Query {
+                find: Some(text.into()),
+                ..Default::default()
+            },
+            200,
+            20000,
+            None,
+            deadline,
+        )
+        .await?;
+    let matched = observation.rows.iter().any(|row| {
+        row.facts.name.contains(text)
+            || row
+                .facts
+                .value
+                .as_ref()
+                .is_some_and(|value| value.contains(text))
+    });
+    Ok(matched.then(|| json!({"condition_observed":true})))
+}
 
 async fn wait_record(
     page: &sem::Page<impl sem::Port>,
@@ -605,31 +672,24 @@ impl Browsers {
                         wait_record(&page, &mut session, &tab, epoch, record, deadline).await
                     } else {
                         session.invalidate();
+                        let mut retries = 0;
                         loop {
-                            let (_, meta) = page.access(false)?.metadata(deadline).await?;
-                            if let Some(text) = params["url_contains"].as_str() {
-                                if meta.url.contains(text) {
-                                    break Ok(json!({"condition_observed":true,"url":meta.url}));
+                            match sample_wait_condition(&page, params, deadline).await {
+                                Ok(Some(result)) => break Ok(result),
+                                Ok(None) => retries = 0,
+                                // Reload may replace the execution context during this read.
+                                Err(error)
+                                    if can_retry_wait(
+                                        &error,
+                                        retries,
+                                        deadline.saturating_duration_since(Instant::now()),
+                                    ) && page.access(false)?.connected() =>
+                                {
+                                    retries += 1;
+                                    tokio::time::sleep(WAIT_RELOAD_BACKOFF).await;
+                                    continue;
                                 }
-                            } else if let Some(text) = params["text_contains"].as_str() {
-                                let observation = page
-                                    .observe(
-                                        sem::Query {
-                                            find: Some(text.into()),
-                                            ..Default::default()
-                                        },
-                                        200,
-                                        20000,
-                                        None,
-                                        deadline,
-                                    )
-                                    .await?;
-                                if observation.rows.iter().any(|r| {
-                                    r.facts.name.contains(text)
-                                        || r.facts.value.as_ref().is_some_and(|v| v.contains(text))
-                                }) {
-                                    break Ok(json!({"condition_observed":true}));
-                                }
+                                Err(error) => break Err(error),
                             }
                             if Instant::now() + Duration::from_millis(100) >= deadline {
                                 break Err(Failure::new("browser_condition_timeout"));
