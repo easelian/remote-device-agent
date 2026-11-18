@@ -56,6 +56,8 @@ Agent 通过 CDP 读取单节点原生 AX，Core 校验返回内容，Server 的
 
 样式诊断从单个证据节点开始。先用 `read_layout` 查看计算值和遮挡，再为 CDP 单独协商匹配规则读取。Agent 应验证同一 frame 和文档的节点绑定，负责 DOM/CSS domain 的启停、临时节点和取消后的清理。首批样例覆盖 `display`、`visibility`、`pointer-events` 及 `!important`。返回筛选后的属性、规则来源类别与覆盖范围；无法证明层叠胜者时标明原因未知。验收应包含外部样式表、导航、迟到回包和人工接管。
 
+在 Linux Chrome 157 的本地合成页面上，已有节点包装对象能通过 `DOM.describeNode` 取得正的 `backendNodeId`，此时返回的前端 `nodeId` 仍为 0，直接调用 `DOM.requestNode` 也得到 0。启用 DOM 和 CSS domain、用 `DOM.getDocument(depth=0)` 登记当前文档后，对同一对象调用 `DOM.requestNode` 才获得可用于 `CSS.getMatchedStylesForNode` 的 ID。这条路径读到了外部作者样式表中的 `pointer-events: none !important` 和目标的行内 `visibility`。协议同时产生 `CSS.styleSheetAdded` 与 `DOM.setChildNodes` 事件。实现应让这些临时 ID 和事件归属于当前原生 session，限制原始消息大小，在导航、超时和接管时释放包装对象、结束诊断；公开结果只投影约定属性和来源。该路径已在协议层验证，MCP 能力仍待实现。
+
 性能先给任务耗时、长任务与资源阶段摘要，需要进一步定位时再提供有期限的 trace 私有制品和受限查询。将来若提供 VM 暂停、步进等会改变页面执行的能力，须与普通输入互斥，并证明超时或断连后能恢复执行。Agent 的控制暂停和 JavaScript VM 暂停分别记录状态。[CDP CSS](https://chromedevtools.github.io/devtools-protocol/tot/CSS/)
 
 ## 人工接管与续接
