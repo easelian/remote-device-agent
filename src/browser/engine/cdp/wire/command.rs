@@ -22,6 +22,7 @@ pub enum Command {
     FetchTakeResponseBodyAsStream,
     InputKeyPress,
     InputKeyRelease,
+    #[cfg(feature = "experimental-browser-bidi")]
     InputMouseMove,
     InputMousePress,
     InputMouseRelease,
@@ -96,7 +97,9 @@ impl Command {
             }
             Self::InputKeyPress => ("Input.dispatchKeyEvent", Page, Block),
             Self::InputKeyRelease => ("Input.dispatchKeyEvent", Page, Release),
-            Self::InputMouseMove | Self::InputMousePress | Self::InputMouseWheel => {
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::InputMouseMove => ("Input.dispatchMouseEvent", Page, Block),
+            Self::InputMousePress | Self::InputMouseWheel => {
                 ("Input.dispatchMouseEvent", Page, Block)
             }
             Self::InputMouseRelease => ("Input.dispatchMouseEvent", Page, Release),
