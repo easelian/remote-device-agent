@@ -103,7 +103,8 @@ function(operation, args, other) {
       }
       return norm(pieces.join(' '));
     };
-    if (forbidden.has(mapped.role)) return {name:'',source:'prohibited',quality:[]};
+    // A scroll handle uses the container label even when the DOM role prohibits an AX name.
+    if (forbidden.has(mapped.role) && mapped.kind !== 'scrollable') return {name:'',source:'prohibited',quality:[]};
     if (mapped.role === 'unsupported') quality.add('unsupported_role');
     let name = '', source = 'none';
     if (bounded(node.getAttribute('aria-labelledby'))) { name = associated(node,new Set(),0); if (name) source = 'aria-labelledby'; }
