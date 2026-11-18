@@ -21,6 +21,11 @@ pub(crate) enum Program {
     ScrollViewport {
         delta: f64,
     },
+    ScrollTarget {
+        marker: Marker,
+        node: u64,
+        delta: f64,
+    },
     Ready,
     Stats,
     ClearNodes {
@@ -90,6 +95,7 @@ impl Program {
         match self {
             Self::Scroll { .. }
             | Self::ScrollViewport { .. }
+            | Self::ScrollTarget { .. }
             | Self::Focus { .. }
             | Self::Form { .. } => Effect::Page,
             _ => Effect::None,
@@ -138,6 +144,15 @@ impl Program {
                 json!({"realm":marker.realm,"restoration":marker.restoration,"nodes":nodes}),
             ),
             Self::Scroll { marker, node } => ("scroll", target(marker, *node)),
+            Self::ScrollTarget {
+                marker,
+                node,
+                delta,
+            } => {
+                let mut args = target(marker, *node);
+                args["delta"] = (*delta).into();
+                ("scroll_target", args)
+            }
             Self::Focus { marker, node } => ("focus", target(marker, *node)),
             Self::Form {
                 marker,

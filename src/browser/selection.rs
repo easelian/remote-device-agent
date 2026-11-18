@@ -98,7 +98,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
         json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
                 "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"],
                 "extensions":{"actionability":extension(why),
-                    "observation_delta":extension(why), "dom_evidence":extension(why),
+                    "observation_delta":extension(why), "scoped_scroll":extension(why), "dom_evidence":extension(why),
                     "native_ax":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "task_events":{"version":1,"available":why.is_none(),"categories":if backend==Backend::Bidi {json!(["console","network"])} else {json!(["network"])} }}})
     })

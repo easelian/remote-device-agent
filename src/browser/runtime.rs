@@ -634,6 +634,7 @@ impl Browsers {
                 let action = &params["action"];
                 match action["kind"].as_str().unwrap_or("") {
                     "scroll" => {
+                        if action["ref"].is_string() { return Err(Failure::new("browser_feature_unsupported")); }
                         if target.dialog.is_some() { return Err(Failure::new("browser_dialog_open")); }
                         let tree = page::frame_tree(&engine, &target.session, deadline).await?;
                         let frame = tree.first().ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
@@ -1990,7 +1991,16 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "check" => &["kind", "ref", "checked"],
             "select" => &["kind", "ref", "value"],
             "attach_file" => &["kind", "ref", "file_grant_id"],
-            "scroll" => &["kind", "delta_y"],
+            "scroll" => {
+                if action.len() == 3
+                    && action.get("ref").and_then(Value::as_str).is_some()
+                    && action.get("delta_y").is_some()
+                {
+                    &["kind", "ref", "delta_y"]
+                } else {
+                    &["kind", "delta_y"]
+                }
+            }
             "click" => &["kind", "ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
             "dialog" => &["kind", "accept", "dialog_id"],
@@ -2028,9 +2038,11 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                 .as_str()
                 .is_none_or(|s| s.chars().count() > 256)
             || kind == "scroll"
-                && action["delta_y"]
-                    .as_f64()
-                    .is_none_or(|n| !n.is_finite() || n.abs() > 2000.)
+                && action.get("delta_y").is_some_and(|value| {
+                    value
+                        .as_f64()
+                        .is_none_or(|n| !n.is_finite() || n.abs() > 2000.)
+                })
         {
             return Err(Failure::new("browser_invalid_params"));
         }
@@ -2218,6 +2230,19 @@ mod tests {
                 "{request}"
             );
         }
+    }
+
+    #[test]
+    fn scroll_accepts_reference_or_document_delta_but_no_mixed_form() {
+        let base = json!({"session_id":"session","control_epoch":1,"action":{"kind":"scroll","ref":"r","delta_y":300}});
+        assert!(validate("browser_act", &base).is_ok());
+        let delta = json!({"session_id":"session","control_epoch":1,"action":{"kind":"scroll","delta_y":300}});
+        assert!(validate("browser_act", &delta).is_ok());
+        let mixed = json!({"session_id":"session","control_epoch":1,"action":{"kind":"scroll","ref":"r","delta_y":300,"extra":true}});
+        assert_eq!(
+            validate("browser_act", &mixed).unwrap_err().code,
+            "browser_invalid_params"
+        );
     }
 
     fn state(operation: &str, effects: bool, error: Failure) -> &'static str {

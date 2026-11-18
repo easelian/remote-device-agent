@@ -172,6 +172,7 @@ impl<P> Clone for Page<P> {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
+    Scroll { delta: f64 },
     Click,
     Check(bool),
     ReplaceText(String),
@@ -183,6 +184,7 @@ impl Action {
     fn kind(&self) -> actionability::ActionKind {
         use actionability::ActionKind as Kind;
         match self {
+            Self::Scroll { .. } => Kind::Click,
             Self::Click => Kind::Click,
             Self::Check(_) => Kind::Check,
             Self::ReplaceText(_) => Kind::Fill,
@@ -1036,6 +1038,25 @@ async fn perform<P: Port>(
     let mut facts = inspect(port, element, deadline).await?;
     let kind = action.kind();
     let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
+    if let Action::Scroll { delta } = action {
+        let marker = element.frame.marker.clone();
+        if !matches!(
+            port.program(
+                &element.frame,
+                Program::ScrollTarget {
+                    marker,
+                    node: facts.node,
+                    delta
+                },
+                deadline,
+            )
+            .await?,
+            Output::Applied(Some(true))
+        ) {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        return Ok(ack(true, "semantic_scroll"));
+    }
     if facts.kind == "inferred" && !matches!(action, Action::Click | Action::Press(_)) {
         return Err(Failure::new("browser_not_actionable"));
     }

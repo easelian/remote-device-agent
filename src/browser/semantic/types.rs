@@ -270,8 +270,10 @@ impl Facts {
             && self.visible
             && self.record.complete
             && self.name_quality.is_empty()
-            && (matches!(self.kind.as_str(), "native" | "aria") && interactive(&self.role)
-                || self.kind == "inferred")
+            && (matches!(self.kind.as_str(), "native" | "aria")
+                && (interactive(&self.role) || self.role == "region")
+                || self.kind == "inferred"
+                || self.kind == "scrollable")
     }
     pub fn fingerprint(&self) -> [u8; 32] {
         // Canonical fields and record material are serialized from validated

@@ -111,9 +111,10 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":backend==Backend::Cdp,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
-        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
+        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document|reference",
         "extensions":{"task_events":{"version":1,"available":true,"categories":if backend==Backend::Bidi {json!(["console","network"])} else {json!(["network"])}},"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
+            "scoped_scroll":crate::browser::selection::extension(None),
             "dom_evidence":crate::browser::selection::extension(None),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
@@ -800,6 +801,11 @@ async fn act(
             "fill" => sem::Action::ReplaceText(action["text"].as_str().unwrap().into()),
             "press" => sem::Action::Press(sem::Key::parse(action["key"].as_str().unwrap())?),
             "select" => sem::Action::SetFormValue(action["value"].as_str().unwrap().into()),
+            "scroll" => sem::Action::Scroll {
+                delta: action["delta_y"]
+                    .as_f64()
+                    .ok_or_else(|| Failure::new("browser_invalid_params"))?,
+            },
             _ => return Err(Failure::new("browser_feature_unsupported")),
         };
         let mut value = serde_json::to_value(page.act(reference, input, deadline).await?)
