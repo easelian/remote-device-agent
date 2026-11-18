@@ -102,6 +102,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
                     "native_ax":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "ref_drag":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "matched_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
+                    "ancestor_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "task_events":{"version":1,"available":why.is_none(),"categories":["console","network"] }, "network_progress":{"version":1,"available":why.is_none(),"reason":why}}})
     })
     .collect();

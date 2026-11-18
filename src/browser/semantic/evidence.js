@@ -61,6 +61,22 @@ function(operation, args) {
     return ['password','file'].includes(node.type) || /(?:pass(?:word|code)?|secret|token|one-time-code|cc-number|cc-csc)/i.test(fields.join(' '));
   };
   const sensitive = node => node.localName === 'input' && sensitiveControl(node);
+  // Style guards inspect only ordinary parentElement ancestors. This stops at
+  // shadow-root and slot boundaries and is distinct from semantic parent().
+  const styleSensitive = node => {
+    const control = node.localName === 'input' || node.localName === 'textarea' || node.localName === 'select';
+    return (control || node.isContentEditable) && sensitiveControl(node);
+  };
+  const directStyleSensitive = node => {
+    const formControl = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement;
+    return formControl && sensitiveControl(node);
+  };
+  const styleTargetSensitive = node => {
+    for (let item=node, depth=0; item && depth<=4; item=item.parentElement, depth++) {
+      if (styleSensitive(item)) return true;
+    }
+    return false;
+  };
   function nativeValidation(node) {
     if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement)) {
       return {state:'not_applicable',reasons:[]};
@@ -263,11 +279,23 @@ function(operation, args) {
   } else {
     const node=registry.nodes.get(args.node)?.weak.deref();
     if (!node || !node.isConnected || node.ownerDocument!==document) return result(null);
+    // CDP calls this closed operation on its retained target. Bind the same
+    // ordinary parents that passed the sensitivity check in this JS turn.
+    if (operation==='bind_style_ancestors') {
+      if (this!==node || styleTargetSensitive(node)) return false;
+      if (node.getRootNode()!==document || node.assignedSlot || node.localName==='slot') return null;
+      const chain=[];
+      for (let item=node.parentElement; item && chain.length<5; item=item.parentElement) {
+        if (chain.length<4 && (item.assignedSlot || item.localName==='slot')) return null;
+        chain.push(item);
+      }
+      return chain;
+    }
     if (operation==='match_record') {
       output={kind:operation,matched:matchesRecord(node),coverage:coverage()};
-    } else if (operation==='style_target') {
-      const formControl = node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement;
-      output={kind:operation,sensitive:formControl && sensitiveControl(node),coverage:coverage()};
+    } else if (operation==='style_target' || operation==='ancestor_style_target') {
+      const guarded = operation==='ancestor_style_target' ? styleTargetSensitive(node) : directStyleSensitive(node);
+      output={kind:'style_target',sensitive:guarded,coverage:coverage()};
     } else if (!visit(node)) {
       return result(null);
     } else if (operation==='read_node') {

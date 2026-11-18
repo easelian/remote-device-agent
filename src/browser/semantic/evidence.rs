@@ -84,6 +84,10 @@ pub(crate) enum Query {
         node_id: String,
         property: super::styles::StyleProperty,
     },
+    ReadAncestorStyles {
+        node_id: String,
+        property: super::styles::StyleProperty,
+    },
     // Internal-only query used by record_wait after resolving an evidence binding.
     #[serde(skip_deserializing)]
     MatchRecord {
@@ -149,6 +153,14 @@ impl Query {
                     return Err(invalid());
                 }
             }
+            Self::ReadAncestorStyles {
+                node_id: id,
+                property,
+            } => {
+                if !node_id(id) || matches!(property, super::styles::StyleProperty::Display) {
+                    return Err(invalid());
+                }
+            }
             // This variant is intentionally unavailable to serde input; only
             // record_wait may construct it after resolving an evidence binding.
             Self::MatchRecord { .. } => return Err(invalid()),
@@ -163,6 +175,7 @@ impl Query {
             | Self::ReadAccessibility { node_id }
             | Self::ReadValidation { node_id }
             | Self::ReadStyles { node_id, .. }
+            | Self::ReadAncestorStyles { node_id, .. }
             | Self::MatchRecord { node_id, .. } => Some(node_id),
         }
     }
@@ -174,6 +187,7 @@ impl Query {
             Self::ReadAccessibility { .. } => "read_accessibility",
             Self::ReadValidation { .. } => "read_validation",
             Self::ReadStyles { .. } => "read_styles",
+            Self::ReadAncestorStyles { .. } => "read_ancestor_styles",
             Self::MatchRecord { .. } => "match_record",
         }
     }
@@ -181,7 +195,16 @@ impl Query {
         matches!(self, Self::ReadAccessibility { .. })
     }
     pub fn native_css(&self) -> bool {
-        matches!(self, Self::ReadStyles { .. })
+        matches!(
+            self,
+            Self::ReadStyles { .. } | Self::ReadAncestorStyles { .. }
+        )
+    }
+    pub fn style_scope(&self) -> super::styles::StyleScope {
+        match self {
+            Self::ReadAncestorStyles { .. } => super::styles::StyleScope::Ancestors,
+            _ => super::styles::StyleScope::Direct,
+        }
     }
     pub fn source(&self) -> &'static str {
         if self.native_ax() {
@@ -535,7 +558,10 @@ impl Raw {
                         != validation.reasons.is_empty())
             }
             Self::ReadStyles { .. } => false,
-            Self::StyleTarget { .. } => query.kind == "style_target" && query.node.is_some(),
+            Self::StyleTarget { .. } => {
+                (query.kind == "style_target" || query.kind == "ancestor_style_target")
+                    && query.node.is_some()
+            },
             Self::MatchRecord { matched, .. } => {
                 query.kind == "match_record"
                     && query.node.is_some()
@@ -670,6 +696,7 @@ async fn capture_styles<P: Port>(
     frame: &Frame,
     request: NativeQuery,
     property: super::styles::StyleProperty,
+    scope: super::styles::StyleScope,
     deadline: Instant,
 ) -> Result<Raw> {
     let node = request.node.ok_or_else(types::stale)?;
@@ -681,7 +708,9 @@ async fn capture_styles<P: Port>(
         return Err(types::decode());
     };
     if !sensitive {
-        let snapshot = port.native_styles(frame, node, property, deadline).await?;
+        let snapshot = port
+            .native_styles(frame, node, property, scope, deadline)
+            .await?;
         let Raw::StyleTarget {
             sensitive,
             coverage: after,
@@ -699,7 +728,14 @@ async fn capture_styles<P: Port>(
     }
     coverage.omitted.insert(Omitted::SensitiveStyleRules);
     Ok(Raw::ReadStyles {
-        styles: super::styles::StyleSnapshot::new(property, Vec::new(), false),
+        styles: match scope {
+            super::styles::StyleScope::Ancestors => {
+                super::styles::StyleSnapshot::with_scope(property, Vec::new(), false, Some(0))
+            }
+            super::styles::StyleScope::Direct => {
+                super::styles::StyleSnapshot::new(property, Vec::new(), false)
+            }
+        },
         coverage,
     })
 }
@@ -771,7 +807,11 @@ pub(crate) async fn capture<P: Port>(
             kind: if query.native_ax() {
                 "read_node"
             } else if query.native_css() {
-                "style_target"
+                if query.style_scope() == super::styles::StyleScope::Ancestors {
+                    "ancestor_style_target"
+                } else {
+                    "style_target"
+                }
             } else {
                 query.kind()
             },
@@ -792,8 +832,18 @@ pub(crate) async fn capture<P: Port>(
                 _ => None,
             },
         };
-        let mut raw = if let Query::ReadStyles { property, .. } = query {
-            capture_styles(port, frame, request, *property, deadline).await?
+        let mut raw = if let Query::ReadStyles { property, .. }
+        | Query::ReadAncestorStyles { property, .. } = query
+        {
+            capture_styles(
+                port,
+                frame,
+                request,
+                *property,
+                query.style_scope(),
+                deadline,
+            )
+            .await?
         } else {
             native_facts(port, frame, request, deadline).await?
         };

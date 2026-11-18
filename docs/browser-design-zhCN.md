@@ -74,11 +74,15 @@ Chromium 会在启用 Runtime 时回放历史记录。Agent 等待启用确认�
 
 验收页面将目标写请求和后台请求同时挂起，分别放行响应，并通过站点记录核对每次提交。测试须覆盖开窗前已开始的请求、诊断中途交给人工、重定向以及事件淘汰。请求与响应的关联只能解释传输进度。某个请求是否由这次点击触发、业务结果是否生效，仍需页面证据。
 
-AI 排查点击失败时，先用 `browser_inspect` 看命中与遮挡，再用 `find_nodes` 定位页面元素。CDP 会话可在同一证据节点上调用 `read_layout` 取得计算值，调用 `read_styles` 找到直接匹配的行内声明或样式表声明。例如计算值为 `pointer-events: none`，外部作者规则对应的候选也为 `none` 且带 `!important`，客户端可以报告这两项事实。尚缺祖先继承、变量解析和完整层叠顺序时，结果保留 `cascade: "undetermined"`。现有接口与限制见[实现说明](browser-implementation-zhCN.md#定位影响控件的样式)。
+AI 排查点击失败时，先用 `browser_inspect` 检查命中，再用 `find_nodes` 定位页面元素。对同一个 `node_id`，`read_layout` 返回计算值，`read_styles` 返回目标本身的声明，CDP 的 `read_ancestor_styles` 可以补查普通父链上的 `pointer-events` 或 `visibility` 声明。
 
-一个已在 Chromium 复现的缺口是继承样式。祖先区域设置 `pointer-events: none` 后，按钮的 `read_layout` 显示 `none`，该按钮的 `read_styles` 返回空候选。单独查询祖先区域才能看到对应声明。Chromium 的 `CSS.getMatchedStylesForNode` 已在 `inherited` 中给出普通 DOM 祖先的候选。即使按钮用行内 `auto` 覆盖并恢复点击，祖先的 `none` 仍在列表中。
+例如，同一容器里的两个按钮都能查到祖先的 `pointer-events: none`。第一个按钮自身没有声明，计算值为 `none`，命中测试失败。第二个按钮有行内 `auto`，计算值为 `auto`，命中测试通过。AI 应结合这三项证据决定能否操作，再按业务记录验证结果。CSS 变量和完整层叠顺序仍未解析，`cascade` 保持 `undetermined`。[样式诊断用法](browser-implementation-zhCN.md#定位影响控件的样式)
 
-下一步应使 AI 从按钮的 `node_id` 查询有限层数的祖先声明，优先覆盖可继承的 `pointer-events` 和 `visibility`。建议通过独立扩展返回祖先层数、已允许的声明值、来源位置及截断状态。验收时使用同一按钮的直接覆盖、无匹配祖先和深层截断三种对照，确认诊断期间网页写入为零。缺少完整层叠证据时保留 `cascade: "undetermined"`。
+查询必须使用同一节点的原始 `node_id`，不能用相邻节点、重挂后的新节点或名称相同的节点替代。Agent 在目标所属文档内最多检查四层普通父节点。节点重挂使正在采集的结果失效，遇到 shadow root 或 slot 边界时返回不支持。一次祖先查询合计最多检查 32 条规则、128 项属性，返回 16 项候选。敏感节点或敏感祖先零披露；不会返回页面文字、选择器、原生标识或敏感 CSS 声明。直接样式读取在 ancestor 查询不可用时仍独立有效。
+
+维护者可运行 Server 的 `scripts/run_browser_acceptance.py --phase ancestor-styles`，测试普通父链、直接覆盖、敏感父节点、shadow/slot 边界及节点重挂。重挂期间的采样应被拒绝，再次读取同一元素时只应看到当前父链。
+
+遇到命中和样式结果不一致时，用同一 Chrome 可执行文件、同一测试页面，在独立的 `agent-browser` 会话中执行 `snapshot -i`、`get styles @ref` 和 `click @ref`。每个客户端使用自己观察得到的引用。样式读取期间站点写入应为 0。对照点击后，再检查页面确认文字和站点收到的写入次数；受阻按钮也可能得到 CLI 的 `clicked` 回执。
 
 性能先给任务耗时、长任务与资源阶段摘要，需要进一步定位时再提供有期限的 trace 私有制品和受限查询。将来若提供 VM 暂停、步进等会改变页面执行的能力，须与普通输入互斥，并证明超时或断连后能恢复执行。Agent 的控制暂停和 JavaScript VM 暂停分别记录状态。[CDP CSS](https://chromedevtools.github.io/devtools-protocol/tot/CSS/)
 

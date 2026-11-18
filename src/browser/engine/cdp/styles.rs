@@ -1,7 +1,7 @@
 //! CSS domains own temporary frontend node IDs. Serialize their use per browser
 //! connection and settle disable commands even if the waiting reader is gone.
 use super::*;
-use sem::styles::{StyleProperty, StyleSnapshot};
+use sem::styles::{StyleProperty, StyleScope, StyleSnapshot};
 use tokio::sync::OwnedMutexGuard;
 
 struct Cleanup {
@@ -65,11 +65,148 @@ impl Drop for Domains {
     }
 }
 
+// Keep the target's ordinary DOM parents alive in this query's isolated realm.
+// The fifth object only witnesses truncation. No page IDs or nodes leave the adapter.
+const BIND_ANCESTORS: &str = concat!(
+    "function (identity) { return (",
+    include_str!("../../semantic/evidence.js"),
+    ").call(this, 'bind_style_ancestors', identity); }"
+);
+
+const SAME_CHAIN: &str = r#"function (target) {
+    if (!target.isConnected || target.getRootNode() !== document || target.assignedSlot) return false;
+    let child = target;
+    for (let i = 0; i < this.length; i++) {
+        const parent = this[i];
+        if (child.parentElement !== parent || (i < 4 && parent.assignedSlot)) return false;
+        child = parent;
+    }
+    return this.length === 5 || !child.parentElement;
+}"#;
+
+async fn read_ancestors(
+    wire: &Cdp,
+    session: &str,
+    object: &str,
+    identity: &serde_json::Value,
+    property: StyleProperty,
+    deadline: Instant,
+) -> Result<StyleSnapshot> {
+    let call = Command::RuntimeCallFunction(Effect::None);
+    let chain = wire
+        .scoped_call(
+            Some(session),
+            call,
+            json!({
+                "objectId": object, "functionDeclaration": BIND_ANCESTORS, "arguments":[{"value":identity}],
+                "objectGroup": "rdh-native-styles", "returnByValue": false
+            }),
+            deadline,
+        )
+        .await?;
+    let result = chain.value();
+    if result.get("exceptionDetails").is_some() {
+        return Err(Failure::new("browser_script_exception"));
+    }
+    if result["result"]["subtype"] == "null" {
+        return Err(Failure::new("browser_feature_unsupported"));
+    }
+    if result["result"]["subtype"] != "array" {
+        return Err(sem::types::stale());
+    }
+    let chain_id = result["result"]["objectId"]
+        .as_str()
+        .ok_or_else(sem::types::decode)?;
+    let length = wire
+        .call(
+            Some(session),
+            call,
+            json!({"objectId":chain_id,
+                "functionDeclaration":"function () { return this.length; }", "returnByValue":true
+            }),
+            deadline,
+        )
+        .await?;
+    let count = length["result"]["value"]
+        .as_u64()
+        .filter(|n| *n <= 5)
+        .ok_or_else(sem::types::decode)? as u8;
+    let examined = count.min(4);
+    let mut projection = super::styles_project::Projection::new(property);
+    let mut frontend_ids = Vec::with_capacity(usize::from(examined));
+    for index in 0..examined {
+        let parent = wire.scoped_call(Some(session), call, json!({
+            "objectId":chain_id, "functionDeclaration":"function (index) { return this[index]; }",
+            "arguments":[{"value":index}], "objectGroup":"rdh-native-styles", "returnByValue":false
+        }), deadline).await?;
+        let node = &parent.value()["result"];
+        let parent_id = node["objectId"]
+            .as_str()
+            .filter(|_| node["subtype"] == "node")
+            .ok_or_else(sem::types::stale)?;
+        let frontend = wire
+            .call(
+                Some(session),
+                Command::DomRequestNode,
+                json!({"objectId":parent_id}),
+                deadline,
+            )
+            .await?;
+        let id = frontend["nodeId"]
+            .as_i64()
+            .filter(|n| *n > 0)
+            .ok_or_else(sem::types::stale)?;
+        frontend_ids.push(id);
+        let styles = wire
+            .call(
+                Some(session),
+                Command::CssGetMatchedStylesForNode,
+                json!({"nodeId":id}),
+                deadline,
+            )
+            .await?;
+        // Read declarations on the bound parent itself. Chromium's anonymous
+        // inherited entries cannot establish the identity of a reparented node.
+        projection.add_node(&styles, Some(index + 1))?;
+    }
+    // A light child assigned to a closed root can report assignedSlot == null.
+    // The native host description includes even a closed root. Check after all
+    // reads so a shadow root attached during CSS capture also retires the result.
+    for id in frontend_ids {
+        let described = wire
+            .call(
+                Some(session),
+                Command::DomDescribeNode,
+                json!({"nodeId":id,"depth":0,"pierce":false}),
+                deadline,
+            )
+            .await?;
+        let node = &described["node"];
+        if node["nodeType"] != 1 || node["nodeId"] != id {
+            return Err(sem::types::stale());
+        }
+        if let Some(roots) = node.get("shadowRoots") {
+            if !roots.as_array().ok_or_else(sem::types::decode)?.is_empty() {
+                return Err(Failure::new("browser_feature_unsupported"));
+            }
+        }
+    }
+    let check = wire.call(Some(session), call, json!({
+        "objectId":chain_id, "functionDeclaration":SAME_CHAIN, "arguments":[{"objectId":object}],
+        "returnByValue":true
+    }), deadline).await?;
+    if check["result"]["value"] != true {
+        return Err(sem::types::stale());
+    }
+    Ok(projection.finish(Some(examined), count > examined))
+}
+
 pub(super) async fn read(
     owner: &Semantic,
     frame: &sem::Frame,
     node: u64,
     property: StyleProperty,
+    scope: StyleScope,
     deadline: Instant,
 ) -> Result<StyleSnapshot> {
     let native = owner.native(frame)?;
@@ -133,26 +270,34 @@ pub(super) async fn read(
         if document["root"]["nodeId"].as_i64().is_none_or(|id| id <= 0) {
             return Err(sem::types::stale());
         }
-        let frontend = wire
-            .call(
-                Some(&session),
-                Command::DomRequestNode,
-                json!({"objectId": object}),
-                deadline,
-            )
-            .await?;
-        let id = frontend["nodeId"]
-            .as_i64()
-            .filter(|id| *id > 0)
-            .ok_or_else(sem::types::stale)?;
-        let matches = wire
-            .call(
-                Some(&session),
-                Command::CssGetMatchedStylesForNode,
-                json!({"nodeId": id}),
-                deadline,
-            )
-            .await;
+        let projected = match scope {
+            StyleScope::Ancestors => {
+                read_ancestors(wire, &session, object, &identity, property, deadline).await
+            }
+            StyleScope::Direct => {
+                let frontend = wire
+                    .call(
+                        Some(&session),
+                        Command::DomRequestNode,
+                        json!({"objectId": object}),
+                        deadline,
+                    )
+                    .await?;
+                let id = frontend["nodeId"]
+                    .as_i64()
+                    .filter(|id| *id > 0)
+                    .ok_or_else(sem::types::stale)?;
+                wire
+                    .call(
+                        Some(&session),
+                        Command::CssGetMatchedStylesForNode,
+                        json!({"nodeId": id}),
+                        deadline,
+                    )
+                    .await
+                    .and_then(|matches| super::styles_project::project(&matches, property))
+            }
+        };
         // A native reply may arrive after DOM replacement. Compare the exact wrapper
         // against the registry in its original isolated realm before returning rules.
         let same_node = format!(
@@ -173,7 +318,7 @@ pub(super) async fn read(
         if check.get("exceptionDetails").is_some() || check["result"]["value"] != true {
             return Err(sem::types::stale());
         }
-        super::styles_project::project(&matches?, property)
+        projected
     }
     .await;
     domains.finish().await?;

@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StyleScope {
+    Direct,
+    Ancestors,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum StyleProperty {
@@ -12,6 +18,8 @@ pub(crate) struct StyleSnapshot {
     pub property: StyleProperty,
     pub candidates: Vec<StyleCandidate>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ancestors_examined: Option<u8>,
     cascade: Cascade,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -22,10 +30,19 @@ enum Cascade {
 
 impl StyleSnapshot {
     pub fn new(property: StyleProperty, candidates: Vec<StyleCandidate>, truncated: bool) -> Self {
+        Self::with_scope(property, candidates, truncated, None)
+    }
+    pub fn with_scope(
+        property: StyleProperty,
+        candidates: Vec<StyleCandidate>,
+        truncated: bool,
+        ancestors_examined: Option<u8>,
+    ) -> Self {
         Self {
             property,
             candidates,
             truncated,
+            ancestors_examined,
             cascade: Cascade::Undetermined,
         }
     }
@@ -39,6 +56,8 @@ pub(crate) struct StyleCandidate {
     pub sheet: Option<u8>,
     pub line: Option<u32>,
     pub column: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ancestor_depth: Option<u8>,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]

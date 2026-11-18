@@ -132,6 +132,14 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 从 `styles.candidates` 查看来源、字面值和 `important`。有源码位置时，`line`、`column` 从 1 开始，`sheet` 是单次结果内的样式表编号。`value: null` 表示声明使用了此接口不展开的值，例如 CSS 变量。候选只覆盖目标元素自身，行内声明先取样，随后从原生匹配列表末端取样。最多检查 32 条规则、128 项属性，最多返回 16 项候选。到达边界时读取 `styles.truncated`。结合计算值和命中测试解释候选，`cascade` 目前固定为 `undetermined`。
 
+#### 读取祖先样式
+
+在同一节点需要判断祖先是否影响命中或可见性时，CDP 会话可使用 `read_ancestor_styles`。请求仍使用原 `node_id`，并指定 `property` 为 `pointer-events` 或 `visibility`；`display` 等属性不属于该接口。设备的 CDP 候选和实际会话均须启用版本 1 的 `dom_evidence`、`matched_styles` 和 `ancestor_styles`。例如，可向 `browser_evidence` 传入 `query: {"kind":"read_ancestor_styles","node_id":"<find_nodes 返回的 node_id>","property":"pointer-events"}`。
+
+Agent 从当前节点沿普通 DOM 父链读取，最多检查 4 层祖先。shadow root、`slot`、`assignedSlot` 或跨文档边界会使这条链不可证明；不会把 shadow/slot 两侧拼成一条祖先链。返回的候选沿用直接样式的来源、字面值、`important` 和可选源码位置，单次结果共享 32 条规则、128 项属性和 16 项候选的预算，`cascade` 保持 `undetermined`。`styles.ancestors_examined` 是本次检查的层数，`ancestor_depth: 1` 表示父元素。若还有更远的父节点或超出采样预算，`styles.truncated` 为 `true`。
+
+遇到敏感控件或带敏感标记的可编辑祖先时，结果的检查层数为 0，候选为空，`coverage.omitted` 包含 `sensitive_style_rules`。采集期间节点重挂或文档身份变化时，丢弃本次结果并重新定位。元素使用行内样式覆盖祖先声明时，仍可同时读取直接样式和祖先样式；例如祖先的 `pointer-events: none` 与节点自身的 `pointer-events: auto` 都可以作为候选交给 AI，但不能据此宣称完整层叠结论。
+
 Agent 在隔离执行环境中复查证据节点和敏感标记。敏感节点返回空候选和 `coverage.omitted` 中的 `sensitive_style_rules`。Chrome 需要先以 `DOM.getDocument(depth=0)` 登记当前文档，再用 `DOM.requestNode` 为已绑定的包装对象取得临时前端 ID，才能调用 `CSS.getMatchedStylesForNode`。同一浏览器连接的样式读取等待上一次 DOM/CSS domain 关闭确认。取消、控制变更和迟到回包要覆盖包装对象释放、后续读取与旧结果拒绝。[原生读取](../src/browser/engine/cdp/styles.rs) · [结果投影](../src/browser/engine/cdp/styles_project.rs)
 
 #### 表单提交前的字段校验

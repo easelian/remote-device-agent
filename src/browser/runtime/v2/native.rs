@@ -102,10 +102,11 @@ impl sem::Port for Port {
         f: &sem::Frame,
         n: u64,
         property: sem::styles::StyleProperty,
+        scope: sem::styles::StyleScope,
         d: Instant,
     ) -> Result<sem::styles::StyleSnapshot> {
         match self {
-            Self::Cdp(p) => p.native_styles(f, n, property, d).await,
+            Self::Cdp(p) => p.native_styles(f, n, property, scope, d).await,
             Self::Bidi(_) => Err(crate::browser::Failure::new("browser_feature_unsupported")),
         }
     }

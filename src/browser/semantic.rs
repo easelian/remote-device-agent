@@ -63,6 +63,7 @@ pub(crate) trait Port: Clone + Send + Sync + 'static {
         _frame: &Frame,
         _node: u64,
         _property: styles::StyleProperty,
+        _scope: styles::StyleScope,
         _deadline: Instant,
     ) -> impl Future<Output = Result<styles::StyleSnapshot>> + Send {
         async { Err(super::Failure::new("browser_feature_unsupported")) }

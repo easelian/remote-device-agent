@@ -139,6 +139,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
             "record_wait":crate::browser::selection::extension(None),
             "ref_drag":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "matched_styles":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
+            "ancestor_styles":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {

@@ -39,6 +39,23 @@ fn evidence_requests_are_closed_and_diagnostic_ids_are_not_refs() {
     }
 }
 #[test]
+fn ancestor_style_parser_rejects_display_but_accepts_safe_properties() {
+    let node_id = format!("den_{}", "a".repeat(32));
+    assert!(
+        Query::parse(
+            &json!({"kind":"read_ancestor_styles","node_id":node_id,"property":"display"})
+        )
+        .is_err()
+    );
+    assert!(
+        Query::parse(
+            &json!({"kind":"read_ancestor_styles","node_id":node_id,"property":"visibility"})
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn evidence_identity_capacity_scope_expiration_and_no_renewal() {
     let frame = frame();
     let target = dom::target(std::slice::from_ref(&frame), &frame, 1).unwrap();

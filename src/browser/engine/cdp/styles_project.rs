@@ -1,4 +1,4 @@
-//! Project only direct declarations. Protocol selectors, values with custom syntax,
+//! Project direct declarations of each explicitly bound node. Protocol selectors, values with custom syntax,
 //! and global sheet IDs stay inside the native adapter.
 use super::*;
 use sem::styles::{StyleCandidate, StyleOrigin, StyleProperty, StyleSnapshot};
@@ -93,16 +93,17 @@ fn location(prop: &Value) -> Result<(Option<u32>, Option<u32>)> {
     Ok((Some(line as u32 + 1), Some(column as u32 + 1)))
 }
 
-struct Projection<'a> {
+pub(super) struct Projection {
     property: StyleProperty,
-    sheets: Vec<&'a str>,
+    sheets: Vec<String>,
     candidates: Vec<StyleCandidate>,
     inspected: usize,
+    rules: usize,
     truncated: bool,
 }
 
-impl<'a> Projection<'a> {
-    fn sheet(&mut self, style: &'a Value) -> Result<Option<u8>> {
+impl Projection {
+    fn sheet(&mut self, style: &Value) -> Result<Option<u8>> {
         let Some(value) = style.get("styleSheetId") else {
             return Ok(None);
         };
@@ -116,11 +117,11 @@ impl<'a> Projection<'a> {
         if self.sheets.len() == MAX_RULES {
             return Ok(None);
         }
-        self.sheets.push(id);
+        self.sheets.push(id.to_owned());
         Ok(Some(self.sheets.len() as u8))
     }
 
-    fn style(&mut self, style: &'a Value, origin: StyleOrigin) -> Result<()> {
+    fn style(&mut self, style: &Value, origin: StyleOrigin, depth: Option<u8>) -> Result<()> {
         let props = style["cssProperties"]
             .as_array()
             .ok_or_else(sem::types::decode)?;
@@ -139,6 +140,7 @@ impl<'a> Projection<'a> {
             let raw = prop["value"].as_str().ok_or_else(sem::types::decode)?;
             let (line, column) = location(prop)?;
             block.push(StyleCandidate {
+                ancestor_depth: depth,
                 origin,
                 value: self.property.literal(raw),
                 important: flag(prop, "important", false)?,
@@ -168,47 +170,64 @@ impl<'a> Projection<'a> {
         }
         Ok(())
     }
+
+    pub(super) fn new(property: StyleProperty) -> Self {
+        Self {
+            property,
+            sheets: Vec::new(),
+            candidates: Vec::new(),
+            inspected: 0,
+            rules: 0,
+            truncated: false,
+        }
+    }
+
+    pub(super) fn add_node(&mut self, raw: &Value, depth: Option<u8>) -> Result<()> {
+        if !raw.is_object() {
+            return Err(sem::types::decode());
+        }
+        if let Some(style) = raw.get("inlineStyle") {
+            self.style(style, StyleOrigin::Inline, depth)?;
+        }
+        let matches = array(raw, "matchedCSSRules")?;
+        let count = matches.len().min(MAX_RULES - self.rules);
+        self.rules += count;
+        self.truncated |= count < matches.len();
+        for entry in matches.iter().rev().take(count) {
+            if entry["matchingSelectors"]
+                .as_array()
+                .ok_or_else(sem::types::decode)?
+                .is_empty()
+            {
+                continue;
+            }
+            let rule = &entry["rule"];
+            let origin = match rule["origin"].as_str() {
+                Some("regular") => StyleOrigin::Author,
+                Some("user-agent") => StyleOrigin::UserAgent,
+                Some("injected") => StyleOrigin::Injected,
+                Some("inspector") => StyleOrigin::Inspector,
+                _ => return Err(sem::types::decode()),
+            };
+            self.style(&rule["style"], origin, depth)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish(self, ancestors_examined: Option<u8>, more: bool) -> StyleSnapshot {
+        StyleSnapshot::with_scope(
+            self.property,
+            self.candidates,
+            self.truncated || more,
+            ancestors_examined,
+        )
+    }
 }
 
 pub(super) fn project(raw: &Value, property: StyleProperty) -> Result<StyleSnapshot> {
-    if !raw.is_object() {
-        return Err(sem::types::decode());
-    }
-    let mut view = Projection {
-        property,
-        sheets: Vec::new(),
-        candidates: Vec::new(),
-        inspected: 0,
-        truncated: false,
-    };
-    if let Some(style) = raw.get("inlineStyle") {
-        view.style(style, StyleOrigin::Inline)?;
-    }
-    let matches = array(raw, "matchedCSSRules")?;
-    view.truncated |= matches.len() > MAX_RULES;
-    for entry in matches.iter().rev().take(MAX_RULES) {
-        if entry["matchingSelectors"]
-            .as_array()
-            .ok_or_else(sem::types::decode)?
-            .is_empty()
-        {
-            continue;
-        }
-        let rule = &entry["rule"];
-        let origin = match rule["origin"].as_str() {
-            Some("regular") => StyleOrigin::Author,
-            Some("user-agent") => StyleOrigin::UserAgent,
-            Some("injected") => StyleOrigin::Injected,
-            Some("inspector") => StyleOrigin::Inspector,
-            _ => return Err(sem::types::decode()),
-        };
-        view.style(&rule["style"], origin)?;
-    }
-    Ok(StyleSnapshot::new(
-        property,
-        view.candidates,
-        view.truncated,
-    ))
+    let mut projection = Projection::new(property);
+    projection.add_node(raw, None)?;
+    Ok(projection.finish(None, false))
 }
 
 #[cfg(test)]
@@ -237,6 +256,40 @@ mod tests {
         assert_eq!(result.candidates[2].value.as_deref(), Some("none"));
         assert!(result.candidates[2].important && result.candidates[3].value.is_none());
         assert!(!serde_json::to_string(&result).unwrap().contains("private"));
+    }
+
+    #[test]
+    fn ancestor_nodes_share_rule_property_candidate_and_sheet_budgets() {
+        let item = json!({"name":"visibility","value":"hidden"});
+        let mut projection = Projection::new(StyleProperty::Visibility);
+        projection
+            .add_node(
+                &json!({"matchedCSSRules":[rule("same",json!([item]))]}),
+                Some(1),
+            )
+            .unwrap();
+        projection
+            .add_node(
+                &json!({"matchedCSSRules":vec![rule("same",json!([item]));32]}),
+                Some(2),
+            )
+            .unwrap();
+        let snapshot = projection.finish(Some(2), false);
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.candidates.len(), MAX_CANDIDATES);
+        assert_eq!(snapshot.candidates[0].ancestor_depth, Some(1));
+        assert!(
+            snapshot.candidates[1..]
+                .iter()
+                .all(|c| c.ancestor_depth == Some(2) && c.sheet == Some(1))
+        );
+        let mut projection = Projection::new(StyleProperty::Visibility);
+        projection.add_node(&json!({"inlineStyle":{"cssProperties":vec![json!({"name":"color","value":"red"});128]}}),Some(1)).unwrap();
+        projection
+            .add_node(&json!({"inlineStyle":{"cssProperties":[item]}}), Some(2))
+            .unwrap();
+        let exhausted = projection.finish(Some(2), false);
+        assert!(exhausted.truncated && exhausted.candidates.is_empty());
     }
 
     #[test]

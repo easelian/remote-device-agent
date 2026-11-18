@@ -1184,9 +1184,10 @@ impl Port for Semantic {
         frame: &sem::Frame,
         node: u64,
         property: sem::styles::StyleProperty,
+        scope: sem::styles::StyleScope,
         deadline: Instant,
     ) -> Result<sem::styles::StyleSnapshot> {
-        styles::read(self, frame, node, property, deadline).await
+        styles::read(self, frame, node, property, scope, deadline).await
     }
     async fn input(
         &self,

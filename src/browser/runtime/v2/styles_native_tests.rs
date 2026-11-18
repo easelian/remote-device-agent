@@ -170,3 +170,103 @@ async fn native_styles_rechecks_identity_and_sensitivity_before_delivery() {
         std::panic::resume_unwind(error);
     }
 }
+
+#[tokio::test]
+#[ignore = "requires native Chromium"]
+async fn native_styles_reparent_and_claim_never_deliver_held_reply() {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    const PAGE: &str = r#"<!doctype html><style>
+        #left { pointer-events: auto }
+        #right { pointer-events: none }
+    </style><div id="left"><span id="target">CSS target</span></div><div id="right"></div>
+    <script>
+    const channel = new WebSocket('ws://' + location.host + '/control');
+    channel.onmessage = event => {
+        if (event.data === 'reparent') {
+            document.querySelector('#right').append(document.querySelector('#target'));
+        }
+        channel.send('changed');
+    };
+    </script>"#;
+    let (accepted, mut sockets) = tokio::sync::mpsc::channel(1);
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(|| async { axum::response::Html(PAGE) }))
+        .route(
+            "/control",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let accepted = accepted.clone();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let _ = accepted.send(socket).await;
+                    })
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut f = Fixture::open("cdp").await;
+    let result = std::panic::AssertUnwindSafe(async {
+        f.port.navigate(&format!("http://{address}/"), deadline()).await.unwrap();
+        let mut socket = tokio::time::timeout_at(deadline().into(), sockets.recv())
+            .await.unwrap().unwrap();
+        let tab = f.port.tab_id().unwrap();
+
+        // First prove that a held native reply cannot be delivered after the
+        // same node is moved under a different CSS parent.
+        f.fixture("(()=>{document.querySelector('#left').append(document.querySelector('#target'));return true})()")
+            .await;
+        let found = f.read(json!({"kind":"find_nodes","tag":"span","text":"CSS target"})).await.unwrap();
+        let id = found["nodes"][0]["node_id"].as_str().unwrap().to_owned();
+        let epoch = f.page.control().snapshot().0;
+        let binding = f.registry.lookup(&id, &tab, epoch).unwrap();
+        let query = Query::parse(&json!({"kind":"read_ancestor_styles","node_id":id,"property":"pointer-events"})).unwrap();
+        let page = f.page.clone();
+        let native::Port::Cdp(port) = &f.port else { unreachable!() };
+        let (reached, release) = port.hold_styles_reply();
+        let pending = tokio::spawn(async move { page.evidence(&query, Some(binding), deadline()).await });
+        tokio::time::timeout_at(deadline().into(), reached).await.unwrap().unwrap();
+        socket.send(Message::Text("reparent".into())).await.unwrap();
+        let ack = tokio::time::timeout_at(deadline().into(), socket.recv()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(ack, Message::Text(text) if text == "changed"));
+        release.send(()).unwrap();
+        let error = pending.await.unwrap().expect_err("held reply crossed a reparent");
+        assert_eq!(error.code, "browser_stale_reference");
+        let found = f.read(json!({"kind":"find_nodes","tag":"span","text":"CSS target"})).await.unwrap();
+        let fresh_id = found["nodes"][0]["node_id"].as_str().unwrap();
+        let fresh = f.read(json!({"kind":"read_ancestor_styles","node_id":fresh_id,"property":"pointer-events"})).await.unwrap();
+        assert!(fresh["styles"]["candidates"].as_array().unwrap().iter().any(|row| row["value"] == "none" && row["ancestor_depth"] == 1));
+        settled(&f).await;
+
+        // Reset the node, then prove a human claim while the native reply is
+        // held also prevents that reply from reaching the AI owner.
+        f.fixture("(()=>{const t=document.querySelector('#target');document.querySelector('#left').append(t);return true})()")
+            .await;
+        let found = f.read(json!({"kind":"find_nodes","tag":"span","text":"CSS target"})).await.unwrap();
+        let id = found["nodes"][0]["node_id"].as_str().unwrap().to_owned();
+        let epoch = f.page.control().snapshot().0;
+        let binding = f.registry.lookup(&id, &tab, epoch).unwrap();
+        let query = Query::parse(&json!({"kind":"read_ancestor_styles","node_id":id,"property":"pointer-events"})).unwrap();
+        let page = f.page.clone();
+        let native::Port::Cdp(port) = &f.port else { unreachable!() };
+        let (reached, release) = port.hold_styles_reply();
+        let pending = tokio::spawn(async move { page.evidence(&query, Some(binding), deadline()).await });
+        tokio::time::timeout_at(deadline().into(), reached).await.unwrap().unwrap();
+        let permit = f.page.claim_human(Instant::now() + Duration::from_millis(100)).await.unwrap();
+        release.send(()).unwrap();
+        let error = pending.await.unwrap().expect_err("held reply crossed human claim");
+        assert!(matches!(error.code, "browser_control_changed" | "browser_timeout_unknown"));
+        f.page.return_to_ai(&permit, true, deadline()).await.unwrap();
+        let found = f.read(json!({"kind":"find_nodes","tag":"span","text":"CSS target"})).await.unwrap();
+        let fresh_id = found["nodes"][0]["node_id"].as_str().unwrap();
+        let fresh = f.read(json!({"kind":"read_ancestor_styles","node_id":fresh_id,"property":"pointer-events"})).await.unwrap();
+        assert!(fresh["styles"]["candidates"].as_array().unwrap().iter().any(|row| row["value"] == "auto" && row["ancestor_depth"] == 1));
+        settled(&f).await;
+    }).catch_unwind().await;
+    f.native.close().await.unwrap();
+    std::fs::remove_dir_all(&f.directory).unwrap();
+    server.abort();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
