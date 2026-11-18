@@ -176,24 +176,46 @@ async fn wait_record(
         anchor_text: condition.anchor_text,
         expected_text: condition.expected_text,
     };
+    let interval = Duration::from_millis(100);
+    let mut sampled = false;
     loop {
         let target = session.evidence.lookup(&condition.node_id, tab, epoch)?;
-        let capture = page.evidence(&query, Some(target), deadline).await?;
+        // A delayed poll can wake with too little time for another native read.
+        if sampled && deadline.saturating_duration_since(Instant::now()) <= interval {
+            break;
+        }
+        let capture = match page.evidence(&query, Some(target), deadline).await {
+            Ok(capture) => capture,
+            Err(error)
+                if sampled
+                    && error.code == "browser_deadline"
+                    && error.state == "not_sent"
+                    && Instant::now() >= deadline =>
+            {
+                break;
+            }
+            Err(error) => return Err(error),
+        };
         let [(_, sem::evidence::Raw::MatchRecord { matched, coverage })] =
             capture.records.as_slice()
         else {
             return Err(sem::types::decode());
         };
+        sampled = true;
         if *matched && !coverage.truncated {
             return Ok(
                 json!({"condition_observed":true,"condition":"record","node_id":condition.node_id}),
             );
         }
-        if Instant::now() + Duration::from_millis(100) >= deadline {
-            return Err(Failure::new("browser_condition_timeout"));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep_until(deadline.min(Instant::now() + interval).into()).await;
     }
+    if page.control().snapshot() != (epoch, false) {
+        return Err(Failure::new("browser_control_changed"));
+    }
+    if !page.access(false)?.connected() {
+        return Err(Failure::unknown("browser_lost"));
+    }
+    Err(Failure::new("browser_condition_timeout"))
 }
 async fn capture(
     port: &native::Port,
