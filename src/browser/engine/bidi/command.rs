@@ -101,6 +101,25 @@ pub(super) enum Command {
     },
 }
 
+fn semantic_call_function(
+    context: &ContextId,
+    function: String,
+    arguments: Value,
+    effect: Effect,
+) -> (&'static str, Value, Effect) {
+    let mut params = json!({
+        "target": {
+            "context": context.as_str(),
+            "sandbox": "rdh-semantic-dom-v1"
+        },
+        "awaitPromise": false,
+        "resultOwnership": "none"
+    });
+    params["functionDeclaration"] = Value::String(function);
+    params["arguments"] = arguments;
+    ("script.callFunction", params, effect)
+}
+
 impl Command {
     pub fn belongs_to(&self, scope: u64) -> bool {
         match self {
@@ -200,9 +219,13 @@ impl Command {
             ),
             Self::Program { context, program } => {
                 let (operation, args) = program.encode();
-                (
-                    "script.callFunction",
-                    json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(op,args){{return ({})(op,JSON.parse(args));}}",program.source()),"arguments":[{"type":"string","value":operation},{"type":"string","value":args.to_string()}],"awaitPromise":false,"resultOwnership":"none"}),
+                semantic_call_function(
+                    context,
+                    format!(
+                        "function(op,args){{return ({})(op,JSON.parse(args));}}",
+                        program.source()
+                    ),
+                    json!([{"type":"string","value":operation},{"type":"string","value":args.to_string()}]),
                     program.effect(),
                 )
             }
@@ -234,23 +257,35 @@ impl Command {
                 context,
                 node,
                 geometry,
-            } => (
-                "script.callFunction",
-                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(args,node){{return ({})(\"native_frame\",JSON.parse(args),node);}}",program::SOURCE),"arguments":[{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
+            } => semantic_call_function(
+                context,
+                format!(
+                    "function(args,node){{return ({})(\"native_frame\",JSON.parse(args),node);}}",
+                    program::SOURCE
+                ),
+                json!([{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}]),
                 Effect::None,
             ),
-            Self::FrameFocused { context, node } => (
-                "script.callFunction",
-                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(node){{return ({})(\"native_focused_frame\",null,node);}}",program::SOURCE),"arguments":[{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
+            Self::FrameFocused { context, node } => semantic_call_function(
+                context,
+                format!(
+                    "function(node){{return ({})(\"native_focused_frame\",null,node);}}",
+                    program::SOURCE
+                ),
+                json!([{"sharedId":node}]),
                 Effect::None,
             ),
             Self::FramePoint {
                 context,
                 node,
                 geometry,
-            } => (
-                "script.callFunction",
-                json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(args,node){{return ({})(\"native_frame_point\",JSON.parse(args),node);}}",program::SOURCE),"arguments":[{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}],"awaitPromise":false,"resultOwnership":"none"}),
+            } => semantic_call_function(
+                context,
+                format!(
+                    "function(args,node){{return ({})(\"native_frame_point\",JSON.parse(args),node);}}",
+                    program::SOURCE
+                ),
+                json!([{"type":"string","value":serde_json::to_string(geometry).unwrap()},{"sharedId":node}]),
                 Effect::None,
             ),
             Self::Action { context, action } => {
@@ -359,6 +394,88 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn semantic_program_encoder_preserves_call_function_shape() {
+        let context = ContextId::parse(1, &json!("fixture")).unwrap();
+        let (method, params, effect) = Command::Program {
+            context,
+            program: Program::Stamp,
+        }
+        .encode();
+        assert_eq!((method, effect), ("script.callFunction", Effect::None));
+        assert_eq!(params["target"]["sandbox"], "rdh-semantic-dom-v1");
+        assert_eq!(params["awaitPromise"], false);
+        assert_eq!(params["resultOwnership"], "none");
+        assert_eq!(params["arguments"][0]["value"], "stamp");
+        assert_eq!(params["arguments"][1]["value"], "{}");
+        assert!(
+            params["functionDeclaration"]
+                .as_str()
+                .unwrap()
+                .contains("JSON.parse(args)")
+        );
+    }
+
+    #[test]
+    fn semantic_frame_wrappers_match_original_declarations_and_shape() {
+        let context = ContextId::parse(1, &json!("fixture")).unwrap();
+        let geometry = crate::browser::semantic::Geometry {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            visible: true,
+            hit: false,
+            in_view: true,
+        };
+        let cases = [
+            (
+                Command::FrameGeometry {
+                    context: context.clone(),
+                    node: "n".into(),
+                    geometry: geometry.clone(),
+                },
+                format!(
+                    r#"function(args,node){{return ({})("native_frame",JSON.parse(args),node);}}"#,
+                    program::SOURCE
+                ),
+                json!([{"type":"string","value":serde_json::to_string(&geometry).unwrap()},{"sharedId":"n"}]),
+            ),
+            (
+                Command::FrameFocused {
+                    context: context.clone(),
+                    node: "n".into(),
+                },
+                format!(
+                    r#"function(node){{return ({})("native_focused_frame",null,node);}}"#,
+                    program::SOURCE
+                ),
+                json!([{"sharedId":"n"}]),
+            ),
+            (
+                Command::FramePoint {
+                    context,
+                    node: "n".into(),
+                    geometry: geometry.clone(),
+                },
+                format!(
+                    r#"function(args,node){{return ({})("native_frame_point",JSON.parse(args),node);}}"#,
+                    program::SOURCE
+                ),
+                json!([{"type":"string","value":serde_json::to_string(&geometry).unwrap()},{"sharedId":"n"}]),
+            ),
+        ];
+        for (command, declaration, arguments) in cases {
+            let (method, params, effect) = command.encode();
+            assert_eq!((method, effect), ("script.callFunction", Effect::None));
+            assert_eq!(params["functionDeclaration"], declaration);
+            assert_eq!(params["arguments"], arguments);
+            assert_eq!(params["target"]["sandbox"], "rdh-semantic-dom-v1");
+            assert_eq!(params["awaitPromise"], false);
+            assert_eq!(params["resultOwnership"], "none");
+        }
+    }
+
     #[test]
     fn move_to_element_dispatches_a_single_pointer_move() {
         let context = ContextId::parse(1, &json!("fixture")).unwrap();

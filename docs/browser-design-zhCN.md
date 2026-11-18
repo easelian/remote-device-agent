@@ -116,3 +116,5 @@ python3 scripts/run_browser_acceptance.py --phase evidence \
 性能门槛沿用同机同 release profile 的配对测量。CDP 耗时每批 p50 增量不超过 `max(10%, 5 ms)`、p95 不超过 `max(15%, 10 ms)`，协议往返 p95 不超过基线 120%。控制换代在满载下 1,000 次的 p99 不超过 100 ms。Linux x86_64 GNU 的 Firefox 在 2 CPU/4 GiB 固定页面上冷启动 p95 ≤ 10 秒、单段观察 ≤ 3 秒、稳定输入确认 ≤ 1 秒（均为 p95）。剥离后 Agent 二进制增量 ≤ `max(15%, 2 MiB)`，不增加外部浏览器驱动依赖。
 
 延迟测量至少三个交替批次，每批预热 20 次再采 100 次。固定 CDP 对照为 `06e43b18763292a89fe79f2df1992e4053225ff2`，汇总入口为 [browser-d1-report.py](../scripts/browser-d1-report.py)。RSS 以 v1、v2/CDP、v2/BiDi、v1 四组依序测量，每组预热 20 次、采样 100 次。Agent 和浏览器各自增长 ≤ 16 MiB，新后端空闲开销 ≤ 8 MiB，两个 v1 空闲基线相差超过 8 MiB 时需重新测量。Server `scripts/summarize_browser_rss.py` 对四组原始样本重算。客户端、平台或浏览器版本的放行需要该组合的实测。
+
+复测固定基线时，用 Cargo 的 `--config 'profile.release.lto="fat"' --config 'profile.release.package.rdh-agent.opt-level="z"' --config 'profile.release.package.rdh-agent.codegen-units=1'` 对齐构建参数。先用 `cargo build --release --bin rdh` 构建发布程序，候选版本启用 `experimental-browser-bidi`，立即保存两边的程序和 SHA-256。再用 `cargo test --release --lib --no-run` 构建原生测试程序。集成测试构建可能重新链接带开发依赖特性的 CLI。体积比较使用保留符号名的发布产物。

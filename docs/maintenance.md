@@ -21,11 +21,16 @@ run; inspect [Agent CI](../.github/workflows/ci.yml) for platform-specific comma
 Native Rust builds and tests do not require npm; npm packaging checks require
 Node and npm. A passing cross-build does not establish runtime behavior.
 
-Release builds use full LTO and `opt-level = "s"` for the Agent package;
-dependencies retain their normal release optimization. Debug information is
-stripped while symbol names remain available. The `ci` profile disables LTO for
-iteration. Compare performance and executable size with identical profile
-settings for the baseline and candidate, and retain their executable hashes.
+Release builds use full LTO. The Agent package uses `opt-level = "z"` and
+one codegen unit. Dependencies use their normal release settings. Release
+artifacts retain symbol names for diagnostics. The `ci` profile uses 16 Agent
+codegen units, `opt-level = "s"` and disables LTO for iteration.
+
+Build both sides of a size comparison with identical profile settings. Save
+each `cargo build --release --bin rdh` executable and its hash before building
+tests. Cargo can relink the CLI with development dependency features when it
+builds integration tests. Use `cargo test --release --lib --no-run` to build
+the native browser measurement harness separately.
 
 Focused lifecycle and bootstrap checks are:
 
