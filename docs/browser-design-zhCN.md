@@ -92,7 +92,7 @@ AI 排查点击失败时，先用 `browser_inspect` 检查命中，再用 `find_
 
 普通校验错误、脚本异常、请求失败和加载缓慢由 AI 在当前权限范围内处理。缺少证据时，AI 应告诉调用者哪个步骤未验证、已知事实是什么、还可检查什么。敏感输入或站点要求本人验证时，使用原有 `human_url`，由用户在已认证页面取得控制。站点要求硬件安全密钥或其他系统级 UI 且远程视口无法承载时，明确说明该验证方式的限制。
 
-交给人工前，客户端保存原任务、目标记录、已提交操作 ID 和待验证条件。保存内容只含恢复任务所需的信息。用户在页面上输入秘密、验证身份，检查可披露的页面内容后明确交还。租约到期继续保持披露限制。AI 回到原会话后先查控制者和新代次，再观察并核对结果。已结束的对话目前需要用户返回并发送“继续”。将来可由客户端订阅仅含会话状态的交还通知，收到后仍从工具重新获取授权状态。文件选择与批准沿用 `files_url` 的一次性授权。
+交给人工前，客户端保存原任务、目标记录、已提交操作 ID 和待验证条件。保存内容只含恢复任务所需的信息。用户在页面上输入秘密、验证身份，检查可披露的页面内容后明确交还。租约到期继续保持披露限制。AI 回到原会话后用 `browser_tabs` 确认控制者并取得新代次，重新观察并定位原记录。例如，验证 B42 的审批结果时，即使相邻 A17 已获批，也必须在 B42 上核对状态。已结束的对话目前需要用户返回并发送“继续”。将来可由客户端订阅仅含会话状态的交还通知，收到后仍从工具重新获取授权状态。文件选择与批准沿用 `files_url` 的一次性授权。
 
 ## 验收入口与放行条件
 
@@ -101,7 +101,7 @@ AI 排查点击失败时，先用 `browser_inspect` 检查命中，再用 `find_
 | 两个引擎是否操作了同一业务目标？ | [共同语义测试](../src/browser/semantic/tests)、[固定页面及 oracle](../tests/fixtures/semantic-dom-v1)。覆盖同名记录、open shadow、跨 frame、同 URL reload、BFCache、节点替换及引用失效。在公开 MCP 上核对网站接收的输入次数 |
 | 执行、撤权和清理是否正确？ | [CDP 传输测试](../src/browser/engine/cdp/wire)、[BiDi 传输测试](../src/browser/engine/bidi/wire/tests)。在入队前、入队后、超时及迟到回包时切换控制。另一个 tab 能继续工作，关键事件缺失会阻止新输入，未结算对象/流仍有所有者 |
 | 拦截发生在哪个阶段？ | [导航测试](../src/browser/semantic/tests/navigation.rs) 中 BC-30 检查新上下文的首个文档请求与重定向。BC-31 区分 DNS 检查、实际连接地址证据与严格策略，分别记录连接次数和 HTTP 请求次数 |
-| 人工边界能否维持？ | Server `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
+| 人工边界能否维持？ | Server 的 `identity-handoff` 阶段验证同一订单的本人验证与交还；另见 `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
 | 新诊断是否帮助 AI 作出正确判断？ | 为遮挡、JS 异常、HTTP 失败、HTTP 200 业务拒绝、响应丢失、本人验证分别固定页面终态和提交计数。记录任务完成率、误报成功率、普通故障人工接管数、诊断调用数/字节数。纳入事件洪峰、跨主体、换代与双后端能力不对称。普通任务与必须本人验证的任务分别计数。基准语料中重复提交、敏感内容披露和无证据宣称成功均为阻断项 |
 | 增量与新能力能否独立关闭？ | Server `clients/browser-observation-delta.test.mjs`、`tests/core/test_browser_observation_delta.py`。用同一次采集的完整观察验证重建。稀疏组实际 MCP 总字节不超过始终 full 的 70%。覆盖未知扩展、旧客户端、重连、乱序及基线淘汰 |
 | 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`exception-locations`、`lost-write`、`record-wait`、`form-validation`、`scoped-scroll`、`hover`、`ref-drag`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。`delta-corpus` 还需用 `--delta-native-corpus` 指向包含 `cdp-corpus.jsonl` 和 `bidi-corpus.jsonl` 的同次原生采集目录。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |

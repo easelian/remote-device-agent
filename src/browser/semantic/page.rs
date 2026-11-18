@@ -94,8 +94,27 @@ impl Coordination {
     pub fn control(&self) -> Arc<Control> {
         self.control.clone()
     }
-    pub fn pause(&self) {
-        self.control.change(true);
+    pub fn pause(&self) -> u64 {
+        let epoch = self.control.change(true);
+        self.clear_ai_refs();
+        epoch
+    }
+    /// Interrupt a busy AI operation before waiting for the session. An
+    /// already paused epoch may belong to a human input or an in-flight claim.
+    pub fn fence_active_ai(&self) -> u64 {
+        let epoch = {
+            let mut control = self.control.state.lock().unwrap();
+            if control.1 {
+                return control.0;
+            }
+            control.0 += 1;
+            control.1 = true;
+            control.0
+        };
+        self.clear_ai_refs();
+        epoch
+    }
+    fn clear_ai_refs(&self) {
         let mut state = self.state.lock().unwrap();
         state.refs.clear();
         state.cursor = None;

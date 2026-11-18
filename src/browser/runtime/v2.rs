@@ -82,6 +82,22 @@ impl Slot {
     fn pause(&self) {
         self.coordination.pause();
     }
+    async fn lock_for_handoff(
+        &self,
+        deadline: Instant,
+    ) -> Result<tokio::sync::MutexGuard<'_, Session>> {
+        if let Ok(session) = self.session.try_lock() {
+            return Ok(session);
+        }
+        let epoch = self.coordination.fence_active_ai();
+        let session = tokio::time::timeout_at(deadline.into(), self.session.lock())
+            .await
+            .map_err(|_| Failure::unknown("browser_input_pending"))?;
+        if self.control.snapshot() != (epoch, true) {
+            return Err(Failure::new("browser_control_changed"));
+        }
+        Ok(session)
+    }
     fn stop(&self) {
         self.pause();
         self.closing.store(true, Ordering::Release);
@@ -462,7 +478,12 @@ impl Browsers {
                 "browser_evidence"
                     if matches!(
                         params["query"]["kind"].as_str(),
-                        Some("read_events" | "read_event" | "read_requests" | "read_exception_location")
+                        Some(
+                            "read_events"
+                                | "read_event"
+                                | "read_requests"
+                                | "read_exception_location"
+                        )
                     ) =>
                 {
                     let port = page.access(false)?;
@@ -642,20 +663,22 @@ impl Browsers {
         deadline: Instant,
     ) -> Result<Value> {
         let action = params["action"].as_str().unwrap_or("");
-        if action == "close" {
-            slot.stop();
-        } else if action == "pause" {
-            slot.pause();
-        }
         let mut session = if action == "close" {
+            slot.stop();
             tokio::time::timeout_at(deadline.into(), slot.session.lock())
                 .await
                 .map_err(|_| Failure::unknown("browser_input_pending"))?
+        } else if action == "pause" {
+            slot.lock_for_handoff(deadline).await?
         } else {
             slot.session
                 .try_lock()
                 .map_err(|_| Failure::unknown("browser_input_pending"))?
         };
+        if action != "close" && (session.human.is_some() || slot.closing.load(Ordering::Acquire)) {
+            return Err(Failure::new("browser_paused"));
+        }
+        let pause_epoch = (action == "pause").then(|| slot.coordination.pause());
         session.invalidate();
         session.touched = Instant::now();
         if action == "close" {
@@ -666,9 +689,6 @@ impl Browsers {
         let page = sem::Page::new(slot.port()?);
         match action {
             "resume" => {
-                if session.human.is_some() {
-                    return Err(Failure::new("browser_paused"));
-                }
                 page.resume(
                     params["control_epoch"].as_u64().unwrap_or(0),
                     true,
@@ -682,6 +702,9 @@ impl Browsers {
             _ => return Err(Failure::new("browser_feature_unsupported")),
         }
         let (epoch, paused) = slot.control.snapshot();
+        if pause_epoch.is_some_and(|expected| (epoch, paused) != (expected, true)) {
+            return Err(Failure::new("browser_control_changed"));
+        }
         Ok(
             json!({"session_id":id,"control_epoch":epoch,"controller":if paused{"paused"}else{"ai"},"new_observation_required":true}),
         )

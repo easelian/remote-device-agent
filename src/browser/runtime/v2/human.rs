@@ -70,15 +70,12 @@ impl Browsers {
                 .await;
         }
         let view = string(params, "view_id")?;
-        let mut session = match slot.session.try_lock() {
-            Ok(s) => s,
-            Err(_) => {
-                if action == "claim" {
-                    slot.pause();
-                    return Err(Failure::unknown("browser_input_pending"));
-                }
-                return Err(Failure::new("browser_busy"));
-            }
+        let mut session = if action == "claim" {
+            slot.lock_for_handoff(deadline).await?
+        } else {
+            slot.session
+                .try_lock()
+                .map_err(|_| Failure::new("browser_busy"))?
         };
         let (epoch, paused) = slot.control.snapshot();
         if action == "status" {
