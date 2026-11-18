@@ -56,14 +56,17 @@ If you use `allowed_operations`, include the browser tools you need. The web pag
 By default a browser session opens any public site, sites on your private network and sites on the device itself. Addresses of cloud metadata services and link-local addresses (`169.254.0.0/16`, `fe80::/10`) are refused: a page has no ordinary reason to open them, and some clouds hand out credentials there. To change this, add a `sites` object to `browser` in the policy file:
 
 ```json
-"browser": {
-  "enabled": true,
-  "sites": {
-    "public": "allow",
-    "allow": ["*.example.org", "intranet.example.com"],
-    "deny": ["*.bank.example"],
-    "private_networks": "allow",
-    "private_allow": ["localhost:3000", "wiki.corp", "192.168.10.0/24"]
+{
+  "version": 1,
+  "browser": {
+    "enabled": true,
+    "sites": {
+      "public": "allow",
+      "allow": ["*.example.org", "intranet.example.com"],
+      "deny": ["*.bank.example"],
+      "private_networks": "allow",
+      "private_allow": ["localhost:3000", "wiki.corp", "192.168.10.0/24"]
+    }
   }
 }
 ```
@@ -114,7 +117,9 @@ The AI uses `browser_open`, then `browser_observe`. It acts on returned element 
 
 An explicit v2 session can use `browser_inspect` when both the device and opened session advertise actionability extension version 1 as available. It checks one current ref: `ready_now` means the sampled prerequisites hold, `needs_scroll` means outside the viewport, `blocked` reports a known restriction, and `indeterminate` means the check could not prove readiness. The check does not scroll, focus, input or renew references. Use `browser_act` for the actual action and verify its result; observe again after a stale-reference error and never replay an uncertain input based on a diagnostic.
 
-Each element that the AI can act on has a reference, and the observation names its `kind`:
+When an explicit v2 session advertises `dom_evidence` version 1, `browser_evidence` can find page nodes and read node facts or local layout. The returned `node_id` is for reads. If a click has an uncertain outcome, check the original operation receipt and the page result. Request human control for sensitive input or a verification the user must complete personally.
+
+In the default v1 observation, each element that the AI can act on has a reference, and the observation names its `kind`:
 
 | Kind | Which elements |
 | --- | --- |
@@ -122,9 +127,9 @@ Each element that the AI can act on has a reference, and the observation names i
 | `aria` | Elements whose `role` attribute declares a control, such as a button, a tab, a menu item, a grid cell or a tree item. |
 | `inferred` | Elements that only look like a control: the markup holds a click handler, the pointer turns into a hand over the element and not over what surrounds it, or the element is in the focus order. |
 
-The page decides the kind, so it is the same on every browser version. An element that the page does not mark, and that the browser itself treats as a control, still has a reference of kind `native`. An inferred element is named by its own text and takes clicks and keys only. Its reference is a guess: a click can do nothing. No reference is given to an element that only a script makes clickable, that shows a hand only while the pointer is over it, that appears only on hover, or that is drawn on a canvas.
+The classification uses the HTML, ARIA and interaction properties visible on the current page. An element that the page does not mark, and that the browser itself treats as a control, still has a reference of kind `native`. An inferred element is named by its own text and takes clicks and keys only. Its reference is a guess: a click can do nothing. No reference is given to an element that only a script makes clickable, that shows a hand only while the pointer is over it, that appears only on hover, or that is drawn on a canvas.
 
-An action that cannot be carried out is refused before any input is sent: an action that does not suit the element, text for a password field, an element that is disabled or hidden, an element in view in the top document that another element covers, a click on an inferred element that a control inside it would take, as the delete button of a card would, or a value that a date, colour or slider field cannot hold. The session keeps running, and the AI observes the page again to resolve the cause. A read-only field accepts clicks and keys but not text. After the browser has scrolled an element into view or received input, a failure has an unknown outcome and pauses the session; inspect it with `browser_tabs`, resume with `browser_control`, and observe again. A read that the browser rejects while the page navigates does not pause the session.
+An action that cannot be carried out is refused before any input is sent: an action that does not suit the element, text for a password field, an element that is disabled or hidden, an element in view in the top document that another element covers, a click on an inferred element that a control inside it would take, as the delete button of a card would, or a value that a date, colour or slider field cannot hold. The session keeps running, and the AI observes the page again to resolve the cause. A read-only field accepts clicks and keys but not text. After the browser has scrolled an element into view or received input, a failure has an unknown outcome and pauses the session; check the original receipt with `get_operation_status` and inspect the tab with `browser_tabs`. Once pending input has settled and the session permits it, resume with `browser_control` and observe again. A read that the browser rejects while the page navigates does not pause the session.
 
 An observation can be narrowed to part of a page:
 
@@ -141,9 +146,9 @@ Long observations return `next_cursor`. Continue until no cursor remains and ins
 
 A page can change while it is read, and the read goes on. When the page changed something that had already been read, `coverage.changed_during_read` is true and the coverage is not complete: the result can hold text that is no longer on the page. That alone is no reason to observe again, because every reference is checked against the page again when it is used. A control in a table row, list item, article or dialog that changed after it was reported gets no reference in that observation and carries `changed_during_read` itself; observe again to act on it. A subframe that navigated or went away during the read is left out, and `omitted` names `frame_changed`. An observation fails only when the tab's own document is replaced. A first read then starts once more on the new document within the same call; a continuation is refused. The reader does not create an atomic snapshot of a changing website.
 
-Each observation reports the document's `ready_state` with the page address. While it is `loading`, the browser has not finished reading the page: the coverage is not complete and names `document_loading`, so wait and observe again before concluding that something is missing. An element reference stays valid while unrelated text near it changes. It stops being valid when the element's own text changes, or when the table row, list item, article or dialog it belongs to shows different text. A navigation that receives no answer is cancelled before the call's deadline and reported as a failed navigation. The session pauses as after any uncertain navigation, keeps the earlier page, and can be resumed at once.
+Each observation reports the document's `ready_state` with the page address. While it is `loading`, the browser has not finished reading the page: the coverage is not complete and names `document_loading`, so wait and observe again before concluding that something is missing. An element reference stays valid while unrelated text near it changes. It stops being valid when the element's own text changes, or when the table row, list item, article or dialog it belongs to shows different text. A navigation that receives no answer is cancelled before the call's deadline and reported as a failed navigation. The session pauses. Check the original operation and tab state, then resume when pending input and cleanup have settled.
 
-For integrations, `browser_open`, `browser_act` and `browser_control` require an operation ID from `prepare_operation`. Reuse that ID only to recover the same request. An acknowledged input says that browser input completed; verify the website's actual result separately. A timeout can leave an effect unknown, so query operation/session state instead of repeating a submission.
+For `browser_open`, `browser_act` and `browser_control`, integrations can reserve and save an ID with `prepare_operation` before calling the target tool. This lets the client recover the original operation if the response is lost. Core prepares an ID automatically when one is omitted. Verify the result on the website after an input acknowledgement.
 
 ## Sign in and return to the AI
 
@@ -161,7 +166,7 @@ Set `persistent_profiles` to `true` to allow `browser_open.profile_name`. The na
 
 With `downloads` enabled, supported HTTP document attachments appear in `browser_files` and **Browser files**. Save them from the authenticated page. Each download must have an explicit length, status 200 and no content compression. Blob and streaming downloads without a length are unsupported. File bytes are not returned to the AI.
 
-With `uploads` enabled, take human control, choose a local file and explicitly approve it for the displayed site. The page stages and hashes the file. After you return control, the AI uses the resulting `file_grant_id` with a fresh main-page file-input reference. The grant is used once, expires after ten minutes if unused, and cannot be restored after an uncertain selection. Selecting a file may upload it immediately; later form submission remains a separate action. Arbitrary remote paths and frame file inputs are not accepted.
+With `uploads` enabled and `file_authorization` version 1 available, use `files_url` or select **Approve a file** from the session list. Confirm the destination site and the local file for one selection. The AI keeps browser control, gets the `file_grant_id` from `browser_files` and uses `attach_file` with a current main-document file-input reference. The grant expires ten minutes after creation and stays consumed if selection is uncertain. Selecting a file can start an upload immediately. A later form submission is a separate action. The older upload panel is available during a human-controlled session on compatible versions.
 
 ## Limits and cleanup
 

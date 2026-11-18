@@ -93,8 +93,8 @@ Linux、macOS 和 Windows 上可选择启用浏览器会话，使用结构化页
 - [生命周期](docs/native-lifecycle-zhCN.md)（[English](docs/native-lifecycle.md)）：启动、解绑和程序替换。
 - [架构](docs/architecture.md)：连接、请求和工作生命周期。
 - [分发说明](docs/distribution.md)：产物、安装器和发布准备。
-- [浏览器能力实现现状](docs/browser-implementation-zhCN.md)：当前行为、源码职责、资源上限和兼容边界。
-- [浏览器能力设计与验收](docs/browser-design-zhCN.md)：未完成工作与持续回归要求。每轮实现同步核对和更新这两份文档，完成项转为现状，不另建迭代报告。
+- [浏览器实现与维护](docs/browser-implementation-zhCN.md)说明后端选择、页面操作、诊断、人工接管与回退。
+- [面向 AI 的浏览器架构与实现路线](docs/browser-design-zhCN.md)说明动作结果验证、DevTools 取证和验收顺序。
 
 ## 许可证
 

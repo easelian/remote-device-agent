@@ -151,8 +151,8 @@ not establish native runtime behavior or power-loss durability.
 - [Code navigation](docs/code-structure.md) ([简体中文](docs/code-structure-zhCN.md)): source ownership and reading order.
 - [Lifecycle](docs/native-lifecycle.md) ([简体中文](docs/native-lifecycle-zhCN.md)): startup, unbinding and executable replacement.
 - [Architecture](docs/architecture.md): connections, requests and work lifetimes.
-- [Browser implementation](docs/browser-implementation-zhCN.md): current behavior, source ownership, limits and compatibility.
-- [Browser design and acceptance](docs/browser-design-zhCN.md): pending work and persistent regression requirements. Review and update both browser documents with each implementation change; completed designs become current behavior, not new iteration reports.
+- [Browser implementation and maintenance](docs/browser-implementation-zhCN.md) covers backend selection, page actions, diagnostics, human control and rollback.
+- [Browser architecture and roadmap](docs/browser-design-zhCN.md) describes how AI clients can verify outcomes and diagnose failures, with acceptance criteria for each step.
 - [Distribution](docs/distribution.md): artifacts, installers and release preparation.
 
 ## License

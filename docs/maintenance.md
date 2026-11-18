@@ -68,20 +68,9 @@ recorded as dirty. See [Distribution](distribution.md) for installing a local
 artifact. These commands are validation procedures, not a record of completed
 checks.
 
-## Maintain browser documentation
+## Browser maintenance
 
-Browser architecture has two maintained documents: [implementation](browser-implementation-zhCN.md)
-for current code behavior, and [design and acceptance](browser-design-zhCN.md) for
-pending work and regression requirements. Review both with each browser change.
-Update behavior, defaults, budgets, source links and support limits in the same
-implementation or companion commit. Remove completed proposals from pending
-work, retaining their lasting assertions as regression requirements. Keep the
-user guides consistent when configuration or user-visible behavior changes.
-
-Record validation scope and results in commit messages; keep raw evidence in
-ignored build directories or external storage. Do not add dated, stage-specific,
-conversation-specific or archived design/status reports. Server documentation
-points to these two Agent-owned documents instead of maintaining another copy.
+Update the [implementation guide](browser-implementation-zhCN.md) when capabilities, ownership, resource limits or rollback procedures change. Use the [architecture and roadmap](browser-design-zhCN.md) for proposed work and repeatable acceptance criteria. User-facing changes also belong in the browser guides. Keep one-off test outputs with the build artifacts.
 
 ## Update the Agent
 

@@ -38,9 +38,7 @@ Agent 崩溃后，启动流程核对原 PID 和进程启动时间；确认原实
 
 回执补发在连接激活后等待现有发送队列腾出空间，等待期间仍处理收包和关闭。Agent 最多保留 1,024 条回执，满额时只回收已结束且经 Core 确认的最旧记录。运行中及尚未确认的回执继续保留；Core 自身的结果保留和请求准入限制仍然适用。
 
-浏览器工作从 `browser/runtime.rs` 进入。`control.rs` 管理会话控制代次及暂停、恢复状态，供传输层和文件交付共用。`cdp.rs` 接受通用异步读写端，管理有界通信及在途输入；`process.rs` 统一启动参数、私有运行目录、启动检查和关闭顺序，并先将已结束的运行目录改为回收状态，再删除内容，使中断清理保留完成依据。`process/posix.rs` 处理继承的描述符和进程组，内部由 Linux 的 `/proc` 与 macOS 的 libproc 观察组成员；`process/windows.rs` 处理受限继承管道及在进程创建时分配的 kill-on-close Job。其 `windows/supervisor.rs` 在独立回收子进程中持有受限 Job 句柄，处理 Agent 异常退出，不接触 CDP 或页面输入。暂存文件共用 `storage/` 的私有流接口，由平台实现 POSIX 权限或 Windows ACL、身份及共享检查。
-
-`page.rs` 与 `observe.js` 将语义内容段和动作引用绑定到 frame。`sites.rs` 保存站点规则：owner 写的名单，以及对会话被引向的地址的判定。`runtime/human.rs` 管理接管租约，`profiles.rs`、`files.rs` 与 `files/upload.rs` 管理登录资料和文件保留。运行时等待工作结束后才释放命名空间锁；确认解绑后只删除对应凭据的命名空间。用法见[浏览器任务](browser-zhCN.md)。
+浏览器会话通过 `browser/runtime.rs` 分发。`page.rs` 和 `observe.js` 实现 v1 页面观察。显式 v2 会话由 `runtime/v2.rs` 和 `semantic/page.rs` 调用 CDP 或 BiDi adapter。`control.rs` 统一处理输入提交与控制代次，`process/` 管理平台进程所有权及退出，`storage/` 提供私有存储原语。会话、文件、人工控制及原生资源的边界见[浏览器实现与维护](browser-implementation-zhCN.md)。设备配置见[使用手册](browser-zhCN.md)。
 
 Windows 私有存储和启动授权操作复用 `storage/windows/` 中的 ACL 与句柄基础操作。启动注册通过模块接口和 RPC 分派访问，公开 CLI 不提供启动管理命令。本文不约定本地批准的交互方式。
 

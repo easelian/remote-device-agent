@@ -54,25 +54,7 @@ limit, the Agent evicts only the oldest settled receipt acknowledged by Core.
 Running and unacknowledged work stays protected; Core's own result-retention
 and admission limits still apply.
 
-Browser work starts in `browser/runtime.rs`. `control.rs` owns session control
-epochs and the pause/resume gate shared by the transport and file transfers.
-`cdp.rs` owns bounded traffic and in-flight input over generic asynchronous
-readers and writers. `process.rs` owns
-launch arguments, the private run directory, startup checks and close ordering.
-It renames completed runs into a retirement state before removing their contents,
-so interrupted cleanup retains the completion evidence.
-`process/posix.rs` supplies inherited descriptors and process-group ownership;
-its Linux and macOS modules observe groups through `/proc` and libproc respectively.
-`process/windows.rs` supplies restricted inherited pipe handles and a creation-time
-kill-on-close Job. Its `windows/supervisor.rs` holds a restricted Job handle in an
-independent cleanup child to handle Agent death; it owns no CDP or page input.
-Shared private stream APIs in `storage/` apply POSIX permissions
-or Windows ACL, identity and sharing rules to staged files.
-`page.rs` and `observe.js` bind semantic segments and action references to frames. `sites.rs` holds the site policy: the owner's lists, and the judgement of the addresses a session is led to.
-`runtime/human.rs` owns control leases. `profiles.rs`, `files.rs` and
-`files/upload.rs` own persistent login state and file lifetimes. Runtime shutdown
-joins workers before releasing the namespace lock; confirmed unbinding removes
-only that credential's namespace. See [Browser tasks](browser.md).
+Browser sessions enter through `browser/runtime.rs`. `page.rs` and `observe.js` implement v1 observation. Explicit v2 sessions route through `runtime/v2.rs` and `semantic/page.rs` to CDP or BiDi. `control.rs` gates input submission and changes of control, `process/` owns platform processes and exit handling, and `storage/` supplies private-storage primitives. For ownership and limits see [Browser implementation](browser-implementation-zhCN.md). Device configuration is in the [browser guide](browser.md).
 
 Windows private storage and startup grant operations reuse ACL and handle
 primitives in `storage/windows/`. Startup registration is reached through its
