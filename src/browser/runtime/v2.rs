@@ -111,7 +111,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":backend==Backend::Cdp,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
-        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document|reference",
+        "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
         "extensions":{"task_events":{"version":1,"available":true,"categories":if backend==Backend::Bidi {json!(["console","network"])} else {json!(["network"])}},"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
             "scoped_scroll":crate::browser::selection::extension(None),

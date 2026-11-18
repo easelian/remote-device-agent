@@ -163,7 +163,7 @@ function(operation, args, other) {
     if (!node || node.nodeType !== 1 || !node.isConnected || node.ownerDocument !== document) return false;
     const style = getComputedStyle(node);
     const vertical = style.overflowY === "auto" || style.overflowY === "scroll";
-    const named = node.getAttribute("role") === "region" || node.hasAttribute("aria-label") || node.tabIndex >= 0;
+    const named = node.getAttribute("role") === "region" || node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby") || node.tabIndex >= 0;
     return vertical && node.scrollHeight > node.clientHeight && named && visible(node);
   };
   function facts(node) {

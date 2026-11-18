@@ -25,6 +25,8 @@ pub(crate) fn check_size(value: &serde_json::Value) -> crate::browser::Result<()
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ActionKind {
+    // Scrolling a container has no native pointer preflight or public inspect kind.
+    #[serde(skip)]
     Scroll,
     Click,
     Press,
