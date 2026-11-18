@@ -118,7 +118,7 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 异常位置与事件一起淘汰。停止窗口后可在保留期限内复查，交给人工或文档替换后必须重新开窗。Firefox 按原生事件时间过滤早于本次开窗以及与开窗同一毫秒的异常。若还要判断保存请求是否到达网站，可以在同一窗口同时启用 `network` 和 `track_requests`，并在操作后只读刷新原订单。调用栈能说明浏览器在哪一行抛错，提交结果需要单独核对。
 
-当前会话声明 `extensions.network_progress.version == 1` 且可用时，可在包含 `network` 类别的开窗动作内增加 `"track_requests":true`。使用 `{"kind":"read_requests","capture_id":"…"}` 读取快照。最多保留最近 32 个请求跳转步骤，按窗口内的整数 `request_id` 排列。Chromium 观察目标原生页面 session，可能包含同进程子 frame。Firefox 只计入原顶层 context。两个后端从原生响应头事件取得 HTTP 状态，随后收到传输失败时更新为 `failed`。
+当前会话声明 `extensions.network_progress.version == 1` 且可用时，可在包含 `network` 类别的开窗动作内增加 `"track_requests":true`。使用 `{"kind":"read_requests","capture_id":"…"}` 读取快照。窗口最多保留 32 条请求记录，每次重定向另占一条，按窗口内的整数 `request_id` 排列。Chromium 观察目标原生页面 session，可能包含同进程子 frame。Firefox 只计入原顶层 context。两个后端从原生响应头事件取得 HTTP 状态，随后收到传输失败时更新为 `failed`。
 
 `start_observed:false` 表示当前行缺少开始证据，此时省略方法。已观察开始时只返回标准方法枚举或 `OTHER`。重定向的下一跳通过 `redirected_from` 指向保留的前一跳，缺失前一跳时标记 `redirect_gap:true`。`evicted_count` 统计淘汰的行，`untracked_count` 统计无法归属或解析的进度事件。普通事件读取继续使用原有的序号和分页。控制代次改变后重新开窗。新窗口只披露从该窗口开始观察到的请求链，避免把上个控制者产生的延迟响应交给 AI。[请求关联与淘汰](../src/browser/semantic/task_events/requests.rs)
 

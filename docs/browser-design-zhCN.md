@@ -16,6 +16,8 @@ AI 应能在一次会话中找到目标、执行操作、解释失败，并用�
 
 遇到提交无响应时，先检查控件遮挡和页面上的字段错误。Chromium 和 Firefox 的采集窗口都能记录顶层页面的控制台级别、脚本异常和网络结果。客户端在动作前按会话声明的类别开窗。普通网络事件记录响应和传输失败。会话另有 `network_progress` 时，客户端可在开窗时启用请求跟踪，检查哪些请求已开始、哪些仍在等待响应头。后台请求也会出现在窗口中，提交结果仍须从原记录核对。开窗晚于动作时，应明确此前时段缺少证据。
 
+排查“点击成功、订单仍待审批”时，可用同一浏览器版本、同一合成页面和独立订单副本做对照。先记录订单号和初始状态，再各提交一次。MCP 客户端读取 `read_requests`、控制台事件和原订单状态。`agent-browser` 可用 `network requests`、`console --json` 和页面快照核对；`errors` 查看未处理的页面错误，站点主动调用 `console.error` 时应查 `console`。最后核对站点收到的提交次数。一次 POST 返回 HTTP 200、控制台报错、页面仍显示待审批时，可以确认请求已收到响应。若页面没有新的业务凭据，记录审批结果尚未确认，保留原操作回执，避免再次提交。
+
 ## 模块职责与数据边界
 
 | 模块 | 建议的实现位置与责任 |
@@ -80,7 +82,7 @@ AI 排查点击失败时，先用 `browser_inspect` 检查命中，再用 `find_
 
 查询必须使用同一节点的原始 `node_id`，不能用相邻节点、重挂后的新节点或名称相同的节点替代。Agent 在目标所属文档内最多检查四层普通父节点。节点重挂使正在采集的结果失效，遇到 shadow root 或 slot 边界时返回不支持。一次祖先查询合计最多检查 32 条规则、128 项属性，返回 16 项候选。敏感节点或敏感祖先零披露；不会返回页面文字、选择器、原生标识或敏感 CSS 声明。直接样式读取在 ancestor 查询不可用时仍独立有效。
 
-维护者可运行 Server 的 `scripts/run_browser_acceptance.py --phase ancestor-styles`，测试普通父链、直接覆盖、敏感父节点、shadow/slot 边界及节点重挂。重挂期间的采样应被拒绝，再次读取同一元素时只应看到当前父链。
+按下文[验收示例](#验收入口与放行条件)在 Server 根目录运行，将阶段改为 `ancestor-styles`，可验证普通父链、直接覆盖、敏感父节点、shadow/slot 边界及节点重挂。重挂期间的采样应被拒绝，再次读取同一元素时只应看到当前父链。
 
 遇到命中和样式结果不一致时，用同一 Chrome 可执行文件、同一测试页面，在独立的 `agent-browser` 会话中执行 `snapshot -i`、`get styles @ref` 和 `click @ref`。每个客户端使用自己观察得到的引用。样式读取期间站点写入应为 0。对照点击后，再检查页面确认文字和站点收到的写入次数；受阻按钮也可能得到 CLI 的 `clicked` 回执。
 
@@ -102,7 +104,7 @@ AI 排查点击失败时，先用 `browser_inspect` 检查命中，再用 `find_
 | 人工边界能否维持？ | Server `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
 | 新诊断是否帮助 AI 作出正确判断？ | 为遮挡、JS 异常、HTTP 失败、HTTP 200 业务拒绝、响应丢失、本人验证分别固定页面终态和提交计数。记录任务完成率、误报成功率、普通故障人工接管数、诊断调用数/字节数。纳入事件洪峰、跨主体、换代与双后端能力不对称。普通任务与必须本人验证的任务分别计数。基准语料中重复提交、敏感内容披露和无证据宣称成功均为阻断项 |
 | 增量与新能力能否独立关闭？ | Server `clients/browser-observation-delta.test.mjs`、`tests/core/test_browser_observation_delta.py`。用同一次采集的完整观察验证重建。稀疏组实际 MCP 总字节不超过始终 full 的 70%。覆盖未知扩展、旧客户端、重连、乱序及基线淘汰 |
-| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`exception-locations`、`lost-write`、`record-wait`、`form-validation`、`scoped-scroll`、`hover`、`ref-drag`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
+| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`exception-locations`、`lost-write`、`record-wait`、`form-validation`、`scoped-scroll`、`hover`、`ref-drag`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。`delta-corpus` 还需用 `--delta-native-corpus` 指向包含 `cdp-corpus.jsonl` 和 `bidi-corpus.jsonl` 的同次原生采集目录。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
 
 在 Server 根目录核对 `python3 scripts/run_browser_acceptance.py --help`。例如，在准备好专用测试环境后运行下面的 DOM 证据阶段。`RDH_ACCEPT_ENV` 指向包含配套测试产物与数据库设置的私有 JSON，`RDH_ACCEPT_OUT` 指向一个尚不存在的输出目录。成功时退出码为 0，目录中的 `acceptance-complete.json` 记录通过状态。
 
