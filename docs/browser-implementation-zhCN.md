@@ -61,7 +61,35 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 
 匹配 CSS 规则、控制台异常、网络请求摘要与性能采样尚无公开工具。`read_layout` 的计算样式和局部命中可帮助解释可见性。精确到样式表规则、脚本异常或失败请求的证据需要相应扩展。
 
-原生无障碍树（AX）的单节点读取已定义接口，适用后端及接入条件见[架构与路线](browser-design-zhCN.md#单节点原生无障碍证据)。已提交的 DOM 查询返回 `source: dom`。
+#### 单节点原生无障碍证据
+
+原生 AX 使用独立的 `extensions.native_ax: {version: 1, available, reason}`。当前只在显式 v2/CDP 会话提供；BiDi 明确返回 `available: false`、`reason: browser_feature_unsupported`，不以 DOM 推导替代 Firefox 原生树。构建、平台和本地策略拒绝仍优先保留其原因。实际会话原有的布尔字段 `capabilities.native_ax` 同步表示本次 CDP 支持状态，BiDi 仍为 false；工具准入使用独立版本化扩展，不把布尔值当作完整契约。候选与实际会话分别声明；旧 Agent、v1、缺失或未知扩展及不支持的后端在原生 AX 读取前拒绝。
+
+`browser_evidence` 增加封闭查询 `query: {kind: read_accessibility, node_id}`，其余必填字段、主体/tab/epoch 绑定、2 秒绝对期限和最终披露检查沿用 DOM 证据。node_id 必须来自同一会话的独立 den_ 注册表；不接受 AX ID、DOM 原生 ID、对象 ID、选择器、脚本或任意协议方法。读取只针对这个节点，不自动选择父节点或改用相似名称。节点、realm、文档或祖先身份失效时仍返回 stale。
+
+CDP 使用固定的隔离 realm 函数，从 WeakRef 表取得当前节点，再调用 `Accessibility.getPartialAXTree`，固定 `fetchRelatives: false`。不调用全树、祖先、子树查询，不为这次读取启用 AX 事件订阅。结果最多包含一个原生 AX 节点，AX 遍历深度固定为 0；零节点表示本节点没有原生 AX 记录。多于一个节点或不符合协议结构时拒绝，不把截断后的树声称为完整树。深层或超量 DOM 不改变这一读取范围。原生消息继续受现有 2 MiB 硬上限约束，不能把输出截断当作无界原生接收的替代。
+
+结果封装沿用证据接口，固定 `kind: read_accessibility`、`source: native_ax`，载荷字段为 `accessibility`，不使用 nodes/node/layout。载荷是以下封闭字段：
+
+| 字段 | 类型与含义 |
+| --- | --- |
+| node_id、frame_index、main_frame | 本次实际读取的诊断身份和 frame；不签发动作 ref |
+| status | present 或 absent；仅说明这个节点是否有原生 AX 记录 |
+| role | 原生角色字符串，最多 64 个 Unicode 标量；不可用时为 null |
+| name、name_status | name 为最多 256 个 Unicode 标量或 null；name_status 为 available、omitted 或 absent |
+| ignored | present 时为原生布尔值，absent 时为 null；不能由 DOM 可见性推断 |
+| states | 最多 18 个封闭状态字段，未返回字段不等于 false |
+| ignored_reasons | 最多 16 个已知原生原因名；不附带关联节点或原始属性值 |
+
+absent 时 role/name/ignored 均为 null、name_status 为 absent，states 和 ignored_reasons 为空。名称不得带入新的表单值或编辑文本：先从同一诊断节点取得有界 DOM 名称；只有节点不敏感、原生名称在 256 标量内的前缀与该 DOM 名称完全一致时才公开该原生前缀。原生名称缺失时为 absent，不能满足披露条件时为 omitted 并记录 native_ax_name；不以 DOM 名称冒充原生名称。原生 value、description、命名来源展开、关系、AX 父子 ID 和 BackendNodeId 始终不公开。
+
+states 只允许 atomic、busy、disabled、focusable、focused、hidden、modal、multiline、multiselectable、readonly、required、selected、expanded 的布尔值；checked、pressed 为布尔值或 mixed；invalid 为 false/true/grammar/spelling 字符串；editable 为 plaintext/richtext；level 为 0～1024 的整数。每次最多检查 32 个原生 property 和 16 个 ignoredReason，超量记录 ax_property_limit/ax_reason_limit；未知字段或类型不进入结果。ignored_reasons 只允许 activeFullscreenElement、activeModalDialog、activeAriaModalDialog、ariaHiddenElement、ariaHiddenSubtree、emptyAlt、emptyText、inertElement、inertSubtree、labelContainer、labelFor、notRendered、notVisible、presentationalRole、probablyPresentational、inactiveCarouselTabContent、uninteresting。角色或名称前缀截断分别记录 ax_role_limit/ax_name_limit。
+
+coverage 保留同次 DOM 名称读取的计数，并增加 native_ax_nodes（0～1）、native_ax_properties（0～32）和 native_ax_ignored_reasons（0～16）；这些字段只用于 read_accessibility。omitted 明确包含 native_ax_tree、native_ax_value、native_ax_description、native_ax_relations 和 native_ax_other_properties；未知状态或原因分别增加 unrecognized_ax_property/unrecognized_ax_reason。Agent 正文仍最多 16 KiB，完整 MCP JSON-RPC 仍最多 64 KiB；两种输出来自同一份结果。不保存 AX 正文、AX ID 或对象缓存，不更改 canonical 观察、原动作引用和增量基线。
+
+取得节点包装对象前由既有 CDP 租约账本预留，返回后以作用域持有。正常返回、解码失败、取消或超时均必须进入同一有界释放路径；已接收对象不能因上层 future 被丢弃而脱离账本。释放成功或原生 session 退出才结算对象；迟到创建仍按现有机制回收。清理通路容量、3 秒收尾期限和失败后的连接停止规则保持不变，人工控制 fence 不等待本次只读工作。
+
+实现入口为 [原生 AX 类型](../src/browser/semantic/accessibility.rs)、[CDP 投影与读取](../src/browser/engine/cdp/accessibility.rs)和 [CDP 作用域回复](../src/browser/engine/cdp/wire.rs)。Core 依据 query 选择 native_ax 准入并验证 source、后端、节点身份、状态/名称与计数的一致性；DOM 查询拒绝混入原生 AX 载荷或计数。字段依据为 CDP [Accessibility.getPartialAXTree](https://chromedevtools.github.io/devtools-protocol/tot/Accessibility/#method-getPartialAXTree)，实际浏览器支持须由固定产物的原生验收证明。
 
 ## 输入不明、人工接管与文件
 
@@ -90,6 +118,7 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 | 增量观察基线 | 每份编码投影 256 KiB。每会话 2 份，Agent 合计 1 MiB。节点索引 4,000 项、frame 索引 128 项。创建后 60 秒、不续期 | [presentation](../src/browser/runtime/v2/presentation.rs) |
 | 增量观察构造与选择 | 单会话新增暂存 512 KiB。O(N) 前后缀比较、最多一段 splice。含新绑定与 MCP 双输出的候选不超过同次 full 的 70% 才采用 | [presentation](../src/browser/runtime/v2/presentation.rs)、Server `apps/core/src/browser/presentation.rs` |
 | DOM 与布局证据 | 访问 5,000 元素/10,000 文本/5,000 其他节点、深度 64。最多 64 结果。正文 16 KiB、完整 MCP 64 KiB。总期限 2 秒 | [semantic evidence](../src/browser/semantic/evidence.rs)、Server `apps/core/src/browser/evidence.rs` |
+| 单节点原生 AX | 每次 0～1 节点、深度 0。最多检查 32 属性/16 原因，状态最多 18 项。原生消息 2 MiB、正文 16 KiB/MCP 64 KiB。一个作用域节点包装对象，释放确认前保留占用 | [AX adapter](../src/browser/engine/cdp/accessibility.rs)、[作用域原生回复](../src/browser/engine/cdp/wire.rs) |
 | 诊断节点身份 | 每会话 128 项/32 KiB、两会话 64 KiB。创建后 60 秒不续期。每 realm 独立 128 个 WeakRef | [evidence registry](../src/browser/runtime/v2/evidence.rs)、[DOM program](../src/browser/semantic/evidence.js) |
 | 人工控制 | 公开视图租约 120 秒。内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB。出站完整 JSON 256 KiB。BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |

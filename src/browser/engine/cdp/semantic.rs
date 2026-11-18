@@ -10,6 +10,9 @@ use crate::browser::semantic::{
 use sem::surface::{Dialog, HumanInput, Metadata, Tab};
 use std::{collections::HashMap, sync::Mutex};
 
+#[path = "accessibility.rs"]
+mod accessibility;
+
 #[derive(Clone)]
 struct NativeTab {
     info: Tab,
@@ -1029,6 +1032,17 @@ impl Port for Semantic {
             return Ok(Output::Applied(Some(true)));
         }
         self.run(&native, world, &program, deadline).await
+    }
+    async fn native_accessibility(
+        &self,
+        frame: &sem::Frame,
+        node: u64,
+        facts: &sem::evidence::Node,
+        coverage: &mut sem::evidence::Coverage,
+        deadline: Instant,
+    ) -> Result<sem::accessibility::Snapshot> {
+        self.read_accessibility(frame, node, facts, coverage, deadline)
+            .await
     }
     async fn input(
         &self,

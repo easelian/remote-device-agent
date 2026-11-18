@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "backend": "cdp",
+  "cases": [
+    {
+      "query": {
+        "tag": "button",
+        "text": "Native action"
+      },
+      "expected": {
+        "status": "present",
+        "role": "button",
+        "name": "Native action",
+        "name_status": "available",
+        "ignored": false
+      }
+    },
+    {
+      "query": {
+        "tag": "input",
+        "text": "Customer"
+      },
+      "expected": {
+        "status": "present",
+        "role": "textbox",
+        "name": "Customer",
+        "name_status": "available",
+        "ignored": false
+      }
+    },
+    {
+      "query": {
+        "tag": "input",
+        "text": "Password"
+      },
+      "expected": {
+        "status": "present",
+        "name": null,
+        "name_status": "omitted",
+        "ignored": false
+      }
+    },
+    {
+      "query": {
+        "tag": "div",
+        "role": "button"
+      },
+      "expected": {
+        "status": "present",
+        "role": "button",
+        "name": null,
+        "name_status": "omitted",
+        "ignored": false
+      }
+    },
+    {
+      "query": {
+        "tag": "div",
+        "text": "Hidden native facts"
+      },
+      "expected": {
+        "status": "present",
+        "ignored": true
+      },
+      "ignored_reasons_include": [
+        "ariaHiddenElement"
+      ]
+    },
+    {
+      "query": {
+        "tag": "input",
+        "role": "checkbox"
+      },
+      "expected": {
+        "status": "present",
+        "role": "checkbox",
+        "name": "Agree",
+        "name_status": "available",
+        "ignored": false
+      },
+      "states": {
+        "checked": true
+      }
+    },
+    {
+      "query": {
+        "tag": "div",
+        "role": "heading"
+      },
+      "expected": {
+        "status": "present",
+        "role": "heading",
+        "name": "Heading facts",
+        "name_status": "available",
+        "ignored": false
+      },
+      "states": {
+        "level": 3
+      }
+    }
+  ],
+  "forbidden_values": [
+    "CANARY_FORM_VALUE_8274",
+    "CANARY_PASSWORD_6431",
+    "Native nested name"
+  ],
+  "forbidden_keys": [
+    "backendDOMNodeId",
+    "objectId",
+    "parentId",
+    "childIds",
+    "chromeRole",
+    "description",
+    "sources",
+    "value"
+  ]
+}

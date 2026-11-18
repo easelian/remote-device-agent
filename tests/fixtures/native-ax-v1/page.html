@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>Native accessibility fixture</title>
+<button id="native-button">Native action</button>
+<label for="customer">Customer</label><input id="customer" value="CANARY_FORM_VALUE_8274">
+<label for="secret">Password</label><input id="secret" type="password" value="CANARY_PASSWORD_6431">
+<div id="nested" role="button"><span>Native nested name</span></div>
+<div id="hidden" aria-hidden="true">Hidden native facts</div>
+<label><input id="checked" type="checkbox" checked>Agree</label>
+<div id="level" role="heading" aria-level="3">Heading facts</div>
+<script>window.axWitness={clicks:0,inputs:0,focus:0,scroll:0};for(const [event,key] of [['click','clicks'],['input','inputs'],['focusin','focus'],['scroll','scroll']])document.addEventListener(event,()=>axWitness[key]++,true);window.axReady=true;</script>

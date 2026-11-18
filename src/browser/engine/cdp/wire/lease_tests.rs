@@ -840,3 +840,52 @@ async fn dropping_all_public_clients_closes_the_pipe_without_explicit_stop() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn scoped_native_reply_keeps_consumed_object_owned_until_cleanup_acknowledges() {
+    for cancel in [false, true] {
+        let mut peer = Peer::new();
+        let wire = peer.cdp.clone();
+        let (ready, reached) = oneshot::channel();
+        let (finish, hold) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let binding = wire
+                .scoped_call(
+                    Some("s"),
+                    Command::RuntimeCallFunction(Effect::None),
+                    json!({"objectGroup":"scoped"}),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            assert_eq!(binding.value["result"]["objectId"], "scoped-object");
+            ready.send(()).unwrap();
+            let _ = hold.await;
+            drop(binding);
+        });
+        let request = peer.request().await;
+        peer.reply(
+            &request,
+            json!({"result":{"type":"object","subtype":"node","objectId":"scoped-object"}}),
+        )
+        .await;
+        reached.await.unwrap();
+        assert_eq!(peer.leases()["objects"], 1);
+        if cancel {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        } else {
+            finish.send(()).unwrap();
+            task.await.unwrap();
+        }
+        let release = peer.request().await;
+        assert_eq!(release["method"], "Runtime.releaseObject");
+        assert_eq!(release["params"]["objectId"], "scoped-object");
+        assert_eq!(peer.leases()["objects"], 1);
+        assert_eq!(peer.cdp.test_metrics()["cleanup_pending"], 1);
+        peer.reply(&release, json!({})).await;
+        peer.barrier().await;
+        assert_eq!(peer.leases()["objects"], 0);
+        assert_eq!(peer.cdp.test_metrics()["native_objects"], 0);
+    }
+}

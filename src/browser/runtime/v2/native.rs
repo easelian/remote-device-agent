@@ -87,6 +87,16 @@ impl sem::Port for Port {
     async fn program(&self, f: &sem::Frame, p: Program, d: Instant) -> Result<Output> {
         asynchronous!(self, program(f, p, d))
     }
+    async fn native_accessibility(
+        &self,
+        f: &sem::Frame,
+        n: u64,
+        facts: &sem::evidence::Node,
+        coverage: &mut sem::evidence::Coverage,
+        d: Instant,
+    ) -> Result<sem::accessibility::Snapshot> {
+        asynchronous!(self, native_accessibility(f, n, facts, coverage, d))
+    }
     async fn input(&self, f: &sem::Frame, i: sem::NativeInput, d: Instant) -> Result<()> {
         asynchronous!(self, input(f, i, d))
     }

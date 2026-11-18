@@ -98,7 +98,8 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
         json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
                 "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"],
                 "extensions":{"actionability":extension(why),
-                    "observation_delta":extension(why), "dom_evidence":extension(why)}})
+                    "observation_delta":extension(why), "dom_evidence":extension(why),
+                    "native_ax":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported")))}})
     })
     .collect();
     let available = backends.iter().any(|b| b["available"] == true);
@@ -128,6 +129,20 @@ mod tests {
         assert_eq!(only_bidi["backends"][1]["available"], compiled);
         for candidate in [&only_cdp, &only_bidi] {
             for backend in candidate["backends"].as_array().unwrap() {
+                let ax = &backend["extensions"]["native_ax"];
+                assert_eq!(ax["version"], 1);
+                assert_eq!(
+                    ax["available"],
+                    backend["available"] == true && backend["id"] == "cdp"
+                );
+                assert_eq!(
+                    ax["reason"],
+                    if backend["available"] == true && backend["id"] == "bidi" {
+                        json!("browser_feature_unsupported")
+                    } else {
+                        backend["reason"].clone()
+                    }
+                );
                 for name in ["actionability", "observation_delta", "dom_evidence"] {
                     let extension = &backend["extensions"][name];
                     assert_eq!(extension["version"], 1);

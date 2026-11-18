@@ -105,13 +105,14 @@ fn token() -> Result<String> {
 fn capability(settings: &Settings, backend: Backend) -> Value {
     json!({"managed_lifecycle":true,"document_identity":true,"observation":true,"input":true,"screenshot":true,
         "dialogs":true,"human_takeover":true,"navigation_policy":true,"conservative_recovery":true,
-        "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":false,"devtools":false,
+        "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":backend==Backend::Cdp,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
         "extensions":{"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
-            "dom_evidence":crate::browser::selection::extension(None)}})
+            "dom_evidence":crate::browser::selection::extension(None),
+            "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
@@ -373,6 +374,9 @@ impl Browsers {
                 }
                 "browser_evidence" => {
                     let query = sem::evidence::Query::parse(&params["query"])?;
+                    if query.native_ax() && slot.selection.backend != Backend::Cdp {
+                        return Err(Failure::new("browser_feature_unsupported"));
+                    }
                     let target = query
                         .id()
                         .map(|id| session.evidence.lookup(id, &tab, epoch))

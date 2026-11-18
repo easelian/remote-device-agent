@@ -82,7 +82,7 @@ pub(super) fn prepare(
     tab: &str,
     epoch: u64,
 ) -> Result<(Value, Prepared)> {
-    let mut value = json!({"version":1,"kind":query.kind(),"tab_id":tab,"source":"dom","content_trust":"untrusted_page",
+    let mut value = json!({"version":1,"kind":query.kind(),"tab_id":tab,"source":query.source(),"content_trust":"untrusted_page",
         "captured":{"started_at_ms":capture.started_at_ms,"finished_at_ms":capture.finished_at_ms},"coverage":capture.coverage});
     value["coverage"]["scope"] = query.scope().into();
     value["coverage"]["frames_read"] = capture.records.len().into();
@@ -113,6 +113,14 @@ pub(super) fn prepare(
                 facts["attributes"] =
                     serde_json::to_value(node.attributes).map_err(|_| sem::types::decode())?;
                 value["node"] = facts;
+            }
+            Raw::ReadAccessibility { accessibility, .. } => {
+                let mut facts =
+                    serde_json::to_value(accessibility).map_err(|_| sem::types::decode())?;
+                facts["node_id"] = query.id().ok_or_else(sem::types::stale)?.into();
+                facts["frame_index"] = index.into();
+                facts["main_frame"] = main.into();
+                value["accessibility"] = facts;
             }
             Raw::ReadLayout { layout, .. } => {
                 let hit = layout.hit.node;

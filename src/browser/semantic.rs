@@ -1,6 +1,7 @@
 //! Explicitly selected semantic_dom_v1 profile. The public v1 path
 //! keeps its own compatibility algorithm until capability v2 is negotiated.
 #![allow(dead_code)] // Native probes and unsupported platform builds retain the shared contract.
+pub(crate) mod accessibility;
 pub(crate) mod actionability;
 pub(crate) mod evidence;
 mod page;
@@ -45,6 +46,16 @@ pub(crate) trait Port: Clone + Send + Sync + 'static {
         program: program::Program,
         deadline: Instant,
     ) -> impl Future<Output = Result<program::Output>> + Send;
+    fn native_accessibility(
+        &self,
+        _frame: &Frame,
+        _node: u64,
+        _facts: &evidence::Node,
+        _coverage: &mut evidence::Coverage,
+        _deadline: Instant,
+    ) -> impl Future<Output = Result<accessibility::Snapshot>> + Send {
+        async { Err(super::Failure::new("browser_feature_unsupported")) }
+    }
     /// Own the entire native input sequence and release its held sources before
     /// returning. Page runs this future in a session-owned task, not the caller.
     fn input(

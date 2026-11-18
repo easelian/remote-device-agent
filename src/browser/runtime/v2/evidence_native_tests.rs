@@ -274,3 +274,6 @@ async fn native_dom_evidence_pending_cdp() {
 async fn native_dom_evidence_pending_bidi() {
     pending_scene("bidi").await;
 }
+
+#[path = "accessibility_native_tests.rs"]
+mod accessibility;

@@ -74,6 +74,9 @@ pub(crate) enum Query {
     ReadLayout {
         node_id: String,
     },
+    ReadAccessibility {
+        node_id: String,
+    },
 }
 fn default_limit() -> usize {
     16
@@ -123,7 +126,9 @@ impl Query {
                     return Err(invalid());
                 }
             }
-            Self::ReadNode { node_id: id } | Self::ReadLayout { node_id: id } => {
+            Self::ReadNode { node_id: id }
+            | Self::ReadLayout { node_id: id }
+            | Self::ReadAccessibility { node_id: id } => {
                 if !node_id(id) {
                     return Err(invalid());
                 }
@@ -134,7 +139,9 @@ impl Query {
     pub fn id(&self) -> Option<&str> {
         match self {
             Self::FindNodes { .. } => None,
-            Self::ReadNode { node_id } | Self::ReadLayout { node_id } => Some(node_id),
+            Self::ReadNode { node_id }
+            | Self::ReadLayout { node_id }
+            | Self::ReadAccessibility { node_id } => Some(node_id),
         }
     }
     pub fn kind(&self) -> &'static str {
@@ -142,7 +149,14 @@ impl Query {
             Self::FindNodes { .. } => "find_nodes",
             Self::ReadNode { .. } => "read_node",
             Self::ReadLayout { .. } => "read_layout",
+            Self::ReadAccessibility { .. } => "read_accessibility",
         }
+    }
+    pub fn native_ax(&self) -> bool {
+        matches!(self, Self::ReadAccessibility { .. })
+    }
+    pub fn source(&self) -> &'static str {
+        if self.native_ax() { "native_ax" } else { "dom" }
     }
     pub fn scope(&self) -> &'static str {
         match self {
@@ -190,6 +204,14 @@ pub(crate) enum Limit {
     Style,
     #[serde(rename = "byte_limit")]
     Byte,
+    #[serde(rename = "ax_name_limit")]
+    AxName,
+    #[serde(rename = "ax_role_limit")]
+    AxRole,
+    #[serde(rename = "ax_property_limit")]
+    AxProperty,
+    #[serde(rename = "ax_reason_limit")]
+    AxReason,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -201,6 +223,14 @@ pub(crate) enum Omitted {
     FormValues,
     EditableText,
     UnresolvedNameReference,
+    NativeAxTree,
+    NativeAxValue,
+    NativeAxDescription,
+    NativeAxRelations,
+    NativeAxOtherProperties,
+    NativeAxName,
+    UnrecognizedAxProperty,
+    UnrecognizedAxReason,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -208,6 +238,12 @@ pub(crate) struct Coverage {
     pub visited_elements: usize,
     pub visited_text_nodes: usize,
     pub visited_other_nodes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_ax_nodes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_ax_properties: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_ax_ignored_reasons: Option<usize>,
     pub truncated: bool,
     pub limits: BTreeSet<Limit>,
     pub omitted: BTreeSet<Omitted>,
@@ -231,6 +267,15 @@ impl Coverage {
         self.visited_elements += other.visited_elements;
         self.visited_text_nodes += other.visited_text_nodes;
         self.visited_other_nodes += other.visited_other_nodes;
+        if let Some(n) = other.native_ax_nodes {
+            self.native_ax_nodes = Some(self.native_ax_nodes.unwrap_or(0) + n);
+        }
+        if let Some(n) = other.native_ax_properties {
+            self.native_ax_properties = Some(self.native_ax_properties.unwrap_or(0) + n);
+        }
+        if let Some(n) = other.native_ax_ignored_reasons {
+            self.native_ax_ignored_reasons = Some(self.native_ax_ignored_reasons.unwrap_or(0) + n);
+        }
         self.truncated |= other.truncated;
         self.limits.extend(&other.limits);
         self.omitted.extend(&other.omitted);
@@ -328,6 +373,10 @@ pub(crate) enum Raw {
         layout: Layout,
         coverage: Coverage,
     },
+    ReadAccessibility {
+        accessibility: super::accessibility::Snapshot,
+        coverage: Coverage,
+    },
 }
 fn short(value: &str, maximum: usize) -> bool {
     value.chars().count() <= maximum
@@ -349,7 +398,8 @@ impl Raw {
         match self {
             Self::FindNodes { coverage, .. }
             | Self::ReadNode { coverage, .. }
-            | Self::ReadLayout { coverage, .. } => coverage,
+            | Self::ReadLayout { coverage, .. }
+            | Self::ReadAccessibility { coverage, .. } => coverage,
         }
     }
     pub fn decode(text: &str, query: &NativeQuery) -> Result<Self> {
@@ -360,7 +410,10 @@ impl Raw {
             .map_err(|_| types::decode())?
             .ok_or_else(types::stale)?;
         let coverage = raw.coverage();
-        let valid = coverage.visited_elements <= query.elements
+        let valid = coverage.native_ax_nodes.is_none()
+            && coverage.native_ax_properties.is_none()
+            && coverage.native_ax_ignored_reasons.is_none()
+            && coverage.visited_elements <= query.elements
             && coverage.visited_text_nodes <= query.text_nodes
             && coverage.visited_other_nodes <= query.other_nodes
             && coverage.truncated != coverage.limits.is_empty();
@@ -384,6 +437,7 @@ impl Raw {
                         .all(|(k, v)| ATTRIBUTES.contains(&k.as_str()) && short(v, 64))
                     && (!node.facts.sensitive || node.text_excerpt.is_empty())
             }
+            Self::ReadAccessibility { .. } => false,
             Self::ReadLayout { layout, .. } => {
                 let b = &layout.r#box;
                 let v = &layout.viewport;
@@ -548,7 +602,12 @@ pub(crate) async fn capture<P: Port>(
             _ => (None, None, None),
         };
         let request = NativeQuery {
-            kind: query.kind().into(),
+            kind: if query.native_ax() {
+                "read_node"
+            } else {
+                query.kind()
+            }
+            .into(),
             tag,
             role,
             text,
@@ -558,7 +617,7 @@ pub(crate) async fn capture<P: Port>(
             text_nodes: MAX_TEXT_NODES - coverage.visited_text_nodes,
             other_nodes: MAX_OTHER_NODES - coverage.visited_other_nodes,
         };
-        let Output::Evidence(raw) = port
+        let Output::Evidence(mut raw) = port
             .program(
                 frame,
                 Program::Evidence {
@@ -571,6 +630,24 @@ pub(crate) async fn capture<P: Port>(
         else {
             return Err(types::decode());
         };
+        if query.native_ax() {
+            let Raw::ReadNode { node, mut coverage } = raw else {
+                return Err(types::decode());
+            };
+            let accessibility = port
+                .native_accessibility(
+                    frame,
+                    binding.ok_or_else(types::stale)?.node,
+                    &node.facts,
+                    &mut coverage,
+                    deadline,
+                )
+                .await?;
+            raw = Raw::ReadAccessibility {
+                accessibility,
+                coverage,
+            };
+        }
         coverage.merge(raw.coverage());
         if let Raw::FindNodes { nodes, .. } = &raw {
             remaining -= nodes.len();

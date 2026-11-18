@@ -20,6 +20,7 @@ fn evidence_requests_are_closed_and_diagnostic_ids_are_not_refs() {
         json!({"kind":"find_nodes","tag":"div"}),
         json!({"kind":"find_nodes","role":"region","text":"状态","scope":"all_frames","limit":64}),
         json!({"kind":"read_node","node_id":format!("den_{}","a".repeat(32))}),
+        json!({"kind":"read_accessibility","node_id":format!("den_{}","a".repeat(32))}),
     ] {
         assert!(Query::parse(&query).is_ok());
     }
@@ -31,6 +32,7 @@ fn evidence_requests_are_closed_and_diagnostic_ids_are_not_refs() {
         json!({"kind":"find_nodes","text":"😀".repeat(129)}),
         json!({"kind":"find_nodes","tag":"div","selector":"*"}),
         json!({"kind":"read_node","node_id":"ref_123"}),
+        json!({"kind":"read_accessibility","node_id":format!("den_{}","a".repeat(32)),"depth":1}),
         json!({"kind":"read_layout","node_id":format!("den_{}","g".repeat(32))}),
     ] {
         assert!(Query::parse(&query).is_err(), "{query}");
@@ -105,6 +107,9 @@ fn evidence_decoder_rejects_extra_content_and_false_coverage() {
     assert!(dom::Raw::decode(&wrong.to_string(), &request).is_err());
     wrong = base.clone();
     wrong["coverage"]["limits"] = json!(["element_limit"]);
+    assert!(dom::Raw::decode(&wrong.to_string(), &request).is_err());
+    wrong = base.clone();
+    wrong["coverage"]["native_ax_nodes"] = 1.into();
     assert!(dom::Raw::decode(&wrong.to_string(), &request).is_err());
     wrong = base;
     wrong["nodes"][0]["name"] = "😀".repeat(257).into();

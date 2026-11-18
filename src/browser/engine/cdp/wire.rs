@@ -38,13 +38,17 @@ pub use command::{Command, InputPair};
 #[cfg(test)]
 mod metrics;
 const MAX_MESSAGE: usize = 2 * 1024 * 1024;
-struct NativeReply {
+pub(in crate::browser::engine) struct NativeReply {
     value: Value,
     leases: Vec<leases::Reap>,
     owner: std::sync::Weak<Inner>,
     outgoing: mpsc::WeakSender<Vec<u8>>,
 }
 impl NativeReply {
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
     fn accept(mut self) -> Value {
         self.leases.clear();
         std::mem::take(&mut self.value)
@@ -104,6 +108,7 @@ struct Inner {
 #[cfg(test)]
 struct ReplyGate {
     id: u64,
+    method: Option<&'static str>,
     reached: oneshot::Sender<()>,
     release: oneshot::Receiver<()>,
 }
@@ -138,6 +143,24 @@ impl Cdp {
         assert!(gate.is_none());
         *gate = Some(ReplyGate {
             id: self.inner.next.load(Ordering::Relaxed),
+            method: None,
+            reached,
+            release: wait,
+        });
+        (ready, release)
+    }
+    #[cfg(all(test, feature = "experimental-browser-bidi"))]
+    pub fn hold_next_reply_for(
+        &self,
+        command: Command,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached, ready) = oneshot::channel();
+        let (release, wait) = oneshot::channel();
+        let mut gate = self.inner.reply_gate.lock().unwrap();
+        assert!(gate.is_none());
+        *gate = Some(ReplyGate {
+            id: 0,
+            method: Some(command.spec().method),
             reached,
             release: wait,
         });
@@ -364,6 +387,20 @@ impl Cdp {
         params: Value,
         deadline: Instant,
     ) -> Result<Value> {
+        self.scoped_call(session, command, params, deadline)
+            .await
+            .map(NativeReply::accept)
+    }
+
+    /// Keep ownership of objects returned by this call until the scope ends.
+    /// Drop queues cleanup without erasing the charge before its native reply.
+    pub(in crate::browser::engine) async fn scoped_call(
+        &self,
+        session: Option<&str>,
+        command: Command,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<NativeReply> {
         let spec = command.spec();
         if Instant::now() >= deadline {
             return Err(Failure::new("browser_deadline"));
@@ -380,6 +417,16 @@ impl Cdp {
         .try_acquire_owned()
         .map_err(|_| Failure::new("browser_busy"))?;
         let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        {
+            let mut gate = self.inner.reply_gate.lock().unwrap();
+            if let Some(gate) = gate.as_mut()
+                && gate.method == Some(spec.method)
+            {
+                gate.id = id;
+                gate.method = None;
+            }
+        }
         #[cfg(test)]
         let metric = metrics::Command::new(session, spec.method, &params);
         let mut message = json!({"id":id,"method":spec.method,"params":params});
@@ -456,7 +503,14 @@ impl Cdp {
             })
         })?;
         match admission {
-            Admission::RetiredObject => return Ok(json!({})),
+            Admission::RetiredObject => {
+                return Ok(NativeReply {
+                    value: json!({}),
+                    leases: Vec::new(),
+                    owner: Arc::downgrade(&self.inner),
+                    outgoing: self.outgoing.downgrade(),
+                });
+            }
             Admission::Sent {
                 blocked_release: true,
             } => return Err(Failure::unknown("browser_dialog_open")),
@@ -466,7 +520,7 @@ impl Cdp {
         }
         // Timeout never releases the outstanding command's slot or implies it stopped.
         match tokio::time::timeout_at(deadline.into(), result).await {
-            Ok(Ok(result)) => result.map(NativeReply::accept),
+            Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Failure::unknown("browser_lost")),
             Err(_) => Err(Failure::unknown("browser_timeout_unknown")),
         }
