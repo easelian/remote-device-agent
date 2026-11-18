@@ -150,10 +150,25 @@ async fn relay(mut client: TcpStream) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{fs, os::fd::AsRawFd, os::unix::fs::MetadataExt};
+
     #[tokio::test]
     async fn connection_limit_refuses_extra_clients_and_shutdown_closes_every_owner() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
+        let inode = fs::metadata(format!("/proc/self/fd/{}", listener.as_raw_fd()))
+            .unwrap()
+            .ino()
+            .to_string();
+        // Another listener can reuse the port. Identify this socket by its
+        // inode in the Linux network namespace before and after shutdown.
+        let listener_is_open = || {
+            fs::read_to_string("/proc/self/net/tcp")
+                .unwrap()
+                .lines()
+                .any(|row| row.split_whitespace().nth(9) == Some(inode.as_str()))
+        };
+        assert!(listener_is_open());
         let server = serve(listener);
         let mut clients = Vec::new();
         for _ in 0..MAX_CONNECTIONS {
@@ -177,6 +192,6 @@ mod tests {
         for mut client in clients {
             assert_eq!(client.read(&mut byte).await.unwrap(), 0);
         }
-        assert!(TcpStream::connect(address).await.is_err());
+        assert!(!listener_is_open(), "egress listener {inode} is still open");
     }
 }
