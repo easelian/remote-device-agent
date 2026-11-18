@@ -39,7 +39,7 @@
 ## 观察、操作与结果验证
 
 1. 用 `browser_sessions`、`browser_tabs` 确认会话、tab 和当前 `control_epoch`。用 `browser_observe` 读取目标记录。`filter`、`find`、`within` 可缩小范围。`coverage` 说明哪些内容已读、页面是否在读取时变化，以及哪些内容被省略。
-2. 从最新观察取元素 `ref`，通过 `browser_act` 导航、操作控件、滚动、处理标签页或弹窗。v2 的 `fill` 走原生文本编辑，日期、时间、颜色和范围控件走 `select` 的固定设值路径。`scroll` 当前滚动主文档。
+2. 从最新观察取元素 `ref`，通过 `browser_act` 导航、操作控件、滚动、处理标签页或弹窗。v2 的 `fill` 走原生文本编辑，日期、时间、颜色和范围控件走 `select` 的固定设值路径。省略 `ref` 的 `scroll` 滚动主文档。会话声明 `extensions.scoped_scroll` 版本 1 时，观察可为具备名称、region 角色或焦点能力的垂直滚动容器签发 `kind: scrollable` 的 ref。使用 `{"kind":"scroll","ref":"…","delta_y":420}` 滚动该容器，正数向下，范围为 −2000 至 2000 CSS 像素。到达边缘时可返回 `changed: false`。重新观察可见记录后再操作；容器专用 ref 只授权滚动。会话声明 `extensions.ref_hover` 版本 1 时，对最新控件引用调用 `{"kind":"hover","ref":"…"}` 可展开悬停菜单。可以先用 `browser_inspect` 的 `action_kind: hover` 检查遮挡和几何稳定性。指针移动也可能触发站点脚本，应在新观察中找到要选择的菜单项，再单独点击。
 3. 用 `browser_wait` 等待明确的 URL 或文本，再观察目标记录的业务状态。`input_acknowledged` 只确认原生输入，`business_result_verified` 保持 `false`。一次提交即使收到了成功回执，仍需从网站读到与目标记录对应的结果。
 
 v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记录材料有独立预算。closed shadow、canvas 内部像素和浏览器自身界面超出语义观察范围。相同 URL 重新加载、文档或 realm 替换、节点或所在记录改变，都可能使旧引用失效。续页替换上一页的动作绑定。出现 `browser_stale_reference` 时重新观察当前记录，按原 ref 派发的动作始终重新检查身份、敏感性、几何和命中条件。[页面算法](../src/browser/semantic/page.rs) · [共同语义语料](../tests/fixtures/semantic-dom-v1/oracle.json)
