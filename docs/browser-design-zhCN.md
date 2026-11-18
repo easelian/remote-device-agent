@@ -196,7 +196,37 @@ AI 按“观察现象 → 读取证据 → 判断原因 → 执行处理 → 验
 
 空白 ARIA 命名引用应回退到实际使用的名称来源；布局命中关系在深度/节点预算内无法判定时必须为 indeterminate，并记录限制，不能返回推断的遮挡节点。
 
-### 9.2 验收
+### 9.2 单节点原生 AX 契约
+
+原生 AX 使用独立的 `extensions.native_ax: {version: 1, available, reason}`。首版只在显式 v2/CDP 会话提供；BiDi 明确返回 `available: false`、`reason: browser_feature_unsupported`，不以 DOM 推导替代 Firefox 原生树。构建、平台和本地策略拒绝仍优先保留其原因。候选与实际会话分别声明；旧 Agent、v1、缺失或未知扩展及不支持的后端在原生 AX 读取前拒绝。
+
+`browser_evidence` 增加封闭查询 `query: {kind: read_accessibility, node_id}`，其余必填字段、主体/tab/epoch 绑定、2 秒绝对期限和最终披露检查沿用 DOM 证据。node_id 必须来自同一会话的独立 den_ 注册表；不接受 AX ID、DOM 原生 ID、对象 ID、选择器、脚本或任意协议方法。读取只针对这个节点，不自动选择父节点或改用相似名称。节点、realm、文档或祖先身份失效时仍返回 stale。
+
+CDP 使用固定的隔离 realm 函数，从 WeakRef 表取得当前节点，再调用 `Accessibility.getPartialAXTree`，固定 `fetchRelatives: false`。不调用全树、祖先、子树查询，不为这次读取启用 AX 事件订阅。结果最多包含一个原生 AX 节点，AX 遍历深度固定为 0；零节点表示本节点没有原生 AX 记录。多于一个节点或不符合协议结构时拒绝，不把截断后的树声称为完整树。深层或超量 DOM 不改变这一读取范围。原生消息继续受现有 2 MiB 硬上限约束，不能把输出截断当作无界原生接收的替代。
+
+结果封装沿用证据接口，固定 `kind: read_accessibility`、`source: native_ax`，载荷字段为 `accessibility`，不使用 nodes/node/layout。载荷是以下封闭字段：
+
+| 字段 | 类型与含义 |
+| --- | --- |
+| node_id、frame_index、main_frame | 本次实际读取的诊断身份和 frame；不签发动作 ref |
+| status | present 或 absent；仅说明这个节点是否有原生 AX 记录 |
+| role | 原生角色字符串，最多 64 个 Unicode 标量；不可用时为 null |
+| name、name_status | name 为最多 256 个 Unicode 标量或 null；name_status 为 available、omitted 或 absent |
+| ignored | present 时为原生布尔值，absent 时为 null；不能由 DOM 可见性推断 |
+| states | 最多 18 个封闭状态字段，未返回字段不等于 false |
+| ignored_reasons | 最多 16 个已知原生原因名；不附带关联节点或原始属性值 |
+
+absent 时 role/name/ignored 均为 null、name_status 为 absent，states 和 ignored_reasons 为空。名称不得带入新的表单值或编辑文本：先从同一诊断节点取得有界 DOM 名称；只有节点不敏感、原生名称在 256 标量内的前缀与该 DOM 名称完全一致时才公开该原生前缀。原生名称缺失时为 absent，不能满足披露条件时为 omitted 并记录 native_ax_name；不以 DOM 名称冒充原生名称。原生 value、description、命名来源展开、关系、AX 父子 ID 和 BackendNodeId 始终不公开。
+
+states 只允许 atomic、busy、disabled、focusable、focused、hidden、modal、multiline、multiselectable、readonly、required、selected、expanded 的布尔值；checked、pressed 为布尔值或 mixed；invalid 为 false/true/grammar/spelling 字符串；editable 为 plaintext/richtext；level 为 0～1024 的整数。每次最多检查 32 个原生 property 和 16 个 ignoredReason，超量记录 ax_property_limit/ax_reason_limit；未知字段或类型不进入结果。ignored_reasons 只允许 activeFullscreenElement、activeModalDialog、activeAriaModalDialog、ariaHiddenElement、ariaHiddenSubtree、emptyAlt、emptyText、inertElement、inertSubtree、labelContainer、labelFor、notRendered、notVisible、presentationalRole、probablyPresentational、inactiveCarouselTabContent、uninteresting。角色或名称前缀截断分别记录 ax_role_limit/ax_name_limit。
+
+coverage 保留同次 DOM 名称读取的计数，并增加 native_ax_nodes（0～1）、native_ax_properties（0～32）和 native_ax_ignored_reasons（0～16）；这些字段只用于 read_accessibility。omitted 明确包含 native_ax_tree、native_ax_value、native_ax_description、native_ax_relations 和 native_ax_other_properties；未知状态或原因分别增加 unrecognized_ax_property/unrecognized_ax_reason。Agent 正文仍最多 16 KiB，完整 MCP JSON-RPC 仍最多 64 KiB；两种输出来自同一份结果。不保存 AX 正文、AX ID 或对象缓存，不更改 canonical 观察、原动作引用和增量基线。
+
+取得节点包装对象前由既有 CDP 租约账本预留，返回后以作用域持有。正常返回、解码失败、取消或超时均必须进入同一有界释放路径；已接收对象不能因上层 future 被丢弃而脱离账本。释放成功或原生 session 退出才结算对象；迟到创建仍按现有机制回收。清理通路容量、3 秒收尾期限和失败后的连接停止规则保持不变，人工控制 fence 不等待本次只读工作。
+
+实现前冻结原生角色/状态、隐藏节点、与 DOM 名称不一致、敏感值和深层/超量 DOM 的合成 oracle。验证公开能力与 v1/BiDi 拒绝、同一主体和代次约束、单节点范围、字节/字段限额、原 ref/基线不变，以及原生 AX 响应被延迟时取消/超时后的真实对象占用和释放。协议依据为 CDP [Accessibility.getPartialAXTree](https://chromedevtools.github.io/devtools-protocol/tot/Accessibility/#method-getPartialAXTree)；浏览器实际支持仍由固定二进制上的原生验收证明。
+
+### 9.3 验收
 
 每项扩展在编码前先补齐独立扩展契约及数值预算。以下是必须细化的验收范围，尚不是已可执行的套件：
 
