@@ -6,6 +6,31 @@ use std::sync::{
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the native Firefox fixture and namespace helper"]
+async fn session_survives_the_exit_of_its_launch_thread() {
+    let fixture = Fixture::new("native-launch-thread");
+    let runtime = tokio::runtime::Handle::current();
+    // Browser RPCs can start on a blocking-pool thread that retires while
+    // the user is reading the page. The Agent process still owns the session.
+    let (mut owner, mut socket) = std::thread::scope(|threads| {
+        threads
+            .spawn(|| {
+                runtime.block_on(async {
+                    let mut owner = fixture.spawn(None);
+                    let socket = handshake(owner.ready().await.unwrap(), false).await;
+                    (owner, socket)
+                })
+            })
+            .join()
+            .unwrap()
+    });
+    let result = request(&mut socket, 2, "browsingContext.getTree", json!({})).await;
+    assert!(!result["result"]["contexts"].as_array().unwrap().is_empty());
+    request(&mut socket, 3, "browser.close", json!({})).await;
+    owner.close(true).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires pinned Firefox, development Agent and private evidence directory"]
 async fn lifecycle_and_tcp_egress() {
     let mut fixture = Fixture::new("native-lifecycle-egress");

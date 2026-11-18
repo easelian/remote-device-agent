@@ -109,6 +109,9 @@ impl OwnedFirefox {
         let source = unsafe { OwnedFd::from_raw_fd(source) };
         let inherited = source.as_raw_fd();
         let parent_pid = unsafe { libc::getpid() };
+        // PR_SET_PDEATHSIG observes the spawning thread. An RPC worker can
+        // retire while the Agent and its browser session are still alive.
+        let owner_pidfd = pidfd_open(parent_pid)?;
         let stderr = crate::storage::create_private_file(&directory.join("guardian.stderr"))
             .map_err(other)?;
         let mut command = Command::new(helper);
@@ -123,9 +126,7 @@ impl OwnedFirefox {
             .process_group(0);
         unsafe {
             command.pre_exec(move || {
-                if libc::dup2(inherited, IPC_FD) < 0
-                    || libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0
-                {
+                if libc::dup2(inherited, IPC_FD) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if libc::getppid() != parent_pid {
@@ -168,7 +169,7 @@ impl OwnedFirefox {
                     downloads,
                     gate: gate.map(str::to_owned),
                 })?,
-                &[],
+                &[owner_pidfd.as_raw_fd()],
             )
         })();
         if let Err(error) = setup {
@@ -376,10 +377,11 @@ fn bootstrap() -> io::Result<()> {
         libc::fcntl(IPC_FD, libc::F_SETFD, libc::FD_CLOEXEC);
     }
     wait_readable(IPC_FD, 10_000)?;
-    let (value, fds) = ipc::receive(IPC_FD)?;
-    if !fds.is_empty() {
+    let (value, mut fds) = ipc::receive(IPC_FD)?;
+    if fds.len() != 1 {
         return Err(other("bidi_invalid_config"));
     }
+    let owner_pidfd = fds.remove(0);
     let config: Config = serde_json::from_value(value)?;
     if !config.executable.is_absolute() || !config.directory.is_absolute() {
         return Err(other("bidi_invalid_config"));
@@ -400,18 +402,12 @@ fn bootstrap() -> io::Result<()> {
     fs::write("/proc/self/setgroups", "deny")?;
     fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))?;
     fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))?;
-    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } < 0
-        || unsafe { libc::getppid() } != parent
-    {
+    if unsafe { libc::getppid() } != parent {
         return Err(other("bidi_owner_gone"));
     }
     // pidfd avoids the parent-died-before-prctl window in namespace PID 1,
     // where getppid() deliberately returns zero for an outside parent.
-    let anchor_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
-    if anchor_fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let anchor_fd = unsafe { OwnedFd::from_raw_fd(anchor_fd) };
+    let anchor_fd = pidfd_open(unsafe { libc::getpid() })?;
     let (gate_read, gate_write) = std::os::unix::net::UnixStream::pair()?;
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -419,6 +415,7 @@ fn bootstrap() -> io::Result<()> {
     }
     if pid == 0 {
         drop(gate_write);
+        drop(owner_pidfd);
         let result = (|| {
             if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } < 0 {
                 return Err(io::Error::last_os_error());
@@ -468,20 +465,55 @@ fn bootstrap() -> io::Result<()> {
     unsafe {
         libc::close(IPC_FD);
     }
-    if publication.is_err() {
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
+    let result = publication.and_then(|()| wait_for_init(&owner_pidfd, pid));
+    if result.is_err() {
+        // This single-threaded helper has not reaped its direct child yet,
+        // so the PID still denotes the init it created, even after exit.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
     }
     loop {
         if unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) } == pid {
-            break;
+            return result;
         }
-        if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
         }
     }
-    publication
+}
+
+fn pidfd_open(pid: libc::pid_t) -> io::Result<OwnedFd> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+}
+
+fn wait_for_init(owner: &OwnedFd, pid: libc::pid_t) -> io::Result<()> {
+    let init = pidfd_open(pid)?;
+    let mut wait = [owner, &init].map(|fd| libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    loop {
+        if unsafe { libc::poll(wait.as_mut_ptr(), wait.len() as _, -1) } >= 0 {
+            if wait[0].revents != 0 {
+                return Err(other("bidi_owner_gone"));
+            }
+            return if wait[1].revents & libc::POLLIN != 0 {
+                Ok(())
+            } else {
+                Err(other("bidi_init_monitor_failed"))
+            };
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
 }
 
 fn wait_readable(fd: i32, millis: i32) -> io::Result<()> {

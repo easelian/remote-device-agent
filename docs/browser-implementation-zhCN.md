@@ -12,6 +12,8 @@
 
 浏览器功能默认关闭。Agent 使用设备上已安装的浏览器，Chromium 的本地路径由 `browser.executable` 指定或按平台规则查找。`device_info.capabilities.browser.version` 保持 `1`，`v2.backends[]` 中的 `stage: "candidate"` 表示设备允许尝试。`browser_open` 完成启动、文档身份和截图检查后才返回 `session_ready`。客户端按本次打开结果的 `capabilities` 选择功能，也可从 `browser_sessions` 取回 v2 会话能力。两个 v2 后端的 `observed_connection_address` 和 `network_isolation` 均为 `false`，要求严格连接地址检查的策略会在创建浏览器前拒绝。[选择与设备声明](../src/browser/selection.rs) · [会话能力](../src/browser/runtime/v2.rs)
 
+Linux 上的 Firefox 会话归 Agent 进程所有。守护进程用 pidfd 等待 Agent 或浏览器命名空间的 PID 1 退出。发起 RPC 的工作线程在空闲时回收，用户仍可继续操作原页面。Agent 退出时，守护进程终止并回收该命名空间。守护进程意外退出时，内核通知命名空间的 PID 1 退出。[进程归属与回收](../src/browser/process/firefox.rs)
+
 下面是显式选择 Chromium 的 `browser_open` 参数。将 `device_id` 替换为账户中已绑定的设备 ID。`selection` 只接受所示三个字段，`backend` 也可取 `bidi`。后端在会话内固定，打开失败会报告原因。
 
 ```json
