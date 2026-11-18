@@ -57,7 +57,7 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 
 在 v2/CDP 会话上检查 `capabilities.extensions.ref_drag` 的 `available` 和 `version`（版本 1）。调用 `browser_observe`，设置 `filter: "drag_endpoints"`。同一页观察中的 `drag_source` 表示显式可拖动的具名元素，`drop_target` 表示有名称和接收标记的候选区域。网页决定是否接受拖放。两端执行时都须在当前主文档的视口内，中心能命中。客户端可先滚动，再重新观察；第一版覆盖的后端为 Chromium CDP。
 
-向 `browser_act` 传入 `{"kind":"drag","ref":"<源 ref>","target_ref":"<目标 ref>"}`。Agent 在按下前及最后一次移动后复核两端的文档、记录和命中位置。端点发生变化或控制权被收回时，Agent 取消尚未释放的拖动。释放已经送出而回执丢失时，按原 `operation_id` 查询，恢复控制后读取同一条记录及目标列。人工交还后使用新控制代次和新观察。
+向 `browser_act` 传入 `{"kind":"drag","ref":"<源 ref>","target_ref":"<目标 ref>"}`。Agent 在按下前及最后一次移动后复核两端的文档、记录和命中位置。Chromium 确认指针移动后，Agent 还会在隔离环境中等待可信的原生拖动进入事件，确保接管时能够取消已经启动的拖动。端点发生变化或控制权被收回时，Agent 取消尚未释放的拖动。释放已经送出而回执丢失时，按原 `operation_id` 查询，恢复控制后读取同一条记录及目标列。人工交还后使用新控制代次和新观察。
 
 排查同一操作在不同路径上的差异时，可在测试机使用独立会话和同一 Chromium 二进制复现。先保存 Easelian 的观察、动作回执、业务记录和提交计数。在重置后的合成页面运行 `~/.local/bin/agent-browser --session <独立名称> --executable-path <Chromium> open <测试页>`，再用同一会话执行 `snapshot`、`drag`、`reload` 和 `close`。分别记录快照是否给两端分配 ref、选择器路径是否成功、页面重载后的记录和写入次数。独立会话使用自己的引用。实际业务中的未知写入按原回执和只读结果排查。
 

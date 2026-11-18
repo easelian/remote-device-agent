@@ -18,7 +18,81 @@ impl Drop for Unsent<'_> {
     }
 }
 
+// The Input domain may acknowledge a pointer move before the renderer has
+// installed its first native drag target. Observe that transition in the
+// existing isolated world without retaining the page or its transfer data.
+const ARM: &str = r#"function() {
+    const slot = "__rdhNativeDragStart";
+    globalThis[slot]?.finish(false);
+    let resolve;
+    const ready = new Promise(done => { resolve = done; });
+    const listeners = new AbortController();
+    let started = false;
+    let timer;
+    const entry = {ready, finish(ok) {
+        clearTimeout(timer);
+        listeners.abort();
+        resolve(ok);
+    }};
+    globalThis[slot] = entry;
+    const options = {capture:true, passive:true, signal:listeners.signal};
+    addEventListener("dragstart", event => { if (event.isTrusted) started = true; }, options);
+    addEventListener("dragenter", event => {
+        if (started && event.isTrusted) entry.finish(true);
+    }, options);
+    addEventListener("dragend", event => {
+        if (started && event.isTrusted) entry.finish(false);
+    }, options);
+    timer = setTimeout(() => entry.finish(false), 3000);
+    return true;
+}"#;
+const SETTLED: &str = r#"async function() {
+    const entry = globalThis.__rdhNativeDragStart;
+    if (!entry) return false;
+    const ready = await entry.ready;
+    if (globalThis.__rdhNativeDragStart === entry) delete globalThis.__rdhNativeDragStart;
+    // Let the renderer finish processing the trusted event before CDP can cancel.
+    await new Promise(done => setTimeout(done, 0));
+    return ready;
+}"#;
+
 impl Cdp {
+    pub(in super::super) async fn arm_drag(
+        &self,
+        session: &str,
+        world: i64,
+        deadline: Instant,
+    ) -> Result<()> {
+        let armed = self
+            .call(
+                Some(session),
+                Command::RuntimeCallFunction(Effect::None),
+                json!({"executionContextId":world,"functionDeclaration":ARM,"returnByValue":true}),
+                deadline,
+            )
+            .await?;
+        if armed["result"]["value"] != true {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        Ok(())
+    }
+    pub(in super::super) async fn settle_drag_start(
+        &self,
+        session: &str,
+        world: i64,
+        deadline: Instant,
+    ) -> Result<()> {
+        // Only the status of the already reserved gesture is read. A claim
+        // fences new moves and drops while this owner waits for its two moves.
+        let reply = self.cleanup().call(Some(session), Command::RuntimeCallFunction(Effect::None),
+            json!({"executionContextId":world,"functionDeclaration":SETTLED,"awaitPromise":true,"returnByValue":true}),
+            deadline).await?;
+        if reply["result"]["value"] != true {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        Ok(())
+    }
+
     /// Reset a possibly held pointer only after Chromium cancels its drag.
     pub(in super::super) async fn cancel_drag(&self, session: &str) -> Result<()> {
         let cleanup = self.cleanup();

@@ -663,6 +663,8 @@ impl Semantic {
         {
             return Err(actionable());
         }
+        let world = self.world(&native, deadline).await?;
+        wire.arm_drag(session, world, deadline).await?;
         let (down_wire, down_sent) = wire.track_effects();
         if let Err(error) = down_wire.call(Some(session), Command::InputMousePress,
             json!({"type":"mousePressed","x":start.x,"y":start.y,"button":"left","buttons":1,"clickCount":1}), deadline).await {
@@ -675,6 +677,7 @@ impl Semantic {
         let result = async {
             let first = (12.0 / dx.abs().max(dy.abs())).min(1.0);
             wire.start_drag(session, start.x + dx*first, start.y + dy*first, deadline).await?;
+            wire.settle_drag_start(session, world, deadline).await?;
             for step in 1..=9 {
                 let ratio = first + (1.0-first) * f64::from(step.min(8)) / 8.0;
                 wire.call(Some(session), Command::InputMouseMove,
