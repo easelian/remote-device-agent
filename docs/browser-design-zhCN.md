@@ -74,7 +74,11 @@ Chromium 会在启用 Runtime 时回放历史记录。Agent 等待启用确认�
 
 验收页面将目标写请求和后台请求同时挂起，分别放行响应，并通过站点记录核对每次提交。测试须覆盖开窗前已开始的请求、诊断中途交给人工、重定向以及事件淘汰。请求与响应的关联只能解释传输进度。某个请求是否由这次点击触发、业务结果是否生效，仍需页面证据。
 
-AI 排查点击失败时，先用 `browser_inspect` 看命中与遮挡，再用 `find_nodes` 定位页面元素。CDP 会话可在同一证据节点上调用 `read_layout` 取得计算值，调用 `read_styles` 找到直接匹配的行内声明或样式表声明。例如计算值为 `pointer-events: none`，外部作者规则对应的候选也为 `none` 且带 `!important`，客户端可以报告这两项事实。尚缺祖先继承、变量解析和完整层叠顺序时，结果保留 `cascade: "undetermined"`。下一步以实际失败页面确定是否扩展祖先和覆盖关系。接口与限制见[实现说明](browser-implementation-zhCN.md#定位影响控件的样式)。
+AI 排查点击失败时，先用 `browser_inspect` 看命中与遮挡，再用 `find_nodes` 定位页面元素。CDP 会话可在同一证据节点上调用 `read_layout` 取得计算值，调用 `read_styles` 找到直接匹配的行内声明或样式表声明。例如计算值为 `pointer-events: none`，外部作者规则对应的候选也为 `none` 且带 `!important`，客户端可以报告这两项事实。尚缺祖先继承、变量解析和完整层叠顺序时，结果保留 `cascade: "undetermined"`。现有接口与限制见[实现说明](browser-implementation-zhCN.md#定位影响控件的样式)。
+
+一个已在 Chromium 复现的缺口是继承样式。祖先区域设置 `pointer-events: none` 后，按钮的 `read_layout` 显示 `none`，该按钮的 `read_styles` 返回空候选。单独查询祖先区域才能看到对应声明。Chromium 的 `CSS.getMatchedStylesForNode` 已在 `inherited` 中给出普通 DOM 祖先的候选。即使按钮用行内 `auto` 覆盖并恢复点击，祖先的 `none` 仍在列表中。
+
+下一步应使 AI 从按钮的 `node_id` 查询有限层数的祖先声明，优先覆盖可继承的 `pointer-events` 和 `visibility`。建议通过独立扩展返回祖先层数、已允许的声明值、来源位置及截断状态。验收时使用同一按钮的直接覆盖、无匹配祖先和深层截断三种对照，确认诊断期间网页写入为零。缺少完整层叠证据时保留 `cascade: "undetermined"`。
 
 性能先给任务耗时、长任务与资源阶段摘要，需要进一步定位时再提供有期限的 trace 私有制品和受限查询。将来若提供 VM 暂停、步进等会改变页面执行的能力，须与普通输入互斥，并证明超时或断连后能恢复执行。Agent 的控制暂停和 JavaScript VM 暂停分别记录状态。[CDP CSS](https://chromedevtools.github.io/devtools-protocol/tot/CSS/)
 
