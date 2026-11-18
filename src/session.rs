@@ -103,7 +103,7 @@ async fn session(
                 deadline.min(Instant::now() + Duration::from_secs(2))
             });
         let assigned = tokio::select! {
-            value=tokio::time::timeout_at(deadline, network.assign(discovery,&config.token,&request))=>value.unwrap_or_else(|_| Err(AssignmentError::Unavailable("Cluster discovery timed out"))),
+            value=tokio::time::timeout_at(deadline, network.assign(discovery,&config.token,&request))=>value.unwrap_or(Err(AssignmentError::Unavailable("Cluster discovery timed out"))),
             _=interrupted(shutdown)=>return End::Stop,
         };
         match assigned {
