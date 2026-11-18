@@ -117,10 +117,46 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
             "scoped_scroll":crate::browser::selection::extension(None), "ref_hover":crate::browser::selection::extension(None),
             "dom_evidence":crate::browser::selection::extension(None),
             "form_validation":crate::browser::selection::extension(None),
+            "virtual_list":crate::browser::selection::extension(None),
+            "record_wait":crate::browser::selection::extension(None),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
+}
+
+async fn wait_record(
+    page: &sem::Page<impl sem::Port>,
+    session: &mut Session,
+    tab: &str,
+    epoch: u64,
+    record: &Value,
+    deadline: Instant,
+) -> Result<Value> {
+    let condition = RecordCondition::parse(record)?;
+    let query = sem::evidence::Query::MatchRecord {
+        node_id: condition.node_id.clone(),
+        anchor_text: condition.anchor_text,
+        expected_text: condition.expected_text,
+    };
+    loop {
+        let target = session.evidence.lookup(&condition.node_id, tab, epoch)?;
+        let capture = page.evidence(&query, Some(target), deadline).await?;
+        let [(_, sem::evidence::Raw::MatchRecord { matched, coverage })] =
+            capture.records.as_slice()
+        else {
+            return Err(sem::types::decode());
+        };
+        if *matched && !coverage.truncated {
+            return Ok(
+                json!({"condition_observed":true,"condition":"record","node_id":condition.node_id}),
+            );
+        }
+        if Instant::now() + Duration::from_millis(100) >= deadline {
+            return Err(Failure::new("browser_condition_timeout"));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 async fn capture(
     port: &native::Port,
@@ -479,37 +515,45 @@ impl Browsers {
                     .await
                 }
                 "browser_wait" => {
-                    session.invalidate();
-                    loop {
-                        let (_, meta) = page.access(false)?.metadata(deadline).await?;
-                        if let Some(text) = params["url_contains"].as_str() {
-                            if meta.url.contains(text) {
-                                break Ok(json!({"condition_observed":true,"url":meta.url}));
+                    // Preserve evidence bindings for record waits, while dropping action
+                    // references and continuation state as for every other wait.
+                    if let Some(record) = params.get("record") {
+                        session.clear_references();
+                        session.presentation.clear();
+                        wait_record(&page, &mut session, &tab, epoch, record, deadline).await
+                    } else {
+                        session.invalidate();
+                        loop {
+                            let (_, meta) = page.access(false)?.metadata(deadline).await?;
+                            if let Some(text) = params["url_contains"].as_str() {
+                                if meta.url.contains(text) {
+                                    break Ok(json!({"condition_observed":true,"url":meta.url}));
+                                }
+                            } else if let Some(text) = params["text_contains"].as_str() {
+                                let observation = page
+                                    .observe(
+                                        sem::Query {
+                                            find: Some(text.into()),
+                                            ..Default::default()
+                                        },
+                                        200,
+                                        20000,
+                                        None,
+                                        deadline,
+                                    )
+                                    .await?;
+                                if observation.rows.iter().any(|r| {
+                                    r.facts.name.contains(text)
+                                        || r.facts.value.as_ref().is_some_and(|v| v.contains(text))
+                                }) {
+                                    break Ok(json!({"condition_observed":true}));
+                                }
                             }
-                        } else if let Some(text) = params["text_contains"].as_str() {
-                            let observation = page
-                                .observe(
-                                    sem::Query {
-                                        find: Some(text.into()),
-                                        ..Default::default()
-                                    },
-                                    200,
-                                    20000,
-                                    None,
-                                    deadline,
-                                )
-                                .await?;
-                            if observation.rows.iter().any(|r| {
-                                r.facts.name.contains(text)
-                                    || r.facts.value.as_ref().is_some_and(|v| v.contains(text))
-                            }) {
-                                break Ok(json!({"condition_observed":true}));
+                            if Instant::now() + Duration::from_millis(100) >= deadline {
+                                break Err(Failure::new("browser_condition_timeout"));
                             }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
-                        if Instant::now() + Duration::from_millis(100) >= deadline {
-                            break Err(Failure::new("browser_condition_timeout"));
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 }
                 _ => Err(Failure::new("browser_feature_unsupported")),
@@ -528,7 +572,10 @@ impl Browsers {
         value["session_id"] = id.into();
         value["control_epoch"] = epoch.into();
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
-        if operation == "browser_evidence" || operation == "browser_capture" {
+        if operation == "browser_evidence"
+            || operation == "browser_capture"
+            || (operation == "browser_wait" && params.get("record").is_some())
+        {
             value["tab_id"] = tab.clone().into();
         }
         if operation == "browser_inspect" {

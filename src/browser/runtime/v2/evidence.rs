@@ -130,6 +130,7 @@ pub(super) fn prepare(
                 result["main_frame"] = main.into();
                 value["validation"] = result;
             }
+            Raw::MatchRecord { .. } => return Err(sem::types::decode()),
             Raw::ReadLayout { layout, .. } => {
                 let hit = layout.hit.node;
                 let mut layout = serde_json::to_value(layout).map_err(|_| sem::types::decode())?;

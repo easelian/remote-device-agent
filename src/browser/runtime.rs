@@ -735,6 +735,9 @@ impl Browsers {
                 }
             }
             "browser_wait" => {
+                if params.get("record").is_some() {
+                    return Err(Failure::new("browser_feature_unsupported"));
+                }
                 if let Some(read)=session.read.take() {read.cursor.close(&engine,deadline).await;}
                 let expected = params["url_contains"].as_str().unwrap_or("");
                 let text = params["text_contains"].as_str();
@@ -1792,6 +1795,31 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
     if valid { Ok(()) } else { Err(invalid()) }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordCondition {
+    node_id: String,
+    anchor_text: String,
+    expected_text: String,
+}
+
+impl RecordCondition {
+    fn parse(value: &Value) -> Result<Self> {
+        let invalid = || Failure::new("browser_invalid_params");
+        let condition: Self = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+        let valid_id = condition.node_id.strip_prefix("den_").is_some_and(|hex| {
+            hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+        let valid_text = |s: &str| !s.is_empty() && s.trim() == s && s.chars().count() <= 128
+            && !s.chars().any(char::is_control);
+        if !valid_id || !valid_text(&condition.anchor_text) || !valid_text(&condition.expected_text)
+            || condition.anchor_text == condition.expected_text {
+            return Err(invalid());
+        }
+        Ok(condition)
+    }
+}
+
 fn validate(operation: &str, params: &Value) -> Result<()> {
     if matches!(
         operation,
@@ -1836,6 +1864,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "control_epoch",
             "url_contains",
             "text_contains",
+            "record",
         ],
         "browser_control" => &[
             "selection",
@@ -2101,15 +2130,18 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         return Err(Failure::new("browser_invalid_params"));
     }
     if operation == "browser_wait" {
-        let conditions: Vec<_> = ["url_contains", "text_contains"]
-            .into_iter()
-            .filter_map(|key| params.get(key))
-            .collect();
-        if conditions.len() != 1
-            || !conditions[0]
-                .as_str()
-                .is_some_and(|s| !s.is_empty() && s.len() <= 1024)
-        {
+        let count = ["url_contains", "text_contains", "record"].iter()
+            .filter(|key| map.contains_key(**key)).count();
+        if count != 1 {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if let Some(record) = map.get("record") {
+            if !map.contains_key("tab_id") {
+                return Err(Failure::new("browser_invalid_params"));
+            }
+            RecordCondition::parse(record)?;
+        } else if !map.get("url_contains").or_else(|| map.get("text_contains"))
+            .and_then(Value::as_str).is_some_and(|s| !s.is_empty() && s.len() <= 1024) {
             return Err(Failure::new("browser_invalid_params"));
         }
     }

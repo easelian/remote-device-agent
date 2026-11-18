@@ -80,6 +80,13 @@ pub(crate) enum Query {
     ReadValidation {
         node_id: String,
     },
+    // Internal-only query used by record_wait after resolving an evidence binding.
+    #[serde(skip_deserializing)]
+    MatchRecord {
+        node_id: String,
+        anchor_text: String,
+        expected_text: String,
+    },
 }
 fn default_limit() -> usize {
     16
@@ -137,6 +144,9 @@ impl Query {
                     return Err(invalid());
                 }
             }
+            // This variant is intentionally unavailable to serde input; only
+            // record_wait may construct it after resolving an evidence binding.
+            Self::MatchRecord { .. } => return Err(invalid()),
         }
         Ok(query)
     }
@@ -146,7 +156,8 @@ impl Query {
             Self::ReadNode { node_id }
             | Self::ReadLayout { node_id }
             | Self::ReadAccessibility { node_id }
-            | Self::ReadValidation { node_id } => Some(node_id),
+            | Self::ReadValidation { node_id }
+            | Self::MatchRecord { node_id, .. } => Some(node_id),
         }
     }
     pub fn kind(&self) -> &'static str {
@@ -156,6 +167,7 @@ impl Query {
             Self::ReadLayout { .. } => "read_layout",
             Self::ReadAccessibility { .. } => "read_accessibility",
             Self::ReadValidation { .. } => "read_validation",
+            Self::MatchRecord { .. } => "match_record",
         }
     }
     pub fn native_ax(&self) -> bool {
@@ -186,6 +198,10 @@ pub(crate) struct NativeQuery {
     pub elements: usize,
     pub text_nodes: usize,
     pub other_nodes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_text: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -415,6 +431,10 @@ pub(crate) enum Raw {
         validation: Validation,
         coverage: Coverage,
     },
+    MatchRecord {
+        matched: bool,
+        coverage: Coverage,
+    },
 }
 fn short(value: &str, maximum: usize) -> bool {
     value.chars().count() <= maximum
@@ -438,7 +458,8 @@ impl Raw {
             | Self::ReadNode { coverage, .. }
             | Self::ReadLayout { coverage, .. }
             | Self::ReadAccessibility { coverage, .. }
-            | Self::ReadValidation { coverage, .. } => coverage,
+            | Self::ReadValidation { coverage, .. }
+            | Self::MatchRecord { coverage, .. } => coverage,
         }
     }
     pub fn decode(text: &str, query: &NativeQuery) -> Result<Self> {
@@ -484,6 +505,13 @@ impl Raw {
                         == validation.reasons.len()
                     && (matches!(validation.state, ValidationState::Invalid)
                         != validation.reasons.is_empty())
+            }
+            Self::MatchRecord { matched, .. } => {
+                query.kind == "match_record"
+                    && query.node.is_some()
+                    && query.anchor_text.is_some()
+                    && query.expected_text.is_some()
+                    && (!matched || !coverage.truncated)
             }
             Self::ReadLayout { layout, .. } => {
                 let b = &layout.r#box;
@@ -662,6 +690,14 @@ pub(crate) async fn capture<P: Port>(
             elements: MAX_ELEMENTS - coverage.visited_elements,
             text_nodes: MAX_TEXT_NODES - coverage.visited_text_nodes,
             other_nodes: MAX_OTHER_NODES - coverage.visited_other_nodes,
+            anchor_text: match query {
+                Query::MatchRecord { anchor_text, .. } => Some(anchor_text.clone()),
+                _ => None,
+            },
+            expected_text: match query {
+                Query::MatchRecord { expected_text, .. } => Some(expected_text.clone()),
+                _ => None,
+            },
         };
         let Output::Evidence(mut raw) = port
             .program(

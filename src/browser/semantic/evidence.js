@@ -202,6 +202,51 @@ function(operation, args) {
     role:roleOf(node),...nameOf(node),sensitive:sensitive(node)});
   const coverage = () => ({visited_elements:elements,visited_text_nodes:texts,visited_other_nodes:others,
     truncated:limits.size>0,limits:[...limits].sort(),omitted:[...omitted].sort()});
+  const recordSelector = '[data-rdh-record],article,tr,li,[role="row"],[role="listitem"],[role="option"]';
+  function allowsRecordText(element) {
+    if (excludesText(element) || element.hidden || element.inert ||
+        element.getAttribute('aria-hidden') === 'true') return false;
+    const style = getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse'
+      && style.opacity !== '0' && style.contentVisibility !== 'hidden';
+  }
+  function matchesRecord(record) {
+    if (!record.matches(recordSelector)) return false;
+    for (let item = record, depth = 0; item; item = parent(item), depth++) {
+      if (depth >= 64) { limits.add('depth_limit'); return false; }
+      if (!visit(item) || !allowsRecordText(item)) return false;
+    }
+    const stack = [{next:record.firstChild}];
+    let visited = 0, characters = 0, anchor = false, expected = false;
+    while (stack.length) {
+      const cursor = stack[stack.length - 1], item = cursor.next;
+      if (!item) { stack.pop(); continue; }
+      cursor.next = item.nextSibling;
+      if (++visited > 256) { limits.add('element_limit'); return false; }
+      if (!visit(item)) return false;
+      if (item.nodeType === Node.ELEMENT_NODE) {
+        if (item.matches(recordSelector) || !allowsRecordText(item)) continue;
+        if (item.firstChild) {
+          if (stack.length >= 64) { limits.add('depth_limit'); return false; }
+          stack.push({next:item.firstChild});
+        }
+      } else if (item.nodeType === Node.TEXT_NODE) {
+        const raw = prefix(item.data, 4096 - characters, 'excerpt_limit');
+        if (limits.size) return false;
+        characters += Array.from(raw).length;
+        const text = raw.replace(/[\t\n\f\r ]+/g,' ').trim();
+        if (text !== args.anchor_text && text !== args.expected_text) continue;
+        const range = document.createRange();
+        range.selectNodeContents(item);
+        const rect = range.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          anchor ||= text === args.anchor_text;
+          expected ||= text === args.expected_text;
+        }
+      }
+    }
+    return anchor && expected;
+  }
   let output;
   if (operation==='find_nodes') {
     const nodes=[];
@@ -217,8 +262,12 @@ function(operation, args) {
     output={kind:operation,nodes,coverage:coverage()};
   } else {
     const node=registry.nodes.get(args.node)?.weak.deref();
-    if (!node || !node.isConnected || node.ownerDocument!==document || !visit(node)) return result(null);
-    if (operation==='read_node') {
+    if (!node || !node.isConnected || node.ownerDocument!==document) return result(null);
+    if (operation==='match_record') {
+      output={kind:operation,matched:matchesRecord(node),coverage:coverage()};
+    } else if (!visit(node)) {
+      return result(null);
+    } else if (operation==='read_node') {
       const attributes={};
       for (const key of ['type','aria-hidden','aria-disabled','aria-expanded','aria-selected','hidden','inert','disabled','readonly']) {
         if (node.hasAttribute(key)) attributes[key]=prefix(node.getAttribute(key),64,'attribute_limit');

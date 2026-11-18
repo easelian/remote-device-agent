@@ -87,6 +87,8 @@ fn evidence_identity_digest_covers_realm_document_url_and_ancestry() {
 #[test]
 fn evidence_decoder_rejects_extra_content_and_false_coverage() {
     let request = dom::NativeQuery {
+        anchor_text: None,
+        expected_text: None,
         kind: "find_nodes",
         tag: Some("div".into()),
         role: None,
@@ -116,8 +118,30 @@ fn evidence_decoder_rejects_extra_content_and_false_coverage() {
     assert!(dom::Raw::decode(&wrong.to_string(), &request).is_err());
 }
 #[test]
+fn record_matching_is_internal_and_requires_complete_coverage() {
+    let binding = format!("den_{}", "a".repeat(32));
+    let public = json!({"kind":"match_record","node_id":binding,
+        "anchor_text":"Order-42","expected_text":"Approved"});
+    assert!(dom::Query::parse(&public).is_err());
+    let request = dom::NativeQuery {
+        kind: "match_record", tag: None, role: None, text: None, node: Some(1),
+        limit: 1, elements: 256, text_nodes: 256, other_nodes: 256,
+        anchor_text: Some("Order-42".into()), expected_text: Some("Approved".into()),
+    };
+    let mut result = json!({"kind":"match_record","matched":true,"coverage":{
+        "visited_elements":2,"visited_text_nodes":2,"visited_other_nodes":0,
+        "truncated":false,"limits":[],"omitted":[]}});
+    assert!(dom::Raw::decode(&result.to_string(), &request).is_ok());
+    result["coverage"]["truncated"] = true.into();
+    result["coverage"]["limits"] = json!(["element_limit"]);
+    assert!(dom::Raw::decode(&result.to_string(), &request).is_err());
+}
+
+#[test]
 fn validation_reads_the_requested_operation_and_only_discloses_fixed_reasons() {
     let query = dom::NativeQuery {
+        anchor_text: None,
+        expected_text: None,
         kind: "read_validation",
         node: Some(1),
         tag: None,

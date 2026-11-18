@@ -41,6 +41,10 @@ function(operation, args, other) {
   const disabled = node => node.matches(':disabled') || node.getAttribute('aria-disabled') === 'true' || !!node.closest('[inert]');
   const role = node => {
     const explicit = norm(node.getAttribute('role')).split(' ')[0];
+    // A virtual listbox is a scroll target when it has real vertical overflow.
+    // Keep its ARIA role so the client can distinguish the container from a
+    // generic region. Its options remain separately observable controls.
+    if (explicit === 'listbox' && scrollable(node)) return {role:'listbox',kind:'scrollable'};
     if (explicit && (controls.has(explicit) || forbidden.has(explicit) || explicit === 'heading' || explicit === 'img')) return {role:explicit,kind:'aria'};
     const tag = node.localName;
     let value = '';
@@ -132,10 +136,32 @@ function(operation, args, other) {
   const editableValue = node => !node.firstChild || node.childNodes.length===1 && node.firstChild.nodeName==='BR' ? '' : node.innerText.replace(/\r\n/g,'\n');
   const valueOf = node => sensitive(node) ? null : typeof node.value === 'string' ? node.value : editingHost(node) ? editableValue(node) : null;
   const semanticAttributes = ['id','name','role','type','href','target','action','formaction','method','aria-label','aria-labelledby','aria-checked','aria-disabled','aria-readonly','aria-expanded','aria-selected','aria-pressed','alt','title','for','disabled','readonly','multiple','min','max','step','tabindex','contenteditable','data-rdh-record'];
-  function material(node) {
+  function optionPosition(item) {
+    const result = [];
+    for (const key of ['aria-posinset','aria-setsize']) {
+      const raw = item.getAttribute(key);
+      if (raw === null) continue;
+      if (key === 'aria-setsize' && raw === '-1') {
+        result.push([key, raw]);
+      } else {
+        if (raw.length > 10 || !/^[0-9]+$/.test(raw)) return null;
+        const value = Number(raw);
+        if (!value || value > 2147483647) return null;
+        result.push([key, String(value)]);
+      }
+    }
+    if (result.length === 2 && result[1][1] !== '-1' && Number(result[0][1]) > Number(result[1][1])) return null;
+    return result;
+  }
+  function material(node, mapped) {
+    // Scrolling needs the container identity, not the content of every mounted
+    // option. All other refs keep their enclosing business record in the fingerprint.
+    const onlyContainer = mapped.kind === 'scrollable' && mapped.role === 'listbox';
     let boundary = node;
-    for (let current = node; current; current = parent(current)) {
-      if (current.matches('[data-rdh-record],tr,li,article,[role="row"],[role="listitem"]')) { boundary = current; break; }
+    if (!onlyContainer) {
+      for (let current = node; current; current = parent(current)) {
+        if (current.matches('[data-rdh-record],tr,li,article,[role="row"],[role="listitem"]')) { boundary = current; break; }
+      }
     }
     const pending = [boundary], entries = [], limits = new Set();
     let characters = 0,visited=0;
@@ -150,11 +176,16 @@ function(operation, args, other) {
       } else if (item.nodeType === Node.ELEMENT_NODE) {
         if (['script','style','template','noscript'].includes(item.localName)) continue;
         const attributes = semanticAttributes.filter(key => item.hasAttribute(key)).map(key => [key,prefix(item.getAttribute(key),4097)]);
+        if (item.getAttribute('role') === 'option') {
+          const position = optionPosition(item);
+          if (position) attributes.push(...position);
+          else if (item === node) limits.add('invalid_option_position');
+        }
         const value = valueOf(item);
         characters += attributes.reduce((sum,pair) => sum+scalars(pair[1]).length,0) + scalars(value || '',4097).length;
         entries.push({identity:identity(item),tag:item.localName,attributes,text:'',value,checked:!!item.checked});
-        if (item.shadowRoot) for (let child = item.shadowRoot.lastChild; child; child = child.previousSibling) if(!append(child))break;
-        for (let child = item.lastChild; child; child = child.previousSibling) if(!append(child))break;
+        if (!onlyContainer && item.shadowRoot) for (let child = item.shadowRoot.lastChild; child; child = child.previousSibling) if(!append(child))break;
+        if (!onlyContainer) for (let child = item.lastChild; child; child = child.previousSibling) if(!append(child))break;
       }
       if (characters > 4096) { limits.add('record_character_limit'); entries.pop(); break; }
     }
@@ -179,7 +210,7 @@ function(operation, args, other) {
       const childRole = role(inner);
       if (controls.has(childRole.role) || inner.localName === 'label') hit = false;
     }
-    const record = material(node);
+    const record = material(node,mapped);
     const value = valueOf(node);
     if (value !== null && (value.length>8192 || scalars(value).length > 4096)) { record.complete = false; record.limits.push('value_character_limit'); }
     return {node:identity(node),id:node.id || '',role:mapped.role,kind:mapped.kind,
