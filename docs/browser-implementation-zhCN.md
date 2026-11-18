@@ -14,6 +14,11 @@
 
 Linux 上的 Firefox 会话归 Agent 进程所有。守护进程用 pidfd 等待 Agent 或浏览器命名空间的 PID 1 退出。发起 RPC 的工作线程在空闲时回收，用户仍可继续操作原页面。Agent 退出时，守护进程终止并回收该命名空间。守护进程意外退出时，内核通知命名空间的 PID 1 退出。[进程归属与回收](../src/browser/process/firefox.rs)
 
+如果任务依赖特定扩展，先查设备上的候选后端，再核对打开后的会话。例如，将卡片拖到另一列需要 `ref_drag`。
+
+1. 调用 `browser_guidance`，传入 `{"device_id":"example-device","topic":"open","include_extensions":true}`。在返回的 `variants` 中查找 `extensions.ref_drag == 1` 的候选项。同一任务需要多种能力时，在同一个候选项内逐项核对。`null` 表示该候选没有可用的已知版本。诊断任务还可以在同一候选项的 `task_event_categories` 中检查 `console` 或 `network`。
+2. 将该项完整的 `selection` 传给一次 `browser_open`。确认实际会话返回的 `selection` 与所选项相符，并检查 `capabilities.extensions.ref_drag` 的 `version == 1` 且 `available == true`，再从新观察中选择两端。打开响应丢失时按原操作回执找回会话。
+
 下面是显式选择 Chromium 的 `browser_open` 参数。将 `device_id` 替换为账户中已绑定的设备 ID。`selection` 只接受所示三个字段，`backend` 也可取 `bidi`。后端在会话内固定，打开失败会报告原因。
 
 ```json
