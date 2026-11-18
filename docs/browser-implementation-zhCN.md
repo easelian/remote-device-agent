@@ -90,6 +90,16 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 仅请求网络事实时，Chromium 沿用页面的网络订阅。请求控制台时，Agent 额外挂接一个 browser session 及其页面子 session。订阅启用前的回放和早于窗口起点的事件均不交付。对于当前文档的 `console.error`，AI 收到 `kind: console` 和 `level: error`。收到 `Runtime.exceptionThrown` 时，AI 收到 `kind: exception`。停止、换页、换代、超时和取消都由会话所有者收尾。[订阅与回收](../src/browser/engine/cdp/wire/console.rs) · [事件归属](../src/browser/engine/cdp/wire/console_route.rs)
 
+会话声明 `extensions.exception_locations` 版本 1 且可用时，AI 可在含 `console` 的开窗动作中设置 `"track_exception_locations":true`。例如，点击保存后页面停在原订单，先从 `read_events` 找到 `kind: exception` 的 `sequence`，再向 `browser_evidence` 提交以下查询。使用原会话、tab、控制代次及版本 1。
+
+```json
+{"kind":"read_exception_location","capture_id":"<原窗口>","sequence":7}
+```
+
+`frames` 按异常现场到调用者的顺序，最多给出三个同步帧。每帧的 `line` 和 `column` 都从 1 开始；浏览器可能把同一表达式定位在不同列。`truncated: true` 表示部分栈未取得或未展开。`source_id` 是窗口内的来源编号，CDP 按原生脚本标识区分，BiDi 按浏览器报告的资源地址区分，同一页面的多个内联脚本可能共用编号。每个窗口最多编号 32 个来源，缺少来源或超出预算时返回 `null`。编号仅适用于当前窗口。Agent 在设备上将有界来源键转换为摘要；公开结果只包含编号和位置。[位置投影](../src/browser/semantic/task_events/locations.rs)
+
+异常位置与事件一起淘汰。停止窗口后可在保留期限内复查，交给人工或文档替换后必须重新开窗。Firefox 按原生事件时间过滤早于本次开窗以及与开窗同一毫秒的异常。若还要判断保存请求是否到达网站，可以在同一窗口同时启用 `network` 和 `track_requests`，并在操作后只读刷新原订单。调用栈能说明浏览器在哪一行抛错，提交结果需要单独核对。
+
 当前会话声明 `extensions.network_progress.version == 1` 且可用时，可在包含 `network` 类别的开窗动作内增加 `"track_requests":true`。使用 `{"kind":"read_requests","capture_id":"…"}` 读取快照。最多保留最近 32 个请求跳转步骤，按窗口内的整数 `request_id` 排列。Chromium 观察目标原生页面 session，可能包含同进程子 frame。Firefox 只计入原顶层 context。两个后端从原生响应头事件取得 HTTP 状态，随后收到传输失败时更新为 `failed`。
 
 `start_observed:false` 表示当前行缺少开始证据，此时省略方法。已观察开始时只返回标准方法枚举或 `OTHER`。重定向的下一跳通过 `redirected_from` 指向保留的前一跳，缺失前一跳时标记 `redirect_gap:true`。`evicted_count` 统计淘汰的行，`untracked_count` 统计无法归属或解析的进度事件。普通事件读取继续使用原有的序号和分页。控制代次改变后重新开窗。新窗口只披露从该窗口开始观察到的请求链，避免把上个控制者产生的延迟响应交给 AI。[请求关联与淘汰](../src/browser/semantic/task_events/requests.rs)

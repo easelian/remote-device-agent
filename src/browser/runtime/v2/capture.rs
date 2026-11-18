@@ -22,16 +22,17 @@ impl Capture {
         port: &native::Port,
         tab: &str,
         epoch: u64,
-        categories: &Value,
-        track_requests: bool,
+        action: &Value,
         deadline: Instant,
     ) -> Result<Value> {
-        let categories = categories
+        let categories = action["categories"]
             .as_array()
             .ok_or_else(|| Failure::new("browser_invalid_params"))?;
         let console = categories.iter().any(|v| v == "console");
         let network = categories.iter().any(|v| v == "network");
-        if track_requests && !network {
+        let track_requests = action["track_requests"] == true;
+        let track_exception_locations = action["track_exception_locations"] == true;
+        if (track_requests && !network) || (track_exception_locations && !console) {
             return Err(Failure::new("browser_invalid_params"));
         }
         let (frame, _) = port.metadata(deadline).await?;
@@ -48,12 +49,13 @@ impl Capture {
             tab: tab.to_owned(),
             epoch,
             frame,
-            sink: Sink::new_with_progress(
+            sink: Sink::new_with_tracking(
                 slot.control.clone(),
                 epoch,
                 console,
                 network,
                 track_requests,
+                track_exception_locations,
             ),
         };
         port.enable_task_events(capture.sink.clone(), deadline)
@@ -100,6 +102,9 @@ impl Capture {
             )?,
             "read_event" => json!({"event":capture.sink.event(params["sequence"].as_u64()
                 .ok_or_else(|| Failure::new("browser_invalid_params"))?)?}),
+            "read_exception_location" => capture.sink.exception_location(
+                params["sequence"].as_u64().ok_or_else(|| Failure::new("browser_invalid_params"))?,
+            )?,
             "read_requests" => {
                 if !capture.sink.wants_progress() {
                     return Err(Failure::new("browser_capture_unavailable"));

@@ -677,7 +677,7 @@ impl Inner {
                         return Ok(());
                     }
                     if let Some(event) = Event::parse(self.scope, method, &value["params"]) {
-                        self.publish_task_event(&event);
+                        self.publish_task_event(&event, &value["params"]);
                     }
                     return Ok(());
                 }
@@ -830,7 +830,7 @@ impl Inner {
         }
     }
 
-    fn publish_task_event(&self, event: &Event) {
+    fn publish_task_event(&self, event: &Event, params: &Value) {
         let task_events = self.task_events.lock().unwrap();
         let Some((root, sink)) = task_events.as_ref() else {
             return;
@@ -850,6 +850,13 @@ impl Inner {
             }) if *category == super::event::ConsoleCategory::Javascript
                 && *level == ConsoleLevel::Error =>
             {
+                if sink.wants_exception_locations() {
+                    if !sink.contains_log_timestamp(&params["timestamp"]) {
+                        return;
+                    }
+                    sink.push_exception(&params["stackTrace"], "url");
+                    return;
+                }
                 Fact::Exception
             }
             Event::Diagnostic(Diagnostic::Console { level, .. }) => Fact::Console(match level {

@@ -130,7 +130,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":actions,
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
-        "extensions":{"task_events":{"version":1,"available":true,"categories":["console","network"]},"network_progress":{"version":1,"available":true,"reason":null},"actionability":crate::browser::selection::extension(None),
+        "extensions":{"exception_locations":crate::browser::selection::extension(None),"task_events":{"version":1,"available":true,"categories":["console","network"]},"network_progress":{"version":1,"available":true,"reason":null},"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
             "scoped_scroll":crate::browser::selection::extension(None), "ref_hover":crate::browser::selection::extension(None),
             "dom_evidence":crate::browser::selection::extension(None),
@@ -441,8 +441,7 @@ impl Browsers {
                             &port,
                             &tab,
                             epoch,
-                            &action["categories"],
-                            action["track_requests"].as_bool().unwrap_or(false),
+                            action,
                             deadline,
                         )
                         .await
@@ -462,7 +461,7 @@ impl Browsers {
                 "browser_evidence"
                     if matches!(
                         params["query"]["kind"].as_str(),
-                        Some("read_events" | "read_event" | "read_requests")
+                        Some("read_events" | "read_event" | "read_requests" | "read_exception_location")
                     ) =>
                 {
                     let port = page.access(false)?;

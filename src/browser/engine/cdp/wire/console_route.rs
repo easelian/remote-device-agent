@@ -80,6 +80,12 @@ impl Route {
         match decision {
             Delivery::Primary => return false,
             Delivery::Private => {}
+            Delivery::Fact(Fact::Exception) if self.sink.wants_exception_locations() => {
+                self.sink.push_exception(
+                    &event["params"]["exceptionDetails"]["stackTrace"],
+                    "scriptId",
+                );
+            }
             Delivery::Fact(fact) => self.sink.push(fact),
             Delivery::Fault => self.fail(),
         }
@@ -212,6 +218,12 @@ mod tests {
         (Route::new("target".into(), sink.clone(), tx), rx, sink)
     }
 
+    fn location_route() -> (Route, Sink) {
+        let (tx, _rx) = mpsc::channel(8);
+        let sink = Sink::new_with_tracking(Arc::new(Control::new()), 1, true, true, false, true);
+        (Route::new("target".into(), sink.clone(), tx), sink)
+    }
+
     fn parent() -> Value {
         json!({"method":"Target.attachedToTarget","params":{
             "sessionId":"parent","targetInfo":{"type":"browser","targetId":"browser"}}})
@@ -283,6 +295,32 @@ mod tests {
             sink.page(0, None, 8).unwrap()["events"][0]["kind"],
             "console"
         );
+    }
+
+    #[test]
+    fn opted_in_exception_stack_uses_one_based_cdp_positions_and_bounds_frames() {
+        let (route, sink) = location_route();
+        route.consume(&parent());
+        route.consume(&child());
+        route.consume(&json!({"sessionId":"child","method":"Runtime.executionContextCreated","params":{"context":{"id":1,"auxData":{"isDefault":true,"frameId":"target"}}}}));
+        route.arm(1.0);
+        assert!(route.consume(
+            &json!({"method":"Runtime.exceptionThrown","sessionId":"child","params":{
+                "timestamp":1.0,"exceptionDetails":{"executionContextId":1,"stackTrace":{
+                    "callFrames":[
+                        {"scriptId":"script","lineNumber":0,"columnNumber":0},
+                        {"scriptId":"script","lineNumber":4,"columnNumber":8},
+                        {"scriptId":"script","lineNumber":9,"columnNumber":2},
+                        {"scriptId":"script","lineNumber":12,"columnNumber":3}
+                    ]
+                }}
+            }})
+        ));
+        let location = sink.exception_location(1).unwrap();
+        assert_eq!(location["frames"][0]["line"], 1);
+        assert_eq!(location["frames"][0]["column"], 1);
+        assert_eq!(location["frames"].as_array().unwrap().len(), 3);
+        assert_eq!(location["truncated"], true);
     }
 
     #[test]

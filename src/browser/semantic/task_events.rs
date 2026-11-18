@@ -5,10 +5,12 @@ use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod locations;
 mod requests;
+use locations::Locations;
 use requests::Ledger;
 pub(crate) use requests::{Method, RequestUpdate};
 
@@ -73,6 +75,7 @@ struct Window {
     stopped: Option<Instant>,
     invalid: bool,
     requests: Option<Ledger>,
+    locations: Option<Locations>,
 }
 struct Inner {
     control: Arc<Control>,
@@ -81,6 +84,7 @@ struct Inner {
     console: bool,
     network: bool,
     progress: bool,
+    location_start_ms: Option<u64>,
     window: Mutex<Window>,
 }
 
@@ -98,6 +102,7 @@ impl Sink {
         Self::new_with_progress(control, epoch, console, network, false)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_progress(
         control: Arc<Control>,
         epoch: u64,
@@ -105,7 +110,19 @@ impl Sink {
         network: bool,
         track: bool,
     ) -> Self {
-        let progress = network && track;
+        Self::new_with_tracking(control, epoch, console, network, track, false)
+    }
+
+    pub(crate) fn new_with_tracking(
+        control: Arc<Control>,
+        epoch: u64,
+        console: bool,
+        network: bool,
+        track_requests: bool,
+        track_exception_locations: bool,
+    ) -> Self {
+        let progress = network && track_requests;
+        let exception_locations = console && track_exception_locations;
         Self(Arc::new(Inner {
             control,
             epoch,
@@ -113,12 +130,21 @@ impl Sink {
             console,
             network,
             progress,
+            location_start_ms: exception_locations
+                .then(|| {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .ok()
+                        .and_then(|d| u64::try_from(d.as_millis()).ok())
+                })
+                .flatten(),
             window: Mutex::new(Window {
                 entries: VecDeque::with_capacity(MAX_EVENTS),
                 last: 0,
                 stopped: None,
                 invalid: false,
                 requests: progress.then(|| Ledger::for_epoch(epoch)),
+                locations: exception_locations.then(Locations::default),
             }),
         }))
     }
@@ -146,6 +172,7 @@ impl Sink {
         w.invalid = true;
         w.entries.clear();
         w.requests = None;
+        w.locations = None;
     }
 
     pub(crate) fn invalidate_active(&self) {
@@ -154,6 +181,7 @@ impl Sink {
             window.invalid = true;
             window.entries.clear();
             window.requests = None;
+            window.locations = None;
         }
     }
 
@@ -161,6 +189,9 @@ impl Sink {
         let mut w = self.0.window.lock().unwrap();
         if let Some(ledger) = &mut w.requests {
             ledger.forget_bindings();
+        }
+        if let Some(locations) = &mut w.locations {
+            locations.forget_sources();
         }
         w.stopped
             .get_or_insert_with(|| Instant::now().min(self.0.started + WINDOW));
@@ -175,18 +206,53 @@ impl Sink {
         if !selected {
             return;
         }
+        self.record_event(fact, None);
+    }
+
+    pub(crate) fn wants_exception_locations(&self) -> bool {
+        self.0.location_start_ms.is_some()
+    }
+
+    /// BiDi log times are Unix milliseconds. Exclude the ambiguous millisecond
+    /// of registration, including buffered exceptions from the previous owner.
+    pub(crate) fn contains_log_timestamp(&self, timestamp: &Value) -> bool {
+        self.0
+            .location_start_ms
+            .zip(timestamp.as_u64())
+            .is_some_and(|(start, event)| event > start)
+    }
+
+    pub(crate) fn push_exception(&self, stack: &Value, source_field: &str) {
+        self.record_event(Fact::Exception, Some((stack, source_field)));
+    }
+
+    fn record_event(&self, fact: Fact, stack: Option<(&Value, &str)>) {
         self.record(|w, now| {
-            if w.entries.len() == MAX_EVENTS {
-                w.entries.pop_front();
+            if w.entries.len() == MAX_EVENTS
+                && let Some(old) = w.entries.pop_front()
+                && let Some(locations) = &mut w.locations
+            {
+                locations.evict(old.sequence);
             }
             w.last += 1;
-            let sequence = w.last;
             w.entries.push_back(Entry {
-                sequence,
+                sequence: w.last,
                 elapsed_ms: now.duration_since(self.0.started).as_millis() as u32,
                 fact,
             });
+            if let (Some(locations), Some((native, field))) = (&mut w.locations, stack) {
+                locations.push(w.last, native, field);
+            }
         });
+    }
+
+    pub(crate) fn exception_location(&self, sequence: u64) -> Result<Value> {
+        self.read(|w, _| {
+            w.locations
+                .as_ref()
+                .and_then(|locations| locations.get(sequence))
+                .ok_or_else(|| Failure::new("browser_capture_unavailable"))
+        })
     }
 
     pub(crate) fn wants_progress(&self) -> bool {
@@ -319,6 +385,87 @@ mod tests {
         assert_eq!(lost["dropped_count"], 3);
         assert!(sink.event(1).is_err());
     }
+    #[test]
+    fn buffered_bidi_exceptions_preceding_this_window_are_excluded() {
+        let sink = Sink::new_with_tracking(Arc::new(Control::new()), 1, true, false, false, true);
+        let cutoff = sink.0.location_start_ms.unwrap();
+        assert!(!sink.contains_log_timestamp(&Value::Null));
+        assert!(!sink.contains_log_timestamp(&json!(cutoff)));
+        assert!(!sink.contains_log_timestamp(&json!(cutoff - 1)));
+        assert!(sink.contains_log_timestamp(&json!(cutoff + 1)));
+    }
+
+    #[test]
+    fn exception_location_tracks_mixed_event_eviction() {
+        let sink = Sink::new_with_tracking(Arc::new(Control::new()), 1, true, false, false, true);
+        let stack = json!({"callFrames":[{"source":"a.js","lineNumber":4,"columnNumber":8}]});
+        sink.push_exception(&stack, "source");
+        for _ in 0..MAX_EVENTS {
+            sink.push(Fact::Console(Level::Info));
+        }
+        assert!(sink.exception_location(1).is_err());
+    }
+
+    #[test]
+    fn exception_locations_bound_sources_and_reset_on_new_window() {
+        let control = Arc::new(Control::new());
+        let sink = Sink::new_with_tracking(control.clone(), 1, true, false, false, true);
+        for n in 0..33 {
+            let stack = json!({"callFrames":[{"source":format!("file-{n}.js"),"lineNumber":1,"columnNumber":1}]});
+            sink.push_exception(&stack, "source");
+        }
+        let last = sink.exception_location(33).unwrap();
+        assert_eq!(last["frames"][0]["source_id"], Value::Null);
+        let known = json!({"callFrames":[{"source":"file-31.js","lineNumber":1,"columnNumber":1}]});
+        sink.push_exception(&known, "source");
+        assert_eq!(
+            sink.exception_location(34).unwrap()["frames"][0]["source_id"],
+            32
+        );
+        let fresh = Sink::new_with_tracking(control.clone(), 1, true, false, false, true);
+        fresh.push_exception(&known, "source");
+        assert_eq!(
+            fresh.exception_location(1).unwrap()["frames"][0]["source_id"],
+            1
+        );
+        sink.stop();
+        assert!(sink.exception_location(33).is_ok());
+        let epoch = control.change(true);
+        assert!(epoch > 1);
+        assert!(sink.exception_location(33).is_err());
+    }
+
+    #[test]
+    fn malformed_exception_frames_are_omitted_and_marked_truncated() {
+        let sink = Sink::new_with_tracking(Arc::new(Control::new()), 1, true, false, false, true);
+        let stack = json!({"callFrames":[
+            {"source":"x","lineNumber":-1,"columnNumber":2},
+            {"source":"x","lineNumber":2,"columnNumber":3}
+        ]});
+        sink.push_exception(&stack, "source");
+        let value = sink.exception_location(1).unwrap();
+        assert_eq!(value["truncated"], true);
+        assert_eq!(
+            value["frames"],
+            json!([{"source_id":1,"line":3,"column":4}])
+        );
+        let wide = json!({"parentId":{"id":"private"},"callFrames":[
+            {"source":"x","lineNumber":0,"columnNumber":0},
+            {"source":"too long".repeat(300),"lineNumber":0,"columnNumber":0},
+            {"source":"x","lineNumber":2147483647,"columnNumber":0},
+            {"source":"skipped","lineNumber":23,"columnNumber":25}]});
+        sink.push_exception(&wide, "source");
+        let value = sink.exception_location(2).unwrap();
+        assert_eq!(value["truncated"], true);
+        assert_eq!(
+            value["frames"],
+            json!([{"source_id":1,"line":1,"column":1},{"source_id":null,"line":1,"column":1}])
+        );
+        let parent = json!({"parent":{"callFrames":[]},"callFrames":[]});
+        sink.push_exception(&parent, "source");
+        assert_eq!(sink.exception_location(3).unwrap()["truncated"], true);
+    }
+
     #[test]
     fn stop_freezes_and_control_transfer_revokes_a_window() {
         let control = Arc::new(Control::new());

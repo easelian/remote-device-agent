@@ -97,7 +97,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
         let why = reason.or((!exists).then_some("browser_not_installed"));
         json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
                 "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"],
-                "extensions":{"actionability":extension(why),
+                "extensions":{"exception_locations":extension(why), "actionability":extension(why),
                     "observation_delta":extension(why), "scoped_scroll":extension(why), "ref_hover":extension(why), "dom_evidence":extension(why), "form_validation":extension(why), "virtual_list":extension(why), "record_wait":extension(why),
                     "native_ax":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "ref_drag":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),

@@ -1767,20 +1767,23 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
     const MAX: u64 = (1 << 53) - 1;
     let valid = match (mutation, value["kind"].as_str()) {
         (true, Some("start")) => {
-            let network = value["categories"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(|v| v == "network"));
-            (fields.len() == 2 || (fields.len() == 3 && fields.contains_key("track_requests")))
+            let tracking = |flag: &str, category: &str| {
+                fields.get(flag).is_none_or(|v| v == true
+                    && value["categories"].as_array().is_some_and(|c| c.iter().any(|v| v == category)))
+            };
+            fields.keys().all(|key| matches!(key.as_str(),
+                "kind" | "categories" | "track_requests" | "track_exception_locations"))
                 && value["categories"].as_array().is_some_and(|c| {
                     (1..=2).contains(&c.len())
                         && c.iter()
                             .all(|v| matches!(v.as_str(), Some("network" | "console")))
                         && (c.len() == 1 || c[0] != c[1])
                 })
-                && fields.get("track_requests").is_none_or(|flag| flag == true && network)
+                && tracking("track_requests", "network")
+                && tracking("track_exception_locations", "console")
         }
         (true, Some("stop")) => fields.len() == 2 && id,
-        (false, Some("read_event")) => {
+        (false, Some("read_event" | "read_exception_location")) => {
             fields.len() == 3 && id && fields.contains_key("sequence") && number("sequence", 1, MAX)
         }
         (false, Some("read_requests")) => fields.len() == 2 && id,
@@ -1931,7 +1934,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             validate_capture_query(&params["action"], true)?;
         } else if matches!(
             params["query"]["kind"].as_str(),
-            Some("read_events" | "read_event" | "read_requests")
+            Some("read_events" | "read_event" | "read_requests" | "read_exception_location")
         ) {
             validate_capture_query(&params["query"], false)?;
         } else {
@@ -2191,6 +2194,13 @@ mod tests {
         unselected["action"]["categories"] = json!(["console"]);
         unselected["action"]["track_requests"] = true.into();
         assert!(validate("browser_capture", &unselected).is_err());
+        let mut both = tracked.clone();
+        both["action"]["track_exception_locations"] = true.into();
+        assert!(validate("browser_capture", &both).is_err());
+        both["action"]["categories"] = json!(["network","console"]);
+        assert!(validate("browser_capture", &both).is_ok());
+        both["action"]["track_exception_locations"] = false.into();
+        assert!(validate("browser_capture", &both).is_err());
         let mut extra = base.clone();
         extra["action"]["extra"] = true.into();
         assert!(validate("browser_capture", &extra).is_err());
