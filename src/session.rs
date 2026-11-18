@@ -230,7 +230,10 @@ async fn session(
     let outcome = loop {
         tokio::select! {
             _ = interrupted(shutdown) => break End::Stop,
-            _ = &mut ready_deadline, if !ready => break End::Retry { was_ready: false, reason: "Gateway ready timed out".into() },
+            _ = &mut ready_deadline, if !ready => break End::Retry {
+                was_ready: false,
+                reason: if accepted.is_some() { "Core activation timed out" } else { "Gateway ready timed out" }.into(),
+            },
             _ = &mut writer => {
                 writer_finished = true;
                 break End::Retry { was_ready: ready, reason: "Gateway send failed".into() };
@@ -286,16 +289,20 @@ async fn session(
                 };
                 if !ready {
                     if let Some(assignment)=&assignment {
+                        let expected_type = if accepted.is_some() { "active" } else { "ready" };
+                        if value["type"] != expected_type {
+                            break End::Retry{was_ready:false,reason:format!("Core did not send the expected {expected_type} message")};
+                        }
                         let identity=value.get("cluster").cloned().and_then(|v|serde_json::from_value::<crate::cluster::Identity>(v).ok());
                         let Some(identity)=identity.filter(|id|assignment.matches(id,&config.device_id,&runtime.receipts.instance_id)) else {
                             break End::Retry{was_ready:false,reason:"Invalid cluster connection identity".into()};
                         };
                         if let Some(current)=&accepted {
-                            if value["type"]!="active" || current!=&identity {
+                            if current!=&identity {
                                 break End::Retry{was_ready:false,reason:"Cluster did not confirm activation".into()};
                             }
                         } else {
-                            if value["type"]!="ready" || !runtime.bind_cluster(generation,identity.clone(),sender.clone()) {
+                            if !runtime.bind_cluster(generation,identity.clone(),sender.clone()) {
                                 break End::Retry{was_ready:false,reason:"Cluster control generation was rejected".into()};
                             }
                             accepted=Some(identity);
@@ -330,6 +337,25 @@ async fn session(
             }
         }
     };
+    if let (
+        Some(assignment),
+        End::Retry {
+            was_ready: false,
+            reason,
+        },
+    ) = (&assignment, &outcome)
+    {
+        state.report(
+            "cluster_handshake_failed",
+            json!({
+                "stage": if accepted.is_some() { "awaiting_active" } else { "awaiting_ready" },
+                "node_id": assignment.node_id,
+                "assignment_id": assignment.assignment_id,
+                "accepted_generation": accepted.as_ref().map(|identity| identity.generation),
+                "reason": reason,
+            }),
+        );
+    }
     state.previous_connection = runtime.last_cluster_identity();
     if matches!(
         outcome,
