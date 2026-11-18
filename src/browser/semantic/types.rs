@@ -198,6 +198,10 @@ pub(crate) struct Material {
     // Private identity of the list that owns this option, included in its action fingerprint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_list: Option<u64>,
+    // Enclosing record material binds nested actions across row moves and recycling.
+    // The MCP projection exports only entries from the target's own record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owner_context: Vec<Entry>,
     pub entries: Vec<Entry>,
     pub complete: bool,
     pub limits: Vec<String>,
@@ -245,14 +249,14 @@ impl Facts {
             || !self.x.is_finite()
             || !self.y.is_finite()
             || self.record.owner_list == Some(0)
-            || self.record.entries.len() > 256
+            || self.record.entries.len() + self.record.owner_context.len() > 256
             || self.record.limits.len() > 16
             || self.record.complete && !self.record.limits.is_empty()
         {
             return Err(decode());
         }
         let mut chars = 0;
-        for entry in &self.record.entries {
+        for entry in self.record.entries.iter().chain(&self.record.owner_context) {
             if entry.identity == 0 || entry.tag.len() > 64 || entry.attributes.len() > 40 {
                 return Err(decode());
             }

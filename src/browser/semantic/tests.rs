@@ -170,6 +170,7 @@ impl Fake {
                     in_view: true,
                     record: Material {
                         owner_list: None,
+                        owner_context: Vec::new(),
                         entries: vec![Entry {
                             identity: node,
                             tag: "button".into(),
@@ -550,6 +551,25 @@ impl Port for Fake {
         }
         self.submission.deliver(())
     }
+}
+
+#[test]
+fn enclosing_records_share_the_node_and_text_budgets_with_public_entries() {
+    let fake = Fake::new();
+    let mut facts = fake.data.lock().unwrap().rows[0].clone();
+    let mut owner = facts.record.entries[0].clone();
+    owner.text.clear();
+    facts.record.entries[0].text = "x".into();
+    facts.record.owner_context = vec![owner.clone(); 255];
+    assert!(facts.validate().is_ok());
+    facts.record.owner_context.push(owner.clone());
+    assert!(facts.validate().is_err());
+
+    owner.text = "字".repeat(4095);
+    facts.record.owner_context = vec![owner];
+    assert!(facts.validate().is_ok());
+    facts.record.owner_context[0].text.push('a');
+    assert!(facts.validate().is_err());
 }
 
 #[tokio::test]

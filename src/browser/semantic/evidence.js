@@ -218,7 +218,6 @@ function(operation, args) {
     role:roleOf(node),...nameOf(node),sensitive:sensitive(node)});
   const coverage = () => ({visited_elements:elements,visited_text_nodes:texts,visited_other_nodes:others,
     truncated:limits.size>0,limits:[...limits].sort(),omitted:[...omitted].sort()});
-  const recordSelector = '[data-rdh-record],article,tr,li,[role="row"],[role="listitem"],[role="option"]';
   function allowsRecordText(element) {
     if (excludesText(element) || element.hidden || element.inert ||
         element.getAttribute('aria-hidden') === 'true') return false;
@@ -227,7 +226,7 @@ function(operation, args) {
       && style.opacity !== '0' && style.contentVisibility !== 'hidden';
   }
   function matchesRecord(record) {
-    if (!record.matches(recordSelector)) return false;
+    if (canonical.recordKind(record) !== 'record') return false;
     for (let item = record, depth = 0; item; item = parent(item), depth++) {
       if (depth >= 64) { limits.add('depth_limit'); return false; }
       if (!visit(item) || !allowsRecordText(item)) return false;
@@ -241,7 +240,7 @@ function(operation, args) {
       if (++visited > 256) { limits.add('element_limit'); return false; }
       if (!visit(item)) return false;
       if (item.nodeType === Node.ELEMENT_NODE) {
-        if (item.matches(recordSelector) || !allowsRecordText(item)) continue;
+        if (canonical.recordKind(item) || !allowsRecordText(item)) continue;
         if (item.firstChild) {
           if (stack.length >= 64) { limits.add('depth_limit'); return false; }
           stack.push({next:item.firstChild});

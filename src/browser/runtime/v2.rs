@@ -541,6 +541,10 @@ impl Browsers {
                     .await
                 }
                 "browser_wait" => {
+                    // Finish polling before the shared exchange deadline so a known
+                    // unmet condition can reach Core. Keep short budgets proportional.
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let deadline = deadline - (remaining / 4).min(Duration::from_millis(250));
                     // Preserve evidence bindings for record waits, while dropping action
                     // references and continuation state as for every other wait.
                     if let Some(record) = params.get("record") {

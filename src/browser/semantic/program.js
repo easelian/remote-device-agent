@@ -17,6 +17,18 @@ function(operation, args, other) {
   let state = globalThis[SLOT];
   if (!state || state.document !== document) {
     state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null};
+    // The evidence program in this isolated realm uses the same boundaries for record waits.
+    // A fallback-only record role is opaque: never attribute its text to an outer record.
+    const recordRoles = new Set(['row','listitem','article','option']);
+    state.recordKind = node => {
+      if (node.matches('[data-rdh-record],tr,li,article')) return 'record';
+      const role = node.getAttribute('role');
+      if (!role) return null;
+      if (role.length > 4096) return 'ambiguous';
+      const tokens = role.toLowerCase().match(/[^\t\n\f\r ]+/g) || [];
+      if (recordRoles.has(tokens[0])) return 'record';
+      return tokens.some(token => recordRoles.has(token)) ? 'ambiguous' : null;
+    };
     Object.defineProperty(globalThis, SLOT, {value:state, configurable:true});
     addEventListener('pageshow', event => {
       if (event.persisted) { state.restoration++; state.nodes.clear(); state.scan = null; }
@@ -158,13 +170,18 @@ function(operation, args, other) {
     // Scrolling needs the container identity, not the content of every mounted
     // option. All other refs keep their enclosing business record in the fingerprint.
     const onlyContainer = mapped.kind === 'scrollable' && mapped.role === 'listbox';
-    let boundary = node;
+    const scopes = [], entries = [], ownerContext = [], limits = new Set();
     if (!onlyContainer) {
+      let depth = 0;
       for (let current = node; current; current = parent(current)) {
-        if (current.matches('[data-rdh-record],tr,li,article,[role="row"],[role="listitem"]')) { boundary = current; break; }
+        if (++depth > 64) { limits.add('record_depth_limit'); break; }
+        const kind = state.recordKind(current);
+        if (!kind) continue;
+        if (!scopes.length && kind === 'ambiguous' && current !== node) scopes.push(node);
+        scopes.push(current);
       }
     }
-    const pending = [boundary], entries = [], limits = new Set();
+    if (!scopes.length) scopes.push(node);
     let ownerList;
     if (mapped.role === 'option') {
       let depth = 0;
@@ -173,32 +190,52 @@ function(operation, args, other) {
         if (explicitRole(owner) === 'listbox') { ownerList = identity(owner); break; }
       }
     }
-    let characters = 0,visited=0;
-    const append=child=>{if(pending.length+visited>=256){limits.add('record_node_limit');return false;}pending.push(child);return true;};
-    while (pending.length) {
-      if (++visited > 256) { limits.add('record_node_limit'); break; }
-      const item = pending.pop();
-      if (item.nodeType === Node.TEXT_NODE) {
-        if(item.nodeValue.length>8192){limits.add('record_character_limit');break;}
-        const text = norm(prefix(item.nodeValue,4097));
-        if (text) { characters += scalars(text).length; entries.push({identity:identity(item),tag:'#text',attributes:[],text,value:null,checked:false}); }
-      } else if (item.nodeType === Node.ELEMENT_NODE) {
-        if (['script','style','template','noscript'].includes(item.localName)) continue;
-        const attributes = semanticAttributes.filter(key => item.hasAttribute(key)).map(key => [key,prefix(item.getAttribute(key),4097)]);
-        if (explicitRole(item) === 'option') {
-          const position = optionPosition(item);
-          if (position) attributes.push(...position);
-          else if (item === node) limits.add('invalid_option_position');
+    let characters = 0, visited = 0;
+    // Keep enclosing records in the private action fingerprint. Their contents
+    // must never make a child control match a public search, or vice versa.
+    for (const scope of scopes) {
+      if (characters > 4096) break;
+      if (visited >= 256) { limits.add('record_node_limit'); break; }
+      const pending = [scope];
+      const destination = scope === scopes[0] ? entries : ownerContext;
+      const appendChildren = root => {
+        for (let child = root.lastChild; child; child = child.previousSibling) {
+          if (pending.length + visited >= 256) {
+            limits.add('record_node_limit');
+            break;
+          }
+          pending.push(child);
         }
-        const value = valueOf(item);
-        characters += attributes.reduce((sum,pair) => sum+scalars(pair[1]).length,0) + scalars(value || '',4097).length;
-        entries.push({identity:identity(item),tag:item.localName,attributes,text:'',value,checked:!!item.checked});
-        if (!onlyContainer && item.shadowRoot) for (let child = item.shadowRoot.lastChild; child; child = child.previousSibling) if(!append(child))break;
-        if (!onlyContainer) for (let child = item.lastChild; child; child = child.previousSibling) if(!append(child))break;
+      };
+      while (pending.length) {
+        if (++visited > 256) { limits.add('record_node_limit'); break; }
+        const item = pending.pop();
+        if (item.nodeType === Node.TEXT_NODE) {
+          if(item.nodeValue.length>8192){limits.add('record_character_limit');break;}
+          const text = norm(prefix(item.nodeValue,4097));
+          if (text) { characters += scalars(text).length; destination.push({identity:identity(item),tag:'#text',attributes:[],text,value:null,checked:false}); }
+        } else if (item.nodeType === Node.ELEMENT_NODE) {
+          if (item !== scope && state.recordKind(item)) continue;
+          if (['script','style','template','noscript'].includes(item.localName)) continue;
+          const attributes = semanticAttributes.filter(key => item.hasAttribute(key)).map(key => [key,prefix(item.getAttribute(key),4097)]);
+          if (explicitRole(item) === 'option') {
+            const position = optionPosition(item);
+            if (position) attributes.push(...position);
+            else if (item === node) limits.add('invalid_option_position');
+          }
+          const value = valueOf(item);
+          characters += attributes.reduce((sum,pair) => sum+scalars(pair[1]).length,0) + scalars(value || '',4097).length;
+          destination.push({identity:identity(item),tag:item.localName,attributes,text:'',value,checked:!!item.checked});
+          if (!onlyContainer) {
+            if (item.shadowRoot) appendChildren(item.shadowRoot);
+            appendChildren(item);
+          }
+        }
+        if (characters > 4096) { limits.add('record_character_limit'); destination.pop(); break; }
       }
-      if (characters > 4096) { limits.add('record_character_limit'); entries.pop(); break; }
     }
-    return {entries,owner_list:ownerList,complete:limits.size === 0,limits:Array.from(limits).sort()};
+    return {entries, owner_context:ownerContext.length ? ownerContext : undefined, owner_list:ownerList,
+      complete:limits.size === 0, limits:Array.from(limits).sort()};
   }
   const scrollable = node => {
     if (!node || node.nodeType !== 1 || !node.isConnected || node.ownerDocument !== document) return false;

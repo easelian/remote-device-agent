@@ -4,7 +4,7 @@ AI 应能在一次会话中找到目标、执行操作、解释失败，并用�
 
 ## 从一次提交定义工具分工
 
-例如，用户要求修改表格中一条记录。AI 从观察结果确认记录及其编辑按钮，填写字段，提交一次，然后重新查找**同一条记录**。如果记录没变，可能是控件被遮挡、表单在本地拒绝、脚本异常、请求失败，或服务端已更新而页面还没刷新。仅凭“按钮已点击”无法选择下一步。
+例如，用户要求修改表格中一条记录。AI 从观察结果确认记录及其编辑按钮，填写字段，提交一次，然后重新查找**同一条记录**。如果记录没变，可能是控件被遮挡、表单在本地拒绝、脚本异常、请求失败，或服务端已更新而页面还没刷新。仅凭“按钮已点击”无法选择下一步。遇到嵌套记录，要分别核对父订单和子订单。查找按钮、采样该记录的结果时都应跳过内嵌记录。动作引用另行保留外层记录的身份与内容，用于检查页面是否把子记录移到了别的订单。
 
 | 可判定的现象 | AI 的下一步 | 判定依据 |
 | --- | --- | --- |
@@ -102,7 +102,7 @@ AI 排查点击失败时，先用 `browser_inspect` 检查命中，再用 `find_
 | 人工边界能否维持？ | Server `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
 | 新诊断是否帮助 AI 作出正确判断？ | 为遮挡、JS 异常、HTTP 失败、HTTP 200 业务拒绝、响应丢失、本人验证分别固定页面终态和提交计数。记录任务完成率、误报成功率、普通故障人工接管数、诊断调用数/字节数。纳入事件洪峰、跨主体、换代与双后端能力不对称。普通任务与必须本人验证的任务分别计数。基准语料中重复提交、敏感内容披露和无证据宣称成功均为阻断项 |
 | 增量与新能力能否独立关闭？ | Server `clients/browser-observation-delta.test.mjs`、`tests/core/test_browser_observation_delta.py`。用同一次采集的完整观察验证重建。稀疏组实际 MCP 总字节不超过始终 full 的 70%。覆盖未知扩展、旧客户端、重连、乱序及基线淘汰 |
-| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`exception-locations`、`lost-write`、`form-validation`、`scoped-scroll`、`hover`、`ref-drag`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
+| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`exception-locations`、`lost-write`、`record-wait`、`form-validation`、`scoped-scroll`、`hover`、`ref-drag`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
 
 在 Server 根目录核对 `python3 scripts/run_browser_acceptance.py --help`。例如，在准备好专用测试环境后运行下面的 DOM 证据阶段。`RDH_ACCEPT_ENV` 指向包含配套测试产物与数据库设置的私有 JSON，`RDH_ACCEPT_OUT` 指向一个尚不存在的输出目录。成功时退出码为 0，目录中的 `acceptance-complete.json` 记录通过状态。
 

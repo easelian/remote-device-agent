@@ -83,6 +83,8 @@ compare snapshot
 
 要确认提交或选择后的页面结果，先用 `browser_evidence` 的 `find_nodes` 取得目标记录的 `node_id`。设备和会话声明 `extensions.record_wait` 版本 1 时，可对当前 tab 调用 `browser_wait`，传入 `record: {"node_id":"…","anchor_text":"订单 B42","expected_text":"已批准"}`。两个字符串分别匹配同一条记录普通 DOM 子树中的独立可见文本节点，不跨 shadow root。单次采样最多遍历 256 个后代、4,096 个 Unicode 标量，遍历深度不超过 64 层；覆盖不完整时继续等待，直到条件成立或期限届满。选稳定且能区分业务记录的文本作为锚；状态出现在相邻记录、内嵌记录或输入框时，不能据此确认成功。页面整体换代时要重新定位记录。超时后检查回执和页面现状，再决定下一步；页面结果只能证明网站当时展示的状态。
 
+同名按钮位于嵌套订单时，用 `browser_observe(find=订单号, filter="interactive")` 比对按钮的 `record.entries`。记录内查找只使用最近一层记录自己的内容。HTML 的 `article`、`tr`、`li`、显式 `data-rdh-record` 以及首个 ARIA 角色为 `row`、`listitem`、`article`、`option` 的容器可形成记录。若记录角色只出现在后备角色中，按不确定边界处理，外层等待会跳过该子树。动作派发还会复核外层记录的归属。页面把同一按钮或整条子记录移到另一订单后，重新观察以取得新的引用。
+
 ### 可用的诊断与增量展示
 
 `browser_guidance` 提供 `open`、`observe`、`recover`、`handoff`、`files` 五个主题。Core 从已认证连接的会话元数据选择静态模板。模板的 `content_trust` 为 `server_template`，网页观察和诊断中的网页数据为 `untrusted_page`。指引里的示例仍需实际调用时的授权、参数和状态。
