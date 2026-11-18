@@ -94,6 +94,8 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 `start_observed:false` 表示当前行缺少开始证据，此时省略方法。已观察开始时只返回标准方法枚举或 `OTHER`。重定向的下一跳通过 `redirected_from` 指向保留的前一跳，缺失前一跳时标记 `redirect_gap:true`。`evicted_count` 统计淘汰的行，`untracked_count` 统计无法归属或解析的进度事件。普通事件读取继续使用原有的序号和分页。控制代次改变后重新开窗。新窗口只披露从该窗口开始观察到的请求链，避免把上个控制者产生的延迟响应交给 AI。[请求关联与淘汰](../src/browser/semantic/task_events/requests.rs)
 
+排查提交后页面迟迟没有变化时，可用可重置的合成订单对照两条路径。固定 Chromium 版本和订单初态，在各自的独立会话中只提交一次。Easelian 在提交前开启请求跟踪；参考工具在同一 CLI 会话中用 `network requests --method POST` 分别读取响应获准返回前后的状态。核对各自会话内的请求标识，再只读刷新目标订单，并检查测试站点收到的写入次数。例如，同一个 POST 从等待响应变为 HTTP 409，刷新后 B42 显示需要复核，而测试站只收到一次提交。这样可以区分等待服务端、业务拒绝和客户端重复提交。CLI 会话的启动步骤见[拖放对照](#用拖放移动看板卡片)。
+
 每条控制台消息最多检查 16 个参数和 8 个不同原生对象，回收队列最多容纳 16 个句柄。超出预算时，Agent 终止该诊断窗口，主页面可以继续操作。超过 2 MiB 的私有 Runtime 通知只有在能按原生消息格式核实其子 session 时才允许流式丢弃，最长 2 秒、最多 16 MiB。其他超限消息沿用连接级故障处理。窗口返回 `browser_capture_unavailable` 时，AI 应重新观察并核对网站结果。若新窗口仍受历史大消息影响，可继续使用网络和页面证据。[大消息归属与丢弃](../src/browser/engine/cdp/wire/oversized_console.rs)
 
 脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。更多样式来源、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)
