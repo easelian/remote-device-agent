@@ -100,6 +100,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
                 "extensions":{"actionability":extension(why),
                     "observation_delta":extension(why), "scoped_scroll":extension(why), "ref_hover":extension(why), "dom_evidence":extension(why), "form_validation":extension(why), "virtual_list":extension(why), "record_wait":extension(why),
                     "native_ax":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
+                    "ref_drag":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "matched_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "task_events":{"version":1,"available":why.is_none(),"categories":["console","network"] }, "network_progress":{"version":1,"available":why.is_none(),"reason":why}}})
     })

@@ -84,6 +84,8 @@ impl LeaseCommand {
             | Command::RuntimeReleaseObjectGroup
             | Command::IoClose => true,
             #[cfg(feature = "experimental-browser-bidi")]
+            Command::InputDragCancel | Command::InputDragReset => true,
+            #[cfg(feature = "experimental-browser-bidi")]
             Command::CssDisable | Command::DomDisable | Command::TargetDetachFromTarget => true,
             _ => false,
         }

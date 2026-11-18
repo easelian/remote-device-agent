@@ -385,14 +385,23 @@ impl Port for Fake {
                         .cloned()
                         .map(Box::new),
                 )),
-                Program::Recheck { nodes, .. } => Ok(Output::Checks(
+                Program::Recheck {
+                    nodes, endpoint, ..
+                } => Ok(Output::Checks(
                     nodes
                         .into_iter()
                         .map(|node| {
                             data.rows(frame.context)
                                 .unwrap()
                                 .iter()
-                                .find(|row| row.node == node)
+                                .find(|row| {
+                                    row.node == node
+                                        && (!endpoint
+                                            || matches!(
+                                                row.kind.as_str(),
+                                                "drag_source" | "drop_target"
+                                            ))
+                                })
                                 .cloned()
                         })
                         .collect(),
@@ -488,7 +497,9 @@ impl Port for Fake {
             self.effects.fetch_add(1, Ordering::AcqRel);
             let mut data=self.data.lock().unwrap();
             match input {
-                NativeInput::SelectFile { .. } => return Err(crate::browser::Failure::new("browser_feature_unsupported")),
+                NativeInput::Drag { .. } | NativeInput::SelectFile { .. } => {
+                    return Err(crate::browser::Failure::new("browser_feature_unsupported"))
+                }
                 NativeInput::Hover { node } => {
                     let id = data.rows(frame.context)?.iter().find(|row| row.node == node)
                         .ok_or_else(types::stale)?.id.clone();

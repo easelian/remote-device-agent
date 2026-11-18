@@ -11,7 +11,7 @@ pub(crate) mod styles;
 pub(crate) mod surface;
 pub(crate) mod task_events;
 pub(crate) mod types;
-pub(crate) use page::Coordination;
+pub(crate) use page::{Coordination, DragEndpoint, check_drag_endpoints};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use page::HumanPermit;
 #[allow(unused_imports)]

@@ -396,6 +396,7 @@ impl Browsers {
             operation,
             "browser_inspect" | "browser_evidence" | "browser_capture"
         ) || operation == "browser_observe" && params.get("presentation").is_some()
+            || ref_drag_request(operation, params)
         {
             // Only the explicitly selected v2 branch supports these extensions.
             // Refuse before preparing storage or touching a legacy session.
@@ -1825,6 +1826,11 @@ impl RecordCondition {
     }
 }
 
+fn ref_drag_request(operation: &str, params: &Value) -> bool {
+    (operation == "browser_observe" && params["filter"] == "drag_endpoints")
+        || (operation == "browser_act" && params["action"]["kind"] == "drag")
+}
+
 fn validate(operation: &str, params: &Value) -> Result<()> {
     if matches!(
         operation,
@@ -1965,7 +1971,10 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         return Err(Failure::new("browser_invalid_params"));
     }
     if let Some(filter) = map.get("filter")
-        && !matches!(filter.as_str(), Some("all" | "interactive" | "viewport"))
+        && !matches!(
+            filter.as_str(),
+            Some("all" | "interactive" | "viewport" | "drag_endpoints")
+        )
     {
         return Err(Failure::new("browser_invalid_params"));
     }
@@ -2037,6 +2046,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                 }
             }
             "click" | "hover" => &["kind", "ref"],
+            "drag" => &["kind", "ref", "target_ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
             "dialog" => &["kind", "accept", "dialog_id"],
             _ => return Err(Failure::new("browser_invalid_params")),
@@ -2053,6 +2063,19 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             return Err(Failure::new("browser_url_denied"));
         }
         if fields.contains(&"ref") && action["ref"].as_str().is_none_or(|s| s.len() > 128) {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        if kind == "drag"
+            && ["ref", "target_ref"].iter().any(|key| {
+                !action[*key].as_str().is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+                })
+            })
+        {
             return Err(Failure::new("browser_invalid_params"));
         }
         if kind == "fill" && action["text"].as_str().is_none_or(|s| s.len() > 16384) {

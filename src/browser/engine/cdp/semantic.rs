@@ -608,6 +608,97 @@ impl Semantic {
     ) {
         self.adapter.wire.hold_next_reply()
     }
+    async fn drag_points(
+        &self,
+        frame: &sem::Frame,
+        native: &Frame,
+        source: sem::DragEndpoint,
+        target: sem::DragEndpoint,
+        deadline: Instant,
+    ) -> Result<[Point; 2]> {
+        sem::check_drag_endpoints(self, frame, source, target, deadline).await?;
+        let mut points = [Point { x: 0., y: 0. }; 2];
+        for (point, endpoint) in points.iter_mut().zip([source, target]) {
+            let node = self
+                .native_node(native, &frame.marker, endpoint.node, deadline)
+                .await?;
+            *point = self
+                .point(native, &node, &frame.marker, endpoint.node, true, deadline)
+                .await?;
+        }
+        Ok(points)
+    }
+
+    async fn native_drag(
+        &self,
+        frame: &sem::Frame,
+        source: sem::DragEndpoint,
+        target: sem::DragEndpoint,
+        deadline: Instant,
+    ) -> Result<()> {
+        let native = self.native(frame)?;
+        let session = self.adapter.session(&native.session)?;
+        let points = self
+            .drag_points(frame, &native, source, target, deadline)
+            .await?;
+        let [start, dest] = points;
+        let dx = dest.x - start.x;
+        let dy = dest.y - start.y;
+        if dx.abs().max(dy.abs()) < 8.0 {
+            return Err(actionable());
+        }
+        let wire = &self.adapter.wire;
+        wire.call(
+            Some(session),
+            Command::InputMouseMove,
+            json!({"type":"mouseMoved","x":start.x,"y":start.y,"button":"none","buttons":0}),
+            deadline,
+        )
+        .await?;
+        // Pointer entry itself can replace a card or open an overlay.
+        if self
+            .drag_points(frame, &native, source, target, deadline)
+            .await?
+            != points
+        {
+            return Err(actionable());
+        }
+        let (down_wire, down_sent) = wire.track_effects();
+        if let Err(error) = down_wire.call(Some(session), Command::InputMousePress,
+            json!({"type":"mousePressed","x":start.x,"y":start.y,"button":"left","buttons":1,"clickCount":1}), deadline).await {
+            if down_sent.load(Ordering::Acquire) {
+                wire.cancel_drag(session).await?;
+            }
+            return Err(error);
+        }
+        let (drop_wire, drop_sent) = wire.track_effects();
+        let result = async {
+            let first = (12.0 / dx.abs().max(dy.abs())).min(1.0);
+            wire.start_drag(session, start.x + dx*first, start.y + dy*first, deadline).await?;
+            for step in 1..=9 {
+                let ratio = first + (1.0-first) * f64::from(step.min(8)) / 8.0;
+                wire.call(Some(session), Command::InputMouseMove,
+                    json!({"type":"mouseMoved","x":start.x+dx*ratio,"y":start.y+dy*ratio,"button":"left","buttons":1}), deadline).await?;
+            }
+            if self.drag_points(frame, &native, source, target, deadline).await? != points {
+                return Err(actionable());
+            }
+            drop_wire.call(Some(session), Command::InputDragDrop,
+                json!({"type":"mouseReleased","x":dest.x,"y":dest.y,"button":"left","buttons":0,"clickCount":1}),
+                deadline).await.map(drop)
+        }.await;
+        if let Err(error) = result {
+            if drop_sent.load(Ordering::Acquire) {
+                // Chromium may have delivered drop. Never issue another release.
+                wire.stop();
+                return Err(Failure::unknown("browser_cleanup_pending"));
+            }
+            wire.cancel_drag(session).await?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn leased_pair(
         &self,
         session: &str,
@@ -724,6 +815,7 @@ impl Semantic {
         node: &Node,
         marker: &sem::Marker,
         token: u64,
+        endpoint: bool,
         deadline: Instant,
     ) -> Result<Point> {
         let engine = self.engine();
@@ -741,7 +833,7 @@ impl Semantic {
             let session = Some(self.adapter.session(&frame.session)?);
             let object=self.adapter.wire.call(session,Command::DomResolveNode,json!({"backendNodeId":self.adapter.node(&hit.node)?,"executionContextId":world,"objectGroup":"rdh-semantic-hit"}),deadline).await?;
             let object = object["object"]["objectId"].as_str().ok_or_else(stale)?;
-            let checked=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_hit"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token}},{"objectId":object}],"returnByValue":true}),deadline).await;
+            let checked=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_hit"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token,"endpoint":endpoint}},{"objectId":object}],"returnByValue":true}),deadline).await;
             let released = self
                 .adapter
                 .wire
@@ -1103,6 +1195,9 @@ impl Port for Semantic {
         let session = self.adapter.session(&native.session)?;
         let hover = matches!(input, sem::NativeInput::Hover { .. });
         match input {
+            sem::NativeInput::Drag { source, target } => {
+                self.native_drag(frame, source, target, deadline).await
+            }
             sem::NativeInput::SelectFile { node, path } => {
                 let node = self
                     .native_node(&native, &frame.marker, node, deadline)
@@ -1115,7 +1210,7 @@ impl Port for Semantic {
                     .native_node(&native, &frame.marker, node, deadline)
                     .await?;
                 let Point { x, y } = self
-                    .point(&native, &node, &frame.marker, token, deadline)
+                    .point(&native, &node, &frame.marker, token, false, deadline)
                     .await?;
                 if hover {
                     return self

@@ -180,6 +180,7 @@ pub(crate) enum Action {
     Press(Key),
     SetFormValue(String),
     AttachFile(crate::browser::files::Attachment),
+    Drag { target: Reference },
 }
 impl Action {
     fn kind(&self) -> actionability::ActionKind {
@@ -193,6 +194,7 @@ impl Action {
             Self::Press(_) => Kind::Press,
             Self::SetFormValue(_) => Kind::Select,
             Self::AttachFile(_) => Kind::AttachFile,
+            Self::Drag { .. } => unreachable!("drag validates two endpoint grants"),
         }
     }
 }
@@ -417,6 +419,7 @@ impl<P: Port> Page<P> {
             let frames = frames
                 .into_iter()
                 .filter(|f| query.within.is_none_or(|id| id == f.context))
+                .filter(|f| query.filter != Filter::DragEndpoints || f.parent.is_none())
                 .collect::<Vec<_>>();
             if frames.is_empty() {
                 return Err(types::stale());
@@ -511,7 +514,7 @@ impl<P: Port> Page<P> {
             let candidates = batch
                 .rows
                 .iter()
-                .filter(|facts| facts.eligible())
+                .filter(|facts| facts.eligible_for(&query.filter))
                 .map(|facts| facts.node)
                 .collect::<Vec<_>>();
             let mut checked = HashMap::new();
@@ -522,6 +525,7 @@ impl<P: Port> Page<P> {
                         Program::Recheck {
                             marker: frame.marker.clone(),
                             nodes: candidates.clone(),
+                            endpoint: query.filter == Filter::DragEndpoints,
                         },
                         deadline,
                     )
@@ -546,11 +550,11 @@ impl<P: Port> Page<P> {
                     .get(&facts.node)
                     .and_then(Option::as_ref)
                     .is_some_and(|current| current.fingerprint() == facts.fingerprint());
-                if facts.eligible() && !stable {
+                if facts.eligible_for(&query.filter) && !stable {
                     observation.changed_during_read = true;
                 }
-                let reference =
-                    (facts.eligible() && stable && stable_document).then(|| Reference {
+                let reference = (facts.eligible_for(&query.filter) && stable && stable_document)
+                    .then(|| Reference {
                         scope: self.0.scope,
                         generation,
                         index: observation.rows.len(),
@@ -723,6 +727,9 @@ impl<P: Port> Page<P> {
                 .ok_or_else(types::stale)?
         };
         let task = async {
+            if is_drag_endpoint(&element.facts) {
+                return Err(Failure::new("browser_not_actionable"));
+            }
             let facts = inspect(&port, &element, deadline).await?;
             let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
             if !actionability::requirements(&facts, kind, top_level).is_empty() {
@@ -858,17 +865,29 @@ impl<P: Port> Page<P> {
         if reference.scope != self.0.scope || reference.epoch != epoch {
             return Err(types::stale());
         }
-        let element = self
-            .0
-            .state
-            .lock()
-            .unwrap()
-            .refs
-            .get(&reference)
-            .cloned()
-            .ok_or_else(types::stale)?;
+        let (element, target) = {
+            let state = self.0.state.lock().unwrap();
+            let element = state
+                .refs
+                .get(&reference)
+                .cloned()
+                .ok_or_else(types::stale)?;
+            let target = match &action {
+                Action::Drag { target } => {
+                    if target.scope != self.0.scope
+                        || target.epoch != epoch
+                        || target.generation != reference.generation
+                    {
+                        return Err(types::stale());
+                    }
+                    Some(state.refs.get(target).cloned().ok_or_else(types::stale)?)
+                }
+                _ => None,
+            };
+            (element, target)
+        };
         let (port, effects) = port.tracked();
-        let result = perform(&port, &element, action, deadline).await;
+        let result = perform(&port, &element, target.as_ref(), action, deadline).await;
         match result {
             Ok(result) => {
                 self.delivery(epoch, human).map_err(|mut error| {
@@ -1090,9 +1109,17 @@ async fn prepare_input_target<P: Port>(
 async fn perform<P: Port>(
     port: &P,
     element: &Element,
+    target: Option<&Element>,
     action: Action,
     deadline: Instant,
 ) -> Result<Acknowledgement> {
+    if let Action::Drag { .. } = &action {
+        let target = target.ok_or_else(types::stale)?;
+        return perform_drag(port, element, target, deadline).await;
+    }
+    if is_drag_endpoint(&element.facts) {
+        return Err(Failure::new("browser_not_actionable"));
+    }
     let mut facts = inspect(port, element, deadline).await?;
     let kind = action.kind();
     let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
@@ -1329,9 +1356,121 @@ async fn perform<P: Port>(
                 _ => return Err(Failure::new("browser_not_actionable")),
             }
         }
+        Action::Drag { .. } => unreachable!("drag handled before ordinary action dispatch"),
     };
     Ok(ack(true, path))
 }
+fn is_drag_endpoint(facts: &Facts) -> bool {
+    matches!(facts.kind.as_str(), "drag_source" | "drop_target")
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DragEndpoint {
+    pub node: u64,
+    pub fingerprint: [u8; 32],
+    pub x: f64,
+    pub y: f64,
+}
+impl DragEndpoint {
+    fn from_element(element: &Element) -> Self {
+        Self {
+            node: element.facts.node,
+            fingerprint: element.fingerprint,
+            x: element.facts.x,
+            y: element.facts.y,
+        }
+    }
+}
+pub(crate) async fn check_drag_endpoints<P: Port>(
+    port: &P,
+    frame: &Frame,
+    source: DragEndpoint,
+    target: DragEndpoint,
+    deadline: Instant,
+) -> Result<()> {
+    if frame.parent.is_some() || source.node == 0 || target.node == 0 || source.node == target.node
+    {
+        return Err(types::stale());
+    }
+    same_document(frame, &port.refresh(frame, deadline).await?)?;
+    let Output::Checks(values) = port
+        .program(
+            frame,
+            Program::Recheck {
+                marker: frame.marker.clone(),
+                nodes: vec![source.node, target.node],
+                endpoint: true,
+            },
+            deadline,
+        )
+        .await?
+    else {
+        return Err(types::decode());
+    };
+    let [Some(source_now), Some(target_now)] = values.as_slice() else {
+        return Err(types::stale());
+    };
+    if source_now.node != source.node
+        || target_now.node != target.node
+        || source_now.fingerprint() != source.fingerprint
+        || target_now.fingerprint() != target.fingerprint
+        || source_now.x != source.x
+        || source_now.y != source.y
+        || target_now.x != target.x
+        || target_now.y != target.y
+        || source_now.kind != "drag_source"
+        || target_now.kind != "drop_target"
+        || !source_now.endpoint_eligible()
+        || !target_now.endpoint_eligible()
+        || !source_now.visible
+        || !target_now.visible
+        || !source_now.hit
+        || !target_now.hit
+        || !source_now.in_view
+        || !target_now.in_view
+    {
+        return Err(types::stale());
+    }
+    Ok(())
+}
+async fn perform_drag<P: Port>(
+    port: &P,
+    source: &Element,
+    target: &Element,
+    deadline: Instant,
+) -> Result<Acknowledgement> {
+    if source.frame.context != target.frame.context
+        || source.frame.document != target.frame.document
+        || source.frame.realm != target.frame.realm
+        || source.facts.kind != "drag_source"
+        || target.facts.kind != "drop_target"
+        || !source.facts.endpoint_eligible()
+        || !target.facts.endpoint_eligible()
+    {
+        return Err(types::stale());
+    }
+    let source_endpoint = DragEndpoint::from_element(source);
+    let target_endpoint = DragEndpoint::from_element(target);
+    check_drag_endpoints(
+        port,
+        &source.frame,
+        source_endpoint,
+        target_endpoint,
+        deadline,
+    )
+    .await?;
+    port.input(
+        &source.frame,
+        NativeInput::Drag {
+            source: source_endpoint,
+            target: target_endpoint,
+        },
+        deadline,
+    )
+    .await?;
+    Ok(ack(true, "native_drag"))
+}
+
 fn ack(changed: bool, path: &'static str) -> Acknowledgement {
     Acknowledgement {
         changed,

@@ -1027,6 +1027,7 @@ impl Port for Semantic {
         let result = async {
             let hover = matches!(input, sem::NativeInput::Hover { .. });
             match input {
+                sem::NativeInput::Drag { .. } => Err(Failure::new("browser_feature_unsupported")),
                 sem::NativeInput::SelectFile { node, path } => {
                     let reply = owned
                         .channel

@@ -160,6 +160,7 @@ pub(crate) enum Filter {
     All,
     Interactive,
     Viewport,
+    DragEndpoints,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -268,6 +269,24 @@ impl Facts {
             return Err(decode());
         }
         Ok(())
+    }
+    pub fn eligible_for(&self, filter: &Filter) -> bool {
+        if *filter == Filter::DragEndpoints {
+            return self.endpoint_eligible();
+        }
+        self.eligible()
+    }
+    pub fn endpoint_eligible(&self) -> bool {
+        matches!(self.kind.as_str(), "drag_source" | "drop_target")
+            && self.enabled
+            && self.visible
+            && !self.sensitive
+            && !self.editable
+            && !self.name.is_empty()
+            && self.name_quality.is_empty()
+            && self.record.complete
+            && self.node != 0
+            && self.input_type != "file"
     }
     pub fn eligible(&self) -> bool {
         self.enabled
@@ -391,11 +410,24 @@ impl Batch {
 
 #[derive(Clone, Debug)]
 pub(crate) enum NativeInput {
-    SelectFile { node: u64, path: std::path::PathBuf },
-    Click { node: u64, x: f64, y: f64 },
+    SelectFile {
+        node: u64,
+        path: std::path::PathBuf,
+    },
+    Click {
+        node: u64,
+        x: f64,
+        y: f64,
+    },
     ReplaceText(String),
     Press(Key),
-    Hover { node: u64 },
+    Hover {
+        node: u64,
+    },
+    Drag {
+        source: super::DragEndpoint,
+        target: super::DragEndpoint,
+    },
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Key {

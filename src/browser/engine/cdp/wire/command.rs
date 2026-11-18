@@ -37,6 +37,12 @@ pub enum Command {
     InputKeyPress,
     InputKeyRelease,
     #[cfg(feature = "experimental-browser-bidi")]
+    InputDragCancel,
+    #[cfg(feature = "experimental-browser-bidi")]
+    InputDragDrop,
+    #[cfg(feature = "experimental-browser-bidi")]
+    InputDragReset,
+    #[cfg(feature = "experimental-browser-bidi")]
     InputMouseMove,
     InputMousePress,
     InputMouseRelease,
@@ -134,10 +140,16 @@ impl Command {
             Self::InputKeyPress => ("Input.dispatchKeyEvent", Page, Block),
             Self::InputKeyRelease => ("Input.dispatchKeyEvent", Page, Release),
             #[cfg(feature = "experimental-browser-bidi")]
+            Self::InputDragCancel => ("Input.cancelDragging", None, Release),
+            #[cfg(feature = "experimental-browser-bidi")]
             Self::InputMouseMove => ("Input.dispatchMouseEvent", Page, Block),
             Self::InputMousePress | Self::InputMouseWheel => {
                 ("Input.dispatchMouseEvent", Page, Block)
             }
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::InputDragDrop => ("Input.dispatchMouseEvent", Page, Block),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::InputDragReset => ("Input.dispatchMouseEvent", Page, Release),
             Self::InputMouseRelease => ("Input.dispatchMouseEvent", Page, Release),
             Self::InputInsertText => ("Input.insertText", Page, Block),
             Self::IoClose => ("IO.close", None, Continue),

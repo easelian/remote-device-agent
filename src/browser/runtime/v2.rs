@@ -106,11 +106,29 @@ fn token() -> Result<String> {
     crate::random::hex_token::<16>().map_err(crate::browser::io_error)
 }
 fn capability(settings: &Settings, backend: Backend) -> Value {
+    let mut actions = vec![
+        "attach_file",
+        "navigate",
+        "click",
+        "fill",
+        "press",
+        "select",
+        "check",
+        "scroll",
+        "hover",
+        "dialog",
+        "new_tab",
+        "close_tab",
+        "select_tab",
+    ];
+    if backend == Backend::Cdp {
+        actions.push("drag");
+    }
     json!({"managed_lifecycle":true,"document_identity":true,"observation":true,"input":true,"screenshot":true,
         "dialogs":true,"human_takeover":true,"navigation_policy":true,"conservative_recovery":true,
         "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":backend==Backend::Cdp,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
-        "actions":["attach_file","navigate","click","fill","press","select","check","scroll","hover","dialog","new_tab","close_tab","select_tab"],
+        "actions":actions,
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
         "extensions":{"task_events":{"version":1,"available":true,"categories":["console","network"]},"network_progress":{"version":1,"available":true,"reason":null},"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
@@ -119,6 +137,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
             "form_validation":crate::browser::selection::extension(None),
             "virtual_list":crate::browser::selection::extension(None),
             "record_wait":crate::browser::selection::extension(None),
+            "ref_drag":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "matched_styles":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
 }
@@ -351,6 +370,9 @@ impl Browsers {
         if !port.connected() {
             slot.pause();
             return Err(Failure::unknown("browser_lost"));
+        }
+        if slot.selection.backend != Backend::Cdp && super::ref_drag_request(operation, params) {
+            return Err(Failure::new("browser_feature_unsupported"));
         }
         if operation == "browser_tabs" {
             let value = json!({"session_id":id,"control_epoch":epoch,"active_tab":slot.active.lock().unwrap().clone(),"tabs":port.tabs(),"selection":slot.selection,
@@ -747,6 +769,7 @@ async fn observe(
             filter: match params["filter"].as_str() {
                 Some("interactive") => sem::Filter::Interactive,
                 Some("viewport") => sem::Filter::Viewport,
+                Some("drag_endpoints") => sem::Filter::DragEndpoints,
                 _ => sem::Filter::All,
             },
             find: params["find"].as_str().map(str::to_owned),
@@ -842,6 +865,10 @@ async fn act(
         .as_str()
         .map(|id| session.reference(id, &port.tab_id()?))
         .transpose()?;
+    let drag_target = action["target_ref"]
+        .as_str()
+        .map(|id| session.reference(id, &port.tab_id()?))
+        .transpose()?;
     session.clear_references();
     if let Some(reference) = reference {
         let input = match kind {
@@ -850,6 +877,9 @@ async fn act(
             ),
             "click" => sem::Action::Click,
             "hover" => sem::Action::Hover,
+            "drag" => sem::Action::Drag {
+                target: drag_target.ok_or_else(|| Failure::new("browser_invalid_params"))?,
+            },
             "check" => sem::Action::Check(action["checked"].as_bool().unwrap()),
             "fill" => sem::Action::ReplaceText(action["text"].as_str().unwrap().into()),
             "press" => sem::Action::Press(sem::Key::parse(action["key"].as_str().unwrap())?),

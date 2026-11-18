@@ -40,13 +40,11 @@ AI 应能在一次会话中找到目标、执行操作、解释失败，并用�
 | 4. 按问题深入诊断 | 已提供 CDP 单节点匹配样式诊断，两个后端均可关联请求开始、响应、传输失败和重定向。下一步按仍无法解释的样例补充脚本错误的有限栈位置，或细分连接失败阶段。每种细查单独协商 | 能从“不可见”追到负责的规则，或从“长时间无响应”定位到任务/请求区间。未采集、来源不可判定都保留在结果中 |
 | 5. 验证真实使用范围 | 在目标 AI 客户端验证工具发现、图片呈现、长任务续接、人工交还、文件批准与错误恢复。按 OS、CPU、浏览器产品/版本和客户端分别登记实测结果，再决定默认开启哪些扩展 | 同一任务从建立会话到核对业务结果可重复完成，回退后旧客户端仍可完整观察。性能、关闭清理与披露门槛同时通过 |
 
-### 同一文档内的拖放
+### 同一主文档内的拖放
 
-首个任务是把看板上的具名卡片移到目标列。Chromium 157 的本地原生输入实验中，按下左键、保持按下状态移动到接收列、释放，触发了一次 `drop`，卡片只移动了一次。移动到接收列后调用 `Input.cancelDragging` 再释放，卡片留在原列，下一次拖动仍可成功。实验使用网页自己生成的拖动数据。公开 MCP 的拖放能力仍待实现和验收。
+第一版以看板为验收任务。客户端从同一次主文档观察中选定源卡片和接收列，Agent 用两端的身份、所属记录、命中位置和控制代次约束原生输入。CDP 实现将正常放下与故障取消分开，正常放下一直受控制代次约束。执行状态为 `unknown` 时，客户端按原操作回执追踪，恢复后重新读取卡片所属列。具体工具参数与跨工具对照步骤见[维护说明](browser-implementation-zhCN.md#用拖放移动看板卡片)。
 
-1. **绑定两个端点。** 为源卡片和接收列分别提供可执行拖放的引用，绑定同一 tab、文档和控制代次。普通容器的只读 `node_id` 继续用于诊断。第一版限定同一主文档。
-2. **派发与取消。** 按下前检查源和目标的身份、坐标和遮挡。设备端持有一次动作的按键状态，在进入目标后再次核实命中和控制权，然后释放。实验中错误列也会收到自己的 drop 事件，因此仅检查起点无法保护目标。目标移动、接管或超时发生在释放前时，先取消拖动再清理按键。要用迟到命令和断连用例验证这条路径。
-3. **核对业务结果。** 对已经派发释放但回执丢失的动作，按原 `operation_id` 查询，然后重新定位同一张卡片和所属列。验收记录实际提交次数，覆盖正确目标、同名卡片、遮挡、取消以及随后一次正常拖放。每个后端独立声明能力。
+后续扩展按任务验收。Firefox 需要先验证能够在拖动中途撤权、取消而保留原会话，并用同一个看板检查实际写入次数。跨 frame 与自动滚动会改变坐标和命中目标，应在分别完成文档归属、滚动后两端重新定位及取消测试后，再发布独立的能力声明。
 
 对于 canvas、自绘控件或 closed shadow，先支持用截图获取可见上下文。确有任务需要指针操作时，单独设计绑定截图帧、tab、文档代次、视口和 DPR 的定位凭据，限定作用区域并在派发前重新核实。无法识别目标或排除敏感区域时返回覆盖缺口。这个能力应在已有语义动作无法解决的具体样例上评估。
 
@@ -92,7 +90,7 @@ AI 排查点击失败时，先用 `browser_inspect` 看命中与遮挡，再用 
 | 人工边界能否维持？ | Server `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
 | 新诊断是否帮助 AI 作出正确判断？ | 为遮挡、JS 异常、HTTP 失败、HTTP 200 业务拒绝、响应丢失、本人验证分别固定页面终态和提交计数。记录任务完成率、误报成功率、普通故障人工接管数、诊断调用数/字节数。纳入事件洪峰、跨主体、换代与双后端能力不对称。普通任务与必须本人验证的任务分别计数。基准语料中重复提交、敏感内容披露和无证据宣称成功均为阻断项 |
 | 增量与新能力能否独立关闭？ | Server `clients/browser-observation-delta.test.mjs`、`tests/core/test_browser_observation_delta.py`。用同一次采集的完整观察验证重建。稀疏组实际 MCP 总字节不超过始终 full 的 70%。覆盖未知扩展、旧客户端、重连、乱序及基线淘汰 |
-| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`lost-write`、`form-validation`、`scoped-scroll`、`hover`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
+| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`cdp-console`、`lost-write`、`form-validation`、`scoped-scroll`、`hover`、`ref-drag`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
 
 在 Server 根目录核对 `python3 scripts/run_browser_acceptance.py --help`。例如，在准备好专用测试环境后运行下面的 DOM 证据阶段。`RDH_ACCEPT_ENV` 指向包含配套测试产物与数据库设置的私有 JSON，`RDH_ACCEPT_OUT` 指向一个尚不存在的输出目录。成功时退出码为 0，目录中的 `acceptance-complete.json` 记录通过状态。
 

@@ -49,6 +49,7 @@ pub(crate) enum Program {
     Recheck {
         marker: Marker,
         nodes: Vec<u64>,
+        endpoint: bool,
     },
     Scroll {
         marker: Marker,
@@ -134,9 +135,13 @@ impl Program {
             ),
             Self::Inspect { marker, node } => ("inspect", target(marker, *node)),
             Self::Geometry { marker, node } => ("geometry", target(marker, *node)),
-            Self::Recheck { marker, nodes } => (
+            Self::Recheck {
+                marker,
+                nodes,
+                endpoint,
+            } => (
                 "recheck",
-                json!({"realm":marker.realm,"restoration":marker.restoration,"nodes":nodes}),
+                json!({"realm":marker.realm,"restoration":marker.restoration,"nodes":nodes,"endpoint":endpoint}),
             ),
             Self::Scroll { marker, node } => ("scroll", target(marker, *node)),
             Self::ScrollTarget {

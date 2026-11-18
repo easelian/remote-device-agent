@@ -53,6 +53,14 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 | `revision` | 受控接收端应用观察增量 | 不赋予输入资格。重新连接、换代或基线失效后从完整观察重建，每次替换全部 ref 和 frame 绑定 |
 | `file_grant_id` | 给一个当前的文件输入控件选择经用户批准的文件 | 绑定原主体、会话、tab、站点与一次选择。结果不明也不会恢复次数 |
 
+### 用拖放移动看板卡片
+
+在 v2/CDP 会话上检查 `capabilities.extensions.ref_drag` 的 `available` 和 `version`（版本 1）。调用 `browser_observe`，设置 `filter: "drag_endpoints"`。同一页观察中的 `drag_source` 表示显式可拖动的具名元素，`drop_target` 表示有名称和接收标记的候选区域。网页决定是否接受拖放。两端执行时都须在当前主文档的视口内，中心能命中。客户端可先滚动，再重新观察；第一版覆盖的后端为 Chromium CDP。
+
+向 `browser_act` 传入 `{"kind":"drag","ref":"<源 ref>","target_ref":"<目标 ref>"}`。Agent 在按下前及最后一次移动后复核两端的文档、记录和命中位置。端点发生变化或控制权被收回时，Agent 取消尚未释放的拖动。释放已经送出而回执丢失时，按原 `operation_id` 查询，恢复控制后读取同一条记录及目标列。人工交还后使用新控制代次和新观察。
+
+排查同一操作在不同路径上的差异时，可在测试机使用独立会话和同一 Chromium 二进制复现。先保存 Easelian 的观察、动作回执、业务记录和提交计数。在重置后的合成页面运行 `~/.local/bin/agent-browser --session <独立名称> --executable-path <Chromium> open <测试页>`，再用同一会话执行 `snapshot`、`drag`、`reload` 和 `close`。分别记录快照是否给两端分配 ref、选择器路径是否成功、页面重载后的记录和写入次数。独立会话使用自己的引用。实际业务中的未知写入按原回执和只读结果排查。
+
 ### 在虚拟列表中确认目标记录
 
 带组合框的页面通常只挂载一小段选项，滚动时会把同一批 DOM 节点用于下一段。设备和会话声明 `extensions.virtual_list` 版本 1 后，展开组合框，观察具有 `role: "listbox"` 和 `kind: "scrollable"` 的容器。用该容器的 ref 定向滚动，每次重新观察当前选项。在选项的 `record.entries[].attributes` 中读取页面提供的 `aria-posinset`（从 1 开始的逻辑位置）和 `aria-setsize`（集合大小，`-1` 表示未知）。位置只在对应列表内有意义。页面声明的位置非法或大于已知集合大小时，该选项的记录将标为不完整，并且不会签发动作 ref。同名项缺少可区分的标记时，先向任务上下文核对。选中前使用最新的选项 ref；若节点已被页面复用或移到另一个列表，重新观察并核对目标。

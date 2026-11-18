@@ -29,6 +29,10 @@ mod console_event;
 #[cfg(feature = "experimental-browser-bidi")]
 mod console_route;
 #[cfg(feature = "experimental-browser-bidi")]
+mod drag;
+#[cfg(all(test, feature = "experimental-browser-bidi"))]
+mod drag_tests;
+#[cfg(feature = "experimental-browser-bidi")]
 mod oversized_console;
 #[cfg(test)]
 mod event_tests;

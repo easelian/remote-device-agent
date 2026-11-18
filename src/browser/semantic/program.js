@@ -207,9 +207,32 @@ function(operation, args, other) {
     const named = node.getAttribute("role") === "region" || node.hasAttribute("aria-label") || node.hasAttribute("aria-labelledby") || node.tabIndex >= 0;
     return vertical && node.scrollHeight > node.clientHeight && named && visible(node);
   };
-  function facts(node) {
+  const dropRoles = new Set(['region','list','listbox','group']);
+  function endpointMarker(node) {
+    if (node.draggable && node.getAttribute('draggable')?.toLowerCase() === 'true') return 'drag_source';
+    const effect = norm(node.getAttribute('aria-dropeffect')).toLowerCase();
+    return dropRoles.has(explicitRole(node)) || node.hasAttribute('ondrop') || effect && effect !== 'none' ? 'drop_target' : '';
+  }
+  function endpointFacts(node) {
     if (!node || !node.isConnected || node.ownerDocument !== document) return null;
-    const mapped = role(node), name = nameOf(node,mapped), box = node.getBoundingClientRect();
+    const kind = endpointMarker(node);
+    if (!kind || !visible(node) || ['input','textarea','select'].includes(node.localName) || node.isContentEditable) return null;
+    let current = node;
+    for (let depth = 0; current && depth < 64; depth++, current = parent(current)) {
+      if (disabled(current) || sensitive(current) || current.isContentEditable) return null;
+    }
+    if (current) return null;
+    const mapped = role(node);
+    const explicit = explicitRole(node);
+    if (dropRoles.has(explicit)) mapped.role = explicit;
+    if (!mapped.role) mapped.role = 'group';
+    const row = facts(node, mapped, kind);
+    return row.name && !row.name_quality.length ? row : null;
+  }
+  function facts(node, mapped, endpoint) {
+    if (!node || !node.isConnected || node.ownerDocument !== document) return null;
+    mapped = mapped || role(node);
+    const name = nameOf(node,mapped), box = node.getBoundingClientRect();
     const x = (Math.max(0,box.left)+Math.min(innerWidth,box.right))/2;
     const y = (Math.max(0,box.top)+Math.min(innerHeight,box.bottom))/2;
     const root = node.getRootNode();
@@ -217,12 +240,12 @@ function(operation, args, other) {
     let hit = top === node || !!top && node.contains(top);
     for (let inner = top; hit && inner && inner !== node; inner = parent(inner)) {
       const childRole = role(inner);
-      if (controls.has(childRole.role) || inner.localName === 'label') hit = false;
+      if (controls.has(childRole.role) || inner.localName === 'label' || endpoint && endpointMarker(inner)) hit = false;
     }
     const record = material(node,mapped);
     const value = valueOf(node);
     if (value !== null && (value.length>8192 || scalars(value).length > 4096)) { record.complete = false; record.limits.push('value_character_limit'); }
-    return {node:identity(node),id:node.id || '',role:mapped.role,kind:mapped.kind,
+    return {node:identity(node),id:node.id || '',role:mapped.role,kind:endpoint || mapped.kind,
       name:name.name,name_source:name.source,name_quality:name.quality,
       value:value === null ? null : prefix(value,4096),
       enabled:!disabled(node),readonly:!!node.readOnly || node.getAttribute('aria-readonly') === 'true',
@@ -263,7 +286,7 @@ function(operation, args, other) {
     while (scan.pending.length && rows.length < args.nodes && count < 5000) {
       const node = scan.pending.pop(); count++; scan.scanned++;
       if (node.nodeType === Node.TEXT_NODE) {
-        if (scan.query.filter==='interactive' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
+        if (scan.query.filter==='interactive' || scan.query.filter==='drag_endpoints' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
         let inside=false;
         for (let p=node.parentElement;p;p=parent(p)) {const mapped=role(p);if(controls.has(mapped.role)||contentNames.has(mapped.role)){inside=true;break;}}
         if (inside) continue;
@@ -280,10 +303,13 @@ function(operation, args, other) {
       }
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
       if (['script','style','template','noscript'].includes(node.localName)) continue;
-      const mapped = role(node);
+      const endpoints = scan.query.filter === 'drag_endpoints';
+      const mapped = endpoints ? null : role(node);
       const inViewport = () => { const box=node.getBoundingClientRect(); return box.bottom>0 && box.right>0 && box.top<innerHeight && box.left<innerWidth; };
-      if (mapped.role && visible(node) && (scan.query.filter!=='interactive'||controls.has(mapped.role)||mapped.role==='heading'||mapped.role==='inferred'||mapped.kind==='scrollable') && (scan.query.filter !== 'viewport' || inViewport())) {
-        const row = facts(node);
+      const ordinary = mapped && mapped.role && (scan.query.filter!=='interactive'||controls.has(mapped.role)||mapped.role==='heading'||mapped.role==='inferred'||mapped.kind==='scrollable');
+      const row = endpoints ? endpointFacts(node) :
+        ordinary && visible(node) && (scan.query.filter !== 'viewport' || inViewport()) ? facts(node, mapped) : null;
+      if (row) {
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
         const match = !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
         if (match) {
@@ -374,13 +400,13 @@ function(operation, args, other) {
     const node=target();if(!node||!node.isConnected)return result(false);
     for(let item=other,depth=0;item&&depth<64;item=parent(item),depth++){
       if(item===node)return result(true);
-      if(controls.has(role(item).role)||item.localName==='label')return result(false);
+      if(controls.has(role(item).role)||item.localName==='label'||args.endpoint&&endpointMarker(item))return result(false);
     }
     return result(false);
   }
   if (operation === 'recheck') {
     if(args.realm!==state.realm||args.restoration!==state.restoration)return result(args.nodes.map(()=>null));
-    return result(args.nodes.map(node=>facts(state.nodes.get(node))));
+    return result(args.nodes.map(id => args.endpoint ? endpointFacts(state.nodes.get(id)) : facts(state.nodes.get(id))));
   }
   if (operation === 'scroll_target') {
     const node = target();
