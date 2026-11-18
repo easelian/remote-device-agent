@@ -161,7 +161,7 @@ impl Browsers {
         let dialog_recovery = (action == "screenshot"
             || action == "input" && params["input"]["kind"] == "dialog")
             && port.dialog().is_some();
-        if !dialog_recovery && (port.pending() != 0 || page.resources().1 != 0) {
+        if !dialog_recovery && page.input_pending() {
             return Err(Failure::unknown("browser_input_pending"));
         }
         if action.starts_with("upload_") {

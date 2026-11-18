@@ -186,7 +186,7 @@ coverage 保留同次 DOM 名称读取的计数，并增加 native_ax_nodes（0�
 
 `Submission::enqueue` 在同一把控制锁内校验代次、将命令同步入队并标记可能的副作用。`not_sent` 表示该操作尚未提交副作用，可以在修正原因并重新观察后决定下一步。`unknown` 表示可能已经生效。先查询原 `operation_id` 的 `get_operation_status`，再取会话和标签状态。尚有相关输入或清理待决时等待结算，允许恢复后用当前代次 `resume` 再观察。仍无法确认的写入向调用者报告未验证，避免第二次提交。[控制门](../src/browser/control.rs)
 
-遇到密码、一次性验证码或需要本人完成的验证时，AI 暂停任务，提供 Core 返回的 `human_url`。v2 的暂停和人工接管会先拦住仍在运行的 AI 操作，再在本次调用期限内等待原操作退出。若输入或清理仍待结算，保留原回执，避免重复提交。人工已接管时再次请求暂停会收到 `browser_paused`，原人工租约仍可用。用户登录并明确接管后，AI 的页面读取、截图和输入受阻。用户核对可分享的页面和文件元数据后明确交回并同意披露。原对话继续时，AI 重新查询会话、tab 和新代次，从新观察取得 ref。普通网络或页面故障走诊断与回执恢复。人工输入受 view、租约、代次、序号和截图帧约束。系统级生物识别、硬件安全密钥界面不在远程网页视口内。[人工输入与交还](../src/browser/runtime/human.rs)
+遇到密码、一次性验证码或需要本人完成的验证时，AI 暂停任务，提供 Core 返回的 `human_url`。v2 的暂停和人工接管会先拦住旧代次的新输入。遇到只读等待时，在本次调用期限内等待它退出。若原生拖动等输入仍在执行，调用会返回 `browser_input_pending`。保留原操作回执，等输入结算后再请求接管，避免重复提交。人工已接管时再次请求暂停会收到 `browser_paused`，原人工租约仍可用。用户登录并明确接管后，AI 的页面读取、截图和输入受阻。用户核对可分享的页面和文件元数据后明确交回并同意披露。原对话继续时，AI 重新查询会话、tab 和新代次，从新观察取得 ref。普通网络或页面故障走诊断与回执恢复。人工输入受 view、租约、代次、序号和截图帧约束。系统级生物识别、硬件安全密钥界面不在远程网页视口内。[人工输入与交还](../src/browser/runtime/human.rs)
 
 `browser.persistent_profiles`、`browser.uploads`、`browser.downloads` 分别启用，默认均关闭。独立文件批准还需设备的 `capabilities.browser.extensions.file_authorization` 版本 1 可用。用户从 `files_url` 或会话列表进入“批准文件使用”，确认 tab、目标 origin 和本地文件。AI 保留控制，批准后从 `browser_files` 取得授权，用最新主文档文件输入 ref 执行 `attach_file`。Agent 在原生派发前持久化消费。旧版租约上传仍可用于已接管的会话。文件字节只走授权的人工接口。[文件批准](../src/browser/runtime/file_approval.rs) · [上传存储与消费](../src/browser/files/upload.rs)
 

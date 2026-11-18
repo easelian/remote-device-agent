@@ -233,6 +233,7 @@ impl<P: Port> Page<P> {
     pub fn control(&self) -> Arc<Control> {
         self.0.control.clone()
     }
+    #[cfg(test)]
     pub fn resources(&self) -> (usize, usize, usize) {
         let state = self.0.state.lock().unwrap();
         (
@@ -249,8 +250,11 @@ impl<P: Port> Page<P> {
         state.cursor = None;
         epoch
     }
+    pub fn input_pending(&self) -> bool {
+        self.0.inputs.load(Ordering::Acquire) != 0 || self.0.port.pending() != 0
+    }
     pub async fn settled(&self, deadline: Instant) -> Result<()> {
-        while self.0.inputs.load(Ordering::Acquire) != 0 || self.0.port.pending() != 0 {
+        while self.input_pending() {
             if Instant::now() >= deadline {
                 return Err(Failure::unknown("browser_cleanup_pending"));
             }

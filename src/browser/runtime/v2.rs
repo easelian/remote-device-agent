@@ -90,6 +90,15 @@ impl Slot {
             return Ok(session);
         }
         let epoch = self.coordination.fence_active_ai();
+        // A gesture may already own native input. Its caller and the person
+        // taking over need the pending receipt while the gesture settles.
+        if !self.human_held.load(Ordering::Acquire)
+            && self
+                .port()
+                .is_ok_and(|port| sem::Page::new(port).input_pending())
+        {
+            return Err(Failure::unknown("browser_input_pending"));
+        }
         let session = tokio::time::timeout_at(deadline.into(), self.session.lock())
             .await
             .map_err(|_| Failure::unknown("browser_input_pending"))?;
@@ -463,7 +472,7 @@ impl Browsers {
         if !dialog && port.dialog().is_some() {
             return Err(Failure::new("browser_dialog_open"));
         }
-        if !dialog && (port.pending() != 0 || page.resources().1 != 0) {
+        if !dialog && page.input_pending() {
             return Err(Failure::unknown("browser_input_pending"));
         }
         let mut prepared_presentation = None;

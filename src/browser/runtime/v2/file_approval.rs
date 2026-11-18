@@ -37,7 +37,7 @@ impl Browsers {
         let ready = || {
             if !port.connected() {
                 Err(Failure::unknown("browser_lost"))
-            } else if port.pending() != 0 || page.resources().1 != 0 {
+            } else if page.input_pending() {
                 Err(Failure::unknown("browser_input_pending"))
             } else if port.dialog().is_some() {
                 Err(Failure::new("browser_tab_unavailable"))
