@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::{Message, protocol::frame::coding::CloseCode
 
 use crate::config::DeviceConfig;
 use crate::error::{Error, Result};
-use crate::network::{Network, WebSocketError};
+use crate::network::{AssignmentError, Network, WebSocketError};
 use crate::rpc::Runtime;
 use crate::{random, transport};
 
@@ -27,6 +27,7 @@ async fn interrupted(shutdown: &mut watch::Receiver<bool>) {
 
 enum End {
     Stop,
+    Rediscover,
     Retry { was_ready: bool, reason: String },
     Fatal(String),
     Authorization(String),
@@ -102,7 +103,7 @@ async fn session(
                 deadline.min(Instant::now() + Duration::from_secs(2))
             });
         let assigned = tokio::select! {
-            value=tokio::time::timeout_at(deadline, network.assign(discovery,&config.token,&request))=>value.unwrap_or_else(|_| Err(WebSocketError::Network("Cluster discovery timed out".into()))),
+            value=tokio::time::timeout_at(deadline, network.assign(discovery,&config.token,&request))=>value.unwrap_or_else(|_| Err(AssignmentError::Unavailable("Cluster discovery timed out"))),
             _=interrupted(shutdown)=>return End::Stop,
         };
         match assigned {
@@ -111,15 +112,24 @@ async fn session(
                 state.failed_assignment = Some(assignment.assignment_id.clone());
                 Some(assignment)
             }
-            Err(WebSocketError::Unauthorized(status)) => {
+            Err(AssignmentError::Unauthorized(status)) => {
                 return End::Authorization(format!(
                     "Cluster discovery authorization rejected (HTTP {status})"
                 ));
             }
-            Err(WebSocketError::Network(reason)) => {
+            Err(AssignmentError::StaleReconnect) => {
+                state.report("stale_reconnect", json!({}));
+                // Gate rejected the release proof. Start a fresh assignment;
+                // the Runtime fence and receipts still belong to this process.
+                state.previous_connection = None;
+                state.failed_assignment = None;
+                state.discovery_attempt = None;
+                return End::Rediscover;
+            }
+            Err(AssignmentError::Unavailable(reason)) => {
                 return End::Retry {
                     was_ready: false,
-                    reason,
+                    reason: reason.into(),
                 };
             }
         }
@@ -353,6 +363,12 @@ pub async fn run(
         let outcome = session(network, config, runtime, &mut shutdown, &mut state).await;
         match outcome {
             End::Stop => return Ok(()),
+            End::Rediscover => {
+                if *shutdown.borrow() {
+                    return Ok(());
+                }
+                delay = 1_000;
+            }
             End::Fatal(message) => return Err(Error::message(message)),
             End::Authorization(message) => {
                 return Err(Error::AuthorizationRejected(message));
@@ -396,7 +412,7 @@ mod admission_tests {
     const LONG_TOKEN: &str = "long-lived-device-token-must-only-reach-the-gate";
 
     #[tokio::test]
-    async fn sequential_mutations_with_lost_acks_replay_after_cluster_activation() {
+    async fn stale_reconnect_recovers_and_replays_pending_receipts() {
         const COUNT: usize = 32;
         struct Directory(std::path::PathBuf);
         impl Drop for Directory {
@@ -443,14 +459,37 @@ mod admission_tests {
             Some(audit.clone()),
         )
         .unwrap();
-        let app = Router::new().route("/agent/assign",post(move |Json(body):Json<Value>| async move {
-            assert_eq!(body["device_id"],"replay-test");
-            Json(json!({"version":2,"assignment_id":"assignment","node_id":"node","boot_id":"boot",
-                "agent_url":format!("ws://{core_address}"),"expires_at":4102444800.0,"access_ticket":TICKET}))
-        }));
+        let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let observed = requests.clone();
+        let app = Router::new().route(
+            "/agent/assign",
+            post(move |Json(body): Json<Value>| {
+                let observed = observed.clone();
+                async move {
+                    let mut requests = observed.lock().unwrap();
+                    assert_eq!(body["device_id"], "replay-test");
+                    requests.push(body.clone());
+                    let count = requests.len();
+                    // A generic 503 must keep the same reconnect proof and attempt.
+                    let (status, response) = if count == 3 {
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, json!({"error":"cluster_unavailable"}))
+                    } else if count >= 4 && body.get("previous_connection").is_some() {
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, json!({"error":"cluster_reconnect_stale"}))
+                    } else {
+                        (axum::http::StatusCode::OK, json!({
+                            "version":2,"assignment_id":format!("assignment-{count}"),"node_id":"node","boot_id":"boot",
+                            "agent_url":format!("ws://{core_address}"),"expires_at":4102444800.0,"access_ticket":TICKET
+                        }))
+                    };
+                    (status, Json(response))
+                }
+            }),
+        );
         let gate_task = tokio::spawn(async move { axum::serve(gate, app).await.unwrap() });
+        let peer_audit = audit.clone();
         let core_task = tokio::spawn(async move {
-            for generation in 1..=2 {
+            let mut audit_before = Value::Null;
+            for generation in 1..=3 {
                 let (stream, _) = core.accept().await.unwrap();
                 let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let hello = next(&mut socket).await;
@@ -459,6 +498,12 @@ mod admission_tests {
                     .unwrap();
                 let identity = json!({"device_id":"replay-test","node_id":"node","boot_id":"boot",
                     "connection_id":format!("connection-{generation}"),"generation":generation,"instance_id":instance});
+                if generation == 2 {
+                    // Core has claimed a new generation, but the socket drops
+                    // before the Agent receives its ready frame; Core retires it.
+                    socket.close(None).await.unwrap();
+                    continue;
+                }
                 send(&mut socket, json!({"type":"ready","cluster":identity})).await;
                 assert_eq!(
                     next(&mut socket).await,
@@ -490,6 +535,7 @@ mod admission_tests {
                             }
                         }
                     }
+                    audit_before = peer_audit.stats()["written"].clone();
                     socket.close(None).await.unwrap();
                 } else {
                     let mut completed = HashSet::new();
@@ -506,6 +552,11 @@ mod admission_tests {
                         send(&mut socket,json!({"type":"operation_ack","operation_id":receipt["operation_id"],"instance_id":instance})).await;
                     }
                     assert_eq!(completed.len(), COUNT);
+                    assert_eq!(
+                        peer_audit.stats()["written"],
+                        audit_before,
+                        "replay must not audit or execute another mutation"
+                    );
                     socket
                         .send(Message::Close(Some(
                             tokio_tungstenite::tungstenite::protocol::CloseFrame {
@@ -519,37 +570,35 @@ mod admission_tests {
             }
         });
         let network = Network::new(None, None, "", None).unwrap();
-        let (_stop, mut shutdown) = watch::channel(false);
-        let mut state = SessionState::new();
-        let first = tokio::time::timeout(
-            Duration::from_secs(10),
-            session(&network, &config, &runtime, &mut shutdown, &mut state),
+        let (_stop, shutdown) = watch::channel(false);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(9),
+            run(&network, &config, &runtime, shutdown),
         )
         .await
-        .unwrap();
-        assert!(matches!(
-            first,
-            End::Retry {
-                was_ready: true,
-                ..
-            }
-        ));
-        assert_eq!(runtime.receipts.pending().len(), COUNT);
-        let audit_before = audit.stats()["written"].clone();
-        let second = tokio::time::timeout(
-            Duration::from_secs(10),
-            session(&network, &config, &runtime, &mut shutdown, &mut state),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(second, End::Authorization(_)));
+        .expect("Agent should reconnect without restarting");
+        assert!(matches!(outcome, Err(Error::AuthorizationRejected(_))));
         core_task.await.unwrap();
-        assert!(runtime.receipts.pending().is_empty());
+        let requests = requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 5);
+        assert!(requests[0].get("previous_connection").is_none());
+        assert_eq!(requests[1]["previous_connection"]["generation"], 1);
         assert_eq!(
-            audit.stats()["written"],
-            audit_before,
-            "replay must not execute or audit another mutation"
+            requests[2]["previous_connection"],
+            requests[1]["previous_connection"]
         );
+        assert_eq!(requests[2]["failed_assignment_id"], "assignment-2");
+        assert_eq!(requests[3], requests[2]);
+        assert!(requests[4].get("previous_connection").is_none());
+        assert!(requests[4]["failed_assignment_id"].is_null());
+        assert_ne!(requests[4]["attempt_id"], requests[3]["attempt_id"]);
+        assert!(
+            requests
+                .iter()
+                .all(|r| r["instance_id"] == runtime.receipts.instance_id)
+        );
+        assert_eq!(runtime.last_cluster_identity().unwrap().generation, 3);
+        assert!(runtime.receipts.pending().is_empty());
         for index in 0..COUNT {
             assert_eq!(
                 std::fs::read_to_string(root.0.join(format!("file-{index}"))).unwrap(),

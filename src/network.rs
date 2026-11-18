@@ -26,6 +26,12 @@ pub enum WebSocketError {
     Network(String),
 }
 
+pub enum AssignmentError {
+    Unauthorized(u16),
+    Unavailable(&'static str),
+    StaleReconnect,
+}
+
 // Proxy URLs may contain credentials: neither this type nor Network implements Debug.
 struct ProxyPolicy {
     http: Option<String>,
@@ -225,10 +231,10 @@ impl Network {
         origin: &str,
         token: &str,
         request: &crate::cluster::AssignmentRequest<'_>,
-    ) -> std::result::Result<crate::cluster::Assignment, WebSocketError> {
+    ) -> std::result::Result<crate::cluster::Assignment, AssignmentError> {
         let url = url::Url::parse(origin)
             .and_then(|url| url.join("/agent/assign"))
-            .map_err(|_| WebSocketError::Network("Invalid discovery URL".into()))?;
+            .map_err(|_| AssignmentError::Unavailable("Invalid discovery URL"))?;
         let response = self
             .client
             .post(url)
@@ -237,20 +243,29 @@ impl Network {
             .json(request)
             .send()
             .await
-            .map_err(|_| WebSocketError::Network("Cluster discovery unavailable".into()))?;
-        if matches!(response.status().as_u16(), 401 | 403) {
-            return Err(WebSocketError::Unauthorized(response.status().as_u16()));
+            .map_err(|_| AssignmentError::Unavailable("Cluster discovery unavailable"))?;
+        let status = response.status().as_u16();
+        if matches!(status, 401 | 403) {
+            return Err(AssignmentError::Unauthorized(status));
         }
         if !response.status().is_success() {
-            return Err(WebSocketError::Network(
-                "Cluster assignment unavailable".into(),
+            if status == 503
+                && request.previous_connection.is_some()
+                && Self::response_json(response)
+                    .await
+                    .is_ok_and(|body| body["error"].as_str() == Some("cluster_reconnect_stale"))
+            {
+                return Err(AssignmentError::StaleReconnect);
+            }
+            return Err(AssignmentError::Unavailable(
+                "Cluster assignment unavailable",
             ));
         }
         let value = Self::response_json(response)
             .await
-            .map_err(|_| WebSocketError::Network("Invalid cluster discovery response".into()))?;
+            .map_err(|_| AssignmentError::Unavailable("Invalid cluster discovery response"))?;
         serde_json::from_value(value)
-            .map_err(|_| WebSocketError::Network("Invalid cluster assignment".into()))
+            .map_err(|_| AssignmentError::Unavailable("Invalid cluster assignment"))
     }
 
     pub(crate) async fn agent_request(
