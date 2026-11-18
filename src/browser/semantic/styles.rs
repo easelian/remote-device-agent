@@ -13,7 +13,7 @@ pub(crate) enum StyleProperty {
     Visibility,
     PointerEvents,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct StyleSnapshot {
     pub property: StyleProperty,
     pub candidates: Vec<StyleCandidate>,
@@ -22,7 +22,7 @@ pub(crate) struct StyleSnapshot {
     pub ancestors_examined: Option<u8>,
     cascade: Cascade,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Cascade {
     Undetermined,
@@ -48,7 +48,7 @@ impl StyleSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct StyleCandidate {
     pub origin: StyleOrigin,
     pub value: Option<String>,
@@ -59,7 +59,7 @@ pub(crate) struct StyleCandidate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ancestor_depth: Option<u8>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StyleOrigin {
     Inline,

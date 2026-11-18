@@ -16,6 +16,16 @@ fn frame() -> sem::Frame {
 }
 #[test]
 fn evidence_requests_are_closed_and_diagnostic_ids_are_not_refs() {
+    let escaped: Value = serde_json::from_str(r#"{"kind":"find_no\u0064es","text":"\u72b6态"}"#).unwrap();
+    assert!(matches!(
+        Query::parse(&escaped).unwrap(),
+        Query::FindNodes {
+            text: Some(text),
+            scope: dom::Scope::MainDocument,
+            limit: 16,
+            ..
+        } if text == "状态"
+    ));
     for query in [
         json!({"kind":"find_nodes","tag":"div"}),
         json!({"kind":"find_nodes","role":"region","text":"状态","scope":"all_frames","limit":64}),
@@ -28,6 +38,9 @@ fn evidence_requests_are_closed_and_diagnostic_ids_are_not_refs() {
         json!({"kind":"find_nodes"}),
         json!({"kind":"find_nodes","tag":null,"role":"div"}),
         json!({"kind":"find_nodes","tag":"DIV"}),
+        json!({"kind":"find_nodes","tag":"div","node_id":"extra"}),
+        json!({"kind":"read_node","node_id":format!("den_{}","a".repeat(32)),"property":"display"}),
+        json!({"kind":"read_styles","node_id":format!("den_{}","a".repeat(32))}),
         json!({"kind":"find_nodes","tag":"div","limit":65}),
         json!({"kind":"find_nodes","text":"😀".repeat(129)}),
         json!({"kind":"find_nodes","tag":"div","selector":"*"}),
@@ -101,6 +114,89 @@ fn evidence_identity_digest_covers_realm_document_url_and_ancestry() {
         );
     }
 }
+#[test]
+fn native_style_and_accessibility_results_cannot_be_decoded_from_dom_replies() {
+    let native = [
+        dom::Raw::ReadAccessibility {
+            accessibility: sem::accessibility::Snapshot::absent(),
+            coverage: dom::Coverage::base(),
+        },
+        dom::Raw::ReadStyles {
+            styles: sem::styles::StyleSnapshot::new(
+                sem::styles::StyleProperty::Display,
+                vec![],
+                false,
+            ),
+            coverage: dom::Coverage::base(),
+        },
+    ];
+    for (kind, result) in ["read_accessibility", "read_styles"]
+        .into_iter()
+        .zip(native)
+    {
+        let query = dom::NativeQuery {
+            kind,
+            tag: None,
+            role: None,
+            text: None,
+            node: Some(1),
+            limit: 1,
+            elements: 8,
+            text_nodes: 8,
+            other_nodes: 8,
+            anchor_text: None,
+            expected_text: None,
+        };
+        let encoded = serde_json::to_string(&result).unwrap();
+        assert_eq!(
+            dom::Raw::decode(&encoded, &query).unwrap_err().code,
+            sem::types::decode().code
+        );
+    }
+}
+
+#[test]
+fn dom_reply_checks_the_operation_and_payload_with_reordered_fields() {
+    let query = dom::NativeQuery {
+        kind: "ancestor_style_target",
+        node: Some(1),
+        tag: None,
+        role: None,
+        text: None,
+        limit: 1,
+        elements: 8,
+        text_nodes: 8,
+        other_nodes: 8,
+        anchor_text: None,
+        expected_text: None,
+    };
+    let coverage = serde_json::to_string(&dom::Coverage::base()).unwrap();
+    let sample = |fields: &str| format!(r#"{{"coverage":{coverage},{fields}}}"#);
+    let valid = sample(r#""sensitive":false,"kind":"style_target""#);
+    assert!(matches!(
+        dom::Raw::decode(&valid, &query),
+        Ok(dom::Raw::StyleTarget {
+            sensitive: false,
+            ..
+        })
+    ));
+    for fields in [
+        r#""sensitive":false,"kind":"match_record""#,
+        r#""matched":false,"kind":"style_target""#,
+        r#""sensitive":false,"sensitive":true,"kind":"style_target""#,
+        r#""sensitive":false,"kind":"style_target","kind":"style_target""#,
+    ] {
+        assert_eq!(
+            dom::Raw::decode(&sample(fields), &query).unwrap_err().code,
+            sem::types::decode().code,
+        );
+    }
+    assert_eq!(
+        dom::Raw::decode(" null\n", &query).unwrap_err().code,
+        sem::types::stale().code
+    );
+}
+
 #[test]
 fn evidence_decoder_rejects_extra_content_and_false_coverage() {
     let request = dom::NativeQuery {

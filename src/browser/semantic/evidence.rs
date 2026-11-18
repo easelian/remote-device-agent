@@ -56,16 +56,13 @@ pub(crate) enum Scope {
     MainDocument,
     AllFrames,
 }
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub(crate) enum Query {
     FindNodes {
         tag: Option<String>,
         role: Option<String>,
         text: Option<String>,
-        #[serde(default)]
         scope: Scope,
-        #[serde(default = "default_limit")]
         limit: usize,
     },
     ReadNode {
@@ -89,7 +86,6 @@ pub(crate) enum Query {
         property: super::styles::StyleProperty,
     },
     // Internal-only query used by record_wait after resolving an evidence binding.
-    #[serde(skip_deserializing)]
     MatchRecord {
         node_id: String,
         anchor_text: String,
@@ -124,48 +120,64 @@ impl Query {
         {
             return Err(invalid());
         }
-        let query: Self = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
-        match &query {
-            Self::FindNodes {
-                tag,
-                role,
-                text,
-                limit,
-                ..
-            } => {
-                if tag.is_none() && role.is_none() && text.is_none()
-                    || tag.as_ref().is_some_and(|v| !identifier(v))
-                    || role.as_ref().is_some_and(|v| !identifier(v))
-                    || text
-                        .as_ref()
-                        .is_some_and(|v| v.is_empty() || v.chars().count() > 128)
-                    || !(1..=MAX_RESULTS).contains(limit)
-                {
-                    return Err(invalid());
-                }
+        if value["kind"] == "find_nodes" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct FindRequest<'a> {
+                #[serde(rename = "kind")]
+                _kind: serde::de::IgnoredAny,
+                tag: Option<&'a str>,
+                role: Option<&'a str>,
+                text: Option<&'a str>,
+                #[serde(default)]
+                scope: Scope,
+                #[serde(default = "default_limit")]
+                limit: usize,
             }
-            Self::ReadNode { node_id: id }
-            | Self::ReadLayout { node_id: id }
-            | Self::ReadAccessibility { node_id: id }
-            | Self::ReadValidation { node_id: id }
-            | Self::ReadStyles { node_id: id, .. } => {
-                if !node_id(id) {
-                    return Err(invalid());
-                }
+            let find = FindRequest::deserialize(value).map_err(|_| invalid())?;
+            if find.tag.is_none() && find.role.is_none() && find.text.is_none()
+                || find.tag.is_some_and(|tag| !identifier(tag))
+                || find.role.is_some_and(|role| !identifier(role))
+                || find
+                    .text
+                    .is_some_and(|text| text.is_empty() || text.chars().count() > 128)
+                || !(1..=MAX_RESULTS).contains(&find.limit)
+            {
+                return Err(invalid());
             }
-            Self::ReadAncestorStyles {
-                node_id: id,
-                property,
-            } => {
-                if !node_id(id) || matches!(property, super::styles::StyleProperty::Display) {
-                    return Err(invalid());
-                }
-            }
-            // This variant is intentionally unavailable to serde input; only
-            // record_wait may construct it after resolving an evidence binding.
-            Self::MatchRecord { .. } => return Err(invalid()),
+            return Ok(Self::FindNodes {
+                tag: find.tag.map(str::to_owned),
+                role: find.role.map(str::to_owned),
+                text: find.text.map(str::to_owned),
+                scope: find.scope,
+                limit: find.limit,
+            });
         }
-        Ok(query)
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct NodeRequest<'a> {
+            kind: &'a str,
+            node_id: &'a str,
+            property: Option<super::styles::StyleProperty>,
+        }
+        let target = NodeRequest::deserialize(value).map_err(|_| invalid())?;
+        if !node_id(target.node_id) {
+            return Err(invalid());
+        }
+        let node_id = target.node_id.to_owned();
+        match (target.kind, target.property) {
+            ("read_node", None) => Ok(Self::ReadNode { node_id }),
+            ("read_layout", None) => Ok(Self::ReadLayout { node_id }),
+            ("read_accessibility", None) => Ok(Self::ReadAccessibility { node_id }),
+            ("read_validation", None) => Ok(Self::ReadValidation { node_id }),
+            ("read_styles", Some(property)) => Ok(Self::ReadStyles { node_id, property }),
+            ("read_ancestor_styles", Some(property))
+                if property != super::styles::StyleProperty::Display =>
+            {
+                Ok(Self::ReadAncestorStyles { node_id, property })
+            }
+            _ => Err(invalid()),
+        }
     }
     pub fn id(&self) -> Option<&str> {
         match self {
@@ -449,8 +461,9 @@ pub(crate) struct Validation {
     pub state: ValidationState,
     pub reasons: Vec<ValidationReason>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// DOM replies are decoded here. Native adapters construct the AX and CSS variants directly.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Raw {
     FindNodes {
         nodes: Vec<Node>,
@@ -517,9 +530,43 @@ impl Raw {
         if text.len() > MAX_BYTES {
             return Err(types::decode());
         }
-        let raw: Self = serde_json::from_str::<Option<Self>>(text)
-            .map_err(|_| types::decode())?
-            .ok_or_else(types::stale)?;
+        // A missing DOM node is represented by JSON null regardless of the query.
+        if text.trim_matches([' ', '\n', '\r', '\t']) == "null" {
+            return Err(types::stale());
+        }
+        // The operation is known before reading the response. Decode its closed
+        // shape directly so Serde need not buffer a tagged value and decode it again.
+        macro_rules! dom_reply {
+            ($variant:ident, $field:ident: $ty:ty, $tag:expr) => {{
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Reply<'a> {
+                    #[serde(borrow)]
+                    kind: std::borrow::Cow<'a, str>,
+                    $field: $ty,
+                    coverage: Coverage,
+                }
+                let reply: Reply = serde_json::from_str(text).map_err(|_| types::decode())?;
+                if reply.kind != $tag {
+                    return Err(types::decode());
+                }
+                Self::$variant {
+                    $field: reply.$field,
+                    coverage: reply.coverage,
+                }
+            }};
+        }
+        let raw = match query.kind {
+            "find_nodes" => dom_reply!(FindNodes, nodes: Vec<Node>, query.kind),
+            "read_node" => dom_reply!(ReadNode, node: Detail, query.kind),
+            "read_layout" => dom_reply!(ReadLayout, layout: Layout, query.kind),
+            "read_validation" => dom_reply!(ReadValidation, validation: Validation, query.kind),
+            "match_record" => dom_reply!(MatchRecord, matched: bool, query.kind),
+            "style_target" | "ancestor_style_target" => {
+                dom_reply!(StyleTarget, sensitive: bool, "style_target")
+            }
+            _ => return Err(types::decode()),
+        };
         let coverage = raw.coverage();
         let valid = coverage.native_ax_nodes.is_none()
             && coverage.native_ax_properties.is_none()
@@ -530,14 +577,12 @@ impl Raw {
             && coverage.truncated != coverage.limits.is_empty();
         let shape = match &raw {
             Self::FindNodes { nodes, .. } => {
-                query.kind == "find_nodes"
-                    && nodes.len() <= query.limit
+                nodes.len() <= query.limit
                     && nodes.iter().all(Node::valid)
                     && nodes.iter().map(|n| n.node).collect::<BTreeSet<_>>().len() == nodes.len()
             }
             Self::ReadNode { node, .. } => {
-                query.kind == "read_node"
-                    && Some(node.facts.node) == query.node
+                Some(node.facts.node) == query.node
                     && node.facts.valid()
                     && short(&node.text_excerpt, 1024)
                     && node.states.connected
@@ -548,23 +593,17 @@ impl Raw {
                         .all(|(k, v)| ATTRIBUTES.contains(&k.as_str()) && short(v, 64))
                     && (!node.facts.sensitive || node.text_excerpt.is_empty())
             }
-            Self::ReadAccessibility { .. } => false,
             Self::ReadValidation { validation, .. } => {
-                query.kind == "read_validation"
-                    && validation.reasons.len() <= 10
+                validation.reasons.len() <= 10
                     && validation.reasons.iter().collect::<BTreeSet<_>>().len()
                         == validation.reasons.len()
                     && (matches!(validation.state, ValidationState::Invalid)
                         != validation.reasons.is_empty())
             }
-            Self::ReadStyles { .. } => false,
-            Self::StyleTarget { .. } => {
-                (query.kind == "style_target" || query.kind == "ancestor_style_target")
-                    && query.node.is_some()
-            },
+            Self::ReadAccessibility { .. } | Self::ReadStyles { .. } => false,
+            Self::StyleTarget { .. } => query.node.is_some(),
             Self::MatchRecord { matched, .. } => {
-                query.kind == "match_record"
-                    && query.node.is_some()
+                query.node.is_some()
                     && query.anchor_text.is_some()
                     && query.expected_text.is_some()
                     && (!matched || !coverage.truncated)
@@ -572,10 +611,9 @@ impl Raw {
             Self::ReadLayout { layout, .. } => {
                 let b = &layout.r#box;
                 let v = &layout.viewport;
-                query.kind == "read_layout"
-                    && [b.x, b.y, b.width, b.height, v.width, v.height]
-                        .into_iter()
-                        .all(f64::is_finite)
+                [b.x, b.y, b.width, b.height, v.width, v.height]
+                    .into_iter()
+                    .all(f64::is_finite)
                     && b.width >= 0.
                     && b.height >= 0.
                     && v.width >= 0.

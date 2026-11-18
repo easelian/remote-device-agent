@@ -1,23 +1,22 @@
 //! Native accessibility facts, separate from the canonical DOM profile.
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Status {
     Present,
     Absent,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum NameStatus {
     Available,
     Omitted,
     Absent,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct Snapshot {
     pub status: Status,
     pub role: Option<String>,

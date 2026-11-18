@@ -65,14 +65,6 @@ impl Drop for Domains {
     }
 }
 
-// Keep the target's ordinary DOM parents alive in this query's isolated realm.
-// The fifth object only witnesses truncation. No page IDs or nodes leave the adapter.
-const BIND_ANCESTORS: &str = concat!(
-    "function (identity) { return (",
-    include_str!("../../semantic/evidence.js"),
-    ").call(this, 'bind_style_ancestors', identity); }"
-);
-
 const SAME_CHAIN: &str = r#"function (target) {
     if (!target.isConnected || target.getRootNode() !== document || target.assignedSlot) return false;
     let child = target;
@@ -98,7 +90,8 @@ async fn read_ancestors(
             Some(session),
             call,
             json!({
-                "objectId": object, "functionDeclaration": BIND_ANCESTORS, "arguments":[{"value":identity}],
+                "objectId": object, "functionDeclaration": sem::evidence::SOURCE,
+                "arguments": [{"value": "bind_style_ancestors"}, {"value": identity}],
                 "objectGroup": "rdh-native-styles", "returnByValue": false
             }),
             deadline,
