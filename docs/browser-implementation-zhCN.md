@@ -59,7 +59,20 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 - **DOM 与布局。** v2 两个后端的 `dom_evidence` 扩展使用 `browser_evidence`。`find_nodes` 以 tag、role 或文本查找诊断节点，`read_node` 读取受限的节点事实，`read_layout` 读取 frame 视口内的布局、计算样式子集和局部命中情况。父 frame 遮挡、字段缺失和预算截断通过 `coverage` 表达。用 `node_id` 查读不会替换当前观察或增量基线。[证据采集](../src/browser/semantic/evidence.rs) · [注册表](../src/browser/runtime/v2/evidence.rs)
 - **观察增量。** `observation_delta` 是展示扩展。受控客户端在每次调用的外层 `params._meta` 中声明 `com.easelian/browser-observation-delta` 的版本 1 和 reducer `rdh-observation-v1`，并显式传 `presentation`。Agent 执行完整观察，Core 按真实 MCP 编码在 `full`、`delta` 和 `unchanged` 中选择。只有候选至多为同次 full 的 70% 才发送较小格式。Server `clients/browser-observation-delta.mjs` 重建并校验当前绑定。普通客户端继续使用完整观察。[Agent 展示缓存](../src/browser/runtime/v2/presentation.rs)
 
-匹配 CSS 规则、控制台异常、网络请求摘要与性能采样尚无公开工具。`read_layout` 的计算样式和局部命中可帮助解释可见性。精确到样式表规则、脚本异常或失败请求的证据需要相应扩展。
+#### 动作期间的事件
+
+v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。Chromium 支持 `network`，Firefox 支持 `network` 与 `console`。AI 在操作前调用 `browser_capture` 开窗，等待返回后执行一次已授权操作，再用 `browser_evidence` 读窗口。两种工具都要求 `version: 1`、同一会话、tab 和当前控制代次。启停使用独立的操作回执，启动响应丢失时按原操作 ID 找回 `capture_id`。动作本身继续使用原有的输入回执。
+
+窗口只保存下列事实。每条都有从 1 开始的 `sequence` 和相对开窗时间 `elapsed_ms`。
+
+| 事件 | 可读信息 |
+| --- | --- |
+| `response`、`failed` | HTTP 状态码，或受限的传输错误类别。CDP 以目标 tab 的原生 session 归属，可能包括同一进程的子 frame。BiDi 只接收可归属该顶层 context 的事件 |
+| `console`、`exception` | Firefox 的日志级别和脚本异常标记。日志正文、参数、错误文本、请求地址和认证信息均不进入窗口 |
+
+`read_events` 的 `after_sequence` 为排他下界。首次读取返回 `through_sequence`，续页原样传回并用 `next_sequence` 接着读。达到末序号后，可省略 `through_sequence` 读取新增事件。`read_event` 使用同一窗口和序号复查一条摘要。窗口最长采集 30 秒，按序保留最近 128 条固定大小的记录。覆盖旧记录时，`dropped_count` 给出累计丢弃数；读到空页也可能是所查区间已全部淘汰。主动停止或到期后最多保留 30 秒，开始新窗口会替换旧窗口。控制权变化或文档替换会使旧窗口失效。人工操作结束后须重新开窗。
+
+脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。样式规则归属、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)
 
 #### 单节点原生无障碍证据
 

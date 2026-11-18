@@ -60,6 +60,7 @@ impl Fixture {
             cursor: None,
             presentation: Cache::default(),
             evidence: crate::browser::runtime::v2::evidence::Registry::default(),
+            task_events: None,
             human: None,
             touched: Instant::now(),
         };

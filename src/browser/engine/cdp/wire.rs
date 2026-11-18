@@ -1,4 +1,6 @@
 //! Private Chromium pipe, with bounded framing, queueing and late-reply ownership.
+#[cfg(feature = "experimental-browser-bidi")]
+use crate::browser::semantic::task_events::{Fact, FailureKind, Sink};
 use crate::browser::{
     Failure, Result,
     control::{Control, Effect, Submission},
@@ -97,6 +99,8 @@ struct Inner {
     fenced: AtomicBool,
     event_slots: Arc<Semaphore>,
     event_bytes: Arc<Semaphore>,
+    #[cfg(feature = "experimental-browser-bidi")]
+    task_events: Mutex<Option<(String, Sink)>>,
     slots: Arc<Semaphore>,
     cleanup_slots: Arc<Semaphore>,
     stop: watch::Sender<Shutdown>,
@@ -190,6 +194,8 @@ impl Cdp {
             fenced: AtomicBool::new(false),
             event_slots: Arc::new(Semaphore::new(events::MAX_EVENTS)),
             event_bytes: Arc::new(Semaphore::new(events::MAX_EVENT_BYTES)),
+            #[cfg(feature = "experimental-browser-bidi")]
+            task_events: Mutex::new(None),
             slots: Arc::new(Semaphore::new(32)),
             cleanup_slots: Arc::new(Semaphore::new(leases::CLEANUP_SLOTS)),
             stop,
@@ -310,23 +316,34 @@ impl Cdp {
                                 reader.barriers.fetch_add(1, Ordering::Release);
                             }
                         } else {
-                            let mut pending = reader.pending.lock().unwrap();
-                            #[cfg(test)]
-                            pending.resources.event(&value);
-                            // Native ownership is checked even for events that no
-                            // semantic consumer uses, and after admission closes.
-                            if !pending.leases.event(&value)
-                                || !reader.session_event(&mut pending, &value)
+                            #[cfg(feature = "experimental-browser-bidi")]
+                            let task_fact;
                             {
-                                reader.fence_events(&mut pending);
-                                continue;
+                                let mut pending = reader.pending.lock().unwrap();
+                                #[cfg(test)]
+                                pending.resources.event(&value);
+                                // Validate ownership even for messages that no consumer retains.
+                                if !pending.leases.event(&value)
+                                    || !reader.session_event(&mut pending, &value)
+                                {
+                                    reader.fence_events(&mut pending);
+                                    continue;
+                                }
+                                #[cfg(feature = "experimental-browser-bidi")]
+                                {
+                                    task_fact = reader.capture_event(&value);
+                                }
+                                reader.publish_event(
+                                    &mut pending,
+                                    &notifications,
+                                    value,
+                                    encoded_bytes,
+                                );
                             }
-                            reader.publish_event(
-                                &mut pending,
-                                &notifications,
-                                value,
-                                encoded_bytes,
-                            );
+                            #[cfg(feature = "experimental-browser-bidi")]
+                            if let Some((sink, fact)) = task_fact {
+                                sink.push(fact);
+                            }
                         }
                     } else {
                         if frame.len() == MAX_MESSAGE {
@@ -378,6 +395,18 @@ impl Cdp {
             events,
             submission: Submission::default(),
         }
+    }
+
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub fn set_task_events(&self, session: &str, sink: Sink) -> Result<()> {
+        let mut slot = self.inner.task_events.lock().unwrap();
+        if let Some((_, previous)) = slot.take() {
+            // A new subscription is a new document window. Retire the old
+            // sink before replacing it so facts cannot cross navigation.
+            previous.invalidate();
+        }
+        *slot = Some((session.to_owned(), sink));
+        Ok(())
     }
 
     pub async fn call(

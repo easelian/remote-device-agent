@@ -487,8 +487,10 @@ impl Runtime {
         let browser = self.browsers.info();
         if browser["available"] == true || browser["v2"]["available"] == true {
             operations.extend(BROWSER_OPERATIONS.iter().copied().filter(|operation| {
-                !matches!(*operation, "browser_inspect" | "browser_evidence")
-                    || browser["v2"]["available"] == true
+                !matches!(
+                    *operation,
+                    "browser_inspect" | "browser_evidence" | "browser_capture"
+                ) || browser["v2"]["available"] == true
             }));
         }
         if self.startup.is_some() {

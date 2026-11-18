@@ -51,6 +51,7 @@ pub const OPERATIONS: &[&str] = &[
     "browser_wait",
     "browser_control",
     "browser_human",
+    "browser_capture",
 ];
 
 /// Internal process entry, recognized before public CLI arguments are parsed.
@@ -80,7 +81,12 @@ pub fn run_internal_supervisor() -> Option<crate::error::Result<()>> {
     )))]
     None
 }
-pub const MUTATIONS: &[&str] = &["browser_open", "browser_act", "browser_control"];
+pub const MUTATIONS: &[&str] = &[
+    "browser_open",
+    "browser_act",
+    "browser_control",
+    "browser_capture",
+];
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]

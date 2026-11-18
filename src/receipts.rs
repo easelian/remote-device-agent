@@ -13,6 +13,7 @@ use crate::random;
 const TRACKED: &[&str] = &[
     "browser_open",
     "browser_act",
+    "browser_capture",
     "browser_control",
     "write_file",
     "edit_file",
@@ -180,6 +181,16 @@ pub fn result_summary(value: &Value) -> Value {
         && matches!(selection["backend"].as_str(), Some("cdp" | "bidi"))
     {
         out.insert("selection".into(), selection.clone());
+    }
+    if let Some(id) = value.get("capture_id").and_then(Value::as_str)
+        && id.strip_prefix("cap_").is_some_and(|hex| {
+            hex.len() == 32
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    {
+        out.insert("capture_id".into(), Value::String(id.into()));
     }
     for key in [
         "job_id",

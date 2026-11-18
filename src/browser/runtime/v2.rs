@@ -5,6 +5,7 @@ use crate::browser::{
     semantic::{self as sem, Port as _},
 };
 use sem::surface::{Focus, Metadata};
+mod capture;
 mod evidence;
 mod file_approval;
 mod human;
@@ -34,6 +35,7 @@ struct Session {
     cursor: Option<(String, sem::Continuation, sem::Query)>,
     presentation: presentation::Cache,
     evidence: evidence::Registry,
+    task_events: Option<capture::Capture>,
     human: Option<human::Lease>,
     touched: Instant,
 }
@@ -55,6 +57,7 @@ impl Session {
         }
         self.native = None;
         self.invalidate();
+        self.task_events = None;
         self.human = None;
         Ok(())
     }
@@ -109,7 +112,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
-        "extensions":{"actionability":crate::browser::selection::extension(None),
+        "extensions":{"task_events":{"version":1,"available":true,"categories":if backend==Backend::Bidi {json!(["console","network"])} else {json!(["network"])}},"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
             "dom_evidence":crate::browser::selection::extension(None),
             "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
@@ -203,6 +206,7 @@ impl Browsers {
                 cursor: None,
                 presentation: presentation::Cache::default(),
                 evidence: evidence::Registry::default(),
+                task_events: None,
                 human: None,
                 touched: Instant::now(),
             }),
@@ -366,11 +370,49 @@ impl Browsers {
         let mut prepared_evidence = None;
         let result = async {
             match operation {
+                "browser_capture" => {
+                    let port = page.access(false)?;
+                    let action = &params["action"];
+                    if action["kind"] == "start" {
+                        capture::Capture::start(
+                            &mut session,
+                            &slot,
+                            &port,
+                            &tab,
+                            epoch,
+                            &action["categories"],
+                            deadline,
+                        )
+                        .await
+                    } else {
+                        capture::Capture::read_or_stop(
+                            &session, &port, &tab, epoch, action, deadline,
+                        )
+                        .await
+                    }
+                }
                 "browser_observe" => {
                     let (value, prepared) =
                         observe(&mut session, &page, &port, params, epoch, deadline).await?;
                     prepared_presentation = prepared;
                     Ok(value)
+                }
+                "browser_evidence"
+                    if matches!(
+                        params["query"]["kind"].as_str(),
+                        Some("read_events" | "read_event")
+                    ) =>
+                {
+                    let port = page.access(false)?;
+                    capture::Capture::read_or_stop(
+                        &session,
+                        &port,
+                        &tab,
+                        epoch,
+                        &params["query"],
+                        deadline,
+                    )
+                    .await
                 }
                 "browser_evidence" => {
                     let query = sem::evidence::Query::parse(&params["query"])?;
@@ -484,6 +526,9 @@ impl Browsers {
         value["session_id"] = id.into();
         value["control_epoch"] = epoch.into();
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
+        if operation == "browser_evidence" || operation == "browser_capture" {
+            value["tab_id"] = tab.clone().into();
+        }
         if operation == "browser_inspect" {
             sem::actionability::check_size(&value)?;
         }

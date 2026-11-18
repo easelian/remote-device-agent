@@ -284,6 +284,16 @@ impl Session {
     }
 }
 impl Semantic {
+    pub async fn enable_task_events(
+        &self,
+        sink: crate::browser::semantic::task_events::Sink,
+        deadline: std::time::Instant,
+    ) -> crate::browser::Result<()> {
+        self.adapter
+            .enable_task_events(&self.root, sink, deadline)
+            .await
+    }
+
     pub fn tab_id(&self) -> Result<String> {
         self.tabs
             .lock()

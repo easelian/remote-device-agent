@@ -22,7 +22,7 @@ impl std::ops::Deref for EventLease {
     }
 }
 
-pub(in crate::browser::engine) struct EventReceiver {
+pub(in crate::browser) struct EventReceiver {
     raw: broadcast::Receiver<Arc<Envelope>>,
     owner: Arc<Inner>,
     stopped: watch::Receiver<Shutdown>,
@@ -109,6 +109,35 @@ impl Inner {
         self.stop.send_replace(Shutdown::Fenced);
     }
 
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub(super) fn capture_event(&self, value: &Value) -> Option<(Sink, Fact)> {
+        let session = value["sessionId"].as_str()?;
+        let task_events = self.task_events.lock().unwrap();
+        let (root, sink) = task_events.as_ref()?;
+        if session != root {
+            return None;
+        }
+        if value["method"] == "Page.frameNavigated" {
+            sink.invalidate();
+            return None;
+        }
+        match value["method"].as_str()? {
+            "Network.responseReceived" => value["params"]["response"]["status"]
+                .as_u64()
+                .and_then(|status| u16::try_from(status).ok())
+                .map(|status| (sink.clone(), Fact::Response(status))),
+            "Network.loadingFailed" => Some((
+                sink.clone(),
+                Fact::Failed(if value["params"]["canceled"].as_bool().unwrap_or(false) {
+                    FailureKind::Canceled
+                } else {
+                    FailureKind::Other
+                }),
+            )),
+            _ => None,
+        }
+    }
+
     pub(super) fn publish_event(
         &self,
         pending: &mut PendingState,
@@ -133,6 +162,7 @@ impl Inner {
         ) {
             return;
         }
+
         let permits = self
             .event_slots
             .clone()

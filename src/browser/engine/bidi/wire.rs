@@ -1,6 +1,10 @@
 //! One pending owner per command, independent read/write tasks and a bounded
 //! critical-event path. Caller cancellation never cancels an accepted command.
-use super::{Command, ContextId, Event, event::CORE_EVENTS};
+use super::{
+    Command, ContextId, Event,
+    event::{CORE_EVENTS, ConsoleLevel, Diagnostic, FetchErrorKind},
+};
+use crate::browser::semantic::task_events::{Fact, Sink};
 use crate::browser::{
     Failure,
     control::{Control, Effect, Submission},
@@ -175,6 +179,7 @@ struct Inner {
     fenced: AtomicBool,
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
+    task_events: Mutex<Option<(ContextId, Sink)>>,
     mode: watch::Sender<Mode>,
     workers: watch::Sender<usize>,
     #[cfg(test)]
@@ -257,6 +262,7 @@ impl Bidi {
             fenced: AtomicBool::new(false),
             slots: Arc::new(Semaphore::new(SLOTS)),
             bytes: Arc::new(Semaphore::new(EVENT_BYTES)),
+            task_events: Mutex::new(None),
             mode,
             workers,
             #[cfg(test)]
@@ -376,6 +382,10 @@ impl Bidi {
                 delivered: 0,
             },
         )
+    }
+
+    pub(super) fn set_task_events(&self, root: ContextId, sink: Option<Sink>) {
+        self.inner.set_task_events(root, sink);
     }
 
     pub fn submit(&self, command: Command, deadline: Instant) -> Result<Call> {
@@ -653,12 +663,38 @@ impl Inner {
                     return Err(Fault::Malformed);
                 }
                 // Only subscribed lifecycle events enter the critical channel.
-                // Future diagnostic subscriptions need separate budgets.
-                if !CORE_EVENTS.contains(&method) && !super::event::PAGE_EVENTS.contains(&method) {
+                // A task window projects optional diagnostics directly into its own ring.
+                let diagnostic = super::event::DIAGNOSTIC_EVENTS.contains(&method);
+                if !CORE_EVENTS.contains(&method)
+                    && !super::event::PAGE_EVENTS.contains(&method)
+                    && !diagnostic
+                {
+                    return Ok(());
+                }
+                if diagnostic {
+                    if self.task_events.lock().unwrap().is_none() {
+                        return Ok(());
+                    }
+                    if let Some(event) = Event::parse(self.scope, method, &value["params"]) {
+                        self.publish_task_event(&event);
+                    }
                     return Ok(());
                 }
                 let event =
                     Event::parse(self.scope, method, &value["params"]).ok_or(Fault::Malformed)?;
+                let invalidate = match &event {
+                    Event::Destroyed { context } | Event::Navigation { context, .. } => self
+                        .task_events
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .filter(|(root, _)| root == context)
+                        .map(|(_, sink)| sink.clone()),
+                    _ => None,
+                };
+                if let Some(sink) = invalidate {
+                    sink.invalidate();
+                }
                 let mut pending = self.pending.lock().unwrap();
                 let sent = (|| {
                     // Read-side publication precedes replies on this connection;
@@ -709,6 +745,58 @@ impl Inner {
             _ => return Err(Fault::Malformed),
         }
         Ok(())
+    }
+    fn publish_task_event(&self, event: &Event) {
+        let task_events = self.task_events.lock().unwrap();
+        let Some((root, sink)) = task_events.as_ref() else {
+            return;
+        };
+        let context = match event {
+            Event::Diagnostic(Diagnostic::Console { context, .. })
+            | Event::Diagnostic(Diagnostic::Response { context, .. })
+            | Event::Diagnostic(Diagnostic::FetchError { context, .. }) => context.as_ref(),
+            _ => return,
+        };
+        if context != Some(root) {
+            return;
+        }
+        let fact = match event {
+            Event::Diagnostic(Diagnostic::Console {
+                level, category, ..
+            }) if *category == super::event::ConsoleCategory::Javascript
+                && *level == ConsoleLevel::Error =>
+            {
+                Fact::Exception
+            }
+            Event::Diagnostic(Diagnostic::Console { level, .. }) => Fact::Console(match level {
+                ConsoleLevel::Debug => crate::browser::semantic::task_events::Level::Debug,
+                ConsoleLevel::Info => crate::browser::semantic::task_events::Level::Info,
+                ConsoleLevel::Warn => crate::browser::semantic::task_events::Level::Warning,
+                ConsoleLevel::Error => crate::browser::semantic::task_events::Level::Error,
+                ConsoleLevel::Other => crate::browser::semantic::task_events::Level::Log,
+            }),
+            Event::Diagnostic(Diagnostic::Response { status, .. }) => {
+                Fact::Response((*status).min(u16::MAX as u64) as u16)
+            }
+            Event::Diagnostic(Diagnostic::FetchError { kind, .. }) => Fact::Failed(match kind {
+                FetchErrorKind::Dns => crate::browser::semantic::task_events::FailureKind::Dns,
+                FetchErrorKind::Timeout => {
+                    crate::browser::semantic::task_events::FailureKind::Timeout
+                }
+                FetchErrorKind::Connection => {
+                    crate::browser::semantic::task_events::FailureKind::Connection
+                }
+                FetchErrorKind::Canceled => {
+                    crate::browser::semantic::task_events::FailureKind::Canceled
+                }
+                FetchErrorKind::Other => crate::browser::semantic::task_events::FailureKind::Other,
+            }),
+            _ => return,
+        };
+        sink.push(fact);
+    }
+    pub(super) fn set_task_events(&self, root: ContextId, sink: Option<Sink>) {
+        *self.task_events.lock().unwrap() = sink.map(|sink| (root, sink));
     }
     fn close(&self) {
         let _pending = self.pending.lock().unwrap();

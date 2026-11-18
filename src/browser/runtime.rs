@@ -392,8 +392,10 @@ impl Browsers {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
         }
-        if matches!(operation, "browser_inspect" | "browser_evidence")
-            || operation == "browser_observe" && params.get("presentation").is_some()
+        if matches!(
+            operation,
+            "browser_inspect" | "browser_evidence" | "browser_capture"
+        ) || operation == "browser_observe" && params.get("presentation").is_some()
         {
             // Only the explicitly selected v2 branch supports these extensions.
             // Refuse before preparing storage or touching a legacy session.
@@ -1740,6 +1742,54 @@ fn scope(params: &Value) -> page::Scope {
     }
 }
 
+fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
+    let invalid = || Failure::new("browser_invalid_params");
+    let fields = value.as_object().ok_or_else(invalid)?;
+    let id = value["capture_id"]
+        .as_str()
+        .and_then(|v| v.strip_prefix("cap_"))
+        .is_some_and(|v| {
+            v.len() == 32
+                && v.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+    let number = |field: &str, min: u64, max: u64| {
+        fields
+            .get(field)
+            .is_none_or(|v| v.as_u64().is_some_and(|n| (min..=max).contains(&n)))
+    };
+    const MAX: u64 = (1 << 53) - 1;
+    let valid = match (mutation, value["kind"].as_str()) {
+        (true, Some("start")) => {
+            fields.len() == 2
+                && value["categories"].as_array().is_some_and(|c| {
+                    (1..=2).contains(&c.len())
+                        && c.iter()
+                            .all(|v| matches!(v.as_str(), Some("network" | "console")))
+                        && (c.len() == 1 || c[0] != c[1])
+                })
+        }
+        (true, Some("stop")) => fields.len() == 2 && id,
+        (false, Some("read_event")) => {
+            fields.len() == 3 && id && fields.contains_key("sequence") && number("sequence", 1, MAX)
+        }
+        (false, Some("read_events")) => {
+            id && fields.keys().all(|k| {
+                matches!(
+                    k.as_str(),
+                    "kind" | "capture_id" | "after_sequence" | "through_sequence" | "limit"
+                )
+            }) && number("after_sequence", 0, MAX)
+                && number("through_sequence", 0, MAX)
+                && number("limit", 1, 64)
+                && value["after_sequence"].as_u64().unwrap_or(0)
+                    <= value["through_sequence"].as_u64().unwrap_or(MAX)
+        }
+        _ => false,
+    };
+    if valid { Ok(()) } else { Err(invalid()) }
+}
+
 fn validate(operation: &str, params: &Value) -> Result<()> {
     if matches!(
         operation,
@@ -1757,6 +1807,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
         "browser_evidence" => &["session_id", "tab_id", "control_epoch", "version", "query"],
+        "browser_capture" => &["session_id", "tab_id", "control_epoch", "version", "action"],
         "browser_inspect" => &[
             "session_id",
             "tab_id",
@@ -1818,7 +1869,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             return Err(Failure::new("browser_invalid_params"));
         }
     }
-    if operation == "browser_evidence" {
+    if matches!(operation, "browser_capture" | "browser_evidence") {
         if params["version"].as_u64() != Some(1)
             || params["control_epoch"]
                 .as_u64()
@@ -1834,8 +1885,17 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         {
             return Err(Failure::new("browser_invalid_params"));
         }
-        #[cfg(feature = "experimental-browser-bidi")]
-        crate::browser::semantic::evidence::Query::parse(&params["query"])?;
+        if operation == "browser_capture" {
+            validate_capture_query(&params["action"], true)?;
+        } else if matches!(
+            params["query"]["kind"].as_str(),
+            Some("read_events" | "read_event")
+        ) {
+            validate_capture_query(&params["query"], false)?;
+        } else {
+            #[cfg(feature = "experimental-browser-bidi")]
+            crate::browser::semantic::evidence::Query::parse(&params["query"])?;
+        }
     }
     if operation == "browser_inspect"
         && (params["session_id"].as_str().is_none()
@@ -2046,6 +2106,33 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_event_capture_validation_is_closed_and_versioned() {
+        let base = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"action":{"kind":"start","categories":["network"]}});
+        assert!(validate("browser_capture", &base).is_ok());
+        let mut extra = base.clone();
+        extra["action"]["extra"] = true.into();
+        assert!(validate("browser_capture", &extra).is_err());
+        let stop = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"action":{"kind":"stop","capture_id":format!("cap_{}", "a".repeat(32))}});
+        assert!(validate("browser_capture", &stop).is_ok());
+        let read = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"query":{"kind":"read_events","capture_id":format!("cap_{}", "a".repeat(32))}});
+        assert!(validate("browser_evidence", &read).is_ok());
+        let mut bad = read.clone();
+        bad["query"]["through_sequence"] = 0.into();
+        assert!(validate("browser_evidence", &bad).is_ok());
+        bad["query"]["limit"] = false.into();
+        assert!(validate("browser_evidence", &bad).is_err());
+        let mut old = read.clone();
+        old["version"] = 2.into();
+        assert!(validate("browser_evidence", &old).is_err());
+    }
+
+    #[test]
+    fn task_event_capture_rejects_non_hex_capture_ids() {
+        let request = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"action":{"kind":"stop","capture_id":format!("cap_{}", "g".repeat(32))}});
+        assert!(validate("browser_capture", &request).is_err());
+    }
 
     #[test]
     fn delta_presentation_is_explicit_closed_and_incompatible_with_a_cursor() {

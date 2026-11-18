@@ -26,7 +26,7 @@ AI 应能在一次会话中找到目标、执行操作、解释失败，并用�
 | 页面语义与原生 adapter | `semantic::Page` 保留跨引擎共用的记录、引用、动作条件与覆盖语义。CDP/BiDi 分别实现类型化的读取和动作，拥有原生对象、事件、流及待决命令。用独立扩展声明引擎特有能力 |
 | Business 人工页面 | 在已有会话中提供明确接管、受保护输入、交还及披露确认。独立文件批准只授权一个文件给指定站点。网页处理用户输入，AI 继续负责任务和验收 |
 
-原生方法和调试端点留在设备内。每个公开扩展都从一个具体任务定义输入、可观察结果、失败状态和预算。各种标识各有用途。动作 `ref` 用于输入，`node_id` 用于查读节点，拟议的事件 ID 用于查询同一窗口的证据。页面文字、错误消息和站点日志都属于不受信任的数据。敏感字段要在设备端进入缓冲区前处理，并在 Core 交付时重新核对权限。
+原生方法和调试端点留在设备内。每个公开扩展都从一个具体任务定义输入、可观察结果、失败状态和预算。各种标识各有用途。动作 `ref` 用于输入，`node_id` 用于查读节点，事件序号与 capture_id 一起定位采集窗口内的一条记录。页面文字、错误消息和站点日志都属于不受信任的数据。敏感字段要在设备端进入缓冲区前处理，并在 Core 交付时重新核对权限。
 
 ## 第一条开发路线
 
@@ -50,23 +50,9 @@ Agent 通过 CDP 读取单节点原生 AX，Core 校验返回内容，Server 的
 
 ## 第一版 DevTools 诊断接口
 
-建议增加版本化扩展 `task_events`，用一个有界的采集窗口解释一次操作。下表是拟议接口，当前工具目录尚未提供这些操作。
+已提供 `task_events` 版本 1。AI 可以围绕一次已授权动作开窗、读取和停止；窗口与输入各有自己的操作回执。事件流保存来自浏览器的固定类别和状态码。操作系统、浏览器与客户端组合的放行仍独立验收。字段、能力协商、分页和回收规则见[实现说明](browser-implementation-zhCN.md#动作期间的事件)。
 
-| 拟议入口 | 参数与结果 |
-| --- | --- |
-| `browser_capture` | 传入设备、会话、tab、控制代次及 `start` 或 `stop`。`start` 选择 `console`、`network` 类别，返回 `capture_id` 和起始序号。启停会改变诊断资源，使用原操作 ID 去重。丢失响应时先找回原采集 |
-| `browser_evidence` 的 `read_events`、`read_event` | 前者用 `capture_id` 和起始序号读取一页摘要，后者用同一窗口的事件 ID 读取受限详情。分页固定末序号，实时追加的数据留给下一次读取。两者沿用只读计量和最终披露检查 |
-
-动作 ID 用于关联同一时间窗，事件或内容不写入动作回执。AI 可以在整个过程中持有控制权。
-
-1. **开始采集。** 为当前主体、会话、tab、文档和控制代次登记窗口，明确采集类别并返回不透明 ID 和起始序号。原生订阅就绪后才允许调用方将下一次动作与窗口关联。动作继续用 `browser_act` 提交，原回执独立结算。
-2. **读取摘要。** 按序号读取已采集区间。返回采集时间、来源、文档、事件类型、覆盖缺口、丢弃数和下一游标。控制台摘要只含级别、异常类别、重复次数及受限位置，网络只含请求类别、阶段、状态码、耗时和失败类别。一个请求可以来自页面后台，时间接近只能支持关联判断。
-3. **按需查一条。** 使用该窗口签发的事件 ID 读取已允许的调用栈位置或请求阶段。首版不采集网络正文、原始 URL 查询、Cookie、认证头、console 对象值或任意 console 文本。需要区分 HTTP 200 中的业务错误时，优先读页面确认。若网站只能通过响应字段表达结果，再为指定字段设计独立授权、脱敏和限额。
-4. **结束采集。** 主动结束或超时后停止采集并结算订阅。暂停、人工接管、断连、文档替换或撤权须隔离旧窗口。接管期间停止采集和 AI 披露，交还后使用新窗口。不能向 AI 补发人工输入期间的历史。取消等待后仍由 adapter 结算已占用的原生资源。
-
-首版建议每会话同时一个窗口，最长 30 秒，最多 128 条、64 KiB 已脱敏记录。读取沿用诊断正文 16 KiB、完整 MCP 64 KiB 的目标。按条数和字节同时计量，达到任一上限时丢弃可丢的诊断记录，并报告序号缺口。身份、控制、导航和资源释放事件仍走已有关键通道。注册、取消、迟到响应、计数归零和慢消费者分别测试。满足已有原生对象预算后才声明能力可用。
-
-Chromium adapter 可从 `Runtime.exceptionThrown`、`Runtime.consoleAPICalled`、`Network.responseReceived` 与 `Network.loadingFailed` 投影事实。Firefox 对应考察 `log.entryAdded`、`network.responseCompleted` 和 `network.fetchError`。先验证目标版本的订阅、字段和资源所有权，再决定各后端的 `available`。采集复用已有请求事件，避免影响导航拦截与附件响应的原有所有者。协议字段依据见 [CDP Runtime](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/)、[CDP Network](https://chromedevtools.github.io/devtools-protocol/tot/Network/) 和 [WebDriver BiDi](https://w3c.github.io/webdriver-bidi/)。
+下一步由失败用例决定补哪些事实。Chromium 的控制台订阅会出现带原生对象的消息。先证明旧消息不会回放、对象配额与释放可结算、日志洪峰不会阻塞导航和人工接管，再向 CDP 会话声明 `console`。网络时间窗也可能包含页面后台请求；跨重定向识别、失败阶段和有限的脚本栈位置需要独立定义来源与覆盖范围。两种后端都应保持普通输入回执和诊断内容分离，优先用目标记录判断网站业务结果。
 
 匹配样式应区分计算值、已读取的匹配规则，以及能够证明的层叠来源。性能先给任务耗时、长任务与资源阶段摘要，需要进一步定位时再提供有期限的 trace 私有制品和受限查询。将来若提供 VM 暂停、步进等会改变页面执行的能力，须与普通输入互斥，并证明超时或断连后能恢复执行。Agent 的控制暂停和 JavaScript VM 暂停分别记录状态。[CDP CSS](https://chromedevtools.github.io/devtools-protocol/tot/CSS/)
 
@@ -86,7 +72,7 @@ Chromium adapter 可从 `Runtime.exceptionThrown`、`Runtime.consoleAPICalled`�
 | 人工边界能否维持？ | Server `tests/core/test_browser_human.py`、`test_browser_file_approval.py`、`test_browser_guidance_races.py`。用合成秘密验证接管窗口内 AI 的读写、截图与诊断均被拒绝，交还前不交付旧读取。文件批准路径保持 AI 控制和一次使用，普通报错无需接管 |
 | 新诊断是否帮助 AI 作出正确判断？ | 为遮挡、JS 异常、HTTP 失败、HTTP 200 业务拒绝、响应丢失、本人验证分别固定页面终态和提交计数。记录任务完成率、误报成功率、普通故障人工接管数、诊断调用数/字节数。纳入事件洪峰、跨主体、换代与双后端能力不对称。普通任务与必须本人验证的任务分别计数。基准语料中重复提交、敏感内容披露和无证据宣称成功均为阻断项 |
 | 增量与新能力能否独立关闭？ | Server `clients/browser-observation-delta.test.mjs`、`tests/core/test_browser_observation_delta.py`。用同一次采集的完整观察验证重建。稀疏组实际 MCP 总字节不超过始终 full 的 70%。覆盖未知扩展、旧客户端、重连、乱序及基线淘汰 |
-| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
+| 真实调用链是否通过？ | Server `scripts/run_browser_acceptance.py` 从公开 MCP 驱动 Gate/Core、Agent 及真实浏览器。根据改动选择 `contracts`、`v1`、`v2`、`evidence`、`capture`、`file-approval`、`delta-corpus`、`budgets`、`recovery`、`linux-tls` 或 `rss`。以脚本的 `--help` 为准。执行需要专用 PostgreSQL、配套产物和浏览器。同一 PostgreSQL 实例的阶段串行。收集清单须与 JUnit 一致，并保留首次失败 |
 
 在 Server 根目录核对 `python3 scripts/run_browser_acceptance.py --help`。例如，在准备好专用测试环境后运行下面的 DOM 证据阶段。`RDH_ACCEPT_ENV` 指向包含配套测试产物与数据库设置的私有 JSON，`RDH_ACCEPT_OUT` 指向一个尚不存在的输出目录。成功时退出码为 0，目录中的 `acceptance-complete.json` 记录通过状态。
 

@@ -5,7 +5,7 @@ pub(super) const CORE_EVENTS: [&str; 2] = [
     "browsingContext.contextCreated",
     "browsingContext.contextDestroyed",
 ];
-pub(super) const PAGE_EVENTS: [&str; 8] = [
+pub(super) const PAGE_EVENTS: [&str; 11] = [
     "network.beforeRequestSent",
     "network.responseStarted",
     "browsingContext.downloadWillBegin",
@@ -14,6 +14,15 @@ pub(super) const PAGE_EVENTS: [&str; 8] = [
     "browsingContext.userPromptOpened",
     "browsingContext.userPromptClosed",
     "browsingContext.navigationCommitted",
+    "log.entryAdded",
+    "network.responseCompleted",
+    "network.fetchError",
+];
+/// Low-cardinality evidence used by an explicit action diagnostic window.
+pub(super) const DIAGNOSTIC_EVENTS: [&str; 3] = [
+    "log.entryAdded",
+    "network.responseCompleted",
+    "network.fetchError",
 ];
 pub(super) const MAX_CONTEXTS: usize = 128;
 
@@ -87,7 +96,48 @@ pub(super) enum Event {
         context: ContextId,
         navigation: String,
     },
+    Diagnostic(Diagnostic),
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Diagnostic {
+    Console {
+        context: Option<ContextId>,
+        level: ConsoleLevel,
+        category: ConsoleCategory,
+    },
+    Response {
+        context: Option<ContextId>,
+        status: u64,
+    },
+    FetchError {
+        context: Option<ContextId>,
+        kind: FetchErrorKind,
+    },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConsoleLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Other,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConsoleCategory {
+    Javascript,
+    Network,
+    Other,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FetchErrorKind {
+    Dns,
+    Timeout,
+    Connection,
+    Canceled,
+    Other,
+}
+
 impl Event {
     pub fn parse(scope: u64, method: &str, params: &Value) -> Option<Self> {
         let bounded = |value: &Value, max| {
@@ -203,6 +253,61 @@ impl Event {
                     .to_owned(),
             });
         }
+        if method == "log.entryAdded" {
+            let context = if params["source"]["context"].is_null() {
+                None
+            } else {
+                Some(ContextId::parse(scope, &params["source"]["context"])?)
+            };
+            let level = match params["level"].as_str()? {
+                "debug" => ConsoleLevel::Debug,
+                "info" => ConsoleLevel::Info,
+                "warn" => ConsoleLevel::Warn,
+                "error" => ConsoleLevel::Error,
+                _ => ConsoleLevel::Other,
+            };
+            let category = match params["type"].as_str()? {
+                "javascript" => ConsoleCategory::Javascript,
+                "network" => ConsoleCategory::Network,
+                _ => ConsoleCategory::Other,
+            };
+            return Some(Self::Diagnostic(Diagnostic::Console {
+                context,
+                level,
+                category,
+            }));
+        }
+        if method == "network.responseCompleted" {
+            return Some(Self::Diagnostic(Diagnostic::Response {
+                context: if params["context"].is_null() {
+                    None
+                } else {
+                    Some(ContextId::parse(scope, &params["context"])?)
+                },
+                status: params["response"]["status"].as_u64()?,
+            }));
+        }
+        if method == "network.fetchError" {
+            return Some(Self::Diagnostic(Diagnostic::FetchError {
+                context: if params["context"].is_null() {
+                    None
+                } else {
+                    Some(ContextId::parse(scope, &params["context"])?)
+                },
+                kind: match params["errorText"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    value if value.contains("dns") => FetchErrorKind::Dns,
+                    value if value.contains("timeout") => FetchErrorKind::Timeout,
+                    value if value.contains("connect") => FetchErrorKind::Connection,
+                    value if value.contains("cancel") => FetchErrorKind::Canceled,
+                    _ => FetchErrorKind::Other,
+                },
+            }));
+        }
         let context = ContextId::parse(scope, &params["context"])?;
         match method {
             "browsingContext.contextCreated" => Some(Self::Created {
@@ -249,6 +354,43 @@ fn response_headers_preserve_bounded_binary_bytes() {
     );
     params["response"]["headers"][0]["value"]["value"] = "!invalid!".into();
     assert!(Event::parse(1, "network.responseStarted", &params).is_none());
+}
+
+#[test]
+fn diagnostic_events_are_bounded_and_do_not_capture_console_payloads() {
+    let console = serde_json::json!({
+        "level":"error", "type":"javascript",
+        "text":"secret console payload",
+        "source":{"context":"tab"}
+    });
+    let Some(Event::Diagnostic(Diagnostic::Console {
+        context,
+        level,
+        category,
+    })) = Event::parse(7, "log.entryAdded", &console)
+    else {
+        panic!("valid console evidence");
+    };
+    assert_eq!(context.as_ref().map(ContextId::as_str), Some("tab"));
+    assert_eq!(level, ConsoleLevel::Error);
+    assert_eq!(category, ConsoleCategory::Javascript);
+
+    let response = serde_json::json!({
+        "context":"tab", "request":{"request":"req","url":"https://example.test"},
+        "response":{"status":204}
+    });
+    assert!(matches!(
+        Event::parse(7, "network.responseCompleted", &response),
+        Some(Event::Diagnostic(Diagnostic::Response { status: 204, .. }))
+    ));
+
+    let error = serde_json::json!({
+        "context":"tab", "request":{"request":"req"}, "errorText":"dns failure"
+    });
+    assert!(matches!(
+        Event::parse(7, "network.fetchError", &error),
+        Some(Event::Diagnostic(Diagnostic::FetchError { .. }))
+    ));
 }
 
 /// Startup-only ownership of the initial context snapshot. Replaying the

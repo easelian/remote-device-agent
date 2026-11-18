@@ -271,6 +271,15 @@ impl Session {
 }
 
 impl Semantic {
+    pub(in crate::browser) async fn enable_task_events(
+        &self,
+        sink: crate::browser::semantic::task_events::Sink,
+        _deadline: Instant,
+    ) -> Result<()> {
+        self.channel.set_task_events(self.root.clone(), Some(sink));
+        Ok(())
+    }
+
     pub fn tab_id(&self) -> Result<String> {
         self.tabs
             .lock()

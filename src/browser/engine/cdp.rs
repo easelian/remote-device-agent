@@ -89,6 +89,21 @@ impl Adapter {
             effect,
         )
     }
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub(super) async fn enable_task_events(
+        &self,
+        context: &Context,
+        sink: crate::browser::semantic::task_events::Sink,
+        deadline: Instant,
+    ) -> Result<()> {
+        let session = self.session(context)?;
+        self.wire.set_task_events(session, sink)?;
+        self.wire
+            .call(Some(session), Command::NetworkEnable, json!({}), deadline)
+            .await
+            .map(drop)
+    }
+
     pub(super) fn connected(&self) -> bool {
         self.wire.connected()
     }

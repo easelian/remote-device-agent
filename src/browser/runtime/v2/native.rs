@@ -102,6 +102,16 @@ impl sem::Port for Port {
     }
 }
 impl Port {
+    pub async fn enable_task_events(
+        &self,
+        sink: crate::browser::semantic::task_events::Sink,
+        d: Instant,
+    ) -> Result<()> {
+        match self {
+            Self::Cdp(p) => p.enable_task_events(sink, d).await,
+            Self::Bidi(p) => p.enable_task_events(sink, d).await,
+        }
+    }
     pub fn tab_id(&self) -> Result<String> {
         forward!(self, tab_id())
     }

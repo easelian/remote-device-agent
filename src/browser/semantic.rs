@@ -8,6 +8,7 @@ mod page;
 pub(crate) mod policy;
 pub(crate) mod program;
 pub(crate) mod surface;
+pub(crate) mod task_events;
 pub(crate) mod types;
 pub(crate) use page::Coordination;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
