@@ -357,7 +357,7 @@ impl Cdp {
                             #[cfg(not(feature = "experimental-browser-bidi"))]
                             let diagnostic = false;
                             #[cfg(feature = "experimental-browser-bidi")]
-                            let task_fact;
+                            let task_event;
                             {
                                 let mut pending = reader.pending.lock().unwrap();
                                 #[cfg(test)]
@@ -374,7 +374,7 @@ impl Cdp {
                                 }
                                 #[cfg(feature = "experimental-browser-bidi")]
                                 {
-                                    task_fact = reader.capture_event(&value);
+                                    task_event = reader.capture_event(&value);
                                 }
                                 reader.publish_event(
                                     &mut pending,
@@ -384,8 +384,13 @@ impl Cdp {
                                 );
                             }
                             #[cfg(feature = "experimental-browser-bidi")]
-                            if let Some((sink, fact)) = task_fact {
-                                sink.push(fact);
+                            if let Some(captured) = task_event {
+                                if let Some(fact) = captured.fact {
+                                    captured.sink.push(fact);
+                                }
+                                for (native_id, update) in captured.progress {
+                                    captured.sink.progress(&native_id, update);
+                                }
                             }
                         }
                     } else {

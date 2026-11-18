@@ -80,6 +80,10 @@ v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。
 
 仅请求网络事实时，Chromium 沿用页面的网络订阅。请求控制台时，Agent 额外挂接一个 browser session 及其页面子 session。订阅启用前的回放和早于窗口起点的事件均不交付。对于当前文档的 `console.error`，AI 收到 `kind: console` 和 `level: error`。收到 `Runtime.exceptionThrown` 时，AI 收到 `kind: exception`。停止、换页、换代、超时和取消都由会话所有者收尾。[订阅与回收](../src/browser/engine/cdp/wire/console.rs) · [事件归属](../src/browser/engine/cdp/wire/console_route.rs)
 
+当前会话声明 `extensions.network_progress.version == 1` 且可用时，可在包含 `network` 类别的开窗动作内增加 `"track_requests":true`。使用 `{"kind":"read_requests","capture_id":"…"}` 读取快照。最多保留最近 32 个请求跳转步骤，按窗口内的整数 `request_id` 排列。Chromium 观察目标原生页面 session，可能包含同进程子 frame。Firefox 只计入原顶层 context。两个后端从原生响应头事件取得 HTTP 状态，随后收到传输失败时更新为 `failed`。
+
+`start_observed:false` 表示当前行缺少开始证据，此时省略方法。已观察开始时只返回标准方法枚举或 `OTHER`。重定向的下一跳通过 `redirected_from` 指向保留的前一跳，缺失前一跳时标记 `redirect_gap:true`。`evicted_count` 统计淘汰的行，`untracked_count` 统计无法归属或解析的进度事件。普通事件读取继续使用原有的序号和分页。控制代次改变后重新开窗。新窗口只披露从该窗口开始观察到的请求链，避免把上个控制者产生的延迟响应交给 AI。[请求关联与淘汰](../src/browser/semantic/task_events/requests.rs)
+
 每条控制台消息最多检查 16 个参数和 8 个不同原生对象，回收队列最多容纳 16 个句柄。超出预算时，Agent 终止该诊断窗口，主页面可以继续操作。超过 2 MiB 的私有 Runtime 通知只有在能按原生消息格式核实其子 session 时才允许流式丢弃，最长 2 秒、最多 16 MiB。其他超限消息沿用连接级故障处理。窗口返回 `browser_capture_unavailable` 时，AI 应重新观察并核对网站结果。若新窗口仍受历史大消息影响，可继续使用网络和页面证据。[大消息归属与丢弃](../src/browser/engine/cdp/wire/oversized_console.rs)
 
 脚本异常、请求失败和页面业务拒绝各自回答不同问题。即使收到 HTTP 200，也要从原目标记录读取结果；缺少对应证据时应报告哪项结果尚待确认。更多样式来源、调用栈位置和性能采样见[架构路线](browser-design-zhCN.md)。[定型事件与分页](../src/browser/semantic/task_events.rs) · [窗口生命周期](../src/browser/runtime/v2/capture.rs)

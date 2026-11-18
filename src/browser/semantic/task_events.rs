@@ -8,6 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod requests;
+use requests::Ledger;
+pub(crate) use requests::{Method, RequestUpdate};
+
 pub(crate) const MAX_EVENTS: usize = 128;
 pub(crate) const WINDOW: Duration = Duration::from_secs(30);
 
@@ -68,6 +72,7 @@ struct Window {
     last: u64,
     stopped: Option<Instant>,
     invalid: bool,
+    requests: Option<Ledger>,
 }
 struct Inner {
     control: Arc<Control>,
@@ -75,6 +80,7 @@ struct Inner {
     started: Instant,
     console: bool,
     network: bool,
+    progress: bool,
     window: Mutex<Window>,
 }
 
@@ -87,18 +93,32 @@ impl std::fmt::Debug for Sink {
 }
 
 impl Sink {
+    #[cfg(test)]
     pub(crate) fn new(control: Arc<Control>, epoch: u64, console: bool, network: bool) -> Self {
+        Self::new_with_progress(control, epoch, console, network, false)
+    }
+
+    pub(crate) fn new_with_progress(
+        control: Arc<Control>,
+        epoch: u64,
+        console: bool,
+        network: bool,
+        track: bool,
+    ) -> Self {
+        let progress = network && track;
         Self(Arc::new(Inner {
             control,
             epoch,
             started: Instant::now(),
             console,
             network,
+            progress,
             window: Mutex::new(Window {
                 entries: VecDeque::with_capacity(MAX_EVENTS),
                 last: 0,
                 stopped: None,
                 invalid: false,
+                requests: progress.then(|| Ledger::for_epoch(epoch)),
             }),
         }))
     }
@@ -125,6 +145,7 @@ impl Sink {
         let mut w = self.0.window.lock().unwrap();
         w.invalid = true;
         w.entries.clear();
+        w.requests = None;
     }
 
     pub(crate) fn invalidate_active(&self) {
@@ -132,11 +153,15 @@ impl Sink {
         if window.stopped.is_none() && self.0.started.elapsed() < WINDOW {
             window.invalid = true;
             window.entries.clear();
+            window.requests = None;
         }
     }
 
     pub(crate) fn stop(&self) {
         let mut w = self.0.window.lock().unwrap();
+        if let Some(ledger) = &mut w.requests {
+            ledger.forget_bindings();
+        }
         w.stopped
             .get_or_insert_with(|| Instant::now().min(self.0.started + WINDOW));
     }
@@ -150,6 +175,50 @@ impl Sink {
         if !selected {
             return;
         }
+        self.record(|w, now| {
+            if w.entries.len() == MAX_EVENTS {
+                w.entries.pop_front();
+            }
+            w.last += 1;
+            let sequence = w.last;
+            w.entries.push_back(Entry {
+                sequence,
+                elapsed_ms: now.duration_since(self.0.started).as_millis() as u32,
+                fact,
+            });
+        });
+    }
+
+    pub(crate) fn wants_progress(&self) -> bool {
+        self.0.progress
+    }
+
+    pub(crate) fn progress(&self, id: &str, update: RequestUpdate) {
+        self.record(|w, _| {
+            if let Some(ledger) = &mut w.requests {
+                ledger.update(id, update);
+            }
+        });
+    }
+
+    pub(crate) fn untracked(&self) {
+        self.record(|w, _| {
+            if let Some(ledger) = &mut w.requests {
+                ledger.untracked += 1;
+            }
+        });
+    }
+
+    pub(crate) fn requests(&self) -> Result<Value> {
+        self.read(|w, state| {
+            w.requests
+                .as_ref()
+                .map(|l| l.snapshot(state))
+                .ok_or_else(|| Failure::new("browser_capture_unavailable"))
+        })
+    }
+
+    fn record(&self, update: impl FnOnce(&mut Window, Instant)) {
         let authority = self.0.control.state.lock().unwrap();
         if *authority != (self.0.epoch, false) {
             return;
@@ -159,16 +228,7 @@ impl Sink {
         if w.invalid || w.stopped.is_some() || now.duration_since(self.0.started) >= WINDOW {
             return;
         }
-        if w.entries.len() == MAX_EVENTS {
-            w.entries.pop_front();
-        }
-        w.last += 1;
-        let sequence = w.last;
-        w.entries.push_back(Entry {
-            sequence,
-            elapsed_ms: now.duration_since(self.0.started).as_millis() as u32,
-            fact,
-        });
+        update(&mut w, now);
     }
 
     fn read<T>(&self, read: impl FnOnce(&Window, &'static str) -> Result<T>) -> Result<T> {

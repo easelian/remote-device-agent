@@ -4,7 +4,7 @@ use super::{
     Command, ContextId, Event,
     event::{CORE_EVENTS, ConsoleLevel, Diagnostic, FetchErrorKind},
 };
-use crate::browser::semantic::task_events::{Fact, Sink};
+use crate::browser::semantic::task_events::{Fact, Method, RequestUpdate, Sink};
 use crate::browser::{
     Failure,
     control::{Control, Effect, Submission},
@@ -662,6 +662,7 @@ impl Inner {
                 if !value["params"].is_object() {
                     return Err(Fault::Malformed);
                 }
+                self.publish_progress(method, &value["params"]);
                 // Only subscribed lifecycle events enter the critical channel.
                 // A task window projects optional diagnostics directly into its own ring.
                 let diagnostic = super::event::DIAGNOSTIC_EVENTS.contains(&method);
@@ -746,6 +747,89 @@ impl Inner {
         }
         Ok(())
     }
+    fn publish_progress(&self, method: &str, params: &Value) {
+        if !matches!(
+            method,
+            "network.beforeRequestSent" | "network.responseStarted" | "network.fetchError"
+        ) {
+            return;
+        }
+        let task_events = self.task_events.lock().unwrap();
+        let Some((root, sink)) = task_events.as_ref() else {
+            return;
+        };
+        if !sink.wants_progress() {
+            return;
+        }
+        let Some(context) = ContextId::parse(self.scope, &params["context"]) else {
+            return;
+        };
+        if context != *root {
+            return;
+        }
+        let request = match params["request"]["request"].as_str() {
+            Some(value) if !value.is_empty() && value.len() <= 256 && value.is_ascii() => value,
+            _ => {
+                sink.untracked();
+                return;
+            }
+        };
+        let Some(hop) = params["redirectCount"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+        else {
+            sink.untracked();
+            return;
+        };
+        let redirect = hop > 0;
+        let hop = Some(hop);
+        let update = match method {
+            "network.beforeRequestSent" => RequestUpdate::Start {
+                method: Method::parse(params["request"]["method"].as_str().unwrap_or("")),
+                redirect,
+                hop,
+            },
+            "network.responseStarted" => RequestUpdate::Response {
+                status: params["response"]["status"]
+                    .as_u64()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .unwrap_or(0),
+                hop,
+            },
+            "network.fetchError" => RequestUpdate::Failed {
+                reason: Self::classify_fetch_error(params["errorText"].as_str()),
+                hop,
+            },
+            _ => return,
+        };
+        sink.progress(request, update);
+    }
+
+    fn classify_fetch_error(
+        error_text: Option<&str>,
+    ) -> crate::browser::semantic::task_events::FailureKind {
+        let bytes = error_text.unwrap_or("").as_bytes();
+        // Native error text is diagnostic input, not a payload. Inspect only a
+        // small ASCII prefix and retain only the stable public category.
+        let bounded = &bytes[..bytes.len().min(512)];
+        let contains = |needle: &[u8]| {
+            bounded
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle))
+        };
+        if contains(b"dns") {
+            crate::browser::semantic::task_events::FailureKind::Dns
+        } else if contains(b"timeout") {
+            crate::browser::semantic::task_events::FailureKind::Timeout
+        } else if contains(b"connect") {
+            crate::browser::semantic::task_events::FailureKind::Connection
+        } else if contains(b"cancel") {
+            crate::browser::semantic::task_events::FailureKind::Canceled
+        } else {
+            crate::browser::semantic::task_events::FailureKind::Other
+        }
+    }
+
     fn publish_task_event(&self, event: &Event) {
         let task_events = self.task_events.lock().unwrap();
         let Some((root, sink)) = task_events.as_ref() else {

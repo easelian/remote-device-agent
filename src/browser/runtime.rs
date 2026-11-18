@@ -1766,18 +1766,23 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
     const MAX: u64 = (1 << 53) - 1;
     let valid = match (mutation, value["kind"].as_str()) {
         (true, Some("start")) => {
-            fields.len() == 2
+            let network = value["categories"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|v| v == "network"));
+            (fields.len() == 2 || (fields.len() == 3 && fields.contains_key("track_requests")))
                 && value["categories"].as_array().is_some_and(|c| {
                     (1..=2).contains(&c.len())
                         && c.iter()
                             .all(|v| matches!(v.as_str(), Some("network" | "console")))
                         && (c.len() == 1 || c[0] != c[1])
                 })
+                && fields.get("track_requests").is_none_or(|flag| flag == true && network)
         }
         (true, Some("stop")) => fields.len() == 2 && id,
         (false, Some("read_event")) => {
             fields.len() == 3 && id && fields.contains_key("sequence") && number("sequence", 1, MAX)
         }
+        (false, Some("read_requests")) => fields.len() == 2 && id,
         (false, Some("read_events")) => {
             id && fields.keys().all(|k| {
                 matches!(
@@ -1920,7 +1925,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             validate_capture_query(&params["action"], true)?;
         } else if matches!(
             params["query"]["kind"].as_str(),
-            Some("read_events" | "read_event")
+            Some("read_events" | "read_event" | "read_requests")
         ) {
             validate_capture_query(&params["query"], false)?;
         } else {
@@ -2156,6 +2161,13 @@ mod tests {
     fn task_event_capture_validation_is_closed_and_versioned() {
         let base = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"action":{"kind":"start","categories":["network"]}});
         assert!(validate("browser_capture", &base).is_ok());
+        let mut tracked = base.clone();
+        tracked["action"]["track_requests"] = true.into();
+        assert!(validate("browser_capture", &tracked).is_ok());
+        let mut unselected = base.clone();
+        unselected["action"]["categories"] = json!(["console"]);
+        unselected["action"]["track_requests"] = true.into();
+        assert!(validate("browser_capture", &unselected).is_err());
         let mut extra = base.clone();
         extra["action"]["extra"] = true.into();
         assert!(validate("browser_capture", &extra).is_err());
@@ -2163,6 +2175,8 @@ mod tests {
         assert!(validate("browser_capture", &stop).is_ok());
         let read = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"query":{"kind":"read_events","capture_id":format!("cap_{}", "a".repeat(32))}});
         assert!(validate("browser_evidence", &read).is_ok());
+        let requests = json!({"version":1,"session_id":"s","tab_id":"t","control_epoch":1,"query":{"kind":"read_requests","capture_id":format!("cap_{}", "a".repeat(32))}});
+        assert!(validate("browser_evidence", &requests).is_ok());
         let mut bad = read.clone();
         bad["query"]["through_sequence"] = 0.into();
         assert!(validate("browser_evidence", &bad).is_ok());

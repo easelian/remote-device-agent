@@ -1,5 +1,7 @@
 //! Shared event ownership covers both queued and consumer-held payloads.
 use super::*;
+#[cfg(feature = "experimental-browser-bidi")]
+use crate::browser::semantic::task_events::{Method, RequestUpdate};
 
 pub(super) const MAX_EVENTS: usize = 256;
 pub(super) const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
@@ -93,6 +95,13 @@ impl Cdp {
     }
 }
 
+#[cfg(feature = "experimental-browser-bidi")]
+pub(super) struct Captured {
+    pub(super) sink: Sink,
+    pub(super) fact: Option<Fact>,
+    pub(super) progress: Vec<(String, RequestUpdate)>,
+}
+
 impl Inner {
     pub(super) fn fence_events(&self, pending: &mut PendingState) {
         if self.closed.load(Ordering::Acquire) || self.fenced.swap(true, Ordering::AcqRel) {
@@ -110,31 +119,128 @@ impl Inner {
     }
 
     #[cfg(feature = "experimental-browser-bidi")]
-    pub(super) fn capture_event(&self, value: &Value) -> Option<(Sink, Fact)> {
+    pub(super) fn capture_event(&self, value: &Value) -> Option<Captured> {
         let session = value["sessionId"].as_str()?;
         let task_events = self.task_events.lock().unwrap();
         let (root, sink) = task_events.as_ref()?;
         if session != root {
             return None;
         }
-        if value["method"] == "Page.frameNavigated" {
+        let method = value["method"].as_str()?;
+        if method == "Page.frameNavigated" {
             sink.invalidate();
             return None;
         }
-        match value["method"].as_str()? {
-            "Network.responseReceived" => value["params"]["response"]["status"]
-                .as_u64()
-                .and_then(|status| u16::try_from(status).ok())
-                .map(|status| (sink.clone(), Fact::Response(status))),
-            "Network.loadingFailed" => Some((
-                sink.clone(),
-                Fact::Failed(if value["params"]["canceled"].as_bool().unwrap_or(false) {
+        let fact = match method {
+            "Network.responseReceived" if sink.wants_network() => {
+                value["params"]["response"]["status"]
+                    .as_u64()
+                    .and_then(|status| u16::try_from(status).ok())
+                    .map(|status| Fact::Response(status))
+            }
+            "Network.loadingFailed" if sink.wants_network() => Some(Fact::Failed(
+                if value["params"]["canceled"].as_bool().unwrap_or(false) {
                     FailureKind::Canceled
                 } else {
                     FailureKind::Other
-                }),
+                },
             )),
             _ => None,
+        };
+        let progress = if sink.wants_progress() {
+            Self::progress_update(method, &value["params"])
+        } else {
+            Vec::new()
+        };
+        if fact.is_none() && progress.is_empty() {
+            return None;
+        }
+        Some(Captured {
+            sink: sink.clone(),
+            fact,
+            progress,
+        })
+    }
+
+    #[cfg(feature = "experimental-browser-bidi")]
+    fn progress_update(method: &str, params: &Value) -> Vec<(String, RequestUpdate)> {
+        let request_id = || {
+            params["requestId"]
+                .as_str()
+                .filter(|id| id.len() <= 256)
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
+        match method {
+            "Network.requestWillBeSent" => {
+                let request_id = request_id();
+                let method = Method::parse(
+                    params
+                        .get("request")
+                        .and_then(|request| request["method"].as_str())
+                        .unwrap_or(""),
+                );
+                let redirect = params.get("redirectResponse").is_some();
+                let mut update = Vec::new();
+                if let Some(status) = params["redirectResponse"]["status"]
+                    .as_u64()
+                    .and_then(|status| u16::try_from(status).ok())
+                {
+                    update.push((
+                        request_id.clone(),
+                        RequestUpdate::Redirect { status, hop: None },
+                    ));
+                }
+                update.push((
+                    request_id,
+                    RequestUpdate::Start {
+                        method,
+                        hop: None,
+                        redirect,
+                    },
+                ));
+                // A single CDP delivery contains both the redirect settlement
+                // and the next start. The caller emits them in order.
+                update
+            }
+            "Network.responseReceived" => vec![(
+                request_id(),
+                RequestUpdate::Response {
+                    status: params["response"]["status"]
+                        .as_u64()
+                        .and_then(|n| u16::try_from(n).ok())
+                        .unwrap_or(0),
+                    hop: None,
+                },
+            )],
+            "Network.loadingFailed" => vec![(
+                request_id(),
+                RequestUpdate::Failed {
+                    reason: Self::failure_reason(params),
+                    hop: None,
+                },
+            )],
+            _ => Vec::new(),
+        }
+    }
+
+    #[cfg(feature = "experimental-browser-bidi")]
+    fn failure_reason(params: &Value) -> FailureKind {
+        if params["canceled"].as_bool().unwrap_or(false) {
+            return FailureKind::Canceled;
+        }
+        let text = params["errorText"]
+            .as_str()
+            .filter(|s| s.len() <= 512)
+            .unwrap_or("");
+        if text.contains("NAME_NOT_RESOLVED") {
+            FailureKind::Dns
+        } else if text.contains("TIMED_OUT") || text.contains("TIMEOUT") {
+            FailureKind::Timeout
+        } else if text.contains("CONNECTION") {
+            FailureKind::Connection
+        } else {
+            FailureKind::Other
         }
     }
 
@@ -220,5 +326,86 @@ impl Inner {
         if sender.send(event).is_err() {
             self.fence_events(pending);
         }
+    }
+}
+
+#[cfg(all(test, feature = "experimental-browser-bidi"))]
+mod progress_tests {
+    use super::*;
+    use crate::browser::semantic::task_events::{FailureKind, RequestUpdate};
+
+    #[test]
+    fn redirect_settles_before_new_start_without_payload() {
+        let updates = Inner::progress_update(
+            "Network.requestWillBeSent",
+            &json!({
+                "requestId":"req-1",
+                "request":{"method":"GET","url":"https://secret.invalid/private"},
+                "redirectResponse":{"status":302,"url":"https://secret.invalid/old"}
+            }),
+        );
+        assert_eq!(updates.len(), 2);
+        assert!(matches!(
+            updates[0].1,
+            RequestUpdate::Redirect { status: 302, .. }
+        ));
+        assert!(matches!(
+            updates[1].1,
+            RequestUpdate::Start { redirect: true, .. }
+        ));
+    }
+
+    #[test]
+    fn response_and_failure_are_typed_and_bounded() {
+        let response = Inner::progress_update(
+            "Network.responseReceived",
+            &json!({"requestId":"r","response":{"status":204,"url":"secret"}}),
+        );
+        assert!(matches!(
+            response.as_slice(),
+            [(id, RequestUpdate::Response { status: 204, .. })] if id == "r"
+        ));
+        let failed = Inner::progress_update(
+            "Network.loadingFailed",
+            &json!({"requestId":"r","canceled":false,"errorText":"net::ERR_NAME_NOT_RESOLVED","url":"secret"}),
+        );
+        assert!(matches!(
+            failed.as_slice(),
+            [(
+                _,
+                RequestUpdate::Failed {
+                    reason: FailureKind::Dns,
+                    ..
+                }
+            )]
+        ));
+        let missing = Inner::progress_update("Network.requestWillBeSent", &json!({}));
+        assert_eq!(missing.len(), 1);
+        assert!(matches!(
+            missing.as_slice(),
+            [(id, RequestUpdate::Start { method: Method::Other, .. })] if id.is_empty()
+        ));
+        let oversized = Inner::progress_update(
+            "Network.responseReceived",
+            &json!({"requestId":"x".repeat(257),"response":{"status":200}}),
+        );
+        assert!(matches!(
+            oversized.as_slice(),
+            [(id, RequestUpdate::Response { status: 200, .. })] if id.is_empty()
+        ));
+        let failed = Inner::progress_update(
+            "Network.loadingFailed",
+            &json!({"requestId":"r","errorText":"net::ERR_FAILED"}),
+        );
+        assert!(matches!(
+            failed.as_slice(),
+            [(
+                _,
+                RequestUpdate::Failed {
+                    reason: FailureKind::Other,
+                    ..
+                }
+            )]
+        ));
     }
 }
