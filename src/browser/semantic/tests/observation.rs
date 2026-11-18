@@ -115,6 +115,7 @@ pub(super) fn fact(template: &Facts, id: &str, node: u64, role: &str, name: &str
     row.hit = true;
     row.in_view = true;
     row.record = Material {
+        owner_list: None,
         entries: vec![Entry {
             identity: node,
             tag: "button".into(),

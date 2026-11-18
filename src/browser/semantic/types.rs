@@ -194,6 +194,9 @@ pub(crate) struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Material {
+    // Private identity of the list that owns this option, included in its action fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_list: Option<u64>,
     pub entries: Vec<Entry>,
     pub complete: bool,
     pub limits: Vec<String>,
@@ -240,6 +243,7 @@ impl Facts {
             || self.sensitive && self.value.is_some()
             || !self.x.is_finite()
             || !self.y.is_finite()
+            || self.record.owner_list == Some(0)
             || self.record.entries.len() > 256
             || self.record.limits.len() > 16
             || self.record.complete && !self.record.limits.is_empty()

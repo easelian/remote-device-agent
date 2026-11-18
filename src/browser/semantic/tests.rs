@@ -169,6 +169,7 @@ impl Fake {
                     y: 10.,
                     in_view: true,
                     record: Material {
+                        owner_list: None,
                         entries: vec![Entry {
                             identity: node,
                             tag: "button".into(),

@@ -39,8 +39,9 @@ function(operation, args, other) {
     return style.visibility !== 'hidden' && style.visibility !== 'collapse' && style.display !== 'none';
   };
   const disabled = node => node.matches(':disabled') || node.getAttribute('aria-disabled') === 'true' || !!node.closest('[inert]');
+  const explicitRole = node => norm(node.getAttribute('role')).split(' ')[0];
   const role = node => {
-    const explicit = norm(node.getAttribute('role')).split(' ')[0];
+    const explicit = explicitRole(node);
     // A virtual listbox is a scroll target when it has real vertical overflow.
     // Keep its ARIA role so the client can distinguish the container from a
     // generic region. Its options remain separately observable controls.
@@ -164,6 +165,14 @@ function(operation, args, other) {
       }
     }
     const pending = [boundary], entries = [], limits = new Set();
+    let ownerList;
+    if (mapped.role === 'option') {
+      let depth = 0;
+      for (let owner = parent(node); owner; owner = parent(owner)) {
+        if (++depth > 64) { limits.add('record_depth_limit'); break; }
+        if (explicitRole(owner) === 'listbox') { ownerList = identity(owner); break; }
+      }
+    }
     let characters = 0,visited=0;
     const append=child=>{if(pending.length+visited>=256){limits.add('record_node_limit');return false;}pending.push(child);return true;};
     while (pending.length) {
@@ -176,7 +185,7 @@ function(operation, args, other) {
       } else if (item.nodeType === Node.ELEMENT_NODE) {
         if (['script','style','template','noscript'].includes(item.localName)) continue;
         const attributes = semanticAttributes.filter(key => item.hasAttribute(key)).map(key => [key,prefix(item.getAttribute(key),4097)]);
-        if (item.getAttribute('role') === 'option') {
+        if (explicitRole(item) === 'option') {
           const position = optionPosition(item);
           if (position) attributes.push(...position);
           else if (item === node) limits.add('invalid_option_position');
@@ -189,7 +198,7 @@ function(operation, args, other) {
       }
       if (characters > 4096) { limits.add('record_character_limit'); entries.pop(); break; }
     }
-    return {entries,complete:limits.size === 0,limits:Array.from(limits).sort()};
+    return {entries,owner_list:ownerList,complete:limits.size === 0,limits:Array.from(limits).sort()};
   }
   const scrollable = node => {
     if (!node || node.nodeType !== 1 || !node.isConnected || node.ownerDocument !== document) return false;
