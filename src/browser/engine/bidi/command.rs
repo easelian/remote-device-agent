@@ -360,6 +360,25 @@ impl Command {
 mod tests {
     use super::*;
     #[test]
+    fn move_to_element_dispatches_a_single_pointer_move() {
+        let context = ContextId::parse(1, &json!("fixture")).unwrap();
+        let (method, params, effect) = Command::Action {
+            context,
+            action: Action::MoveTo {
+                node: "fixture-node".into(),
+            },
+        }
+        .encode();
+        assert_eq!((method, effect), ("input.performActions", Effect::Page));
+        assert_eq!(
+            params["actions"][0]["actions"],
+            json!([{
+                "type":"pointerMove","x":0,"y":0,"origin":{"type":"element","element":{"sharedId":"fixture-node"}}
+            }])
+        );
+    }
+
+    #[test]
     fn command_wire_names_and_effects_are_explicit() {
         let context = ContextId::parse(1, &json!("fixture")).unwrap();
         for (command, name, effect) in [

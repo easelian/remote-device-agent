@@ -633,6 +633,7 @@ impl Browsers {
                 if let Some(read)=session.read.take() {read.cursor.close(&engine,deadline).await;}
                 let action = &params["action"];
                 match action["kind"].as_str().unwrap_or("") {
+                    "hover" => Err(Failure::new("browser_feature_unsupported")),
                     "scroll" => {
                         if action["ref"].is_string() { return Err(Failure::new("browser_feature_unsupported")); }
                         if target.dialog.is_some() { return Err(Failure::new("browser_dialog_open")); }
@@ -1910,7 +1911,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             })
             || !matches!(
                 params["action_kind"].as_str(),
-                Some("click" | "press" | "fill" | "check" | "select" | "attach_file")
+                Some("click" | "hover" | "press" | "fill" | "check" | "select" | "attach_file")
             ))
     {
         return Err(Failure::new("browser_invalid_params"));
@@ -2001,7 +2002,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                     &["kind", "delta_y"]
                 }
             }
-            "click" => &["kind", "ref"],
+            "click" | "hover" => &["kind", "ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
             "dialog" => &["kind", "accept", "dialog_id"],
             _ => return Err(Failure::new("browser_invalid_params")),
@@ -2189,7 +2190,15 @@ mod tests {
         let valid =
             json!({"session_id":"session","control_epoch":1,"ref":"r","action_kind":"click"});
         assert!(validate("browser_inspect", &valid).is_ok());
-        for kind in ["click", "press", "fill", "check", "select", "attach_file"] {
+        for kind in [
+            "click",
+            "hover",
+            "press",
+            "fill",
+            "check",
+            "select",
+            "attach_file",
+        ] {
             let mut request = valid.clone();
             request["action_kind"] = kind.into();
             request["tab_id"] = "tab".into();

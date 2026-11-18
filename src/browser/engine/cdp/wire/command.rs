@@ -22,6 +22,7 @@ pub enum Command {
     FetchTakeResponseBodyAsStream,
     InputKeyPress,
     InputKeyRelease,
+    InputMouseMove,
     InputMousePress,
     InputMouseRelease,
     InputMouseWheel,
@@ -95,7 +96,7 @@ impl Command {
             }
             Self::InputKeyPress => ("Input.dispatchKeyEvent", Page, Block),
             Self::InputKeyRelease => ("Input.dispatchKeyEvent", Page, Release),
-            Self::InputMousePress | Self::InputMouseWheel => {
+            Self::InputMouseMove | Self::InputMousePress | Self::InputMouseWheel => {
                 ("Input.dispatchMouseEvent", Page, Block)
             }
             Self::InputMouseRelease => ("Input.dispatchMouseEvent", Page, Release),

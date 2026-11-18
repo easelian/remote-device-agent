@@ -25,9 +25,10 @@ pub(crate) fn check_size(value: &serde_json::Value) -> crate::browser::Result<()
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ActionKind {
-    // Scrolling a container has no native pointer preflight or public inspect kind.
+    // Container scrolling has no public inspect kind.
     #[serde(skip)]
     Scroll,
+    Hover,
     Click,
     Press,
     Fill,
@@ -99,9 +100,14 @@ pub(crate) fn requirements(facts: &Facts, kind: ActionKind, top_level: bool) -> 
     );
     let sensitive = facts.sensitive && matches!(kind, ActionKind::Fill | ActionKind::Select);
     let supported = (facts.kind != "scrollable" || kind == ActionKind::Scroll)
-        && (facts.kind != "inferred" || matches!(kind, ActionKind::Click | ActionKind::Press))
+        && (facts.kind != "inferred"
+            || matches!(
+                kind,
+                ActionKind::Click | ActionKind::Press | ActionKind::Hover
+            ))
         && match kind {
             ActionKind::Scroll => facts.kind == "scrollable",
+            ActionKind::Hover => matches!(facts.kind.as_str(), "native" | "aria" | "inferred"),
             ActionKind::Fill => facts.editable && !special_input(facts),
             ActionKind::Check => matches!(facts.role.as_str(), "checkbox" | "radio" | "switch"),
             ActionKind::Select => native_form(facts),

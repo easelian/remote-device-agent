@@ -1025,6 +1025,7 @@ impl Port for Semantic {
             ..self.clone()
         };
         let result = async {
+            let hover = matches!(input, sem::NativeInput::Hover { .. });
             match input {
                 sem::NativeInput::SelectFile { node, path } => {
                     let reply = owned
@@ -1062,7 +1063,7 @@ impl Port for Semantic {
                         .map_err(failure)
                         .map(drop)
                 }
-                sem::NativeInput::Click { node, .. } => {
+                sem::NativeInput::Hover { node } | sem::NativeInput::Click { node, .. } => {
                     let geometry = owned.target(frame, node, deadline).await?;
                     if !geometry.visible || !geometry.hit || !geometry.in_view {
                         return Err(Failure::new("browser_not_actionable"));
@@ -1091,6 +1092,9 @@ impl Port for Semantic {
                     owned
                         .action(&context, Action::MoveTo { node }, deadline)
                         .await?;
+                    if hover {
+                        return Ok(());
+                    }
                     #[cfg(test)]
                     self.coordination.before_click_dispatch().await;
                     owned

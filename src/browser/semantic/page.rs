@@ -173,6 +173,7 @@ impl<P> Clone for Page<P> {
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Scroll { delta: f64 },
+    Hover,
     Click,
     Check(bool),
     ReplaceText(String),
@@ -185,6 +186,7 @@ impl Action {
         use actionability::ActionKind as Kind;
         match self {
             Self::Scroll { .. } => Kind::Scroll,
+            Self::Hover => Kind::Hover,
             Self::Click => Kind::Click,
             Self::Check(_) => Kind::Check,
             Self::ReplaceText(_) => Kind::Fill,
@@ -1097,7 +1099,9 @@ async fn perform<P: Port>(
     if (facts.kind == "scrollable") != matches!(action, Action::Scroll { .. }) {
         return Err(Failure::new("browser_not_actionable"));
     }
-    if facts.kind == "inferred" && !matches!(action, Action::Click | Action::Press(_)) {
+    if facts.kind == "inferred"
+        && !matches!(action, Action::Click | Action::Press(_) | Action::Hover)
+    {
         return Err(Failure::new("browser_not_actionable"));
     }
     match &action {
@@ -1206,6 +1210,15 @@ async fn perform<P: Port>(
             )
             .await?;
             "native_file"
+        }
+        Action::Hover => {
+            port.input(
+                &element.frame,
+                NativeInput::Hover { node: facts.node },
+                deadline,
+            )
+            .await?;
+            "native_hover"
         }
         Action::Click | Action::Check(_) => {
             port.input(

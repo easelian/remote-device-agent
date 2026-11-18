@@ -391,6 +391,7 @@ pub(crate) enum NativeInput {
     Click { node: u64, x: f64, y: f64 },
     ReplaceText(String),
     Press(Key),
+    Hover { node: u64 },
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Key {

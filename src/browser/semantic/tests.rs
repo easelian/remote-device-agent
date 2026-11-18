@@ -488,6 +488,11 @@ impl Port for Fake {
             let mut data=self.data.lock().unwrap();
             match input {
                 NativeInput::SelectFile { .. } => return Err(crate::browser::Failure::new("browser_feature_unsupported")),
+                NativeInput::Hover { node } => {
+                    let id = data.rows(frame.context)?.iter().find(|row| row.node == node)
+                        .ok_or_else(types::stale)?.id.clone();
+                    data.events.push(json!({"type":"pointermove","id":id,"trusted":true}));
+                },
                 NativeInput::Click{..}=>{
                     let row=&mut data.rows_mut(frame.context)?[click_index.unwrap()];if matches!(row.role.as_str(),"checkbox"|"radio"|"switch"){row.checked = !row.checked;}let id=row.id.clone();
                     data.events.push(json!({"type":"click","id":id,"trusted":true}));

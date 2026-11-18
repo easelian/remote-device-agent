@@ -1062,6 +1062,7 @@ impl Port for Semantic {
     ) -> Result<()> {
         let native = self.native(frame)?;
         let session = self.adapter.session(&native.session)?;
+        let hover = matches!(input, sem::NativeInput::Hover { .. });
         match input {
             sem::NativeInput::SelectFile { node, path } => {
                 let node = self
@@ -1069,7 +1070,7 @@ impl Port for Semantic {
                     .await?;
                 self.engine().attach_file(&node, &path, deadline).await
             }
-            sem::NativeInput::Click { node, .. } => {
+            sem::NativeInput::Hover { node } | sem::NativeInput::Click { node, .. } => {
                 let token = node;
                 let node = self
                     .native_node(&native, &frame.marker, node, deadline)
@@ -1077,6 +1078,19 @@ impl Port for Semantic {
                 let Point { x, y } = self
                     .point(&native, &node, &frame.marker, token, deadline)
                     .await?;
+                if hover {
+                    return self
+                        .adapter
+                        .wire
+                        .call(
+                            Some(session),
+                            Command::InputMouseMove,
+                            json!({"type":"mouseMoved","x":x,"y":y,"button":"none","buttons":0}),
+                            deadline,
+                        )
+                        .await
+                        .map(drop);
+                }
                 #[cfg(test)]
                 self.coordination.before_click_dispatch().await;
                 self.leased_pair(

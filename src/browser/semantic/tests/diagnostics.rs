@@ -34,6 +34,7 @@ fn assessed(facts: &Facts, kind: K) -> a::Diagnostic {
 fn closed_action_kinds_and_value_independent_preconditions() {
     for (name, kind) in [
         ("click", K::Click),
+        ("hover", K::Hover),
         ("press", K::Press),
         ("fill", K::Fill),
         ("check", K::Check),
