@@ -160,15 +160,24 @@ mod tests {
             .unwrap()
             .ino()
             .to_string();
-        // Another listener can reuse the port. Identify this socket by its
-        // inode in the Linux network namespace before and after shutdown.
+        // The process must release its own descriptor as soon as finish returns.
+        let socket = std::path::PathBuf::from(format!("socket:[{inode}]"));
+        let process_owns_listener = || {
+            fs::read_dir("/proc/self/fd").unwrap().any(|entry| {
+                match fs::read_link(entry.unwrap().path()) {
+                    Ok(target) => target == socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => panic!("cannot inspect process descriptor: {error}"),
+                }
+            })
+        };
         let listener_is_open = || {
             fs::read_to_string("/proc/self/net/tcp")
                 .unwrap()
                 .lines()
                 .any(|row| row.split_whitespace().nth(9) == Some(inode.as_str()))
         };
-        assert!(listener_is_open());
+        assert!(process_owns_listener() && listener_is_open());
         let server = serve(listener);
         let mut clients = Vec::new();
         for _ in 0..MAX_CONNECTIONS {
@@ -189,9 +198,21 @@ mod tests {
             0
         );
         server.finish().await;
+        assert!(
+            !process_owns_listener(),
+            "process still owns egress listener {inode}"
+        );
         for mut client in clients {
             assert_eq!(client.read(&mut byte).await.unwrap(), 0);
         }
-        assert!(!listener_is_open(), "egress listener {inode} is still open");
+        // A concurrently forked child can briefly hold the close-on-exec fd.
+        // The namespace must also release it, including any inherited copies.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while listener_is_open() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("egress listener remained open in the network namespace");
     }
 }
