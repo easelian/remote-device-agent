@@ -25,6 +25,7 @@ pub(crate) fn check_size(value: &serde_json::Value) -> crate::browser::Result<()
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ActionKind {
+    Scroll,
     Click,
     Press,
     Fill,
@@ -95,9 +96,10 @@ pub(crate) fn requirements(facts: &Facts, kind: ActionKind, top_level: bool) -> 
         ActionKind::Fill | ActionKind::Check | ActionKind::Select | ActionKind::AttachFile
     );
     let sensitive = facts.sensitive && matches!(kind, ActionKind::Fill | ActionKind::Select);
-    let supported = (facts.kind != "inferred"
-        || matches!(kind, ActionKind::Click | ActionKind::Press))
+    let supported = (facts.kind != "scrollable" || kind == ActionKind::Scroll)
+        && (facts.kind != "inferred" || matches!(kind, ActionKind::Click | ActionKind::Press))
         && match kind {
+            ActionKind::Scroll => facts.kind == "scrollable",
             ActionKind::Fill => facts.editable && !special_input(facts),
             ActionKind::Check => matches!(facts.role.as_str(), "checkbox" | "radio" | "switch"),
             ActionKind::Select => native_form(facts),

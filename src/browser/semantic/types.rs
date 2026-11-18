@@ -270,8 +270,7 @@ impl Facts {
             && self.visible
             && self.record.complete
             && self.name_quality.is_empty()
-            && (matches!(self.kind.as_str(), "native" | "aria")
-                && (interactive(&self.role) || self.role == "region")
+            && (matches!(self.kind.as_str(), "native" | "aria") && interactive(&self.role)
                 || self.kind == "inferred"
                 || self.kind == "scrollable")
     }

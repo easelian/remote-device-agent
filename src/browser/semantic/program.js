@@ -57,11 +57,8 @@ function(operation, args, other) {
         ['checkbox','radio'].includes(type) ? type : type === 'range' ? 'slider' :
         type === 'number' ? 'spinbutton' : type === 'search' ? 'searchbox' : 'textbox';
     }
-    if (value) return {role:value,kind:native};
-    if (node.hasAttribute("aria-label")) {
-      const style = getComputedStyle(node);
-      if ((style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight) return {role:"region",kind:"aria"};
-    }
+    if (value) return {role:value,kind:'native'};
+    if ((!explicit || explicit === 'region') && scrollable(node)) return {role:explicit || 'generic',kind:'scrollable'};
     if (node.hasAttribute('tabindex') || node.hasAttribute('onclick') || getComputedStyle(node).cursor === 'pointer') return {role:'inferred',kind:'inferred'};
     return {role:explicit ? 'unsupported' : '',kind:explicit ? 'aria' : 'text'};
   };
@@ -244,7 +241,7 @@ function(operation, args, other) {
       if (['script','style','template','noscript'].includes(node.localName)) continue;
       const mapped = role(node);
       const inViewport = () => { const box=node.getBoundingClientRect(); return box.bottom>0 && box.right>0 && box.top<innerHeight && box.left<innerWidth; };
-      if ((mapped.role || scrollable(node)) && visible(node) && (scan.query.filter!==('interactive')||controls.has(mapped.role)||mapped.role===('heading')||mapped.role===('inferred')||scrollable(node)) && (scan.query.filter !== 'viewport' || inViewport())) {
+      if (mapped.role && visible(node) && (scan.query.filter!=='interactive'||controls.has(mapped.role)||mapped.role==='heading'||mapped.role==='inferred'||mapped.kind==='scrollable') && (scan.query.filter !== 'viewport' || inViewport())) {
         const row = facts(node);
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
         const match = !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
@@ -344,13 +341,12 @@ function(operation, args, other) {
     if(args.realm!==state.realm||args.restoration!==state.restoration)return result(args.nodes.map(()=>null));
     return result(args.nodes.map(node=>facts(state.nodes.get(node))));
   }
-  if (operation === "scroll_target") {
+  if (operation === 'scroll_target') {
     const node = target();
-    const delta = Number(args.delta);
-    if (!scrollable(node) || !Number.isFinite(delta) || Math.abs(delta) > 2000) return result(false);
-    const before = {top: node.scrollTop, page: scrollY};
-    node.scrollTop = Math.max(0, Math.min(node.scrollTop + delta, node.scrollHeight - node.clientHeight));
-    return result(node.isConnected && scrollY === before.page && node.scrollTop !== before.top);
+    if (!scrollable(node) || disabled(node) || !Number.isFinite(args.delta) || Math.abs(args.delta) > 2000) return result(null);
+    const before = node.scrollTop;
+    node.scrollBy({top:args.delta,behavior:'instant'});
+    return result(node.scrollTop !== before);
   }
   if (operation === 'scroll') {
     const node=target(); if (!node || !node.isConnected) return result(false);

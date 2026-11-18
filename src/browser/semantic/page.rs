@@ -184,7 +184,7 @@ impl Action {
     fn kind(&self) -> actionability::ActionKind {
         use actionability::ActionKind as Kind;
         match self {
-            Self::Scroll { .. } => Kind::Click,
+            Self::Scroll { .. } => Kind::Scroll,
             Self::Click => Kind::Click,
             Self::Check(_) => Kind::Check,
             Self::ReplaceText(_) => Kind::Fill,
@@ -1029,6 +1029,62 @@ async fn inspect<P: Port>(port: &P, element: &Element, deadline: Instant) -> Res
     }
     Ok(*facts)
 }
+async fn prepare_input_target<P: Port>(
+    port: &P,
+    element: &Element,
+    mut facts: Facts,
+    kind: actionability::ActionKind,
+    deadline: Instant,
+) -> Result<Facts> {
+    let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
+    let marker = &element.frame.marker;
+    let node = facts.node;
+    let mut geometry = port.target(&element.frame, node, deadline).await?;
+    if !geometry.visible || geometry.in_view && !geometry.hit {
+        return Err(Failure::new("browser_not_actionable"));
+    }
+    if !facts.in_view || !geometry.in_view {
+        if !matches!(
+            port.program(
+                &element.frame,
+                Program::Scroll {
+                    marker: marker.clone(),
+                    node
+                },
+                deadline
+            )
+            .await?,
+            Output::Applied(Some(true))
+        ) {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        facts = inspect(port, element, deadline).await?;
+        geometry = port.target(&element.frame, node, deadline).await?;
+    }
+    if !geometry.hit || !geometry.in_view || !facts.hit || !facts.visible || !facts.enabled {
+        return Err(Failure::new("browser_not_actionable"));
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let steady = inspect(port, element, deadline).await?;
+    if !steady.hit || steady.x != facts.x || steady.y != facts.y {
+        return Err(Failure::new("browser_not_actionable"));
+    }
+    let final_geometry = port.target(&element.frame, node, deadline).await?;
+    if actionability::assess(
+        &facts,
+        kind,
+        top_level,
+        Some(&geometry),
+        Some((&steady, &final_geometry)),
+    )
+    .status
+        != actionability::Status::ReadyNow
+    {
+        return Err(Failure::new("browser_not_actionable"));
+    }
+    Ok(steady)
+}
+
 async fn perform<P: Port>(
     port: &P,
     element: &Element,
@@ -1038,24 +1094,8 @@ async fn perform<P: Port>(
     let mut facts = inspect(port, element, deadline).await?;
     let kind = action.kind();
     let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
-    if let Action::Scroll { delta } = action {
-        let marker = element.frame.marker.clone();
-        if !matches!(
-            port.program(
-                &element.frame,
-                Program::ScrollTarget {
-                    marker,
-                    node: facts.node,
-                    delta
-                },
-                deadline,
-            )
-            .await?,
-            Output::Applied(Some(true))
-        ) {
-            return Err(Failure::new("browser_not_actionable"));
-        }
-        return Ok(ack(true, "semantic_scroll"));
+    if (facts.kind == "scrollable") != matches!(action, Action::Scroll { .. }) {
+        return Err(Failure::new("browser_not_actionable"));
     }
     if facts.kind == "inferred" && !matches!(action, Action::Click | Action::Press(_)) {
         return Err(Failure::new("browser_not_actionable"));
@@ -1121,55 +1161,31 @@ async fn perform<P: Port>(
     }
     let marker = element.frame.marker.clone();
     let node = facts.node;
-    let mut geometry = port.target(&element.frame, node, deadline).await?;
-    if !geometry.visible || geometry.in_view && !geometry.hit {
-        return Err(Failure::new("browser_not_actionable"));
+    if !matches!(action, Action::Scroll { .. }) {
+        facts = prepare_input_target(port, element, facts, kind, deadline).await?;
     }
-    if !facts.in_view || !geometry.in_view {
-        if !matches!(
-            port.program(
-                &element.frame,
-                Program::Scroll {
-                    marker: marker.clone(),
-                    node
-                },
-                deadline
-            )
-            .await?,
-            Output::Applied(Some(true))
-        ) {
-            return Err(Failure::new("browser_not_actionable"));
-        }
-        facts = inspect(port, element, deadline).await?;
-        geometry = port.target(&element.frame, node, deadline).await?;
-    }
-    if !geometry.hit || !geometry.in_view || !facts.hit || !facts.visible || !facts.enabled {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let steady = inspect(port, element, deadline).await?;
-    if !steady.hit || steady.x != facts.x || steady.y != facts.y {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    let final_geometry = port.target(&element.frame, node, deadline).await?;
-    if actionability::assess(
-        &facts,
-        kind,
-        top_level,
-        Some(&geometry),
-        Some((&steady, &final_geometry)),
-    )
-    .status
-        != actionability::Status::ReadyNow
-    {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    facts = steady;
     let expected_check = match &action {
         Action::Check(value) => Some(*value),
         _ => None,
     };
     let path = match action {
+        Action::Scroll { delta } => {
+            let output = port
+                .program(
+                    &element.frame,
+                    Program::ScrollTarget {
+                        marker,
+                        node,
+                        delta,
+                    },
+                    deadline,
+                )
+                .await?;
+            let Output::Applied(Some(changed)) = output else {
+                return Err(Failure::new("browser_not_actionable"));
+            };
+            return Ok(ack(changed, "semantic_scroll"));
+        }
         Action::AttachFile(attachment) => {
             let Output::Surface(meta) = port
                 .program(&element.frame, Program::Surface, deadline)

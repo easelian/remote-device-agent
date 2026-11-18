@@ -101,11 +101,6 @@ function(marks, options) {
   // An element that neither its tag nor its role makes a control, and that looks like one all
   // the same: its markup holds a click handler, the pointer turns into a hand over it and not
   // over what is around it, or it is in the focus order.
-  const scrollable = node => {
-    if (!node || !node.isConnected) return false;
-    const style = getComputedStyle(node);
-    return (style.overflowY === "auto" || style.overflowY === "scroll") && node.scrollHeight > node.clientHeight && (node.hasAttribute("aria-label") || node.hasAttribute("role") || node.tabIndex >= 0) && style.visibility !== "hidden" && node.getClientRects().length;
-  };
   const inferred = node => {
     if (node === document.body || node === document.documentElement || node.ownerSVGElement) return false;
     const parent = node.parentElement || node.getRootNode().host;
@@ -304,7 +299,7 @@ function(marks, options) {
           else this.omitted.add('shadow_scope_limit');
         } else if (node.tagName.includes('-')) this.omitted.add('custom_element_internals_unverified');
         // The page says which elements are controls, and of which kind.
-        const kind = scrollable(node) ? "scrollable" : marks.native(node) ? "native" : marks.role(node) ? "aria" : inferred(node) ? "inferred" : null;
+        const kind = marks.native(node) ? 'native' : marks.role(node) ? 'aria' : inferred(node) ? 'inferred' : null;
         if (kind === 'native' ? wordedTags.has(node.tagName) : kind === 'aria' ? wordedRoles.has(marks.role(node)) : kind && small(node)) {
           worded.add(node);
           sealed.add(node);
