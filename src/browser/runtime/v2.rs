@@ -5,6 +5,7 @@ use crate::browser::{
     semantic::{self as sem, Port as _},
 };
 use sem::surface::{Focus, Metadata};
+mod evidence;
 mod file_approval;
 mod human;
 mod native;
@@ -32,6 +33,7 @@ struct Session {
     frames: HashMap<String, sem::Context>,
     cursor: Option<(String, sem::Continuation, sem::Query)>,
     presentation: presentation::Cache,
+    evidence: evidence::Registry,
     human: Option<human::Lease>,
     touched: Instant,
 }
@@ -39,6 +41,7 @@ impl Session {
     fn invalidate(&mut self) {
         self.clear_references();
         self.presentation.clear();
+        self.evidence.clear();
     }
     fn clear_references(&mut self) {
         self.references.clear();
@@ -107,7 +110,8 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "actions":["attach_file","navigate","click","fill","press","select","check","scroll","dialog","new_tab","close_tab","select_tab"],
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
         "extensions":{"actionability":crate::browser::selection::extension(None),
-            "observation_delta":crate::browser::selection::extension(None)}})
+            "observation_delta":crate::browser::selection::extension(None),
+            "dom_evidence":crate::browser::selection::extension(None)}})
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
@@ -197,6 +201,7 @@ impl Browsers {
                 frames: HashMap::new(),
                 cursor: None,
                 presentation: presentation::Cache::default(),
+                evidence: evidence::Registry::default(),
                 human: None,
                 touched: Instant::now(),
             }),
@@ -255,6 +260,7 @@ impl Browsers {
                     };
                     if let Ok(mut s) = slot.session.try_lock() {
                         s.presentation.expire(Instant::now());
+                        s.evidence.expire(Instant::now());
                         if s.native.is_none() {
                             break;
                         }
@@ -356,12 +362,24 @@ impl Browsers {
             return Err(Failure::unknown("browser_input_pending"));
         }
         let mut prepared_presentation = None;
+        let mut prepared_evidence = None;
         let result = async {
             match operation {
                 "browser_observe" => {
                     let (value, prepared) =
                         observe(&mut session, &page, &port, params, epoch, deadline).await?;
                     prepared_presentation = prepared;
+                    Ok(value)
+                }
+                "browser_evidence" => {
+                    let query = sem::evidence::Query::parse(&params["query"])?;
+                    let target = query
+                        .id()
+                        .map(|id| session.evidence.lookup(id, &tab, epoch))
+                        .transpose()?;
+                    let capture = page.evidence(&query, target, deadline).await?;
+                    let (value, prepared) = evidence::prepare(capture, &query, &tab, epoch)?;
+                    prepared_evidence = Some(prepared);
                     Ok(value)
                 }
                 "browser_inspect" => {
@@ -464,6 +482,17 @@ impl Browsers {
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
         if operation == "browser_inspect" {
             sem::actionability::check_size(&value)?;
+        }
+        if let Some(mut prepared) = prepared_evidence {
+            evidence::bounded(&mut value, &mut prepared)?;
+            if Instant::now() >= deadline {
+                return Err(Failure::new("browser_deadline"));
+            }
+            let state = slot.control.state.lock().unwrap();
+            if *state != (epoch, false) {
+                return Err(Failure::new("browser_control_changed"));
+            }
+            session.evidence.publish(prepared);
         }
         if let Some(prepared) = prepared_presentation {
             let retired = {
@@ -751,6 +780,7 @@ async fn act(
             Ok(json!({"input_acknowledged":true,"business_result_verified":false}))
         }
         "new_tab" => {
+            session.evidence.clear();
             let id = page
                 .command(false, false, deadline, move |p| async move {
                     p.new_tab(deadline).await
@@ -760,6 +790,7 @@ async fn act(
             Ok(json!({"tab_id":id}))
         }
         "close_tab" => {
+            session.evidence.clear();
             page.command(false, false, deadline, move |p| async move {
                 p.close_tab(deadline).await
             })
@@ -773,6 +804,7 @@ async fn act(
             Ok(json!({"tab_id":session.active}))
         }
         "select_tab" => {
+            session.evidence.clear();
             page.command(false, false, deadline, move |p| async move {
                 p.activate(deadline).await
             })

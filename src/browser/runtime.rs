@@ -296,6 +296,8 @@ impl Browsers {
         }
         let deadline = if operation == "browser_inspect" {
             deadline.min(Instant::now() + Duration::from_secs(1))
+        } else if operation == "browser_evidence" {
+            deadline.min(Instant::now() + Duration::from_secs(2))
         } else {
             deadline
         };
@@ -390,7 +392,7 @@ impl Browsers {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
         }
-        if operation == "browser_inspect"
+        if matches!(operation, "browser_inspect" | "browser_evidence")
             || operation == "browser_observe" && params.get("presentation").is_some()
         {
             // Only the explicitly selected v2 branch supports these extensions.
@@ -1754,6 +1756,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         "browser_profiles" => &["selection"],
         "browser_tabs" => &["session_id"],
         "browser_screenshot" => &["session_id", "tab_id", "control_epoch"],
+        "browser_evidence" => &["session_id", "tab_id", "control_epoch", "version", "query"],
         "browser_inspect" => &[
             "session_id",
             "tab_id",
@@ -1814,6 +1817,25 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         if !valid || map.contains_key("cursor") {
             return Err(Failure::new("browser_invalid_params"));
         }
+    }
+    if operation == "browser_evidence" {
+        if params["version"].as_u64() != Some(1)
+            || params["control_epoch"]
+                .as_u64()
+                .is_none_or(|v| v == 0 || v > 9_007_199_254_740_991)
+            || ["session_id", "tab_id"].iter().any(|key| {
+                !params[*key].as_str().is_some_and(|v| {
+                    !v.is_empty()
+                        && v.len() <= 128
+                        && v.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                })
+            })
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        #[cfg(feature = "experimental-browser-bidi")]
+        crate::browser::semantic::evidence::Query::parse(&params["query"])?;
     }
     if operation == "browser_inspect"
         && (params["session_id"].as_str().is_none()

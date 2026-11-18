@@ -7,6 +7,10 @@ pub(crate) const SOURCE: &str = include_str!("program.js");
 #[derive(Clone, Debug)]
 pub(crate) enum Program {
     Stamp,
+    Evidence {
+        marker: Marker,
+        query: super::evidence::NativeQuery,
+    },
     Surface,
     NativeFrameFocused,
     FrameAtPoint {
@@ -63,6 +67,7 @@ pub(crate) enum Program {
 }
 pub(crate) const NATIVE_NODE: &str = "function(serialized){const a=JSON.parse(serialized),s=globalThis.__rdhSemanticDomV1;return s&&s.document===document&&s.realm===a.realm&&s.restoration===a.restoration?s.nodes.get(a.node)||null:null;}";
 pub(crate) enum Output {
+    Evidence(super::evidence::Raw),
     Marker(Marker),
     Surface(super::surface::Metadata),
     Batch(Batch),
@@ -73,6 +78,13 @@ pub(crate) enum Output {
     Applied(Option<bool>),
 }
 impl Program {
+    pub fn source(&self) -> &'static str {
+        if matches!(self, Self::Evidence { .. }) {
+            super::evidence::SOURCE
+        } else {
+            SOURCE
+        }
+    }
     pub fn effect(&self) -> crate::browser::control::Effect {
         use crate::browser::control::Effect;
         match self {
@@ -86,6 +98,17 @@ impl Program {
     pub fn encode(&self) -> (&'static str, Value) {
         let target = |marker: &Marker, node| json!({"realm":marker.realm,"restoration":marker.restoration,"node":node});
         match self {
+            Self::Evidence { marker, query } => {
+                let mut args = serde_json::to_value(query).unwrap();
+                args["realm"] = marker.realm.clone().into();
+                args["restoration"] = marker.restoration.into();
+                let operation = match query.kind.as_str() {
+                    "find_nodes" => "find_nodes",
+                    "read_node" => "read_node",
+                    _ => "read_layout",
+                };
+                (operation, args)
+            }
             Self::Stamp => ("stamp", json!({})),
             Self::Surface => ("surface", json!({})),
             Self::NativeFrameFocused => ("native_focused_frame", json!({})),
@@ -145,6 +168,9 @@ impl Program {
             serde_json::from_str(text).map_err(|_| types::decode())
         }
         match self {
+            Self::Evidence { query, .. } => {
+                super::evidence::Raw::decode(text, query).map(Output::Evidence)
+            }
             Self::Surface => {
                 let value: super::surface::Metadata = parse(text)?;
                 value.validate()?;

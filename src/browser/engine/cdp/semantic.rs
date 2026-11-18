@@ -820,7 +820,7 @@ impl Semantic {
     ) -> Result<Output> {
         let (operation, args) = program.encode();
         let reply=self.adapter.wire.call(Some(self.adapter.session(&frame.session)?),Command::RuntimeCallFunction(program.effect()),
-            json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":operation},{"value":args}],"returnByValue":true}),deadline).await?;
+            json!({"executionContextId":world,"functionDeclaration":program.source(),"arguments":[{"value":operation},{"value":args}],"returnByValue":true}),deadline).await?;
         decode_program(program, reply)
     }
     async fn stamp(

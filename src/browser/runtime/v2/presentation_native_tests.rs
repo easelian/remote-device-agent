@@ -59,6 +59,7 @@ impl Fixture {
             frames: HashMap::new(),
             cursor: None,
             presentation: Cache::default(),
+            evidence: crate::browser::runtime::v2::evidence::Registry::default(),
             human: None,
             touched: Instant::now(),
         };

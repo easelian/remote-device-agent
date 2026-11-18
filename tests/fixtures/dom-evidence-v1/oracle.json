@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "find": [
+    {
+      "query": {
+        "kind": "find_nodes",
+        "role": "region"
+      },
+      "nodes": [
+        {
+          "tag": "div",
+          "role": "region",
+          "name": "Region name",
+          "name_source": "aria_label",
+          "sensitive": false
+        }
+      ]
+    },
+    {
+      "query": {
+        "kind": "find_nodes",
+        "text": "Shadow state"
+      },
+      "nodes": [
+        {
+          "tag": "span",
+          "role": "status",
+          "name": "Shadow state",
+          "name_source": "aria_label",
+          "sensitive": false
+        }
+      ]
+    },
+    {
+      "query": {
+        "kind": "find_nodes",
+        "text": "Associated title",
+        "tag": "div"
+      },
+      "nodes": [
+        {
+          "tag": "div",
+          "role": "",
+          "name": "Associated title",
+          "name_source": "aria_labelledby",
+          "sensitive": false
+        }
+      ]
+    }
+  ],
+  "forbidden": [
+    "PRIVATE-EVIDENCE-VALUE",
+    "PRIVATE-EVIDENCE-PASSWORD",
+    "PRIVATE-EVIDENCE-TEXTAREA",
+    "PRIVATE-EVIDENCE-EDITING"
+  ],
+  "coverage_omitted": [
+    "closed_shadow_roots",
+    "canvas_content",
+    "browser_ui",
+    "ancestor_frame_hit_testing",
+    "form_values",
+    "editable_text"
+  ],
+  "bounds": {
+    "elements": 5000,
+    "text_nodes": 10000,
+    "depth": 64,
+    "nodes": 64,
+    "bindings": 128,
+    "binding_bytes": 32768,
+    "ttl_seconds": 60,
+    "agent_bytes": 16384,
+    "mcp_bytes": 65536,
+    "other_nodes": 5000
+  }
+}

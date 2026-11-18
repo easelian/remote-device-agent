@@ -18,6 +18,7 @@ Agent 使用 Rust 单二进制和设备上已安装的浏览器。运行时不�
 | 能力指引 | Core `browser_guidance` 返回当前设备或会话适用的一个主题 | 根据明确能力选择静态模板；只读取会话元数据，按普通请求计量 |
 | 独立文件批准 | 用户在独立页面批准一次文件选择，AI 保留浏览器控制 | v1 与两个 v2 后端；要求 `uploads` 策略及 `file_authorization` 扩展版本 1，原租约上传继续可用 |
 | 可选增量观察 | 完整观察后将内容与当前引用绑定分开，受控 reducer 重建普通结果 | 仅 v2，显式 `presentation` 与每次 MCP 调用的 reducer 元数据；默认完整观察 |
+| DOM 与布局证据 | `browser_evidence` 查找非交互节点并读取事实和局部布局，不改变动作 ref 或增量基线 | 仅显式 v2 / `semantic_dom_v1`，要求候选和实际会话声明 `dom_evidence` 扩展版本 1 |
 | 独立原生 AX/DevTools 扩展 | 尚未实现为公开能力 | 不出现在当前支持声明中；接口草案仅见设计与验收 |
 
 v2 的编译、策略及后端门槛见[选择解析与能力声明](../src/browser/selection.rs)和[会话实际能力](../src/browser/runtime/v2.rs)。`candidate` 仅表示允许尝试；成功打开并返回 `session_ready` 才表示本次启动、文档身份和截图检查完成。最低浏览器版本、Firefox ESR、其他 Chromium 品牌及其他 OS/CPU 的支持需要独立证据，不能由协议名称或交叉构建推导。
@@ -48,11 +49,12 @@ flowchart TD
 | [semantic.rs](../src/browser/semantic.rs)、[semantic/page.rs](../src/browser/semantic/page.rs) | `Port` 与 `Page<P>`：v2 共同事实、记录、引用、动作及输入任务；不按后端改变 canonical 规则 |
 | [semantic/actionability.rs](../src/browser/semantic/actionability.rs) | 动作和只读诊断共用的类型与几何判定；诊断输出不含页面值、文本或原生身份 |
 | [semantic/program.rs](../src/browser/semantic/program.rs)、[program.js](../src/browser/semantic/program.js)、[types.rs](../src/browser/semantic/types.rs) | 随二进制交付的固定程序、严格解码、身份和记录材料；不接受调用者脚本 |
+| [semantic/evidence.rs](../src/browser/semantic/evidence.rs)、[evidence.js](../src/browser/semantic/evidence.js)、[runtime/v2/evidence.rs](../src/browser/runtime/v2/evidence.rs) | 有界 DOM/布局采集、独立弱引用和会话诊断 ID；不修改 canonical 观察材料 |
 | [engine/cdp](../src/browser/engine/cdp)、[engine/bidi](../src/browser/engine/bidi) | 封闭命令、原生 ID、事件、realm、输入和连接待决表；协议差异留在 adapter |
 | [process.rs](../src/browser/process.rs)、[process](../src/browser/process)、[profiles.rs](../src/browser/profiles.rs) | 进程树与启动身份、独占资料租约、恢复和关闭；通道断开不作为进程退出证明 |
 | [files.rs](../src/browser/files.rs)、[files](../src/browser/files) | 人工上传授权、私有暂存、配额、原始附件响应及交付 |
 
-Server 对应源码为 `apps/core/src/browser.rs`、`browser/guidance.rs`、`mcp_tools.rs`、`mcp.rs`，MCP schema 和错误目录位于 `contracts/mcp/v1/`。Core 处理认证、准入、计量、封装及披露，Agent 持有页面身份与原生资源。Runtime Rust 与 PostgreSQL 结算函数共同约束恢复摘要。Server 的协议/维护文档只提供入口，不复制这两份浏览器文档。
+Server 对应源码为 `apps/core/src/browser.rs`、`browser/guidance.rs`、`browser/evidence.rs`、`mcp_tools.rs`、`mcp.rs`，MCP schema 和错误目录位于 `contracts/mcp/v1/`。Core 处理认证、准入、计量、封装及披露，Agent 持有页面身份与原生资源。Runtime Rust 与 PostgreSQL 结算函数共同约束恢复摘要。Server 的协议/维护文档只提供入口，不复制这两份浏览器文档。
 
 ## 3. 能力发现、选择与公开会话
 
@@ -90,7 +92,7 @@ Server 对应源码为 `apps/core/src/browser.rs`、`browser/guidance.rs`、`mcp
 
 Server 先验证选择结构，再检查设备的 v2 声明和目标后端，满足后才分配或执行变更操作。旧 Agent 缺少 v2 时返回 `browser_capability_unsupported`。Agent 独立重复验证。未知选择返回 `browser_selection_invalid`，后端候选不可用返回 `browser_backend_unavailable`。严格策略在能力声明中以 `reason: browser_policy_unsupported` 标为不可用，公开打开因此被拒绝；内部共同语义入口也保留策略校验。这些公开拒绝发生在进程、临时资料和页面副作用之前。
 
-`capabilities.browser.v2.backends[].extensions.actionability` 和 `extensions.observation_delta` 分别声明 `version: 1`、布尔值 `available` 和可空 `reason`；可用性沿用对应后端的构建、平台、本地策略和浏览器检查。成功打开后的 `capabilities.extensions` 声明本次实际启用的对应扩展。扩展不增加 `selection` 字段，也不新增本地开关。
+`capabilities.browser.v2.backends[].extensions.actionability`、`extensions.observation_delta` 和 `extensions.dom_evidence` 分别声明 `version: 1`、布尔值 `available` 和可空 `reason`；可用性沿用对应后端的构建、平台、本地策略和浏览器检查。成功打开后的 `capabilities.extensions` 声明本次实际启用的对应扩展。扩展不增加 `selection` 字段，也不新增本地开关。
 
 打开成功返回原有 `session_id`、`tab_id`、`control_epoch`、`state`，并增加实际 `selection`、`capabilities` 和 `stage: "session_ready"`。`browser_sessions` 的 v2 条目也包含与打开结果相同的 `capabilities`；v1 条目的格式保持原样。选择在会话内固定；后续会话请求通过会话 ID 路由，不再接受选择参数；资料列举和删除单独接受 `selection`。核心能力在运行中丢失时暂停或关闭，不降级成 v1，也不更换后端。
 
@@ -100,7 +102,7 @@ v2 复用 `browser_sessions`、`browser_tabs`、`browser_observe`、`browser_act
 
 `fill` 使用原生文本编辑；原生日期、时间、颜色及范围控件使用 `select` 的固定表单设值路径。`scroll` 只滚动主文档，人工视口滚轮则按命中位置路由。
 
-会话核心能力包括生命周期、文档身份、共同观察与输入、截图、JavaScript 弹窗、人工交接、导航策略和保守恢复。公开会话限制、支持动作和可选功能随打开结果返回。命名资料、上传和下载分别遵循 `browser.persistent_profiles`、`browser.uploads`、`browser.downloads` 三个本地开关，默认均关闭；`device_info` 和打开结果声明这些可选能力。命名资料被本地策略关闭时返回 `browser_profile_disabled`。原生 AX 和 DevTools 扩展仍不可用。关闭及崩溃恢复必须证明所属进程已结束，才能释放命名资料租约。
+会话核心能力包括生命周期、文档身份、共同观察与输入、截图、JavaScript 弹窗、人工交接、导航策略和保守恢复。公开会话限制、支持动作和可选功能随打开结果返回。命名资料、上传和下载分别遵循 `browser.persistent_profiles`、`browser.uploads`、`browser.downloads` 三个本地开关，默认均关闭；`device_info` 和打开结果声明这些可选能力。命名资料被本地策略关闭时返回 `browser_profile_disabled`。原生 AX、匹配 CSS 规则、console/网络记录和 trace 扩展仍不可用。关闭及崩溃恢复必须证明所属进程已结束，才能释放命名资料租约。
 
 v1 与 v2 共用每设备 2 个会话的上限，每个 v2 会话最多 8 个标签页和 32 个 frame。截图为有界 viewport JPEG。人工视图租约为 120 秒；刷新截图或完成输入可续期，过期视图不能继续输入，返回 AI 必须显式确认披露页面。敏感输入只经已认证的人工接口传输，观察和回执不返回密码值。
 
@@ -275,6 +277,36 @@ reducer 使用同次采集生成的 full 作为 oracle，逐字段比较重建�
 
 Agent 的[展示投影与缓存](../src/browser/runtime/v2/presentation.rs)在真实观察之后准备基线，Server `apps/core/src/browser/presentation.rs` 选择完整 MCP 输出。二者不修改页面算法、动作回执或数据库函数契约。当前仅受控适配器实现自动重建；未集成 reducer 的 AI 宿主继续请求普通完整观察。
 
+### 5.7 DOM 与布局证据
+
+`browser_evidence` 提供 DOM 查找、单节点读取和局部布局读取。原生 AX、匹配 CSS 规则、console、网络和 trace 不在此扩展的支持范围。设备候选及实际 v2 会话用 `extensions.dom_evidence: {version: 1, available, reason}` 声明；默认构建、v1、缺失声明及未知版本在页面读取前拒绝。两个后端均使用固定的隔离 realm 程序，返回 `source: dom`，不称为原生无障碍树。
+
+公开请求是封闭对象，必填 `device_id`、`session_id`、`tab_id`、`control_epoch`、`version: 1` 和 `query`。Agent 从现有认证上下文取得主体，不接受调用者指定主体、原生 ID、脚本或协议方法。`query` 是以下互斥的封闭对象：
+
+| `query.kind` | 其余字段 | 含义 |
+| --- | --- | --- |
+| `find_nodes` | 至少一个 `tag`、`role` 或 `text`；可选 `scope`、`limit` | tag/role 为 1～64 字节的小写 ASCII 标识，精确匹配；text 为 1～128 个 Unicode 标量，按大小写敏感的字面子串匹配有界名称或直接文本；各条件取交集。scope 为 `main_document`（默认）或 `all_frames`；limit 默认 16、最大 64 |
+| `read_node` | `node_id` | 读取同一节点的有界 DOM 事实及文本片段，不重新按名称、选择器或路径定位 |
+| `read_layout` | `node_id` | 读取同一节点的 frame viewport 几何、固定计算样式字段及局部中心点命中事实，不滚动、不聚焦、不输入 |
+
+这里的 `role` 是 DOM 诊断事实：有 `role` 属性时取第一个符合小写 ASCII 标识语法的令牌；无有效令牌时，仅推导 button/summary、带 href 的 a、input、textarea、select、img 和 h1～h6 的基础角色，其余为空字符串。不按鼠标样式或事件处理器推断交互性，也不将该字段称为浏览器原生 AX 角色。名称按 `aria-labelledby`、`aria-label`、关联 label、直接文本的顺序选择；`name_source` 只取 aria_labelledby/aria_label/label/direct_text/none。名称解析最多 32 个关联和 16 层，访问仍计入本次统一遍历预算；无法解析或被限制的名称在 coverage 中标明，不借用 canonical 名称质量或动作资格。
+
+查找采用有界 DOM 遍历，包含可访问的 open shadow；跨源 frame 由原 adapter 在已接纳的文档内分别读取，不能经页面脚本绕过同源限制。总访问最多 5,000 个元素、10,000 个文本节点和 5,000 个其他节点，深度 64；注释等非文本游标节点同样受预算约束；文本与命名遍历同样计入本次预算，不能对每个匹配节点重新展开整棵子树。读文本使用有界片段，不序列化 `outerHTML`，不先构造无界 `textContent` 再截断。达到限制时返回已收集结果、计数和 `limits`，不自动追加扫描、分页或扩大预算。查找顺序由固定的 frame 拓扑顺序及各 frame 的 DOM 深度优先顺序确定；同一次请求前后 frame/document/realm 变化时拒绝结果，不能拼接不同文档。
+
+查找结果的每个节点只含 `node_id`、`tag`、`role`、`name`、`name_source`、`sensitive` 和本次采集内的 `frame_index`/`main_frame`。名称最多 256 个 Unicode 标量；支持的来源为有界 ARIA 名称、关联 label 或直接文本，无法完整解析的名称明确列入 coverage。`read_node` 在这些字段上增加 `text_excerpt`（最多 1,024 个 Unicode 标量）、`states` 和封闭的 `attributes`。states 仅包含 connected/disabled/readonly/editable；attributes 仅包含 `type`、`aria-hidden`、`aria-disabled`、`aria-expanded`、`aria-selected`、`hidden`、`inert`、`disabled` 和 `readonly`，单值最多 64 个 Unicode 标量。任何模式都不返回表单 value、文件名、任意属性集合或 HTML。敏感控件沿用当前判定并禁止其值和编辑文本进入结果；祖先文本不能通过拼接敏感子树绕过此边界。
+
+`read_layout` 返回有限数值的 `box: {x, y, width, height}`、`viewport: {width, height}`、`coordinate_space: frame_viewport`、`computed` 和 `hit`。computed 固定包含 display、visibility、opacity、pointer-events、position、z-index、overflow-x、overflow-y、width、height、transform、font-size、line-height、color、background-color；每个值最多 128 个 Unicode 标量，不读取 content、自定义属性或 URL 类值。hit.kind 为 target/descendant/other/outside_viewport/indeterminate；命中 other 时可签发同类型的只读 node_id 供后续查询。命中或祖先遍历达到深度/节点预算时返回 `indeterminate` 并标明限制，不将未完成的判断当作 other。该命中只说明当前 frame 的中心点，不证明嵌入 frame 未被外层遮挡，也不产生 ready_now 或动作许可；跨 frame 的动作判定继续由 `browser_inspect` 和实际动作校验负责。
+
+结果固定包含 `version: 1`、`kind`、`session_id`、`tab_id`、`control_epoch`、`selection`、`source: dom`、`captured: {started_at_ms, finished_at_ms}`、`coverage` 和 `content_trust: untrusted_page`，并按 kind 返回 nodes/node/layout 中的一项。时间是 Agent 的 Unix 毫秒时间，表示本次读取窗口，不用其推断因果。coverage 包含 scope、frames_read、visited_elements、visited_text_nodes、visited_other_nodes、truncated、limits 和 omitted；数量为实际已执行工作，limits 使用封闭原因枚举 element_limit/text_node_limit/other_node_limit/depth_limit/result_limit/name_limit/excerpt_limit/attribute_limit/style_limit/byte_limit。omitted 使用 closed_shadow_roots/canvas_content/browser_ui/ancestor_frame_hit_testing/form_values/editable_text/unresolved_name_reference 表示未取得的范围。超过文本、属性或样式单值上限时只返回有界前缀并记录相应 limit；命名引用不存在、重复、循环或不能在预算内解析时记录 unresolved_name_reference。truncated 为 false 只表示声明范围未触及采集预算，不能据此声称完整理解整个网页。Agent 正文上限 16 KiB；Core 从同一结构生成文本和 structuredContent，装饰后按实际编码检查完整 MCP JSON-RPC 响应的 64 KiB 上限，仍保持原有授权和总消息限制。超出公开响应预算使用既有 result_too_large，不返回不完整 JSON。
+
+node_id 使用 `den_` 加 32 位随机十六进制，只有当前主体的所属会话可解析；与动作 ref、frame_id、cursor、展示 revision 完全分离。Agent 每会话最多保存 128 项纯身份绑定，记录 tab 摘要、内部 context/document/realm/祖先关系摘要、控制代次、节点序号和创建时刻，不保存 URL、节点正文、原生 RemoteObject 或动作许可。每项创建后 60 秒失效，读取不续期；到期后清理，容量不足时淘汰最旧项。受控表自身的分配预算为每会话 32 KiB，两个会话合计 64 KiB。隔离 realm 内使用独立的 WeakRef 注册表，每 realm 最多 128 项；不得复用或清空 canonical `state.nodes`、扫描游标和动作引用。记录淘汰或节点被回收后只返回既有 stale 错误，不能按原名称重新匹配。
+
+读取前后均从 adapter 刷新实际 frame 身份并核对原绑定和控制代次；节点断开、替换、同 URL reload、BFCache 恢复、祖先文档或 realm 变化、切换 tab、暂停、人工接管、关闭、失联及策略更新使旧 ID 不可用。普通观察与增量观察不续期或重建诊断 ID；诊断也不替换原观察 ref 或展示基线。最终发布新 ID 与正文使用现有同步控制 fence，被取消或迟到的读取不能重新发布旧代次。WebSocket/pipe 的迟到响应继续由原命令账本结算，不能因只读或超时提前释放原生占用。
+
+每次调用的绝对期限上限为 2 秒，覆盖准入等待、frame 读取、DOM 程序、结果编码和最终控制检查；控制 fence 不等待这次读取完成。单次调用与现有同会话任务串行化，不先引入另一套调度器。接口复用普通设备权限、准入和计量，正文不进入操作回执或持久缓存；人工持有控制或待披露确认期间仍禁止 AI 读取。向动作传入 den_ ID、向证据接口传入 ref 或其他会话 ID，都必须在原生输入之前拒绝。
+
+实现入口为 [semantic/evidence.rs](../src/browser/semantic/evidence.rs)、[固定 DOM 程序](../src/browser/semantic/evidence.js)和 [runtime/v2/evidence.rs](../src/browser/runtime/v2/evidence.rs)。Core 的 `apps/core/src/browser/evidence.rs` 验证封闭结果、请求身份和字节预算；在完成记录及授权检查之后再次核对当前连接，数据库等待期间撤权或断开不会披露旧结果。
+
 ## 6. 原生连接、进程和资源所有权
 
 ### 6.1 CDP
@@ -349,6 +381,8 @@ CDP 不订阅未使用的 Runtime console/exception/inspect 事件，仍拒绝�
 | 独立文件批准 | 创建后 600 秒、不续期、一次选择；64 KiB 数据块；接口期限 20 秒，状态正文 4 KiB；与原文件共用配额 | [file approval](../src/browser/runtime/file_approval.rs)、[upload](../src/browser/files/upload.rs) |
 | 增量观察基线 | 每份编码投影 256 KiB；每会话 2 份，Agent 合计 1 MiB；节点索引 4,000 项、frame 索引 128 项；创建后 60 秒、不续期 | [presentation](../src/browser/runtime/v2/presentation.rs) |
 | 增量观察构造与选择 | 单会话新增暂存 512 KiB；O(N) 前后缀比较、最多一段 splice；含新绑定与 MCP 双输出的候选不超过同次 full 的 70% 才采用 | [presentation](../src/browser/runtime/v2/presentation.rs)、Server `apps/core/src/browser/presentation.rs` |
+| DOM 与布局证据 | 访问 5,000 元素/10,000 文本/5,000 其他节点、深度 64；最多 64 结果；正文 16 KiB、完整 MCP 64 KiB；总期限 2 秒 | [semantic evidence](../src/browser/semantic/evidence.rs)、Server `apps/core/src/browser/evidence.rs` |
+| 诊断节点身份 | 每会话 128 项/32 KiB、两会话 64 KiB；创建后 60 秒不续期；每 realm 独立 128 个 WeakRef | [evidence registry](../src/browser/runtime/v2/evidence.rs)、[DOM program](../src/browser/semantic/evidence.js) |
 | 人工控制 | 公开视图租约 120 秒；内部共同语义输入许可 300 秒，并受外层视图、epoch 约束 | [v2 human](../src/browser/runtime/v2/human.rs)、[page](../src/browser/semantic/page.rs) |
 | 原生完整消息 | 入站 2 MiB；出站完整 JSON 256 KiB；BiDi 单帧与完整消息分别受限 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 待决命令与发送队列 | CDP 普通 32 槽，另有 4 个仅供对象/对象组/流释放的槽，发送队列 36；BiDi 普通 32 | [CDP wire](../src/browser/engine/cdp/wire.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
@@ -446,6 +480,7 @@ v1 的 [select_all](../src/browser/engine/cdp/page.rs) 在 macOS 发送 Command+
 | Server `apps/core/src/browser/guidance.rs` 单元测试、`tests/core/test_browser_guidance*.py` | 模板/schema/摘要、真实 v1/CDP/BiDi 示例、旧 Agent/默认构建、计量与连接/撤权披露边界 |
 | [files/upload.rs](../src/browser/files/upload.rs)、[runtime/file_approval.rs](../src/browser/runtime/file_approval.rs)、Server `tests/core/test_browser_file_approval.py` | 独立批准的身份、控制 fence、一次使用、未知结果、真实 UI、旧 Agent 能力及实际二进制元数据回退/重启 |
 | [presentation tests](../src/browser/runtime/v2/presentation_tests.rs)及同目录原生/资源/性能/内存测试，Server `tests/core/test_browser_observation_delta.py`、`test_browser_delta_native_corpus.py`、`clients/browser-observation-delta.test.mjs` | 同次完整 oracle 重建、MCP 实际字节选择、权限与披露、基线失效、满载缓存和独立会话资源/性能对照 |
+| [evidence tests](../src/browser/runtime/v2/evidence_tests.rs)、[native evidence tests](../src/browser/runtime/v2/evidence_native_tests.rs)、[DOM 语料](../tests/fixtures/dom-evidence-v1)，Server `tests/core/test_browser_evidence.py` | 有界事实与布局、身份/TTL、保留原 ref/基线、取消和控制切换、撤权/断连、公开计量及 v1 拒绝 |
 | Server `tests/core/test_browser_v2*.py`、`tests/runtime/test_single_call_transactions.py` | 公开 MCP、两个后端、文件、版本回退、预算、重复恢复、RSS、回执白名单 |
 | Server `scripts/run_browser_acceptance.py`、`scripts/summarize_browser_rss.py` | 严格收集/JUnit 对照、产物摘要及四组 RSS 汇总；不自动构建、重试、部署或启动托管 CI |
 

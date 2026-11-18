@@ -202,7 +202,7 @@ impl Command {
                 let (operation, args) = program.encode();
                 (
                     "script.callFunction",
-                    json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(op,args){{return ({})(op,JSON.parse(args));}}",program::SOURCE),"arguments":[{"type":"string","value":operation},{"type":"string","value":args.to_string()}],"awaitPromise":false,"resultOwnership":"none"}),
+                    json!({"target":{"context":context.as_str(),"sandbox":"rdh-semantic-dom-v1"},"functionDeclaration":format!("function(op,args){{return ({})(op,JSON.parse(args));}}",program.source()),"arguments":[{"type":"string","value":operation},{"type":"string","value":args.to_string()}],"awaitPromise":false,"resultOwnership":"none"}),
                     program.effect(),
                 )
             }

@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>DOM evidence fixture</title>
+<style>body{margin:20px;font:16px sans-serif}#covered,#blocker{position:absolute;left:400px;top:180px;width:120px;height:70px}#blocker{z-index:2;background:rgb(255,0,0)}#outside{position:absolute;top:2000px}iframe{width:300px;height:160px}</style>
+<h1>Evidence fixture</h1><section aria-label="Static section">Direct section text <span>Nested public text</span></section>
+<div id="hidden" hidden>Hidden facts</div><div role="INVALID region" aria-label="Region name">Direct region text</div>
+<span id="label">Associated title</span><div aria-labelledby="label">Fallback text</div>
+<span id="duplicate">First</span><span id="duplicate">Second</span><div aria-labelledby="duplicate" aria-label="Fallback name">Public fallback</div>
+<label for="customer">Customer</label><input id="customer" value="PRIVATE-EVIDENCE-VALUE">
+<label for="secret">Password</label><input id="secret" type="password" value="PRIVATE-EVIDENCE-PASSWORD">
+<div id="sensitive-parent">Public prefix <textarea>PRIVATE-EVIDENCE-TEXTAREA</textarea><div contenteditable>PRIVATE-EVIDENCE-EDITING</div> Public suffix</div>
+<div id="covered" aria-label="Covered region">Covered text</div><div id="blocker" aria-label="Overlay">Overlay text</div>
+<div id="outside" aria-label="Outside region">Outside text</div><button id="action">Witness action</button><div id="shadow"></div>
+<script>
+window.evidenceWitness={click:0,input:0,focus:0,scroll:0,submit:0};
+for(const [type,key] of [['click','click'],['input','input'],['focusin','focus'],['scroll','scroll'],['submit','submit']])addEventListener(type,()=>evidenceWitness[key]++,true);
+document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<span role="status" aria-label="Shadow state">Shadow text</span>';
+window.evidenceReady=true;
+</script>

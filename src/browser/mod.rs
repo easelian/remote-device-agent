@@ -45,6 +45,7 @@ pub const OPERATIONS: &[&str] = &[
     "browser_tabs",
     "browser_observe",
     "browser_inspect",
+    "browser_evidence",
     "browser_screenshot",
     "browser_act",
     "browser_wait",

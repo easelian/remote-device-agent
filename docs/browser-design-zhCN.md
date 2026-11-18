@@ -16,7 +16,7 @@
 
 | 顺序 | 工作 | 完成条件 |
 | --- | --- | --- |
-| 1 | 面向 AI 的 DOM/原生 AX、控制台/网络、性能诊断与结果验证 | 每项先固定 schema、权限、所有权和数值预算，完成行为与正确性验证，EX-19～24 |
+| 1 | 面向 AI 的原生 AX、匹配 CSS 规则、控制台/网络、性能诊断与结果验证 | 每项先固定 schema、权限、所有权和数值预算，完成行为与正确性验证，EX-19～24 |
 | 2 | AI 恢复操作与按需运行时调试 | 依赖相应诊断能力和已验证的 session 生命周期；逐项定义副作用、互斥、暂停/恢复和收尾，EX-25～26 |
 | 3 | 功能完成后的性能优化与发布验收 | 沿用冻结的性能/RSS 门槛；固定产物、真实客户端、平台/浏览器和回退证据，未安排项保持 `not_run` |
 
@@ -144,7 +144,7 @@ EX-11 的公共 oracle 不接受按 backend kind 的忽略规则。至少覆盖�
 
 ## 9. AI 页面诊断与恢复扩展
 
-本节规划面向 AI 的网页理解、故障定位、处理和结果验证，不建设人工 DevTools 调试前端。现有 `browser_inspect` 只检查动作前置条件；后续按任务增加 DOM/原生 AX、布局、控制台、网络和性能证据，再按需要增加恢复与运行时调试操作。这些是待实现能力，不能由现有诊断接口或 `devtools` 字段推导为已经支持。
+本节规划面向 AI 的网页理解、故障定位、处理和结果验证，不建设人工 DevTools 调试前端。现有 `browser_inspect` 检查动作前置条件，`browser_evidence` 提供有界 DOM 与局部布局事实；后续按任务增加原生 AX、匹配 CSS 规则、控制台、网络和性能证据，再按需要增加恢复与运行时调试操作。这些是待实现能力，不能由现有诊断接口或 `devtools` 字段推导为已经支持。
 
 AI 按“观察现象 → 读取证据 → 判断原因 → 执行处理 → 验证结果”完成任务。普通页面故障不触发人工调试流程；敏感输入或本人验证完成后，按现有交还和披露规则重新观察，由 AI 继续原任务。无法取得足够证据时返回已知事实、缺失范围和可继续的操作，不编造原因或成功结果。
 
@@ -154,7 +154,7 @@ AI 按“观察现象 → 读取证据 → 判断原因 → 执行处理 → 验
 
 | 分段 | 实现方式草案 | 首版交付边界 |
 | --- | --- | --- |
-| DOM/原生 AX 与布局检查 | adapter 提供封闭的只读端口，按需输出版本化的语义、样式、几何和命中证据；不复用 canonical ref | 字段和支持范围分别证明，节点数/深度/字节均有界；覆盖信息明确，不声明两个引擎的原生 AX 完全等价 |
+| 原生 AX 与匹配 CSS 规则 | adapter 提供封闭的只读端口，按需输出版本化的原生语义和规则来源；复用独立诊断身份，不复用 canonical ref | 字段和支持范围分别证明，节点数/深度/字节均有界；覆盖信息明确，不声明两个引擎的原生 AX 完全等价 |
 | 控制台与异常 | 显式开始/停止的有界订阅，按任务筛选级别、来源、异常及必要调用栈 | 关键生命周期事件和可丢失记录分开限额；对象进入租约账本，缺口明示，不向模型展开全部对象 |
 | 网络摘要与按需细查 | 先读请求状态、失败原因和时序，再按具体请求读取已授权的必要请求字段、响应字段或正文片段 | 默认摘要不含正文、凭据或 URL 查询串；细查另定读取范围、脱敏、字节和保留预算，不能为读取证据重发请求 |
 | 性能 trace | 有界采集和受限原生流生成私有制品，向 AI 提供聚合、热点、时序及按需局部读取 | 不把完整 trace 内联给模型；增量处理、保留、取消和删除分别定义。新增诊断制品使用独立类型及旧版读取/回退规则 |
@@ -188,35 +188,13 @@ AI 按“观察现象 → 读取证据 → 判断原因 → 执行处理 → 验
 
 调度按操作实际作用域区分同页互斥、跨页可并发及浏览器级独占；只有证明不触及共享状态后才放宽串行化，取消等待不提前释放执行所有权，控制 fence 与清理仍可推进。无需为接入诊断先重写通用调度器。脚本求值、logpoint 表达式、网络 mock、环境模拟及堆快照不是首批能力的隐含组成部分；若任务需要，分别设计其 effect、恢复、敏感信息及资源边界，不直接复制上游执行任意脚本或访问本机路径的入口。
 
-### 9.1 DOM 与布局证据契约
+### 9.1 DOM 与布局证据回归
 
-本分段先实现 `browser_evidence` 的 DOM 查找、单节点读取和局部布局读取。原生 AX、匹配 CSS 规则、console、网络和 trace 继续按本节依赖分别设计，不能由本分段推导为可用。设备候选及实际 v2 会话用 `extensions.dom_evidence: {version: 1, available, reason}` 声明；默认构建、v1、缺失声明及未知版本在页面读取前拒绝。两个后端均使用固定的隔离 realm 程序，返回 `source: dom`，不称为原生无障碍树。
+当前接口、字段和预算见[DOM 与布局证据](browser-implementation-zhCN.md#57-dom-与布局证据)。本节保留持续适用的行为约束，不把 DOM 事实称为原生 AX，也不将局部命中当作动作许可。
 
-公开请求是封闭对象，必填 `device_id`、`session_id`、`tab_id`、`control_epoch`、`version: 1` 和 `query`。Agent 从现有认证上下文取得主体，不接受调用者指定主体、原生 ID、脚本或协议方法。`query` 是以下互斥的封闭对象：
+固定合成语料和 oracle 后再修改实现，覆盖非交互/隐藏节点、open shadow、同源及跨源 frame、遮挡、嵌入 frame 外层遮挡、超深/超量 DOM、超长文本、敏感控件和敏感子树。双后端逐字段核对来源、事实和覆盖；读取前后统计页面请求、输入、聚焦、滚动和表单提交不变。并验证查找/详情不会失效已有 ref 或增量基线，节点替换与身份换代不会重匹配，注册表的 128 项/32 KiB/60 秒及正文/MCP 字节精确边界，取消、迟到响应、人工接管、撤权和重连后的最终披露边界。公开 MCP 另验普通计量、旧 Agent/v1 拒绝和节点 ID 不能用于动作；连续资源循环验证弱引用、绑定和所属原生占用有界，关闭后归零。
 
-| `query.kind` | 其余字段 | 含义 |
-| --- | --- | --- |
-| `find_nodes` | 至少一个 `tag`、`role` 或 `text`；可选 `scope`、`limit` | tag/role 为 1～64 字节的小写 ASCII 标识，精确匹配；text 为 1～128 个 Unicode 标量，按大小写敏感的字面子串匹配有界名称或直接文本；各条件取交集。scope 为 `main_document`（默认）或 `all_frames`；limit 默认 16、最大 64 |
-| `read_node` | `node_id` | 读取同一节点的有界 DOM 事实及文本片段，不重新按名称、选择器或路径定位 |
-| `read_layout` | `node_id` | 读取同一节点的 frame viewport 几何、固定计算样式字段及局部中心点命中事实，不滚动、不聚焦、不输入 |
-
-这里的 `role` 是 DOM 诊断事实：有 `role` 属性时取第一个符合小写 ASCII 标识语法的令牌；无有效令牌时，仅推导 button/summary、带 href 的 a、input、textarea、select、img 和 h1～h6 的基础角色，其余为空字符串。不按鼠标样式或事件处理器推断交互性，也不将该字段称为浏览器原生 AX 角色。名称按 `aria-labelledby`、`aria-label`、关联 label、直接文本的顺序选择；`name_source` 只取 aria_labelledby/aria_label/label/direct_text/none。名称解析最多 32 个关联和 16 层，访问仍计入本次统一遍历预算；无法解析或被限制的名称在 coverage 中标明，不借用 canonical 名称质量或动作资格。
-
-查找采用有界 DOM 遍历，包含可访问的 open shadow；跨源 frame 由原 adapter 在已接纳的文档内分别读取，不能经页面脚本绕过同源限制。总访问最多 5,000 个元素和 10,000 个文本节点、深度 64；文本与命名遍历同样计入本次预算，不能对每个匹配节点重新展开整棵子树。读文本使用有界片段，不序列化 `outerHTML`，不先构造无界 `textContent` 再截断。达到限制时返回已收集结果、计数和 `limits`，不自动追加扫描、分页或扩大预算。查找顺序由固定的 frame 拓扑顺序及各 frame 的 DOM 深度优先顺序确定；同一次请求前后 frame/document/realm 变化时拒绝结果，不能拼接不同文档。
-
-查找结果的每个节点只含 `node_id`、`tag`、`role`、`name`、`name_source`、`sensitive` 和本次采集内的 `frame_index`/`main_frame`。名称最多 256 个 Unicode 标量；支持的来源为有界 ARIA 名称、关联 label 或直接文本，无法完整解析的名称明确列入 coverage。`read_node` 在这些字段上增加 `text_excerpt`（最多 1,024 个 Unicode 标量）、`states` 和封闭的 `attributes`。states 仅包含 connected/disabled/readonly/editable；attributes 仅包含 `type`、`aria-hidden`、`aria-disabled`、`aria-expanded`、`aria-selected`、`hidden`、`inert`、`disabled` 和 `readonly`，单值最多 64 个 Unicode 标量。任何模式都不返回表单 value、文件名、任意属性集合或 HTML。敏感控件沿用当前判定并禁止其值和编辑文本进入结果；祖先文本不能通过拼接敏感子树绕过此边界。
-
-`read_layout` 返回有限数值的 `box: {x, y, width, height}`、`viewport: {width, height}`、`coordinate_space: frame_viewport`、`computed` 和 `hit`。computed 固定包含 display、visibility、opacity、pointer-events、position、z-index、overflow-x、overflow-y、width、height、transform、font-size、line-height、color、background-color；每个值最多 128 个 Unicode 标量，不读取 content、自定义属性或 URL 类值。hit.kind 为 target/descendant/other/outside_viewport/indeterminate；命中 other 时可签发同类型的只读 node_id 供后续查询。该命中只说明当前 frame 的中心点，不证明嵌入 frame 未被外层遮挡，也不产生 ready_now 或动作许可；跨 frame 的动作判定继续由 `browser_inspect` 和实际动作校验负责。
-
-结果固定包含 `version: 1`、`kind`、`session_id`、`tab_id`、`control_epoch`、`selection`、`source: dom`、`captured: {started_at_ms, finished_at_ms}`、`coverage` 和 `content_trust: untrusted_page`，并按 kind 返回 nodes/node/layout 中的一项。时间是 Agent 的 Unix 毫秒时间，表示本次读取窗口，不用其推断因果。coverage 包含 scope、frames_read、visited_elements、visited_text_nodes、truncated、limits 和 omitted；数量为实际已执行工作，limits 使用封闭原因枚举 element_limit/text_node_limit/depth_limit/result_limit/name_limit/excerpt_limit/attribute_limit/style_limit/byte_limit。omitted 使用 closed_shadow_roots/canvas_content/browser_ui/ancestor_frame_hit_testing/form_values/editable_text/unresolved_name_reference 表示未取得的范围。超过文本、属性或样式单值上限时只返回有界前缀并记录相应 limit；命名引用不存在、重复、循环或不能在预算内解析时记录 unresolved_name_reference。truncated 为 false 只表示声明范围未触及采集预算，不能据此声称完整理解整个网页。Agent 正文上限 16 KiB；Core 从同一结构生成文本和 structuredContent，装饰后按实际编码检查完整 MCP JSON-RPC 响应的 64 KiB 上限，仍保持原有授权和总消息限制。超出公开响应预算使用既有 result_too_large，不返回不完整 JSON。
-
-node_id 使用 `den_` 加 32 位随机十六进制，只有当前主体的所属会话可解析；与动作 ref、frame_id、cursor、展示 revision 完全分离。Agent 每会话最多保存 128 项纯身份绑定，记录 tab 摘要、内部 context/document/realm/祖先关系摘要、控制代次、节点序号和创建时刻，不保存 URL、节点正文、原生 RemoteObject 或动作许可。每项创建后 60 秒失效，读取不续期；到期后清理，容量不足时淘汰最旧项。受控表自身的分配预算为每会话 32 KiB，两个会话合计 64 KiB。隔离 realm 内使用独立的 WeakRef 注册表，每 realm 最多 128 项；不得复用或清空 canonical `state.nodes`、扫描游标和动作引用。记录淘汰或节点被回收后只返回既有 stale 错误，不能按原名称重新匹配。
-
-读取前后均从 adapter 刷新实际 frame 身份并核对原绑定和控制代次；节点断开、替换、同 URL reload、BFCache 恢复、祖先文档或 realm 变化、切换 tab、暂停、人工接管、关闭、失联及策略更新使旧 ID 不可用。普通观察与增量观察不续期或重建诊断 ID；诊断也不替换原观察 ref 或展示基线。最终发布新 ID 与正文使用现有同步控制 fence，被取消或迟到的读取不能重新发布旧代次。WebSocket/pipe 的迟到响应继续由原命令账本结算，不能因只读或超时提前释放原生占用。
-
-每次调用的绝对期限上限为 2 秒，覆盖准入等待、frame 读取、DOM 程序、结果编码和最终控制检查；控制 fence 不等待这次读取完成。单次调用与现有同会话任务串行化，不先引入另一套调度器。接口复用普通设备权限、准入和计量，正文不进入操作回执或持久缓存；人工持有控制或待披露确认期间仍禁止 AI 读取。向动作传入 den_ ID、向证据接口传入 ref 或其他会话 ID，都必须在原生输入之前拒绝。
-
-编码前固定合成语料和 oracle，覆盖非交互/隐藏节点、open shadow、同源及跨源 frame、遮挡、嵌入 frame 外层遮挡、超深/超量 DOM、超长文本、敏感控件和敏感子树。双后端逐字段核对来源、事实和覆盖；读取前后统计页面请求、输入、聚焦、滚动和表单提交不变。并验证查找/详情不会失效已有 ref 或增量基线，节点替换与身份换代不会重匹配，注册表的 128 项/32 KiB/60 秒及正文/MCP 字节精确边界，取消、迟到响应、人工接管、撤权和重连后的最终披露边界。公开 MCP 另验普通计量、旧 Agent/v1 拒绝和节点 ID 不能用于动作；连续资源循环验证弱引用、绑定和所属原生占用有界，关闭后归零。
+空白 ARIA 命名引用应回退到实际使用的名称来源；布局命中关系在深度/节点预算内无法判定时必须为 indeterminate，并记录限制，不能返回推断的遮挡节点。
 
 ### 9.2 验收
 

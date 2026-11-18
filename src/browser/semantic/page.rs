@@ -662,6 +662,29 @@ impl<P: Port> Page<P> {
     ) -> Result<Acknowledgement> {
         self.act_as(reference, action, false, deadline).await
     }
+    pub async fn evidence(
+        &self,
+        query: &super::evidence::Query,
+        target: Option<super::evidence::Target>,
+        deadline: Instant,
+    ) -> Result<super::evidence::Capture> {
+        let deadline = deadline.min(Instant::now() + super::evidence::TIMEOUT);
+        if Instant::now() >= deadline {
+            return Err(Failure::new("browser_deadline"));
+        }
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .map_err(|_| Failure::new("browser_busy"))?;
+        let (port, epoch) = self.authorization(false)?;
+        let capture = tokio::time::timeout_at(
+            deadline.into(),
+            super::evidence::capture(&port, query, target, deadline),
+        )
+        .await
+        .map_err(|_| Failure::unknown("browser_timeout_unknown"))??;
+        self.delivery(epoch, false)?;
+        Ok(capture)
+    }
     pub async fn diagnose(
         &self,
         reference: Reference,
