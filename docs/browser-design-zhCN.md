@@ -44,7 +44,7 @@ AI 应能在一次会话中找到目标、执行操作、解释失败，并用�
 
 ### 同一主文档内的拖放
 
-第一版以看板为验收任务。客户端从同一次主文档观察中选定源卡片和接收列，Agent 用两端的身份、所属记录、命中位置和控制代次约束原生输入。CDP 实现将正常放下与故障取消分开，正常放下一直受控制代次约束。执行状态为 `unknown` 时，客户端按原操作回执追踪，恢复后重新读取卡片所属列。具体工具参数与跨工具对照步骤见[维护说明](browser-implementation-zhCN.md#用拖放移动看板卡片)。
+第一版以看板为验收任务。客户端从同一次主文档观察中选定源卡片和接收列，Agent 用两端的身份、所属记录、命中位置和控制代次约束原生输入。CDP 实现将正常放下与故障取消分开，正常放下一直受控制代次约束。执行状态为 `unknown` 时，客户端按原操作回执追踪，恢复后重新读取卡片所属列。维护文档给出了[拖放参数与回退方法](browser-implementation-zhCN.md#用拖放移动看板卡片)和[独立验证页面行为的步骤](browser-implementation-zhCN.md#独立验证页面行为)。
 
 Linux 上的 Firefox 160 保留 `ref_drag.available: false`。随包 `omni.ja` 的 `shared/webdriver/Actions.sys.mjs` 将指针释放交给 `synthesizeMouseAtPoint`。默认输入路径进入 `external/EventUtils.js` 的 `_maybeEndDragSession` 时会结束已有拖动，源码在此标记投放事件尚待实现。真实看板在默认配置下收到 `dragstart` 和目标的 `dragover`，没有收到 `drop`。开启异步鼠标派发也未产生业务写入。同一有窗口 Firefox 用 X11 鼠标拖动后，正确卡片换列，站点写入一次。
 
