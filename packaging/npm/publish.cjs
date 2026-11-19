@@ -7,11 +7,11 @@ const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { name, packageVersions, tarballName } = require('./packages.cjs');
 
-const registry = 'https://registry.npmjs.org';
+const registry = 'https://registry.npmjs.org/';
 const validVersion = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 async function registryIntegrity(version) {
-  const response = await fetch(`${registry}/${encodeURIComponent(name)}/${version}`, {
+  const response = await fetch(`${registry}${encodeURIComponent(name)}/${version}`, {
     headers: { 'Cache-Control': 'no-cache' },
     signal: AbortSignal.timeout(15000),
   });
@@ -40,24 +40,33 @@ async function publishRelease(directory, version, {
     return { pkgVersion, file, integrity, tag };
   });
 
-  for (const { pkgVersion, file, integrity, tag } of packages) {
-    let existing = await getIntegrity(pkgVersion);
-    if (existing === null) {
-      publish(file, tag);
-      // Chain the parent publish only after all exact platform versions are visible.
-      for (let attempt = 0; attempt < 6; attempt++) {
-        existing = await getIntegrity(pkgVersion);
-        if (existing !== null) break;
-        if (attempt < 5) await wait(1000 * 2 ** attempt);
-      }
+  function verify(pkg, existing) {
+    if (existing === null) return false;
+    if (existing !== pkg.integrity) {
+      throw new Error(`Published integrity differs for ${name}@${pkg.pkgVersion}`);
     }
-    if (existing !== integrity) {
-      throw new Error(existing === null
-        ? `${name}@${pkgVersion} is not visible in npm`
-        : `Published integrity differs for ${name}@${pkgVersion}`);
-    }
-    console.log(`Verified ${name}@${pkgVersion} in npm`);
+    console.log(`Verified ${name}@${pkg.pkgVersion} in npm`);
+    return true;
   }
+
+  async function publishBatch(batch) {
+    const existing = await Promise.all(batch.map(({ pkgVersion }) => getIntegrity(pkgVersion)));
+    let pending = batch.filter((pkg, index) => !verify(pkg, existing[index]));
+    for (const { file, tag } of pending) publish(file, tag);
+
+    // npm scans newly uploaded packages before making them visible.
+    for (let attempt = 0; pending.length && attempt <= 40; attempt++) {
+      if (attempt) await wait(30000);
+      const available = await Promise.all(pending.map(({ pkgVersion }) => getIntegrity(pkgVersion)));
+      pending = pending.filter((pkg, index) => !verify(pkg, available[index]));
+    }
+    if (pending.length) {
+      throw new Error(`Versions not visible in npm: ${pending.map(({ pkgVersion }) => `${name}@${pkgVersion}`).join(', ')}`);
+    }
+  }
+
+  await publishBatch(packages.slice(0, -1));
+  await publishBatch(packages.slice(-1));
 }
 
 if (require.main === module) {

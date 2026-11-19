@@ -45,7 +45,7 @@ for (const [version, tag] of [['1.2.3', 'latest'], ['1.2.3-rc.1', 'next']]) {
   });
 }
 
-test('waits for the platform version to be readable before advancing', async (t) => {
+test('submits all platforms, then waits for them to become readable before publishing the launcher', async (t) => {
   const version = '1.2.3';
   const { directory, packages, writes, getIntegrity, publish } = fixture(t, version);
   let polls = 0;
@@ -54,8 +54,12 @@ test('waits for the platform version to be readable before advancing', async (t)
     publish,
     wait: async () => { waits++; },
     getIntegrity: async (pkgVersion) => {
-      if (pkgVersion === packages[0] && ++polls < 3) return null;
-      if (pkgVersion !== packages[0]) assert.equal(polls, 3);
+      if (pkgVersion === packages[0]) {
+        polls++;
+        if (polls === 2) assert.deepEqual(writes.map(([item]) => item), packages.slice(0, -1));
+        if (polls < 3) return null;
+      }
+      if (pkgVersion === version) assert.equal(polls, 3);
       return getIntegrity(pkgVersion);
     },
   });
@@ -68,7 +72,7 @@ test('blocks the launcher when a platform version is absent or has different byt
   const { directory, packages, registry, getIntegrity, publish } = fixture(t, version);
   await assert.rejects(publishRelease(directory, version, {
     getIntegrity, publish: () => {}, wait: async () => {},
-  }), /is not visible/);
+  }), /Versions not visible/);
   registry.set(packages[0], 'sha512-mismatch');
   await assert.rejects(publishRelease(directory, version, { getIntegrity, publish }), /integrity differs/);
   assert.equal(registry.has(version), false);

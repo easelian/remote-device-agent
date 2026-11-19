@@ -119,8 +119,8 @@ before publication. The manifest's `release_ready: false` field does not indicat
 publication status.
 
 The [npm workflow](../.github/workflows/npm-publish.yml) runs when a GitHub
-Release is published. To retry a split-package release, select the release tag
-in the manual workflow and pass the same tag as input. The workflow verifies
+Release is published. To retry a split-package release with the current workflow,
+run it manually from `main` and provide the published release tag. The workflow verifies
 all nine tarballs against the release checksums and GitHub attestations. It
 publishes the eight platform versions first and verifies their registry
 integrities before publishing the launcher to `latest` or `next`. A retry
