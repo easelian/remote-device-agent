@@ -392,6 +392,9 @@ impl Browsers {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
         }
+        if operation == "browser_act" && params.get("pre_action_diagnostics").is_some() {
+            return Err(Failure::new("browser_feature_unsupported"));
+        }
         if matches!(
             operation,
             "browser_inspect" | "browser_evidence" | "browser_capture"
@@ -1871,7 +1874,13 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "find",
             "presentation",
         ],
-        "browser_act" => &["session_id", "tab_id", "control_epoch", "action"],
+        "browser_act" => &[
+            "session_id",
+            "tab_id",
+            "control_epoch",
+            "action",
+            "pre_action_diagnostics",
+        ],
         "browser_wait" => &[
             "session_id",
             "tab_id",
@@ -2031,6 +2040,23 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             .as_object()
             .ok_or_else(|| Failure::new("browser_invalid_params"))?;
         let kind = action.get("kind").and_then(Value::as_str).unwrap_or("");
+        if let Some(options) = params.get("pre_action_diagnostics") {
+            if kind != "click"
+                || !map.contains_key("tab_id")
+                || !map.contains_key("control_epoch")
+                || action
+                    .get("ref")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                || !options.is_object()
+                || options.get("kind").is_some()
+            {
+                return Err(Failure::new("browser_invalid_params"));
+            }
+            let mut start = options.clone();
+            start["kind"] = "start".into();
+            validate_capture_query(&start, true)?;
+        }
         let fields: &[&str] = match kind {
             "navigate" => &["kind", "url"],
             "fill" => &["kind", "ref", "text"],
@@ -2331,6 +2357,23 @@ mod tests {
             validate("browser_act", &mixed).unwrap_err().code,
             "browser_invalid_params"
         );
+    }
+
+    #[test]
+    fn pre_action_diagnostics_is_limited_to_ref_click() {
+        let base = json!({"session_id":"session","tab_id":"tab","control_epoch":1,"action":{"kind":"click","ref":"r"},"pre_action_diagnostics":{"categories":["console"]}});
+        assert!(validate("browser_act", &base).is_ok());
+        let mut bad = base.clone();
+        bad["pre_action_diagnostics"]["extra"] = true.into();
+        assert!(validate("browser_act", &bad).is_err());
+        let mut bad = base.clone();
+        bad["pre_action_diagnostics"]["categories"] = json!(["dom"]);
+        assert!(validate("browser_act", &bad).is_err());
+        for kind in ["fill", "navigate", "hover"] {
+            let mut bad = base.clone();
+            bad["action"]["kind"] = kind.into();
+            assert!(validate("browser_act", &bad).is_err());
+        }
     }
 
     fn state(operation: &str, effects: bool, error: Failure) -> &'static str {

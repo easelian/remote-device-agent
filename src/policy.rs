@@ -15,6 +15,9 @@ pub const KNOWN_OPERATIONS: &[&str] = &[
     "browser_files",
     "browser_tabs",
     "browser_observe",
+    "browser_inspect",
+    "browser_capture",
+    "browser_evidence",
     "browser_screenshot",
     "browser_act",
     "browser_wait",
@@ -447,6 +450,18 @@ impl Policy {
                 ),
             });
         }
+        if operation == "browser_act"
+            && params.get("pre_action_diagnostics").is_some()
+            && let Some(allowed) = &self.allowed
+            && let Some(missing) = ["browser_capture", "browser_evidence"]
+                .into_iter()
+                .find(|op| !allowed.contains(*op))
+        {
+            return Some(Denial {
+                code: "policy_operation_denied",
+                message: format!("Policy denied: action diagnostics require {missing}"),
+            });
+        }
         if !WRITE_OPERATIONS.contains(&operation) {
             return None;
         }
@@ -579,6 +594,31 @@ mod tests {
             sidecar_path(Path::new("/tmp/device.json")),
             Path::new("/tmp/device.policy.json")
         );
+    }
+
+    #[test]
+    fn action_diagnostics_require_both_diagnostic_permissions() {
+        let click = json!({"action":{"kind":"click","ref":"r"}});
+        let mut captured = click.clone();
+        captured["pre_action_diagnostics"] = json!({"categories":["console"]});
+        let permissions = ["browser_act", "browser_capture", "browser_evidence"];
+        for missing in [None, Some("browser_capture"), Some("browser_evidence")] {
+            let allowed: Vec<_> = permissions
+                .into_iter()
+                .filter(|op| Some(*op) != missing)
+                .collect();
+            let policy = Policy::parse(
+                &json!({"version":1, "allowed_operations":allowed}),
+                &config(),
+            )
+            .unwrap();
+            assert!(policy.denial("browser_act", &click).is_none());
+            let denial = policy.denial("browser_act", &captured);
+            assert_eq!(
+                denial.map(|d| d.code),
+                missing.map(|_| "policy_operation_denied")
+            );
+        }
     }
 
     #[test]

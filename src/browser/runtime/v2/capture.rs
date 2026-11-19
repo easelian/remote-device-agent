@@ -3,11 +3,12 @@ use super::*;
 use sem::task_events::{MAX_EVENTS, Sink, WINDOW};
 
 pub(super) struct Capture {
-    id: String,
+    pub(super) id: String,
     tab: String,
     epoch: u64,
     frame: sem::Frame,
     sink: Sink,
+    action_owned: bool,
 }
 impl Drop for Capture {
     fn drop(&mut self) {
@@ -16,15 +17,27 @@ impl Drop for Capture {
 }
 
 impl Capture {
+    pub(super) fn stop_if_action_owned(&self) {
+        if self.action_owned {
+            self.sink.stop();
+        }
+    }
+
+    pub(super) fn started(&self) -> Value {
+        json!({"capture_id":self.id,"state":"active","start_sequence":1,
+            "max_ms":WINDOW.as_millis(),"max_events":MAX_EVENTS})
+    }
+
     pub(super) async fn start(
-        session: &mut Session,
+        session: &Session,
         slot: &Slot,
         port: &native::Port,
         tab: &str,
         epoch: u64,
         action: &Value,
         deadline: Instant,
-    ) -> Result<Value> {
+        action_owned: bool,
+    ) -> Result<Self> {
         let categories = action["categories"]
             .as_array()
             .ok_or_else(|| Failure::new("browser_invalid_params"))?;
@@ -49,6 +62,7 @@ impl Capture {
             tab: tab.to_owned(),
             epoch,
             frame,
+            action_owned,
             sink: Sink::new_with_tracking(
                 slot.control.clone(),
                 epoch,
@@ -61,10 +75,7 @@ impl Capture {
         port.enable_task_events(capture.sink.clone(), deadline)
             .await?;
         capture.check_document(port, deadline).await?;
-        let response = json!({"capture_id":capture.id,"state":"active","start_sequence":1,
-            "max_ms":WINDOW.as_millis(),"max_events":MAX_EVENTS});
-        session.task_events = Some(capture);
-        Ok(response)
+        Ok(capture)
     }
 
     pub(super) async fn read_or_stop(

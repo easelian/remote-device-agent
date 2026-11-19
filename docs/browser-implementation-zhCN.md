@@ -107,6 +107,10 @@ compare snapshot
 
 v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。当前两个后端均可声明 `console` 和 `network`。客户端只请求所选会话公布的类别，旧版 CDP Agent 可继续使用 `network`。AI 在操作前调用 `browser_capture` 开窗，等待返回后执行一次已授权操作，再用 `browser_evidence` 读窗口。两种工具都要求 `version: 1`、同一会话、tab 和当前控制代次。启停使用独立的操作回执，启动响应丢失时按原操作 ID 找回 `capture_id`。动作本身继续使用原有的输入回执。
 
+诊断一次提交时，若当前后端和会话都报告 `extensions.action_capture.version == 1` 且可用，客户端可将采集选项放入同一个 `browser_act.pre_action_diagnostics`。例如，`{"categories":["console"],"track_exception_locations":true}` 要求已启用异常位置扩展。Agent 先核对会话、tab 和控制代次，再开窗并派发一次带 ref 的点击。回包内的 `capture_id` 可用于 `read_events` 和 `read_exception_location`。若客户端丢失成功回包，可从原操作回执恢复窗口标识。原生输入结果未知时，先查原回执并只读核对记录；缺少窗口标识时应报告诊断证据不足。
+
+本次点击产生的异步事件可在窗口有效期内继续到达。Agent 在处理下一次 `browser_act` 前停止该点击的采集，也允许显式停止。已经单独开启的窗口仍覆盖其间的动作；如果它还在采集，本次附带诊断的点击会收到 `browser_capture_active`，网站不会收到这次输入。导航或控制代次变化后，旧窗口失效。即使在同一窗口内，后台请求仍可能与点击无关。
+
 窗口只保存下列事实。每条都有从 1 开始的 `sequence` 和相对开窗时间 `elapsed_ms`。
 
 | 事件 | 可读信息 |

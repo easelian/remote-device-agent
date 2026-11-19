@@ -155,7 +155,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
         "actions":actions,
         "fill":"native_text_edit","select":"validated_native_form_value","scroll_scope":"main_document",
-        "extensions":{"exception_locations":crate::browser::selection::extension(None),"task_events":{"version":1,"available":true,"categories":["console","network"]},"network_progress":{"version":1,"available":true,"reason":null},"actionability":crate::browser::selection::extension(None),
+        "extensions":{"exception_locations":crate::browser::selection::extension(None),"task_events":{"version":1,"available":true,"categories":["console","network"]},"action_capture":{"version":1,"available":true},"network_progress":{"version":1,"available":true,"reason":null},"actionability":crate::browser::selection::extension(None),
             "observation_delta":crate::browser::selection::extension(None),
             "scoped_scroll":crate::browser::selection::extension(None), "ref_hover":crate::browser::selection::extension(None),
             "dom_evidence":crate::browser::selection::extension(None),
@@ -550,16 +550,13 @@ impl Browsers {
                     let port = page.access(false)?;
                     let action = &params["action"];
                     if action["kind"] == "start" {
-                        capture::Capture::start(
-                            &mut session,
-                            &slot,
-                            &port,
-                            &tab,
-                            epoch,
-                            action,
-                            deadline,
+                        let capture = capture::Capture::start(
+                            &session, &slot, &port, &tab, epoch, action, deadline, false,
                         )
-                        .await
+                        .await?;
+                        let value = capture.started();
+                        session.task_events = Some(capture);
+                        Ok(value)
                     } else {
                         capture::Capture::read_or_stop(
                             &session, &port, &tab, epoch, action, deadline,
@@ -626,6 +623,9 @@ impl Browsers {
                 }
                 "browser_screenshot" => capture(&page.access(false)?, deadline).await.map(|v| v.0),
                 "browser_act" => {
+                    if let Some(previous) = &session.task_events {
+                        previous.stop_if_action_owned();
+                    }
                     let attachment = if params["action"]["kind"] == "attach_file" {
                         if !self.settings.uploads {
                             return Err(Failure::new("browser_upload_disabled"));
@@ -648,7 +648,19 @@ impl Browsers {
                     } else {
                         None
                     };
-                    act(
+                    // Keep the new window local until input is acknowledged. On error
+                    // or cancellation its Drop invalidates the native subscription.
+                    let capture = if let Some(options) = params.get("pre_action_diagnostics") {
+                        Some(
+                            capture::Capture::start(
+                                &session, &slot, &port, &tab, epoch, options, deadline, true,
+                            )
+                            .await?,
+                        )
+                    } else {
+                        None
+                    };
+                    let mut value = act(
                         &mut session,
                         &page,
                         &port,
@@ -657,7 +669,12 @@ impl Browsers {
                         deadline,
                         attachment,
                     )
-                    .await
+                    .await?;
+                    if let Some(capture) = capture {
+                        value["capture_id"] = json!(capture.id);
+                        session.task_events = Some(capture);
+                    }
+                    Ok(value)
                 }
                 "browser_wait" => {
                     // Finish polling before the shared exchange deadline so a known
@@ -715,6 +732,7 @@ impl Browsers {
         value["control_epoch"] = epoch.into();
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
         if operation == "browser_evidence"
+            || operation == "browser_act" && params.get("pre_action_diagnostics").is_some()
             || operation == "browser_capture"
             || (operation == "browser_wait" && params.get("record").is_some())
         {

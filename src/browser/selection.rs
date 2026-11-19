@@ -103,7 +103,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
                     "ref_drag":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "matched_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "ancestor_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
-                    "task_events":{"version":1,"available":why.is_none(),"categories":["console","network"] }, "network_progress":{"version":1,"available":why.is_none(),"reason":why}}})
+                    "task_events":{"version":1,"available":why.is_none(),"categories":["console","network"] }, "action_capture":{"version":1,"available":why.is_none() }, "network_progress":{"version":1,"available":why.is_none(),"reason":why}}})
     })
     .collect();
     let available = backends.iter().any(|b| b["available"] == true);
