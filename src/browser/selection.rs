@@ -71,6 +71,7 @@ pub(super) fn with_input_extensions(mut caps: Value, reason: Option<&str>) -> Va
         "visual_click",
         "visual_gestures",
         "submit_outcome",
+        "submit_feedback",
         "submit_validation_field",
         "submit_validation",
     ] {

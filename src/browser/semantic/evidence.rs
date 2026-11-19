@@ -635,7 +635,7 @@ impl Raw {
 }
 
 /// Retained identity has no URL, text, native object or action reference.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Target {
     pub context: Context,
     pub digest: [u8; 32],

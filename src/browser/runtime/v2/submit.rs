@@ -10,6 +10,7 @@ enum Dispatch {
 
 pub(super) struct Attempt {
     record: RecordCondition,
+    target: sem::evidence::Target,
     endpoint: RequestEndpoint,
     dispatch: Dispatch,
 }
@@ -46,6 +47,7 @@ impl Attempt {
         Ok(Some((
             Self {
                 record,
+                target,
                 endpoint: binding.endpoint.clone(),
                 dispatch: Dispatch::Unconfirmed,
             },
@@ -80,6 +82,7 @@ impl Attempt {
         registry: &mut evidence::Registry,
         tab: &str,
         epoch: u64,
+        feedback: bool,
         deadline: Instant,
     ) -> Result<Value> {
         let unknown = || json!({"state":"undetermined"});
@@ -94,24 +97,56 @@ impl Attempt {
             Dispatch::Unconfirmed => return Ok(unknown()),
             Dispatch::Submitted => (),
         }
-        match response()? {
-            SubmitResponse::NotObserved | SubmitResponse::Pending => Ok(json!({"state":"pending"})),
+        let (request_id, status) = match response()? {
+            SubmitResponse::NotObserved | SubmitResponse::Pending => {
+                return Ok(json!({"state":"pending"}));
+            }
             SubmitResponse::Response {
                 request_id,
-                status: 422,
-            } => Ok(json!({"state":"http_422","http_status":422,"request_id":request_id})),
-            SubmitResponse::Response {
-                request_id,
-                status: 200,
-            } if sink.active() => {
-                let Some(expected) = &self.record.expected_text else {
-                    return Ok(unknown());
-                };
-                let target = registry.lookup(&self.record.node_id, tab, epoch)?;
+                status: status @ (200 | 422),
+            } => (request_id, status),
+            _ => return Ok(unknown()),
+        };
+        let mut result = if status == 422 {
+            json!({"state":"http_422","http_status":status,"request_id":request_id})
+        } else {
+            unknown()
+        };
+        let expected = self
+            .record
+            .expected_text
+            .as_deref()
+            .filter(|_| status == 200);
+        if !sink.active() || (!feedback && expected.is_none()) {
+            return Ok(result);
+        }
+
+        // A text wait may discard public DOM handles. The capture still owns
+        // the original device-side target in this tab, document and epoch.
+        let target = if feedback {
+            self.target
+        } else {
+            registry.lookup(&self.record.node_id, tab, epoch)?
+        };
+        let observed = if feedback {
+            page.read_submit_feedback(target, &self.record.anchor_text, deadline)
+                .await?
+        } else {
+            None
+        };
+        let explicit_rejection = observed.as_ref().is_some_and(|item| {
+            matches!(
+                item.kind,
+                sem::SubmitFeedbackKind::FieldError | sem::SubmitFeedbackKind::RecordRejection
+            )
+        });
+        if status == 200 {
+            let mut rejected = explicit_rejection;
+            if !rejected && let Some(expected) = expected {
                 let query = sem::evidence::Query::MatchRecord {
                     node_id: self.record.node_id.clone(),
                     anchor_text: self.record.anchor_text.clone(),
-                    expected_text: expected.clone(),
+                    expected_text: expected.to_owned(),
                 };
                 let observed = page.evidence(&query, Some(target), deadline).await?;
                 let [(_, sem::evidence::Raw::MatchRecord { matched, coverage })] =
@@ -119,19 +154,44 @@ impl Attempt {
                 else {
                     return Err(sem::types::decode());
                 };
-                if !sink.active()
-                    || !matches!(response()?, SubmitResponse::Response { request_id:id, status:200 } if id == request_id)
-                    || coverage.truncated
-                {
+                if coverage.truncated {
                     return Ok(unknown());
                 }
-                Ok(if *matched {
-                    json!({"state":"business_rejected","http_status":200,"request_id":request_id,"record_node_id":self.record.node_id})
-                } else {
-                    json!({"state":"pending"})
-                })
+                rejected = *matched;
+                if !rejected {
+                    result = json!({"state":"pending"});
+                }
             }
-            _ => Ok(unknown()),
+            if rejected || observed.is_some() {
+                result = json!({"state": if rejected {"business_rejected"} else {"page_feedback"},
+                    "http_status":200,"request_id":request_id,"record_node_id":self.record.node_id});
+            }
         }
+        // Network events continue arriving during the DOM read. Only publish
+        // field identities while the same unique response still owns the evidence.
+        if !matches!(response()?, SubmitResponse::Response { request_id:id, status:code } if id == request_id && code == status)
+        {
+            return Ok(unknown());
+        }
+        if !sink.active() {
+            return Ok(if status == 422 { result } else { unknown() });
+        }
+        if feedback
+            && result.get("record_node_id").is_some()
+            && registry.lookup(&self.record.node_id, tab, epoch).is_err()
+        {
+            result["record_node_id"] = registry.feedback_id(target, tab, epoch)?.into();
+        }
+        if let Some(item) = observed
+            && (result["state"] != "business_rejected" || explicit_rejection)
+        {
+            let mut info = json!({"kind":item.kind, "reason":item.reason,
+                "message_node_id":registry.feedback_id(item.message, tab, epoch)?});
+            if let Some(field) = item.field {
+                info["field_node_id"] = registry.feedback_id(field, tab, epoch)?.into();
+            }
+            result["feedback"] = info;
+        }
+        Ok(result)
     }
 }

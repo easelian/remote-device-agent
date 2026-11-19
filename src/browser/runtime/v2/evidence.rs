@@ -37,6 +37,18 @@ impl Registry {
             .map(|e| e.target)
             .ok_or_else(sem::types::stale)
     }
+    pub fn feedback_id(&mut self, target: dom::Target, tab: &str, epoch: u64) -> Result<String> {
+        self.expire(Instant::now());
+        let tab_digest: [u8; 32] = Sha256::digest(tab.as_bytes()).into();
+        if let Some(existing) = self
+            .entries
+            .iter()
+            .find(|e| e.tab == tab_digest && e.epoch == epoch && e.target == target)
+        {
+            return String::from_utf8(existing.id.to_vec()).map_err(|_| sem::types::decode());
+        }
+        self.publish_target(target, tab, epoch)
+    }
     pub fn publish_target(&mut self, target: dom::Target, tab: &str, epoch: u64) -> Result<String> {
         let (id, binding) = entry(target, tab, epoch)?;
         self.publish(Prepared {

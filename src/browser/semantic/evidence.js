@@ -251,6 +251,139 @@ function(operation, args) {
     }
     return baseline ? anchors === 1 && !expected : anchors > 0 && expected;
   }
+  // Feedback is optional. Use a complete bounded snapshot on both sides of
+  // the input and never promote a generic live region to a rejection.
+  function owner(node) {
+    for (let depth=0; node && depth<64; node=node.parentElement, depth++) {
+      if (canonical.recordKind(node)) return node;
+    }
+    return null;
+  }
+  const editable = node => node.matches('input,select,textarea,button,option,[contenteditable]:not([contenteditable="false"])') || node.isContentEditable;
+  function feedbackVisible(node, record, field = false) {
+    if (!node?.isConnected || owner(node) !== record) return false;
+    for (let item=node, depth=0; item; item=parent(item), depth++) {
+      if (depth>=64 || item.hidden || item.inert || item.getAttribute('aria-hidden')==='true' ||
+          (editable(item) && !(field && item===node))) return false;
+      const style=getComputedStyle(item);
+      if (style.display==='none' || ['hidden','collapse'].includes(style.visibility) ||
+          style.opacity==='0' || style.contentVisibility==='hidden') return false;
+    }
+    return !field || node.getClientRects().length>0;
+  }
+  function feedbackText(node, record, links) {
+    if (node.shadowRoot || !feedbackVisible(node,record) || excludesText(node) || editable(node)) return null;
+    let text='', safe=true;
+    walk(node,false,item=>{
+      if (item.nodeType===Node.ELEMENT_NODE) {
+        if (canonical.recordKind(item) || links.has(item.id) || !feedbackVisible(item,record) ||
+            excludesText(item) || editable(item) || item.matches('a,iframe,[role],slot') || item.shadowRoot) {
+          safe=false; return false;
+        }
+      } else if (item.nodeType===Node.TEXT_NODE) {
+        if (item.length>512 || text.length+item.length>512) { safe=false; return false; }
+        const value=item.data;
+        if (value.trim()) {
+          const range=document.createRange();
+          range.selectNodeContents(item);
+          const rect=range.getBoundingClientRect();
+          if (!rect.width || !rect.height) { safe=false; return false; }
+        }
+        text+=value;
+      }
+    });
+    text=text.replace(/[\t\n\r\f ]+/g,' ').trim();
+    if (!safe || limits.size || !text || Array.from(text).length>256 ||
+        /[\p{Cc}\p{Cf}\u2028\u2029]/u.test(text)) return null;
+    return text;
+  }
+  const messageSelector='[role="alert"],[role="status"],p,output';
+  function plainMessage(node) {
+    return node.matches('div,span') && !node.firstElementChild &&
+      !node.parentElement?.closest('label,button,'+messageSelector);
+  }
+  function feedbackSnapshot(record,form,baseline=false) {
+    // HTMLFormElement named controls can shadow DOM methods. Diagnostics are
+    // optional even if this page cannot provide a complete snapshot.
+    try { return collectFeedback(record,form,baseline); }
+    catch { return null; }
+  }
+  function collectFeedback(record,form,baseline) {
+    if (!record.isConnected || !form.isConnected || owner(form)!==record) return null;
+    const root=form.getRootNode();
+    // IDREFs are scoped to a tree root, and any control can refer to the
+    // same message. An ambiguous or foreign association cannot name a field.
+    const ids=new Map(), links=new Map(), candidates=new Set();
+    let protectedInvalid=false;
+    walk(root,false,node=>{
+      if (node.nodeType!==Node.ELEMENT_NODE) return;
+      const id=prefix(node.id,256,'attribute_limit');
+      if (id) ids.set(id,ids.has(id)?null:node);
+      // Baseline all visible short text containers, even before a page assigns
+      // an alert role or points a field at an existing help message.
+      if (owner(node)===record && (baseline || node.matches(messageSelector) || plainMessage(node))) {
+        candidates.add(node);
+      }
+      if (!node.matches('input,select,textarea')) return;
+      const own=owner(node)===record && node.form===form;
+      const invalid=node.getAttribute('aria-invalid')==='true';
+      const guarded=own && sensitiveControl(node);
+      if (guarded && invalid) protectedInvalid=true;
+      const err=normalized(node.getAttribute('aria-errormessage'),512,'attribute_limit');
+      const desc=normalized(node.getAttribute('aria-describedby'),512,'attribute_limit');
+      const preferred=(err || desc).split(' ').filter(Boolean);
+      for (const key of new Set((err+' '+desc).split(' ').filter(Boolean))) {
+        const field=own && !guarded && preferred.length===1 && preferred[0]===key &&
+          feedbackVisible(node,record,true) ? node : null;
+        links.set(key,links.has(key)?null:{field,invalid});
+      }
+    });
+    if (limits.size || protectedInvalid) return null;
+    for (const [key,link] of links) {
+      const node=ids.get(key);
+      if (link?.field && node && owner(node)===record) candidates.add(node);
+    }
+    const found=[];
+    for (const node of candidates) {
+      const containingForm=node.closest('form');
+      if (containingForm && containingForm!==form) continue;
+      let field=null, kind=null;
+      // Content owned by a foreign, protected, or ambiguous control must
+      // not reappear as a generic alert, even through a nested text wrapper.
+      let ancestor=node;
+      while (ancestor && ancestor!==record && !links.has(ancestor.id)) ancestor=ancestor.parentElement;
+      if (ancestor && ancestor!==record) {
+        const link=links.get(ancestor.id);
+        if (ancestor!==node || !link?.field || ids.get(node.id)!==node) continue;
+        field=link.field;
+        if (link.invalid) kind='field_error';
+      } else if (node.getAttribute('role')==='alert') kind='alert';
+      else if (node.getAttribute('role')==='status' || node.localName==='output') kind='status';
+      else if (node.localName==='p' || plainMessage(node)) kind='record_text';
+      const text=feedbackText(node,record,links);
+      if (text) found.push({node,field,kind,text});
+      if (found.length>32 || limits.size) return null;
+    }
+    return {found,rejected:[record,form].some(n=>n.getAttribute('data-submit-state')==='rejected')};
+  }
+  if (operation === 'submit_feedback_read') {
+    const baseline=registry.submitFeedback;
+    const record=registry.nodes.get(args.record)?.weak.deref();
+    const form=baseline?.form.deref();
+    if (!baseline || !record || !form || record!==baseline.record.deref() ||
+        baseline.anchor!==args.anchor_text || !matchesRecord(record,true) || limits.size) return result(null);
+    const current=feedbackSnapshot(record,form);
+    if (!current) return result(null);
+    // A pre-existing message, even with a replacement DOM node, is not fresh.
+    const changed=current.found.filter(item=>item.kind && !baseline.texts.has(item.text));
+    const marked=changed.filter(item=>item.kind!=='record_text');
+    const choices=marked.length?marked:changed;
+    if (choices.length!==1) return result(null);
+    const {node,field,kind,text}=choices[0];
+    if (kind==='field_error') return result({kind,field_node:remember(field),message_node:remember(node),reason:text});
+    const rejection=(kind==='alert' || kind==='status') && current.rejected && !baseline.rejected;
+    return result({kind:rejection?'record_rejection':kind,message_node:remember(node),reason:text});
+  }
   if (operation === 'submit_record_arm' || operation === 'submit_record_read') {
     const entry = registry.nodes.get(args.record);
     const record = entry?.weak.deref();
@@ -276,20 +409,23 @@ function(operation, args) {
       url.hash = '';
       return url.href;
     };
-    const owns = element => {
-      for (let node=element, depth=0; node && depth<64; node=node.parentElement, depth++) {
-        if (canonical.recordKind(node)) return node === record;
-      }
-      return false;
-    };
-    if (!canSubmit || !form || !owns(form) || !owns(submitter) ||
+    if (!canSubmit || !form || owner(form)!==record || owner(submitter)!==record ||
         !matchesRecord(record, true) || limits.size) return result(null);
     const url = endpoint();
     if (!url) return result(null);
     const probe = {submitter, record, observed:false};
+    clearTimeout(registry.submitFeedback?.expiry);
+    registry.submitFeedback=null;
+    const snapshot=feedbackSnapshot(record,form,true);
+    if (snapshot) {
+      const baseline={record:new WeakRef(record),form:new WeakRef(form),anchor:args.anchor_text,
+        texts:new Set(snapshot.found.map(item=>item.text)),rejected:snapshot.rejected};
+      baseline.expiry=setTimeout(()=>{if (registry.submitFeedback===baseline) registry.submitFeedback=null;},30000);
+      registry.submitFeedback=baseline;
+    }
     const listener = event => {
       if (event.isTrusted && event.target === form && event.submitter === submitter &&
-          submitter.form === form && owns(form) && owns(submitter) && endpoint() === url) probe.observed = true;
+          submitter.form === form && owner(form)===record && owner(submitter)===record && endpoint() === url) probe.observed = true;
     };
     const root = form.getRootNode();
     probe.stop = () => {

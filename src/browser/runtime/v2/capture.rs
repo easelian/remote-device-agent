@@ -167,12 +167,13 @@ impl Capture {
                 &mut session.evidence,
                 tab,
                 epoch,
+                query["kind"] == "read_submit_feedback",
                 deadline,
             )
             .await?;
         capture.check_document(&port, deadline).await?;
         Ok(
-            json!({"kind":"read_submit_outcome","capture_id":capture.id,"content_trust":"untrusted_page","outcome":outcome}),
+            json!({"kind":query["kind"],"capture_id":capture.id,"content_trust":"untrusted_page","outcome":outcome}),
         )
     }
 

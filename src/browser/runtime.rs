@@ -1795,7 +1795,9 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
         (false, Some("read_event" | "read_exception_location")) => {
             fields.len() == 3 && id && fields.contains_key("sequence") && number("sequence", 1, MAX)
         }
-        (false, Some("read_requests" | "read_submit_outcome")) => fields.len() == 2 && id,
+        (false, Some("read_requests" | "read_submit_outcome" | "read_submit_feedback")) => {
+            fields.len() == 2 && id
+        }
         (false, Some("read_events")) => {
             id && fields.keys().all(|k| {
                 matches!(
@@ -1962,6 +1964,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                     | "read_requests"
                     | "read_exception_location"
                     | "read_submit_outcome"
+                    | "read_submit_feedback"
             )
         ) {
             validate_capture_query(&params["query"], false)?;

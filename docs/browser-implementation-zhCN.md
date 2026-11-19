@@ -55,7 +55,11 @@ Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标�
 
 支持 `extensions.submit_validation` 的 v2 会话在通过 `ref` 点击提交按钮或按 Enter 提交表单、并触发原生 `invalid` 事件时，随动作回执返回 `native_validation`。Agent 只在获得字段证据读取权限时观察该次提交，并按原表单过滤事件。`invalid` 提供有界的原因枚举，`omitted` 表示触发事件的字段受保护。支持 `submit_validation_field` 时，`invalid` 回执还可带 `node_id`。监听器按实际表单归属记录首个失败控件，包括用 `form=` 关联的外部字段。用同一标识调用 `read_node` 读字段名称、`read_validation` 复查约束。敏感控件只返回 `omitted` 和空原因列表。
 
-支持 `submit_outcome` 时，动作窗口在点击前检查同源顶层 POST 表单、显式提交按钮、原记录业务键和拒绝文字的基线。Agent 在隔离环境中观察该表单的真实提交事件，匹配方法、端点和请求进度。HTTP 200 还需在原记录上读到本次新增的拒绝文字；同名邻单、重定向和不完整的请求记录不能确立结果。查询只读取当前窗口，不触发输入。浏览器导航或控制代次切换后，沿原操作回执与业务记录恢复。[提交判定](../src/browser/runtime/v2/submit.rs)
+在同源顶层 POST 表单上，把原记录的节点和唯一业务键放入 `rejection_record`，再点击一次显式提交按钮。Agent 在点击前保存页面基线，观察该表单的真实提交事件，并在当前窗口匹配唯一的请求。原生校验拦截时，先读动作回执的 `native_validation`。若动作回执丢失，用原 `operation_id` 查询 `get_operation_status`，从 `result_summary.capture_id` 恢复。
+
+用同一窗口的 `capture_id` 调用 `browser_evidence`。旧查询 `read_submit_outcome` 只返回判定摘要，200 拒绝依赖预先指定的 `expected_text`。声明 `submit_feedback` 版本 1 的后端还支持 `read_submit_feedback`。422 对应 `http_422`；若本次变化的可见提示能唯一关联到原表单中标记无效的字段，`outcome.feedback` 会包含 `field_node_id`、`message_node_id` 和查询时的页面原文 `reason`。用 `read_node` 复查字段名。200 出现这样的字段错误，或原表单、记录进入明确拒绝状态并给出新提示，可返回 `business_rejected`。普通通知和变化的状态文字以 `page_feedback` 返回，由 AI 结合原文判断拒绝、成功或仍在处理。
+
+异步提示可以在原窗口内重读。查询限定在原表单、原记录和同一文档，页面文字按不可信数据处理。记录被替换、读到邻单提示或多个错误归属不清时，保留网络层已知状态。导航或交还控制后，通过原操作和业务键重新观察记录。[提交判定](../src/browser/runtime/v2/submit.rs)
 
 | 标识 | 可用于 | 失效与拒绝 |
 | --- | --- | --- |

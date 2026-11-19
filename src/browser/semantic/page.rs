@@ -224,6 +224,13 @@ enum ValidationProbe {
     Field,
 }
 
+pub(crate) struct SubmitFeedback {
+    pub kind: super::program::SubmitFeedbackKind,
+    pub field: Option<super::evidence::Target>,
+    pub message: super::evidence::Target,
+    pub reason: String,
+}
+
 pub(crate) struct SubmitRecordBinding {
     pub endpoint: super::task_events::RequestEndpoint,
     pub frame: Frame,
@@ -828,6 +835,53 @@ impl<P: Port> Page<P> {
             Output::Applied(None) => Err(Failure::new("browser_not_actionable")),
             _ => Err(types::decode()),
         }
+    }
+
+    pub async fn read_submit_feedback(
+        &self,
+        target: super::evidence::Target,
+        anchor: &str,
+        deadline: Instant,
+    ) -> Result<Option<SubmitFeedback>> {
+        let deadline = deadline.min(Instant::now() + super::evidence::TIMEOUT);
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .map_err(|_| Failure::new("browser_busy"))?;
+        let (port, epoch) = self.authorization(false)?;
+        let frames = port.frames(deadline).await?;
+        let frame = frames
+            .iter()
+            .find(|f| f.context == target.context && f.parent.is_none())
+            .ok_or_else(types::stale)?;
+        if super::evidence::target(&frames, frame, target.node)? != target {
+            return Err(types::stale());
+        }
+        let Output::Feedback(feedback) = port
+            .program(
+                frame,
+                Program::SubmitFeedbackRead {
+                    marker: frame.marker.clone(),
+                    record: target.node,
+                    anchor_text: anchor.to_owned(),
+                },
+                deadline,
+            )
+            .await?
+        else {
+            return Err(types::decode());
+        };
+        self.delivery(epoch, false)?;
+        Ok(feedback.map(|item| SubmitFeedback {
+            kind: item.kind,
+            field: item
+                .field_node
+                .map(|node| super::evidence::Target { node, ..target }),
+            message: super::evidence::Target {
+                node: item.message_node,
+                ..target
+            },
+            reason: item.reason,
+        }))
     }
 
     pub async fn evidence(

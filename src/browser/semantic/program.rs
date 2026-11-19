@@ -98,6 +98,11 @@ pub(crate) enum Program {
         submitter: u64,
         record: u64,
     },
+    SubmitFeedbackRead {
+        marker: Marker,
+        record: u64,
+        anchor_text: String,
+    },
     Release,
 }
 pub(crate) const VISUAL_TARGET_NODE: &str = include_str!("visual-target.js");
@@ -107,6 +112,45 @@ pub(crate) const NATIVE_NODE: &str = "function(serialized){const a=JSON.parse(se
 pub(crate) struct SubmitValidation {
     pub validation: super::evidence::Validation,
     pub field_node: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubmitFeedbackKind {
+    FieldError,
+    RecordRejection,
+    Alert,
+    Status,
+    RecordText,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FeedbackNodes {
+    pub kind: SubmitFeedbackKind,
+    pub field_node: Option<u64>,
+    pub message_node: u64,
+    pub reason: String,
+}
+impl FeedbackNodes {
+    fn valid(&self) -> bool {
+        const MAX_JS_ID: u64 = 9_007_199_254_740_991;
+        let id = |n: u64| (1..=MAX_JS_ID).contains(&n);
+        let text = &self.reason;
+        id(self.message_node)
+            && self
+                .field_node
+                .is_none_or(|n| id(n) && n != self.message_node)
+            && self.field_node.is_some() == (self.kind == SubmitFeedbackKind::FieldError)
+            && !text.is_empty()
+            && text.trim() == text
+            && text.chars().count() <= 256
+            && !text.chars().any(|c| {
+                c.is_control()
+                    || matches!(u32::from(c),
+               0x061c | 0x200b..=0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+            })
+    }
 }
 
 pub(crate) enum Output {
@@ -122,6 +166,7 @@ pub(crate) enum Output {
     Applied(Option<bool>),
     Probe(Option<SubmitValidation>),
     SubmitEndpoint(Option<String>),
+    Feedback(Option<FeedbackNodes>),
 }
 impl Program {
     pub fn source(&self) -> &'static str {
@@ -131,6 +176,7 @@ impl Program {
                 | Self::SubmitProbeRead { .. }
                 | Self::SubmitRecordArm { .. }
                 | Self::SubmitRecordRead { .. }
+                | Self::SubmitFeedbackRead { .. }
         ) {
             super::evidence::SOURCE
         } else {
@@ -260,6 +306,15 @@ impl Program {
                 args["record"] = (*record).into();
                 ("submit_record_read", args)
             }
+            Self::SubmitFeedbackRead {
+                marker,
+                record,
+                anchor_text,
+            } => (
+                "submit_feedback_read",
+                json!({"realm":marker.realm,"restoration":marker.restoration,
+                    "record":record,"anchor_text":anchor_text,"elements":512,"text_nodes":256,"other_nodes":256}),
+            ),
             Self::Release => ("release", json!({})),
         }
     }
@@ -329,6 +384,13 @@ impl Program {
                 Ok(Output::Probe(value))
             }
             Self::SubmitRecordArm { .. } => Ok(Output::SubmitEndpoint(parse(text)?)),
+            Self::SubmitFeedbackRead { .. } => {
+                let feedback: Option<FeedbackNodes> = parse(text)?;
+                if feedback.as_ref().is_some_and(|item| !item.valid()) {
+                    return Err(types::decode());
+                }
+                Ok(Output::Feedback(feedback))
+            }
             _ => Ok(Output::Applied(parse(text)?)),
         }
     }

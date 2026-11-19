@@ -16,6 +16,7 @@ pub(crate) use page::HumanPermit;
 #[allow(unused_imports)]
 pub(crate) use page::{Acknowledgement, Action, Continuation, Observation, Page, Reference};
 pub(crate) use page::{Coordination, DragEndpoint, SubmitRecordBinding, check_drag_endpoints};
+pub(crate) use program::SubmitFeedbackKind;
 pub(crate) use types::*;
 
 use super::{Result, control::Control};

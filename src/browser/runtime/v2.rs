@@ -581,7 +581,12 @@ impl Browsers {
                     prepared_presentation = prepared;
                     Ok(value)
                 }
-                "browser_evidence" if params["query"]["kind"] == "read_submit_outcome" => {
+                "browser_evidence"
+                    if matches!(
+                        params["query"]["kind"].as_str(),
+                        Some("read_submit_outcome" | "read_submit_feedback")
+                    ) =>
+                {
                     capture::Capture::submit_outcome(
                         &mut session,
                         &page,
