@@ -1112,6 +1112,7 @@ async fn act(
         .as_str()
         .map(|id| session.reference(id, &tab))
         .transpose()?;
+    let original_refs = std::mem::take(&mut session.references);
     session.clear_references();
     if let Some(reference) = reference {
         let input = match kind {
@@ -1134,6 +1135,8 @@ async fn act(
             },
             _ => return Err(Failure::new("browser_feature_unsupported")),
         };
+        let radio = matches!(input, sem::Action::Click | sem::Action::Check(true))
+            .then(|| reference.clone());
         let ack = if action["read_native_validation"] == true || submit_window.is_some() {
             page.act_with_diagnostics(
                 reference,
@@ -1149,6 +1152,14 @@ async fn act(
         };
         let target = ack.native_validation_target;
         let mut value = serde_json::to_value(ack).map_err(crate::browser::io_error)?;
+        if let Some(radio) = radio
+            && let Some(submit) = page.reusable_submit(&radio, deadline).await
+            && let Some((id, _)) = original_refs.into_iter().find(|(_, r)| *r == submit)
+        {
+            session.reference_tab = Some(tab.clone());
+            session.references.insert(id.clone(), submit);
+            value["reusable_refs"] = json!([id]);
+        }
         if let Some(target) = target
             && let Ok(id) = session.evidence.publish_target(
                 target,

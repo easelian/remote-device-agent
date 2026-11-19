@@ -1117,6 +1117,10 @@ impl Port for Semantic {
         };
         let result = async {
             let hover = matches!(input, sem::NativeInput::Hover { .. });
+            let reuse_radio = match &input {
+                sem::NativeInput::Click { reuse_radio, .. } => *reuse_radio,
+                _ => None,
+            };
             match input {
                 sem::NativeInput::Drag { .. } => Err(Failure::new("browser_feature_unsupported")),
                 sem::NativeInput::SelectFile { node, path } => {
@@ -1156,6 +1160,7 @@ impl Port for Semantic {
                         .map(drop)
                 }
                 sem::NativeInput::Hover { node } | sem::NativeInput::Click { node, .. } => {
+                    let submit_node = node;
                     let geometry = owned.target(frame, node, deadline).await?;
                     if !geometry.visible || !geometry.hit || !geometry.in_view {
                         return Err(Failure::new("browser_not_actionable"));
@@ -1189,6 +1194,25 @@ impl Port for Semantic {
                     }
                     #[cfg(test)]
                     self.coordination.before_click_dispatch().await;
+                    if let Some(radio) = reuse_radio {
+                        let now = owned.target(frame, submit_node, deadline).await?;
+                        if !now.hit
+                            || !now.visible
+                            || !now.in_view
+                            || now.x != geometry.x
+                            || now.y != geometry.y
+                        {
+                            return Err(sem::types::stale());
+                        }
+                        sem::program::verify_reusable_submit(
+                            &owned,
+                            frame,
+                            radio,
+                            submit_node,
+                            deadline,
+                        )
+                        .await?;
+                    }
                     owned
                         .action(&context, Action::Button { down: true }, deadline)
                         .await?;

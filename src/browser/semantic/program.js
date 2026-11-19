@@ -54,15 +54,20 @@ function(operation, args, other) {
       const reasons = flags.filter(([flag]) => validity[flag]).map(([,reason]) => reason);
       return {state:reasons.length ? 'invalid' : 'omitted',reasons};
     };
+    state.clearNodes = () => {
+      state.reuse?.observer.disconnect();
+      state.reuse = null;
+      state.nodes.clear();
+    };
     Object.defineProperty(globalThis, SLOT, {value:state, configurable:true});
     addEventListener('pageshow', event => {
-      if (event.persisted) { state.restoration++; state.nodes.clear(); state.scan = null; }
+      if (event.persisted) { state.restoration++; state.clearNodes(); state.scan = null; }
     });
     state.observer = new MutationObserver(() => state.revision++);
     state.observer.observe(document, {subtree:true,childList:true,characterData:true,attributes:true});
   }
-  if(state.expires&&performance.now()>=state.expires){state.nodes.clear();state.scan=null;state.expires=0;clearTimeout(state.timer);state.timer=null;}
-  const retain=()=>{clearTimeout(state.timer);state.expires=performance.now()+300000;state.timer=setTimeout(()=>{state.nodes.clear();state.scan=null;state.expires=0;state.timer=null;},300000);};
+  if(state.expires&&performance.now()>=state.expires){state.clearNodes();state.scan=null;state.expires=0;clearTimeout(state.timer);state.timer=null;}
+  const retain=()=>{clearTimeout(state.timer);state.expires=performance.now()+300000;state.timer=setTimeout(()=>{state.clearNodes();state.scan=null;state.expires=0;state.timer=null;},300000);};
   const identity = node => {
     let id = state.identities.get(node);
     if (!id) { id = ++state.serial; state.identities.set(node,id); }
@@ -318,6 +323,73 @@ function(operation, args, other) {
       in_view:box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
       record};
   }
+  // The proof stays in the isolated realm. Reject any DOM mutation in the
+  // document or its same-origin embedding chain. Native radio checkedness is
+  // a property change, so verify the complete group separately before use.
+  function rememberSubmitPairs(rows) {
+    if (window === window.top || rows.length > 200) return;
+    const radios = rows.filter(row => row.kind === 'native' && row.role === 'radio' && !row.checked);
+    if (!radios.length || radios.length > 32) return;
+    const pairs = new Map(), forms = new Map(), observed = new Set(rows.map(row => row.node));
+    const recordOf = node => {
+      for (let depth = 0; node && depth < 64; depth++, node = node.parentElement) {
+        const kind = state.recordKind(node);
+        if (kind) return kind === 'record' ? node : undefined;
+      }
+      return node ? undefined : null;
+    };
+    for (const row of radios) {
+      const radio = state.nodes.get(row.node), form = radio.form;
+      if (!form || !radio.name || radio.getRootNode() !== document || !form.contains(radio)) continue;
+      if (!forms.has(form)) {
+        forms.set(form, null);
+        const controls = form.elements;
+        if (!controls || !Number.isInteger(controls.length) || controls.length > 64) continue;
+        const members = Array.from(controls);
+        if (members.some(n => !form.contains(n) || sensitive(n) ||
+            !(n.localName === 'fieldset' || n.localName === 'button' && n.type === 'submit' ||
+              n.localName === 'input' && ['radio','hidden','submit'].includes(n.type)))) continue;
+        // image inputs are excluded from form.elements; decline the optional shortcut.
+        if (document.querySelector('input[type="image" i]')) continue;
+        const buttons = members.filter(n => n.type === 'submit');
+        if (buttons.length !== 1 || !observed.has(identity(buttons[0]))) continue;
+        const submit = buttons[0], owner = recordOf(submit);
+        if (owner === undefined || submit.getRootNode() !== document) continue;
+        if (!owner) {
+          // Standalone iframe editor: require the form's hidden record key to
+          // also be visible in its document heading. A matching caption alone
+          // cannot bind controls from different forms.
+          if (document.forms.length !== 1) continue;
+          const headings = document.getElementsByTagName('h1');
+          if (headings.length !== 1 || !visible(headings[0])) continue;
+          const caption = headings[0].innerText;
+          if (!caption || caption.length > 512 || !members.some(n => n.type === 'hidden' &&
+              n.name && n.value.length >= 1 && n.value.length <= 128 &&
+              caption.split(/[^\p{L}\p{N}_-]+/u).includes(n.value))) continue;
+        }
+        const group = members.filter(n => n.type === 'radio').map(n => [n, n.checked]);
+        forms.set(form, {form, submit, owner, radios:group});
+      }
+      const proof = forms.get(form);
+      if (proof && recordOf(radio) === proof.owner) pairs.set(radio, proof);
+    }
+    if (!pairs.size) return;
+    const documents = [], observer = new MutationObserver(() => { guard.invalid = true; });
+    const guard = {documents, observer, pairs, invalid:false};
+    try {
+      let win = window;
+      for (let depth = 0; depth <= 8; depth++) {
+        const doc = win.document;
+        documents.push([doc, doc.URL]);
+        observer.observe(doc, {subtree:true, attributes:true, characterData:true, childList:true});
+        if (win === win.top) { state.reuse = guard; return; }
+        const embed = win.frameElement;
+        if (!embed || !embed.isConnected || embed.getRootNode() !== embed.ownerDocument) break;
+        win = win.parent;
+      }
+    } catch { /* An inaccessible ancestor cannot prove the embedding record. */ }
+    observer.disconnect();
+  }
   const target = () => {
     if (args.realm !== state.realm || args.restoration !== state.restoration) return null;
     return state.nodes.get(args.node) || null;
@@ -332,10 +404,10 @@ function(operation, args, other) {
   if (operation === 'stamp') return result(stamp());
   if (operation === 'ready') return result(document.readyState === 'complete');
   if (operation === 'stats') return result({nodes:state.nodes.size,scans:state.scan?1:0,pending:state.scan?.pending.length||0});
-  if (operation === 'clear_nodes') {if(args.realm!==state.realm||args.restoration!==state.restoration)return result(false);state.nodes.clear();return result(true);}
+  if (operation === 'clear_nodes') {if(args.realm!==state.realm||args.restoration!==state.restoration)return result(false);state.clearNodes();return result(true);}
   if (operation === 'open') {
     retain();
-    state.nodes.clear();
+    state.clearNodes();
     state.scan = {pending:document.documentElement ? [document.documentElement] : [],query:args,revision:state.revision,sequence:0,scanned:0};
     return result(stamp());
   }
@@ -343,7 +415,7 @@ function(operation, args, other) {
     const scan = state.scan;
     if (!scan || args.realm !== state.realm || args.restoration !== state.restoration || args.sequence !== scan.sequence) return result(null);
     retain();
-    state.nodes.clear();
+    state.clearNodes();
     const rows = [], omitted = new Set(['closed_shadow_not_observable','canvas_pixels_outside_profile','browser_ui_outside_profile']);
     let count = 0, characters = 0;
     while (scan.pending.length && rows.length < args.nodes && count < 5000) {
@@ -387,10 +459,23 @@ function(operation, args, other) {
       }
       for (let child = node.lastChild; child; child = child.previousSibling) if(!push(scan.pending,child,omitted))break;
     }
+    try { rememberSubmitPairs(rows); } catch { /* Optional for ordinary observations. */ }
     scan.sequence++;
     if(!scan.pending.length)state.scan=null;
     return result({stamp:stamp(),rows,sequence:scan.sequence,more:scan.pending.length>0,scanned:count,
       changed:scan.revision !== state.revision,omitted:Array.from(omitted).sort(),characters});
+  }
+  if (operation === 'reusable_submit') {
+    const radio = target();
+    const guard = state.reuse, before = guard?.pairs.get(radio);
+    if (guard && guard.observer.takeRecords().length) guard.invalid = true;
+    if (!before || !radio.checked || !radio.isConnected) return result(null);
+    const {submit, form} = before;
+    if (!submit.isConnected || radio.form !== form || submit.form !== form || disabled(submit))
+      return result(null);
+    return result(!guard.invalid && guard.documents.every(([doc, url]) => doc.URL === url) &&
+      before.radios.every(([item, checked]) =>
+        item.checked === (item === radio || (item.name !== radio.name && checked))) ? identity(submit) : null);
   }
   const activeElement=()=>{let node=document.activeElement;while(node?.shadowRoot?.activeElement)node=node.shadowRoot.activeElement;return node;};
   const viewportHit=(x,y)=>{
@@ -561,6 +646,6 @@ function(operation, args, other) {
     state.submitProbe = probe;
     return result(true);
   }
-  if (operation === 'release') { state.nodes.clear(); state.scan=null;clearTimeout(state.timer);state.timer=null;state.expires=0;return result(true); }
+  if (operation === 'release') { state.clearNodes(); state.scan=null;clearTimeout(state.timer);state.timer=null;state.expires=0;return result(true); }
   throw new Error('Unknown fixed semantic operation');
 }

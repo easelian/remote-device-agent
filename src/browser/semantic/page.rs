@@ -49,6 +49,7 @@ struct Element {
     ancestors: Vec<Frame>,
     facts: Facts,
     fingerprint: [u8; 32],
+    reuse_radio: Option<u64>,
 }
 #[derive(Clone)]
 struct Cursor {
@@ -646,6 +647,7 @@ impl<P: Port> Page<P> {
                         Element {
                             frame: frame.clone(),
                             ancestors,
+                            reuse_radio: None,
                             fingerprint: facts.fingerprint(),
                             facts: facts.clone(),
                         },
@@ -740,6 +742,60 @@ impl<P: Port> Page<P> {
             None,
         )
         .await
+    }
+    /// Return only a ref from the original observation. Losing an optional
+    /// continuation after the radio input must not change its write receipt.
+    pub async fn reusable_submit(&self, radio: &Reference, deadline: Instant) -> Option<Reference> {
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .ok()?;
+        let (port, epoch) = self.authorization(false).ok()?;
+        let (frame, node) = {
+            let state = self.0.state.lock().unwrap();
+            let element = state.refs.get(radio)?;
+            let f = &element.facts;
+            if radio.epoch != epoch
+                || element.frame.parent.is_none()
+                || f.kind != "native"
+                || f.tag != "input"
+                || f.input_type != "radio"
+                || f.checked
+            {
+                return None;
+            }
+            (element.frame.clone(), f.node)
+        };
+        let proof = Program::ReusableSubmit {
+            marker: frame.marker.clone(),
+            radio: node,
+        };
+        let Output::ReusableSubmit(Some(submit)) =
+            port.program(&frame, proof, deadline).await.ok()?
+        else {
+            return None;
+        };
+        let (reference, element) = {
+            let state = self.0.state.lock().unwrap();
+            let (r, e) = state.refs.iter().find(|(r, e)| {
+                r.generation == radio.generation
+                    && r.epoch == epoch
+                    && e.frame == frame
+                    && e.facts.node == submit
+                    && e.facts.kind == "native"
+                    && e.facts.role == "button"
+            })?;
+            (r.clone(), e.clone())
+        };
+        inspect(&port, &element, deadline).await.ok()?;
+        self.delivery(epoch, false).ok()?;
+        self.0
+            .state
+            .lock()
+            .unwrap()
+            .refs
+            .get_mut(&reference)?
+            .reuse_radio = Some(node);
+        Some(reference)
     }
     pub async fn act_with_diagnostics(
         &self,
@@ -1578,6 +1634,13 @@ async fn perform<P: Port>(
     submit_window: Option<&task_events::Sink>,
     deadline: Instant,
 ) -> Result<Acknowledgement> {
+    if let Some(radio) = element.reuse_radio {
+        if !matches!(action, Action::Click) {
+            return Err(types::stale());
+        }
+        program::verify_reusable_submit(port, &element.frame, radio, element.facts.node, deadline)
+            .await?;
+    }
     if let Action::Drag { .. } = &action {
         let target = target.ok_or_else(types::stale)?;
         return perform_drag(port, element, target, deadline).await;
@@ -1732,6 +1795,7 @@ async fn perform<P: Port>(
                 &element.frame,
                 NativeInput::Click {
                     node: facts.node,
+                    reuse_radio: element.reuse_radio,
                     x: facts.x,
                     y: facts.y,
                 },

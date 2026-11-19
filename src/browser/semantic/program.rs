@@ -4,6 +4,23 @@ use serde_json::{Value, json};
 
 pub(crate) const SOURCE: &str = include_str!("program.js");
 
+pub(crate) async fn verify_reusable_submit<P: Port>(
+    port: &P,
+    frame: &Frame,
+    radio: u64,
+    submit: u64,
+    deadline: Instant,
+) -> Result<()> {
+    let proof = Program::ReusableSubmit {
+        marker: frame.marker.clone(),
+        radio,
+    };
+    match port.program(frame, proof, deadline).await? {
+        Output::ReusableSubmit(Some(id)) if id == submit => Ok(()),
+        _ => Err(types::stale()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Program {
     Stamp,
@@ -48,6 +65,10 @@ pub(crate) enum Program {
     Inspect {
         marker: Marker,
         node: u64,
+    },
+    ReusableSubmit {
+        marker: Marker,
+        radio: u64,
     },
     Geometry {
         marker: Marker,
@@ -394,6 +415,7 @@ pub(crate) enum Output {
     Geometry(Option<Geometry>),
     Stats(RegistryStats),
     Applied(Option<bool>),
+    ReusableSubmit(Option<u64>),
     Probe(Option<SubmitValidation>),
     SubmitEndpoint(Option<String>),
     Feedback(Option<FeedbackNodes>),
@@ -467,6 +489,7 @@ impl Program {
                 json!({"realm":marker.realm,"restoration":marker.restoration,"sequence":sequence,"nodes":nodes,"characters":characters}),
             ),
             Self::Inspect { marker, node } => ("inspect", target(marker, *node)),
+            Self::ReusableSubmit { marker, radio } => ("reusable_submit", target(marker, *radio)),
             Self::Geometry { marker, node } => ("geometry", target(marker, *node)),
             Self::Recheck {
                 marker,
@@ -631,6 +654,7 @@ impl Program {
                 batch.validate(*nodes, *characters)?;
                 Ok(Output::Batch(batch))
             }
+            Self::ReusableSubmit { .. } => Ok(Output::ReusableSubmit(parse(text)?)),
             Self::Inspect { .. } => {
                 let facts: Option<Box<Facts>> = parse(text)?;
                 if let Some(facts) = &facts {

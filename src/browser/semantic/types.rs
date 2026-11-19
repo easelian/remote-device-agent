@@ -420,6 +420,8 @@ pub(crate) enum NativeInput {
     },
     Click {
         node: u64,
+        // Set only for the one-use continuation of a native radio selection.
+        reuse_radio: Option<u64>,
         x: f64,
         y: f64,
     },

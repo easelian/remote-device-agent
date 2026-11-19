@@ -1264,6 +1264,10 @@ impl Port for Semantic {
         let native = self.native(frame)?;
         let session = self.adapter.session(&native.session)?;
         let hover = matches!(input, sem::NativeInput::Hover { .. });
+        let reuse_radio = match &input {
+            sem::NativeInput::Click { reuse_radio, .. } => *reuse_radio,
+            _ => None,
+        };
         match input {
             sem::NativeInput::Drag { source, target } => {
                 self.native_drag(frame, source, target, deadline).await
@@ -1297,6 +1301,10 @@ impl Port for Semantic {
                 }
                 #[cfg(test)]
                 self.coordination.before_click_dispatch().await;
+                if let Some(radio) = reuse_radio {
+                    sem::program::verify_reusable_submit(self, frame, radio, token, deadline)
+                        .await?;
+                }
                 self.leased_pair(
                     session,
                     InputPair::Mouse,

@@ -113,6 +113,8 @@ AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，
 
 v2 会话首次读取页面以及操作后核对结果时，直接调用不带筛选条件的 `browser_observe`。`frame_overview.frames` 按 frame 汇集本次观察到的标题、文字和控件引用，iframe 排在主页面前面。控件的 `record` 来自同一条记录中可明确归属的标题。总览有数量和长度限制，结合 `truncated` 与 `coverage` 判断是否需要继续读取。若 iframe 只显示“已保存”，而主页面有多条记录，应回到站点的记录视图核对目标单的状态。
 
+选中原生单选项后，查看本次 `browser_act` 的 `reusable_refs`。如果其中包含计划点击的提交按钮，可用原引用在同一标签页、同一控制代次发起下一次普通点击。先为写操作准备 `operation_id`。Agent 在派发前再次核对文档、控件、表单和记录归属。引用未列出或已过期时重新观察；写操作回执丢失时用原操作 ID 查询。
+
 `within` 只接受当前标签页、当前控制代次最近一次观察返回的 `frame_id`。每次成功观察（含续页）都会替换 ID，执行动作也会使旧 ID 失效，即使 iframe 仍然可见。导航、文档替换、人工交还或收到 `browser_stale_reference` 后，先省略 `within` 重新观察。保留原写操作的 `operation_id`，以便查回执。
 
 在支持 `submit_validation` 的 v2 会话里，点击原生提交按钮或在单行输入框中按 Enter 后，先看动作回执。若 `native_validation` 给出 `type_mismatch` 等原因，可用 `read_validation` 确认原表单中需要修正的字段。修正后核对原记录的状态。
