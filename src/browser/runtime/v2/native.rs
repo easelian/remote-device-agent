@@ -173,6 +173,9 @@ impl Port {
     pub async fn handle_dialog(&self, id: &str, accept: bool, d: Instant) -> Result<()> {
         asynchronous!(self, handle_dialog(id, accept, d))
     }
+    pub async fn metadata_for(&self, frame: &sem::Frame, d: Instant) -> Result<Metadata> {
+        asynchronous!(self, metadata_for(frame, d))
+    }
     pub async fn metadata(&self, d: Instant) -> Result<(sem::Frame, Metadata)> {
         asynchronous!(self, metadata(d))
     }

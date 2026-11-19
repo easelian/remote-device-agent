@@ -71,6 +71,7 @@ struct ScanLease {
 pub struct Frame {
     pub session: Context,
     pub id: FrameId,
+    pub parent: Option<FrameId>,
     pub document: DocumentId,
     pub url: String,
     pub fragment: String,

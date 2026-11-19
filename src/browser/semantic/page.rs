@@ -33,8 +33,19 @@ pub(crate) struct Row {
     pub facts: Facts,
     pub reference: Option<Reference>,
 }
+/// Topology sampled by the caller for this read. The closing native sample is
+/// always live, including when only a subset of documents needs a DOM scan.
+#[derive(Clone, Copy)]
+pub(crate) struct ReadFrames<'a> {
+    pub tree: &'a [Frame],
+    pub changed: Option<&'a [Context]>,
+}
 #[derive(Serialize)]
 pub(crate) struct Observation {
+    #[serde(skip)]
+    pub end_frames: Vec<Frame>,
+    #[serde(skip)]
+    pub revisions: HashMap<Context, u64>,
     pub profile: &'static str,
     pub rows: Vec<Row>,
     pub cursor: Option<Continuation>,
@@ -387,8 +398,28 @@ impl<P: Port> Page<P> {
         cursor: Option<Continuation>,
         deadline: Instant,
     ) -> Result<Observation> {
-        self.observe_as(query, nodes, characters, cursor, false, deadline)
+        self.observe_as(query, nodes, characters, cursor, false, None, deadline)
             .await
+    }
+    pub async fn observe_frames(
+        &self,
+        frames: ReadFrames<'_>,
+        query: Query,
+        nodes: usize,
+        characters: usize,
+        cursor: Option<Continuation>,
+        deadline: Instant,
+    ) -> Result<Observation> {
+        self.observe_as(
+            query,
+            nodes,
+            characters,
+            cursor,
+            false,
+            Some(frames),
+            deadline,
+        )
+        .await
     }
     pub async fn human_observe(
         &self,
@@ -400,7 +431,7 @@ impl<P: Port> Page<P> {
     ) -> Result<Observation> {
         self.human(permit)?;
         let observed = self
-            .observe_as(query, nodes, characters, None, true, deadline)
+            .observe_as(query, nodes, characters, None, true, None, deadline)
             .await?;
         self.human(permit)?;
         Ok(observed)
@@ -412,6 +443,7 @@ impl<P: Port> Page<P> {
         characters: usize,
         cursor: Option<Continuation>,
         human: bool,
+        window: Option<ReadFrames<'_>>,
         deadline: Instant,
     ) -> Result<Observation> {
         query.validate()?;
@@ -474,7 +506,10 @@ impl<P: Port> Page<P> {
                     let _ = port.program(frame, Program::Release, deadline).await;
                 }
             }
-            let frames = port.frames(deadline).await?;
+            let frames = match window {
+                Some(w) => w.tree.to_vec(),
+                None => port.frames(deadline).await?,
+            };
             if frames.is_empty() || frames.len() > MAX_FRAMES {
                 return Err(Failure::new("browser_frame_limit"));
             }
@@ -482,6 +517,11 @@ impl<P: Port> Page<P> {
             let ancestry = frames.clone();
             let frames = frames
                 .into_iter()
+                .filter(|f| {
+                    window
+                        .and_then(|w| w.changed)
+                        .is_none_or(|changed| changed.contains(&f.context))
+                })
                 .filter(|f| query.within.is_none_or(|id| id == f.context))
                 .filter(|f| query.filter != Filter::DragEndpoints || f.parent.is_none())
                 .collect::<Vec<_>>();
@@ -501,7 +541,13 @@ impl<P: Port> Page<P> {
                 changed: false,
             }
         };
-        same_document(&scan.top, &port.refresh(&scan.top, deadline).await?)?;
+        if let Some(window) = window {
+            if !window.tree.contains(&scan.top) {
+                return Err(types::stale());
+            }
+        } else {
+            same_document(&scan.top, &port.refresh(&scan.top, deadline).await?)?;
+        }
         let generation = {
             let mut state = self.0.state.lock().unwrap();
             state.refs.clear();
@@ -510,6 +556,8 @@ impl<P: Port> Page<P> {
             state.generation
         };
         let mut observation = Observation {
+            end_frames: Vec::new(),
+            revisions: HashMap::new(),
             profile: "semantic_dom_v1",
             rows: Vec::new(),
             cursor: None,
@@ -523,8 +571,13 @@ impl<P: Port> Page<P> {
         while scan.frame < scan.frames.len() && observation.rows.len() < nodes && remaining >= 1024
         {
             let frame = &scan.frames[scan.frame];
-            let current = port.refresh(frame, deadline).await?;
-            same_document(frame, &current)?;
+            if let Some(window) = window {
+                if !window.tree.contains(frame) {
+                    return Err(types::stale());
+                }
+            } else {
+                same_document(frame, &port.refresh(frame, deadline).await?)?;
+            }
             if !scan.opened {
                 let Output::Marker(marker) = port
                     .program(frame, Program::Open(query.clone()), deadline)
@@ -571,6 +624,7 @@ impl<P: Port> Page<P> {
                     state.retained.push(frame.clone());
                 }
             }
+            observation.revisions.insert(frame.context, batch.revision);
             remaining = remaining.saturating_sub(batch.characters);
             observation.scanned += batch.scanned;
             observation.changed_during_read |= batch.changed;
@@ -601,8 +655,8 @@ impl<P: Port> Page<P> {
                     checked.insert(node, value);
                 }
             }
-            let stable_document =
-                same_document(frame, &port.refresh(frame, deadline).await?).is_ok();
+            let stable_document = window.is_some()
+                || same_document(frame, &port.refresh(frame, deadline).await?).is_ok();
             if !stable_document {
                 observation.changed_during_read = true;
                 observation
@@ -667,7 +721,9 @@ impl<P: Port> Page<P> {
                 break;
             }
         }
-        same_document(&scan.top, &port.refresh(&scan.top, deadline).await?)?;
+        if window.is_none() {
+            same_document(&scan.top, &port.refresh(&scan.top, deadline).await?)?;
+        }
         let after = port.frames(deadline).await?;
         if after.len() != scan.ancestry.len()
             || scan.ancestry.iter().any(|before| {
@@ -691,6 +747,7 @@ impl<P: Port> Page<P> {
                 })
             });
         }
+        observation.end_frames = after;
         observation.complete = scan.frame == scan.frames.len()
             && !observation.omitted.iter().any(|s| {
                 matches!(

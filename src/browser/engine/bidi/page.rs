@@ -359,7 +359,14 @@ impl Semantic {
             .into_iter()
             .next()
             .ok_or_else(sem::types::stale)?;
-        let Output::Surface(metadata) = self.program(&frame, Program::Surface, deadline).await?
+        let metadata = self.metadata_for(&frame, deadline).await?;
+        Ok((frame, metadata))
+    }
+    pub async fn metadata_for(&self, frame: &sem::Frame, deadline: Instant) -> Result<Metadata> {
+        if self.dialog().is_some() {
+            return Err(Failure::new("browser_dialog_open"));
+        }
+        let Output::Surface(metadata) = self.program(frame, Program::Surface, deadline).await?
         else {
             return Err(sem::types::decode());
         };
@@ -373,7 +380,7 @@ impl Semantic {
             tab.info.url = metadata.url.clone();
             tab.info.title = metadata.title.clone();
         }
-        Ok((frame, metadata))
+        Ok(metadata)
     }
     pub async fn screenshot(&self, deadline: Instant) -> Result<Value> {
         let (_, metadata) = self.metadata(deadline).await?;

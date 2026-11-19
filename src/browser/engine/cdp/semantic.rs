@@ -391,7 +391,14 @@ impl Semantic {
             .into_iter()
             .next()
             .ok_or_else(stale)?;
-        let Output::Surface(metadata) = self.program(&frame, Program::Surface, deadline).await?
+        let metadata = self.metadata_for(&frame, deadline).await?;
+        Ok((frame, metadata))
+    }
+    pub async fn metadata_for(&self, frame: &sem::Frame, deadline: Instant) -> Result<Metadata> {
+        if self.dialog().is_some() {
+            return Err(Failure::new("browser_dialog_open"));
+        }
+        let Output::Surface(metadata) = self.program(frame, Program::Surface, deadline).await?
         else {
             return Err(sem::types::decode());
         };
@@ -405,7 +412,7 @@ impl Semantic {
             tab.info.title = metadata.title.clone();
             tab.info.url = metadata.url.clone();
         }
-        Ok((frame, metadata))
+        Ok(metadata)
     }
     pub async fn screenshot(&self, deadline: Instant) -> Result<Value> {
         crate::browser::image::capture(&self.engine(), &self.root, deadline).await
@@ -953,49 +960,6 @@ impl Semantic {
         }
         Ok(point)
     }
-    async fn parents(
-        &self,
-        frames: &[Frame],
-        deadline: Instant,
-    ) -> Result<HashMap<String, Option<String>>> {
-        let mut sessions = std::collections::HashSet::new();
-        let mut parents = HashMap::new();
-        for frame in frames {
-            if !sessions.insert(frame.session.clone()) {
-                continue;
-            }
-            let tree = self
-                .adapter
-                .wire
-                .call(
-                    Some(self.adapter.session(&frame.session)?),
-                    Command::PageGetFrameTree,
-                    json!({}),
-                    deadline,
-                )
-                .await?;
-            let mut todo = vec![(&tree["frameTree"], None::<String>)];
-            while let Some((node, inherited)) = todo.pop() {
-                let id = node["frame"]["id"].as_str().ok_or_else(stale)?.to_owned();
-                let parent = node["frame"]["parentId"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or(inherited);
-                if parent.is_some() || !parents.contains_key(&id) {
-                    parents.insert(id.clone(), parent);
-                }
-                if let Some(children) = node["childFrames"].as_array() {
-                    for child in children {
-                        todo.push((child, Some(id.clone())));
-                    }
-                }
-                if parents.len() > sem::types::MAX_FRAMES {
-                    return Err(Failure::new("browser_frame_limit"));
-                }
-            }
-        }
-        Ok(parents)
-    }
     async fn world(&self, frame: &Frame, deadline: Instant) -> Result<i64> {
         let world_name = "rdh-semantic-dom-v1".to_owned();
         #[cfg(test)]
@@ -1110,19 +1074,25 @@ impl Port for Semantic {
             .map(|frame| self.adapter.key(&frame.id.0).map(str::to_owned))
             .collect::<Result<Vec<_>>>()?;
         self.identity.lock().unwrap().retain(&keys);
-        let parents = self.parents(&native, deadline).await?;
+
         for frame in &native {
             let key = self.adapter.key(&frame.id.0)?.to_owned();
             self.routes
                 .lock()
                 .unwrap()
                 .insert(key.clone(), frame.clone());
-            let parent = parents
-                .get(&key)
-                .ok_or_else(stale)?
+            let parent = frame
+                .parent
                 .as_ref()
-                .map(|key| self.identity.lock().unwrap().context(key))
+                .map(|id| {
+                    self.adapter
+                        .key(&id.0)
+                        .and_then(|key| self.identity.lock().unwrap().context(key))
+                })
                 .transpose()?;
+            if parent.is_none() && !output.is_empty() {
+                return Err(stale());
+            }
             output.push(self.stamp(frame, parent, deadline).await?);
         }
         self.identity.lock().unwrap().retain(&keys);

@@ -347,6 +347,7 @@ pub(crate) fn interactive(role: &str) -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Batch {
+    pub revision: u64,
     pub stamp: Marker,
     pub rows: Vec<Facts>,
     pub sequence: u64,

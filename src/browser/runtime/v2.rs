@@ -998,6 +998,30 @@ async fn observe(
     epoch: u64,
     deadline: Instant,
 ) -> Result<(Value, Option<presentation::Prepared>)> {
+    let frames = page.access(false)?.frames(deadline).await?;
+    observe_frames(
+        session,
+        page,
+        port,
+        params,
+        epoch,
+        deadline,
+        sem::ReadFrames {
+            tree: &frames,
+            changed: None,
+        },
+    )
+    .await
+}
+async fn observe_frames(
+    session: &mut Session,
+    page: &sem::Page<native::Port>,
+    port: &native::Port,
+    params: &Value,
+    epoch: u64,
+    deadline: Instant,
+    window: sem::ReadFrames<'_>,
+) -> Result<(Value, Option<presentation::Prepared>)> {
     if params.get("presentation").is_none() {
         session.presentation.clear();
     }
@@ -1036,9 +1060,14 @@ async fn observe(
         }
     };
     let max_chars = params["max_chars"].as_u64().unwrap_or(20000) as usize;
-    let before = port.frames(deadline).await?;
+    let before = window.tree;
+    let meta = page
+        .access(false)?
+        .metadata_for(before.first().ok_or_else(sem::types::stale)?, deadline)
+        .await?;
     let mut result = page
-        .observe(
+        .observe_frames(
+            window,
             query.clone(),
             params["max_nodes"].as_u64().unwrap_or(200) as usize,
             max_chars,
@@ -1075,8 +1104,7 @@ async fn observe(
         }
         nodes.push(node);
     }
-    let (_, meta) = page.access(false)?.metadata(deadline).await?;
-    if !same_frames(&before, &port.frames(deadline).await?) {
+    if !same_frames(before, &result.end_frames) {
         session.invalidate();
         return Err(Failure::new("browser_stale_reference"));
     }
@@ -1098,7 +1126,13 @@ async fn observe(
     if let Some(overview) = value.get("frame_overview")
         && !result.changed_during_read
     {
-        session.overview_baseline = Some(action_view::baseline(overview, &session.frames, &before));
+        session.overview_baseline = Some(action_view::baseline(
+            overview,
+            &session.frames,
+            before,
+            &result.revisions,
+            result.complete && result.cursor.is_none(),
+        ));
     }
     value["nodes"] = nodes.into();
     value["page"]["tab_id"] = port.tab_id()?.into();

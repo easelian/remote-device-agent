@@ -365,6 +365,7 @@ impl Port for Fake {
                     data.position = end;
                     data.sequence += 1;
                     Ok(Output::Batch(Batch {
+                        revision: 0,
                         stamp: data.frame(frame.context)?.marker.clone(),
                         rows,
                         sequence: data.sequence,

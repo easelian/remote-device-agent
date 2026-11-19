@@ -53,6 +53,7 @@ impl Ids {
         Frame {
             session: self.context(context),
             id: self.frame_id(id),
+            parent: None,
             document: DocumentId(self.handle(document)),
             url: url.into(),
             fragment: String::new(),

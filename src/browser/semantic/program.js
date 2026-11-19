@@ -402,7 +402,7 @@ function(operation, args, other) {
   const result = value => JSON.stringify(value);
   if (operation === 'view_revision') {
     const ready = document.readyState === 'complete' && !document.querySelector('[aria-busy="true" i]');
-    return result(ready ? state.revision : null);
+    return result(ready && args.realm === state.realm && args.restoration === state.restoration && args.url === location.href ? state.revision : null);
   }
   if (operation === 'visual_revision') return result(state.revision);
   if (operation === 'stamp') return result(stamp());
@@ -466,7 +466,7 @@ function(operation, args, other) {
     try { rememberSubmitPairs(rows); } catch { /* Optional for ordinary observations. */ }
     scan.sequence++;
     if(!scan.pending.length)state.scan=null;
-    return result({stamp:stamp(),rows,sequence:scan.sequence,more:scan.pending.length>0,scanned:count,
+    return result({stamp:stamp(),revision:scan.revision,rows,sequence:scan.sequence,more:scan.pending.length>0,scanned:count,
       changed:scan.revision !== state.revision,omitted:Array.from(omitted).sort(),characters});
   }
   if (operation === 'reusable_submit') {

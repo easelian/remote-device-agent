@@ -32,6 +32,9 @@ impl Engine {
             for mut frame in self.frames(&child.context, deadline).await? {
                 frame.ancestors = ancestors.clone();
                 if let Some(old) = frames.iter_mut().find(|f| f.id == frame.id) {
+                    if frame.parent.is_none() {
+                        frame.parent = old.parent.clone();
+                    }
                     *old = frame;
                 } else {
                     frames.push(frame);
@@ -136,9 +139,9 @@ impl PageReadPort for Engine {
                 deadline,
             )
             .await?;
-        let mut todo = VecDeque::from([&tree["frameTree"]]);
+        let mut todo = VecDeque::from([(&tree["frameTree"], None)]);
         let mut frames = Vec::new();
-        while let Some(node) = todo.pop_front() {
+        while let Some((node, inherited)) = todo.pop_front() {
             if frames.len() >= 32 {
                 return Err(Failure::new("browser_frame_limit"));
             }
@@ -147,6 +150,10 @@ impl PageReadPort for Engine {
                 frames.push(Frame {
                     session: context.clone(),
                     id: FrameId(a.handle(id)),
+                    parent: frame["parentId"]
+                        .as_str()
+                        .or(inherited)
+                        .map(|p| FrameId(a.handle(p))),
                     document: DocumentId(a.handle(document)),
                     url: frame["url"].as_str().unwrap_or("").into(),
                     fragment: frame["urlFragment"].as_str().unwrap_or("").into(),
@@ -156,7 +163,7 @@ impl PageReadPort for Engine {
                 return Err(stale());
             }
             if let Some(children) = node["childFrames"].as_array() {
-                todo.extend(children);
+                todo.extend(children.iter().map(|child| (child, frame["id"].as_str())));
             }
         }
         Ok(frames)
