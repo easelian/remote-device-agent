@@ -95,6 +95,29 @@ fn evidence_identity_capacity_scope_expiration_and_no_renewal() {
     assert!(table.entries.is_empty());
 }
 #[test]
+fn publishing_field_list_preserves_reused_handles_at_capacity() {
+    let frame = frame();
+    let target = dom::target(std::slice::from_ref(&frame), &frame, 1).unwrap();
+    let mut table = Registry::default();
+    let first = table.feedback_id(target, "tab", 7).unwrap();
+    let created = table.entries[0].created;
+    for node in 2..=MAX_ENTRIES as u64 {
+        table
+            .publish_target(dom::Target { node, ..target }, "tab", 7)
+            .unwrap();
+    }
+    assert_eq!(table.feedback_id(target, "tab", 7).unwrap(), first);
+    for node in 129..=160 {
+        table
+            .feedback_id(dom::Target { node, ..target }, "tab", 7)
+            .unwrap();
+    }
+    assert_eq!(table.lookup(&first, "tab", 7).unwrap(), target);
+    table.expire(created + TTL);
+    assert!(table.lookup(&first, "tab", 7).is_err());
+}
+
+#[test]
 fn evidence_identity_digest_covers_realm_document_url_and_ancestry() {
     let frame = frame();
     let original = dom::target(std::slice::from_ref(&frame), &frame, 1).unwrap();

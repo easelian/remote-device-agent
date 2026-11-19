@@ -230,6 +230,16 @@ pub(crate) struct SubmitFeedback {
     pub message: super::evidence::Target,
     pub reason: String,
 }
+pub(crate) struct SubmitField {
+    pub field: super::evidence::Target,
+    pub message: super::evidence::Target,
+    pub reason: String,
+    pub association: super::program::SubmitFieldAssociation,
+}
+pub(crate) struct SubmitVisualField {
+    pub field: super::evidence::Target,
+    pub changes: Vec<super::program::SubmitVisualChange>,
+}
 
 pub(crate) struct SubmitRecordBinding {
     pub endpoint: super::task_events::RequestEndpoint,
@@ -837,12 +847,13 @@ impl<P: Port> Page<P> {
         }
     }
 
-    pub async fn read_submit_feedback(
+    async fn submit_feedback_snapshot(
         &self,
         target: super::evidence::Target,
         anchor: &str,
+        fields: bool,
         deadline: Instant,
-    ) -> Result<Option<SubmitFeedback>> {
+    ) -> Result<Output> {
         let deadline = deadline.min(Instant::now() + super::evidence::TIMEOUT);
         let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
             .await
@@ -856,21 +867,34 @@ impl<P: Port> Page<P> {
         if super::evidence::target(&frames, frame, target.node)? != target {
             return Err(types::stale());
         }
-        let Output::Feedback(feedback) = port
+        let output = port
             .program(
                 frame,
                 Program::SubmitFeedbackRead {
                     marker: frame.marker.clone(),
                     record: target.node,
                     anchor_text: anchor.to_owned(),
+                    fields,
                 },
                 deadline,
             )
+            .await?;
+        self.delivery(epoch, false)?;
+        Ok(output)
+    }
+
+    pub async fn read_submit_feedback(
+        &self,
+        target: super::evidence::Target,
+        anchor: &str,
+        deadline: Instant,
+    ) -> Result<Option<SubmitFeedback>> {
+        let Output::Feedback(feedback) = self
+            .submit_feedback_snapshot(target, anchor, false, deadline)
             .await?
         else {
             return Err(types::decode());
         };
-        self.delivery(epoch, false)?;
         Ok(feedback.map(|item| SubmitFeedback {
             kind: item.kind,
             field: item
@@ -882,6 +906,48 @@ impl<P: Port> Page<P> {
             },
             reason: item.reason,
         }))
+    }
+
+    pub async fn read_submit_fields(
+        &self,
+        target: super::evidence::Target,
+        anchor: &str,
+        deadline: Instant,
+    ) -> Result<(Vec<SubmitField>, Vec<SubmitVisualField>)> {
+        let Output::Fields(reply) = self
+            .submit_feedback_snapshot(target, anchor, true, deadline)
+            .await?
+        else {
+            return Err(types::decode());
+        };
+        let fields = reply
+            .fields
+            .into_iter()
+            .map(|item| SubmitField {
+                field: super::evidence::Target {
+                    node: item.field_node,
+                    ..target
+                },
+                message: super::evidence::Target {
+                    node: item.message_node,
+                    ..target
+                },
+                reason: item.reason,
+                association: item.association,
+            })
+            .collect::<Vec<_>>();
+        let visuals = reply
+            .visual_changes
+            .into_iter()
+            .map(|item| SubmitVisualField {
+                field: super::evidence::Target {
+                    node: item.field_node,
+                    ..target
+                },
+                changes: item.changes,
+            })
+            .collect();
+        Ok((fields, visuals))
     }
 
     pub async fn evidence(

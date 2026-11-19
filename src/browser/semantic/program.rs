@@ -102,6 +102,7 @@ pub(crate) enum Program {
         marker: Marker,
         record: u64,
         anchor_text: String,
+        fields: bool,
     },
     Release,
 }
@@ -112,6 +113,122 @@ pub(crate) const NATIVE_NODE: &str = "function(serialized){const a=JSON.parse(se
 pub(crate) struct SubmitValidation {
     pub validation: super::evidence::Validation,
     pub field_node: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubmitFieldAssociation {
+    Aria,
+    AdjacentError,
+    AdjacentText,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitField {
+    pub field_node: u64,
+    pub message_node: u64,
+    pub reason: String,
+    pub association: SubmitFieldAssociation,
+}
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubmitVisualPart {
+    BorderTop,
+    BorderRight,
+    BorderBottom,
+    BorderLeft,
+    Outline,
+    Background,
+}
+
+fn nullable_color<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    serde::Deserialize::deserialize(d)
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitVisualChange {
+    pub part: SubmitVisualPart,
+    #[serde(deserialize_with = "nullable_color")]
+    pub before: Option<String>,
+    #[serde(deserialize_with = "nullable_color")]
+    pub after: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitVisualField {
+    pub field_node: u64,
+    pub changes: Vec<SubmitVisualChange>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitFieldsReply {
+    pub fields: Vec<SubmitField>,
+    pub visual_changes: Vec<SubmitVisualField>,
+}
+impl SubmitFieldsReply {
+    fn valid(&self) -> bool {
+        use std::collections::HashSet;
+        if self.fields.len() > 16 || self.visual_changes.len() > 16 {
+            return false;
+        }
+        let mut fields = HashSet::new();
+        let mut messages = HashSet::new();
+        for item in &self.fields {
+            if !valid_page_reason(&item.reason)
+                || !valid_evidence_id(item.field_node)
+                || !valid_evidence_id(item.message_node)
+                || !fields.insert(item.field_node)
+                || !messages.insert(item.message_node)
+            {
+                return false;
+            }
+        }
+        if !fields.is_disjoint(&messages) {
+            return false;
+        }
+        let mut visual = HashSet::new();
+        self.visual_changes.iter().all(|item| {
+            let mut parts = HashSet::new();
+            valid_evidence_id(item.field_node)
+                && !messages.contains(&item.field_node)
+                && visual.insert(item.field_node)
+                && (1..=6).contains(&item.changes.len())
+                && item.changes.iter().all(|c| {
+                    parts.insert(c.part)
+                        && c.before != c.after
+                        && [c.before.as_deref(), c.after.as_deref()]
+                            .into_iter()
+                            .flatten()
+                            .all(|color| {
+                                color.len() == 9
+                                    && color.starts_with('#')
+                                    && color[1..]
+                                        .bytes()
+                                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                            })
+                })
+        })
+    }
+}
+
+fn valid_evidence_id(n: u64) -> bool {
+    (1..=9_007_199_254_740_991).contains(&n)
+}
+
+fn valid_page_reason(text: &str) -> bool {
+    !text.is_empty()
+        && text.trim() == text
+        && text.chars().count() <= 256
+        && !text.chars().any(|c| {
+            c.is_control()
+                || matches!(u32::from(c),
+            0x061c | 0x200b..=0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
+        })
 }
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -134,22 +251,12 @@ pub(crate) struct FeedbackNodes {
 }
 impl FeedbackNodes {
     fn valid(&self) -> bool {
-        const MAX_JS_ID: u64 = 9_007_199_254_740_991;
-        let id = |n: u64| (1..=MAX_JS_ID).contains(&n);
-        let text = &self.reason;
-        id(self.message_node)
+        valid_evidence_id(self.message_node)
             && self
                 .field_node
-                .is_none_or(|n| id(n) && n != self.message_node)
+                .is_none_or(|n| valid_evidence_id(n) && n != self.message_node)
             && self.field_node.is_some() == (self.kind == SubmitFeedbackKind::FieldError)
-            && !text.is_empty()
-            && text.trim() == text
-            && text.chars().count() <= 256
-            && !text.chars().any(|c| {
-                c.is_control()
-                    || matches!(u32::from(c),
-               0x061c | 0x200b..=0x200f | 0x2028..=0x202e | 0x2066..=0x2069 | 0xfeff)
-            })
+            && valid_page_reason(&self.reason)
     }
 }
 
@@ -167,6 +274,7 @@ pub(crate) enum Output {
     Probe(Option<SubmitValidation>),
     SubmitEndpoint(Option<String>),
     Feedback(Option<FeedbackNodes>),
+    Fields(SubmitFieldsReply),
 }
 impl Program {
     pub fn source(&self) -> &'static str {
@@ -310,8 +418,13 @@ impl Program {
                 marker,
                 record,
                 anchor_text,
+                fields,
             } => (
-                "submit_feedback_read",
+                if *fields {
+                    "submit_fields_read"
+                } else {
+                    "submit_feedback_read"
+                },
                 json!({"realm":marker.realm,"restoration":marker.restoration,
                     "record":record,"anchor_text":anchor_text,"elements":512,"text_nodes":256,"other_nodes":256}),
             ),
@@ -384,12 +497,19 @@ impl Program {
                 Ok(Output::Probe(value))
             }
             Self::SubmitRecordArm { .. } => Ok(Output::SubmitEndpoint(parse(text)?)),
-            Self::SubmitFeedbackRead { .. } => {
+            Self::SubmitFeedbackRead { fields: false, .. } => {
                 let feedback: Option<FeedbackNodes> = parse(text)?;
                 if feedback.as_ref().is_some_and(|item| !item.valid()) {
                     return Err(types::decode());
                 }
                 Ok(Output::Feedback(feedback))
+            }
+            Self::SubmitFeedbackRead { fields: true, .. } => {
+                let reply: SubmitFieldsReply = parse(text)?;
+                if !reply.valid() {
+                    return Err(types::decode());
+                }
+                Ok(Output::Fields(reply))
             }
             _ => Ok(Output::Applied(parse(text)?)),
         }

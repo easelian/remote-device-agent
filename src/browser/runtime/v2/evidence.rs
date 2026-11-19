@@ -40,12 +40,17 @@ impl Registry {
     pub fn feedback_id(&mut self, target: dom::Target, tab: &str, epoch: u64) -> Result<String> {
         self.expire(Instant::now());
         let tab_digest: [u8; 32] = Sha256::digest(tab.as_bytes()).into();
-        if let Some(existing) = self
-            .entries
-            .iter()
-            .find(|e| e.tab == tab_digest && e.epoch == epoch && e.target == target)
-        {
-            return String::from_utf8(existing.id.to_vec()).map_err(|_| sem::types::decode());
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.tab == tab_digest && entry.epoch == epoch && entry.target == target
+        }) {
+            // Reserve this handle ahead of the rest of this bounded response
+            // without extending its original TTL.
+            let existing = self.entries.remove(index);
+            let id = std::str::from_utf8(&existing.id)
+                .map_err(|_| sem::types::decode())?
+                .to_owned();
+            self.entries.push(existing);
+            return Ok(id);
         }
         self.publish_target(target, tab, epoch)
     }

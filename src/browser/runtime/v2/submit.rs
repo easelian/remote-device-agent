@@ -2,6 +2,13 @@
 use super::*;
 use sem::task_events::{Method, RequestEndpoint, Sink, SubmitResponse};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Read {
+    Outcome,
+    Feedback,
+    Fields,
+}
+
 enum Dispatch {
     NativeInvalid,
     Submitted,
@@ -82,7 +89,7 @@ impl Attempt {
         registry: &mut evidence::Registry,
         tab: &str,
         epoch: u64,
-        feedback: bool,
+        mode: Read,
         deadline: Instant,
     ) -> Result<Value> {
         let unknown = || json!({"state":"undetermined"});
@@ -117,24 +124,33 @@ impl Attempt {
             .expected_text
             .as_deref()
             .filter(|_| status == 200);
-        if !sink.active() || (!feedback && expected.is_none()) {
+        if !sink.active() || (mode == Read::Outcome && expected.is_none()) {
             return Ok(result);
         }
 
         // A text wait may discard public DOM handles. The capture still owns
         // the original device-side target in this tab, document and epoch.
-        let target = if feedback {
+        let target = if mode != Read::Outcome {
             self.target
         } else {
             registry.lookup(&self.record.node_id, tab, epoch)?
         };
-        let observed = if feedback {
+        let observed = if mode == Read::Feedback {
             page.read_submit_feedback(target, &self.record.anchor_text, deadline)
                 .await?
         } else {
             None
         };
-        let explicit_rejection = observed.as_ref().is_some_and(|item| {
+        let (fields, visuals) = if mode == Read::Fields {
+            page.read_submit_fields(target, &self.record.anchor_text, deadline)
+                .await?
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let explicit_rejection = fields
+            .iter()
+            .any(|item| item.association != sem::SubmitFieldAssociation::AdjacentText)
+            || observed.as_ref().is_some_and(|item| {
             matches!(
                 item.kind,
                 sem::SubmitFeedbackKind::FieldError | sem::SubmitFeedbackKind::RecordRejection
@@ -142,7 +158,11 @@ impl Attempt {
         });
         if status == 200 {
             let mut rejected = explicit_rejection;
-            if !rejected && let Some(expected) = expected {
+            if !rejected
+                && fields.is_empty()
+                && visuals.is_empty()
+                && let Some(expected) = expected
+            {
                 let query = sem::evidence::Query::MatchRecord {
                     node_id: self.record.node_id.clone(),
                     anchor_text: self.record.anchor_text.clone(),
@@ -162,7 +182,7 @@ impl Attempt {
                     result = json!({"state":"pending"});
                 }
             }
-            if rejected || observed.is_some() {
+            if rejected || observed.is_some() || !fields.is_empty() || !visuals.is_empty() {
                 result = json!({"state": if rejected {"business_rejected"} else {"page_feedback"},
                     "http_status":200,"request_id":request_id,"record_node_id":self.record.node_id});
             }
@@ -176,11 +196,34 @@ impl Attempt {
         if !sink.active() {
             return Ok(if status == 422 { result } else { unknown() });
         }
-        if feedback
-            && result.get("record_node_id").is_some()
-            && registry.lookup(&self.record.node_id, tab, epoch).is_err()
+        if result.get("record_node_id").is_some()
+            && (mode == Read::Fields
+                || (mode == Read::Feedback
+                    && registry.lookup(&self.record.node_id, tab, epoch).is_err()))
         {
             result["record_node_id"] = registry.feedback_id(target, tab, epoch)?.into();
+        }
+        if !fields.is_empty() {
+            let mut rows = Vec::with_capacity(fields.len());
+            for item in fields {
+                rows.push(json!({
+                    "field_node_id": registry.feedback_id(item.field, tab, epoch)?,
+                    "message_node_id": registry.feedback_id(item.message, tab, epoch)?,
+                    "association": item.association,
+                    "reason": item.reason
+                }));
+            }
+            result["fields"] = rows.into();
+        }
+        if !visuals.is_empty() {
+            let mut rows = Vec::with_capacity(visuals.len());
+            for item in visuals {
+                rows.push(
+                    json!({"field_node_id":registry.feedback_id(item.field,tab,epoch)?,
+                    "changes":item.changes}),
+                );
+            }
+            result["visual_changes"] = rows.into();
         }
         if let Some(item) = observed
             && (result["state"] != "business_rejected" || explicit_rejection)

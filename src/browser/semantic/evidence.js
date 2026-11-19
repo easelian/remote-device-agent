@@ -17,9 +17,12 @@ function(operation, args) {
   for (const [id, entry] of registry.nodes) {
     if (now - entry.created >= 60000 || !entry.weak.deref()) registry.nodes.delete(id);
   }
-  const remember = node => {
+  const remember = (node, keep=false) => {
     for (const [id, entry] of registry.nodes) {
-      if (entry.weak.deref() === node) return id;
+      if (entry.weak.deref() === node) {
+        if (keep) { registry.nodes.delete(id); registry.nodes.set(id,entry); }
+        return id;
+      }
     }
     if (registry.nodes.size >= 128) registry.nodes.delete(registry.nodes.keys().next().value);
     const id = ++registry.serial;
@@ -271,10 +274,11 @@ function(operation, args) {
     }
     return !field || node.getClientRects().length>0;
   }
-  function feedbackText(node, record, links) {
+  function feedbackText(node, record, links, excluded) {
     if (node.shadowRoot || !feedbackVisible(node,record) || excludesText(node) || editable(node)) return null;
     let text='', safe=true;
     walk(node,false,item=>{
+      if (excluded?.has(item)) { safe=false; return false; }
       if (item.nodeType===Node.ELEMENT_NODE) {
         if (canonical.recordKind(item) || links.has(item.id) || !feedbackVisible(item,record) ||
             excludesText(item) || editable(item) || item.matches('a,iframe,[role],slot') || item.shadowRoot) {
@@ -366,11 +370,197 @@ function(operation, args) {
     }
     return {found,rejected:[record,form].some(n=>n.getAttribute('data-submit-state')==='rejected')};
   }
+  // Only normalized paint colors leave the device. An unsupported paint
+  // (undefined) is distinct from a transparent or absent paint (null).
+  function paintColor(css) {
+    if (css==='transparent') return null;
+    const value=/^rgba?\(([^()]*)\)$/.exec(css);
+    if (!value) return undefined;
+    const body=value[1].trim();
+    const tokens=body.includes(',') ? body.split(',').map(x=>x.trim()) :
+      body.replace(/\s*\/\s*/, ' ').split(/\s+/);
+    if (tokens.length!==3 && tokens.length!==4) return undefined;
+    const bytes=[];
+    for (let i=0;i<tokens.length;i++) {
+      const token=tokens[i];
+      if (!/^\d*\.?\d+%?$/.test(token)) return undefined;
+      const max=token.endsWith('%')?100:(i===3?1:255);
+      const n=parseFloat(token);
+      if (n>max) return undefined;
+      bytes.push(Math.round(n/max*255));
+    }
+    if (bytes[3]===0) return null;
+    if (bytes.length===3) bytes.push(255);
+    return '#'+bytes.map(n=>n.toString(16).padStart(2,'0')).join('');
+  }
+  function fieldAppearance(field, counts) {
+    const style=getComputedStyle(field), paint={};
+    for (const side of ['top','right','bottom','left','outline']) {
+      const key=side==='outline'?side:'border_'+side;
+      const prop=key.replace('_','-');
+      if (side!=='outline' && style.borderImageSource!=='none') continue;
+      paint[key]=['none','hidden'].includes(style.getPropertyValue(prop+'-style')) ||
+        parseFloat(style.getPropertyValue(prop+'-width'))===0 ? null :
+        paintColor(style.getPropertyValue(prop+'-color'));
+    }
+    if (style.backgroundImage==='none') paint.background=paintColor(style.backgroundColor);
+    // A submit button can take focus. Compare interaction on the field and
+    // its own wrappers so normal focus, blur and hover paint isn't evidence.
+    let interaction=field.matches(':disabled')?'d':'e';
+    interaction+=field.readOnly?'r':'w';
+    for (let node=field; node && (node===field || counts.get(node)===1); node=node.parentElement) {
+      interaction+=String(Number(node.matches(':focus-within'))+
+        2*Number(node.matches(':hover'))+4*Number(node.matches(':active')));
+    }
+    return {paint,interaction};
+  }
+  function appearanceChanges(before,after) {
+    if (!before || before.interaction!==after.interaction) return [];
+    return Object.keys(after.paint).filter(part=>
+      after.paint[part]!==undefined && before.paint[part]!==undefined && before.paint[part]!==after.paint[part]
+    ).map(part=>({part,before:before.paint[part],after:after.paint[part]}));
+  }
+
+  // Keep field attribution separate from the single-message query. Weak keys
+  // retain the pre-click identities without keeping detached controls alive.
+  function fieldSnapshot(record, form, previous) {
+    try { return collectFields(record, form, previous); }
+    catch { return null; } // Named form controls may shadow DOM methods.
+  }
+  function collectFields(record, form, previous) {
+    if (!record.isConnected || !form.isConnected || owner(form)!==record) return null;
+    const ids=new Map(), links=new Map(), controls=[], counts=new Map(), candidates=[];
+    const excluded=new WeakSet(), originals=new WeakMap(), visibleText=new WeakMap();
+    const oldByField=new WeakMap(), priorOwner=new WeakMap(), appearances=new WeakMap(), visual=[];
+    const eligible=node=>node && owner(node)===record &&
+      (!node.closest('form') || node.closest('form')===form);
+    const inputSelector='input,select,textarea';
+    const messageTag=node=>node.matches('small,span,p,div,output,strong,em,[role="alert"],[role="status"]');
+    walk(form.getRootNode(),false,node=>{
+      const element=node.nodeType===Node.ELEMENT_NODE ? node : node.parentElement;
+      if (!element || !eligible(element)) excluded.add(node);
+      if (node.nodeType!==Node.ELEMENT_NODE) return;
+      const id=prefix(node.id,256,'attribute_limit');
+      if (id) ids.set(id,ids.has(id)?null:node);
+      const err=normalized(node.getAttribute('aria-errormessage'),512,'attribute_limit');
+      const desc=normalized(node.getAttribute('aria-describedby'),512,'attribute_limit');
+      const keys=(err || desc).split(' ').filter(Boolean);
+      for (const key of new Set((err+' '+desc).split(' ').filter(Boolean))) {
+        const source=keys.length===1 && keys[0]===key ? node : null;
+        links.set(key,links.has(key)?null:source);
+      }
+      if (eligible(node) && messageTag(node)) candidates.push(node);
+      if (!node.matches(inputSelector)) return;
+      // Include other forms' controls and protected fields in group counts.
+      for (let p=node.parentElement, d=0; p && p!==record && p!==form; p=p.parentElement) {
+        if (++d>64) { limits.add('depth_limit'); return; }
+        counts.set(p,1+(counts.get(p)||0));
+      }
+      if (eligible(node) && node.form===form) controls.push(node);
+    });
+    if (limits.size) return null;
+    const reasons=new Map(), pairs=new Map();
+    const textOfMessage=node=>{
+      if (!reasons.has(node)) {
+        const text=feedbackText(node,record,links,previous?.excluded);
+        reasons.set(node,text);
+        if (text) visibleText.set(node,text);
+      }
+      return reasons.get(node);
+    };
+    // Remember visible text before it becomes linked, including a formerly
+    // generic container which the page later promotes to an error message.
+    if (!previous) for (const node of candidates) textOfMessage(node);
+    function add(field,node,association,safe) {
+      if (!eligible(node) || excluded.has(node) || previous?.excluded.has(node)) return;
+      if (priorOwner.has(node) && priorOwner.get(node)!==field) {
+        priorOwner.set(node,null);
+      } else if (!priorOwner.has(node)) priorOwner.set(node,field);
+      if (!safe || (previous?.priorOwner.has(node) && previous.priorOwner.get(node)!==field)) return;
+      for (let p=node.parentElement; p && p!==record; p=p.parentElement) {
+        if (links.has(p.id)) return;
+      }
+      const text=textOfMessage(node);
+      if (!text) return;
+      if (!oldByField.has(field)) oldByField.set(field,new Set());
+      oldByField.get(field).add(text);
+      if (!previous || previous.visibleText.get(node)===text || previous.oldByField.get(field)?.has(text)) return;
+      if (!pairs.has(field)) pairs.set(field,new Map());
+      pairs.get(field).set(node,{node,text,association});
+    }
+    const linkedMessage=new Map();
+    for (const [id,source] of links) {
+      if (source && ids.get(id)) linkedMessage.set(source,ids.get(id));
+    }
+    for (const field of controls) {
+      const identity=sensitiveControl(field)?null:JSON.stringify([field.id,field.name,field.type]);
+      const safe=identity!==null && feedbackVisible(field,record,true) &&
+        (!previous || previous.originals.get(field)===identity);
+      if (safe) {
+        originals.set(field,identity);
+        const appearance=fieldAppearance(field,counts);
+        if (previous) {
+          const changes=appearanceChanges(previous.appearances.get(field),appearance);
+          if (changes.length) visual.push({field,changes});
+        } else appearances.set(field,appearance);
+      }
+      const invalid=field.getAttribute('aria-invalid')==='true';
+      const linked=linkedMessage.get(field);
+      if (linked) add(field,linked,'aria',safe && (invalid || !previous));
+      // An explicit error relationship overrides proximity, even if its
+      // target is outside this record, shared, or otherwise unreadable.
+      if (field.hasAttribute('aria-errormessage') || (invalid && field.hasAttribute('aria-describedby'))) continue;
+      // Look forward from the control and its single-control wrappers. Do
+      // not cross a label for another field, a new control, or a form boundary.
+      for (let part=field; part && part!==form && part!==record; part=part.parentElement) {
+        const group=part.parentElement;
+        if (!group || group===record || !eligible(group)) break;
+        const directForm=group===form;
+        if (!directForm && counts.get(group)!==1) break;
+        // Bare form children are meaningful only after a labelled control or
+        // a wrapper containing exactly one. This rules out paired bare inputs.
+        const bareOK=part===field ? Boolean(field.labels?.length) : counts.get(part)===1;
+        if (!directForm || bareOK) {
+          for (let msg=part.nextElementSibling; msg && messageTag(msg); msg=msg.nextElementSibling) {
+            if (counts.has(msg) || canonical.recordKind(msg) || !eligible(msg)) break;
+            if (links.has(msg.id)) continue;
+            const strong=invalid || msg.matches('.field-error,.error,.invalid-feedback,.error-message,[data-error="true"]');
+            add(field,msg,strong?'adjacent_error':'adjacent_text',safe);
+          }
+        }
+        if (directForm) break;
+      }
+    }
+    if (limits.size) return null;
+    if (!previous) return {originals,excluded,visibleText,oldByField,priorOwner,appearances};
+    const rows=[];
+    for (const [field,byNode] of pairs) {
+      const owned=[...byNode.values()].filter(item=>priorOwner.get(item.node)===field);
+      const marked=owned.filter(item=>item.association!=='adjacent_text');
+      const choices=marked.length?marked:owned;
+      if (choices.length!==1) continue;
+      const {node,text,association}=choices[0];
+      rows.push({field_node:remember(field,true),message_node:remember(node,true),reason:text,association});
+      if (rows.length>16) break;
+    }
+    return {fields:rows.length<=16?rows:[],visual_changes:visual.length<=16?
+      visual.map(({field,changes})=>({field_node:remember(field,true),changes})):[]};
+  }
+  if (operation==='submit_fields_read') {
+    const empty={fields:[],visual_changes:[]};
+    const baseline=registry.submitFeedback, form=baseline?.form.deref();
+    const record=registry.nodes.get(args.record)?.weak.deref();
+    if (!baseline?.fields || !form || !record || record!==baseline.record.deref() ||
+        baseline.anchor!==args.anchor_text || !matchesRecord(record,true) || limits.size) return result(empty);
+    remember(record,true);
+    return result(fieldSnapshot(record,form,baseline.fields) || empty);
+  }
+
   if (operation === 'submit_feedback_read') {
     const baseline=registry.submitFeedback;
     const record=registry.nodes.get(args.record)?.weak.deref();
     const form=baseline?.form.deref();
-    if (!baseline || !record || !form || record!==baseline.record.deref() ||
+    if (!baseline?.texts || !record || !form || record!==baseline.record.deref() ||
         baseline.anchor!==args.anchor_text || !matchesRecord(record,true) || limits.size) return result(null);
     const current=feedbackSnapshot(record,form);
     if (!current) return result(null);
@@ -417,9 +607,13 @@ function(operation, args) {
     clearTimeout(registry.submitFeedback?.expiry);
     registry.submitFeedback=null;
     const snapshot=feedbackSnapshot(record,form,true);
-    if (snapshot) {
+    // The optional list has an independent budget. Exhausting either scan
+    // omits only its own diagnostic evidence and cannot veto the input.
+    elements=0; texts=0; others=0; limits.clear();
+    const fields=fieldSnapshot(record,form,null);
+    if (snapshot || fields) {
       const baseline={record:new WeakRef(record),form:new WeakRef(form),anchor:args.anchor_text,
-        texts:new Set(snapshot.found.map(item=>item.text)),rejected:snapshot.rejected};
+        fields,texts:snapshot && new Set(snapshot.found.map(item=>item.text)),rejected:snapshot?.rejected};
       baseline.expiry=setTimeout(()=>{if (registry.submitFeedback===baseline) registry.submitFeedback=null;},30000);
       registry.submitFeedback=baseline;
     }

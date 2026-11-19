@@ -584,7 +584,7 @@ impl Browsers {
                 "browser_evidence"
                     if matches!(
                         params["query"]["kind"].as_str(),
-                        Some("read_submit_outcome" | "read_submit_feedback")
+                        Some("read_submit_outcome" | "read_submit_feedback" | "read_submit_fields")
                     ) =>
                 {
                     capture::Capture::submit_outcome(

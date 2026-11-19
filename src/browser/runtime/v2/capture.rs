@@ -167,7 +167,12 @@ impl Capture {
                 &mut session.evidence,
                 tab,
                 epoch,
-                query["kind"] == "read_submit_feedback",
+                match query["kind"].as_str() {
+                    Some("read_submit_outcome") => submit::Read::Outcome,
+                    Some("read_submit_feedback") => submit::Read::Feedback,
+                    Some("read_submit_fields") => submit::Read::Fields,
+                    _ => return Err(Failure::new("browser_invalid_params")),
+                },
                 deadline,
             )
             .await?;

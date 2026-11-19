@@ -59,6 +59,10 @@ Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标�
 
 用同一窗口的 `capture_id` 调用 `browser_evidence`。旧查询 `read_submit_outcome` 只返回判定摘要，200 拒绝依赖预先指定的 `expected_text`。声明 `submit_feedback` 版本 1 的后端还支持 `read_submit_feedback`。422 对应 `http_422`；若本次变化的可见提示能唯一关联到原表单中标记无效的字段，`outcome.feedback` 会包含 `field_node_id`、`message_node_id` 和查询时的页面原文 `reason`。用 `read_node` 复查字段名。200 出现这样的字段错误，或原表单、记录进入明确拒绝状态并给出新提示，可返回 `business_rejected`。普通通知和变化的状态文字以 `page_feedback` 返回，由 AI 结合原文判断拒绝、成功或仍在处理。
 
+同一表单有多处错误时，支持 `submit_fields` 版本 1 的会话可用原 `capture_id` 调用 `read_submit_fields`。逐项读取 `outcome.fields`，用各自的 `field_node_id` 复查字段名，结合 `association` 和 `reason` 判断原因。显式 ARIA 关联、带错误标记的相邻提示、普通相邻文字分别对应 `aria`、`adjacent_error`、`adjacent_text`。HTTP 200 只有普通相邻文字时返回 `page_feedback`；原记录内的成功提示或填写建议也可能出现在这个状态下。
+
+为同一个原始字段补充视觉线索时，Agent 比较输入前后有宽度的可见边框、轮廓及纯色背景的 CSS 计算值，并以同一 `field_node_id` 发布 `visual_changes`。保护字段、替换后的字段以及焦点、悬停等交互状态改变的字段省略颜色证据。纯样式变化可以触发 HTTP 200 的 `page_feedback`，共有颜色或相同文字都不能单独确立字段归属。
+
 异步提示可以在原窗口内重读。查询限定在原表单、原记录和同一文档，页面文字按不可信数据处理。记录被替换、读到邻单提示或多个错误归属不清时，保留网络层已知状态。导航或交还控制后，通过原操作和业务键重新观察记录。[提交判定](../src/browser/runtime/v2/submit.rs)
 
 | 标识 | 可用于 | 失效与拒绝 |
