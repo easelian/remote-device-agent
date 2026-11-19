@@ -128,7 +128,7 @@ compare snapshot
 
 `browser_guidance` 提供 `open`、`observe`、`recover`、`handoff`、`files` 五个主题。Core 从已认证连接的会话元数据选择静态模板。模板的 `content_trust` 为 `server_template`，网页观察和诊断中的网页数据为 `untrusted_page`。指引里的示例仍需实际调用时的授权、参数和状态。
 
-- **操作前置条件。** v2 的 `actionability` 扩展使用 `browser_inspect(ref, action_kind)` 检查一个动作。结果为 `ready_now`、`needs_scroll`、`blocked` 或 `indeterminate`。检查不触发滚动、聚焦、输入或文件授权消费，也不延长 ref。执行前仍要复核。[动作判定](../src/browser/semantic/actionability.rs)
+- **操作前置条件。** v2 的 `actionability` 扩展使用 `browser_inspect(ref, action_kind)` 检查一个动作。结果为 `ready_now`、`needs_scroll`、`blocked` 或 `indeterminate`。检查不触发滚动、聚焦、输入或文件授权消费，也不延长 ref。对返回 `needs_scroll` 的点击检查，普通 ref 点击会按需滚动，复核目标、命中点和位置稳定性后再派发。[动作判定](../src/browser/semantic/actionability.rs)
 - **DOM 与布局。** v2 两个后端的 `dom_evidence` 扩展使用 `browser_evidence`。`find_nodes` 以 tag、role 或文本查找诊断节点，`read_node` 读取受限的节点事实，`read_layout` 读取 frame 视口内的布局、计算样式子集和局部命中情况。父 frame 遮挡、字段缺失和预算截断通过 `coverage` 表达。用 `node_id` 查读不会替换当前观察或增量基线。[证据采集](../src/browser/semantic/evidence.rs) · [注册表](../src/browser/runtime/v2/evidence.rs)
 - **观察增量。** `observation_delta` 是展示扩展。受控客户端在每次调用的外层 `params._meta` 中声明 `com.easelian/browser-observation-delta` 的版本 1 和 reducer `rdh-observation-v1`，并显式传 `presentation`。Agent 执行完整观察，Core 按真实 MCP 编码在 `full`、`delta` 和 `unchanged` 中选择。只有候选至多为同次 full 的 70% 才发送较小格式。Server `clients/browser-observation-delta.mjs` 重建并校验当前绑定。普通客户端继续使用完整观察。[Agent 展示缓存](../src/browser/runtime/v2/presentation.rs)
 

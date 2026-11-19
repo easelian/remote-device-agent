@@ -113,7 +113,7 @@ AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，
 
 在支持 `submit_validation` 的 v2 会话里，点击原生提交按钮或在单行输入框中按 Enter 后，先看动作回执。若 `native_validation` 给出 `type_mismatch` 等原因，可用 `read_validation` 确认原表单中需要修正的字段。修正后核对原记录的状态。
 
-显式 v2 会话在设备与打开结果均声明 `extensions.actionability` 版本 1 可用时，可以用 `browser_inspect` 检查一个当前 ref 的动作前置条件。`ready_now` 表示采样时条件满足，`needs_scroll` 表示当前视口外，`blocked` 表示已有阻止条件，`indeterminate` 表示无法证明。检查不滚动、聚焦或输入，不续期引用；随后仍通过 `browser_act` 执行动作并核对结果。旧引用失效时重新观察，不凭诊断重放结果不明的输入。
+显式 v2 会话在设备与打开结果均声明 `extensions.actionability` 版本 1 可用时，可以用 `browser_inspect` 检查一个当前 ref 的动作前置条件。`ready_now` 表示采样时条件满足，`needs_scroll` 表示当前视口外，`blocked` 表示已有阻止条件，`indeterminate` 表示无法证明。检查不滚动、聚焦或输入，不续期引用；点击检查返回 `needs_scroll`（`outside_viewport`）时，可直接用同一有效 `ref` 调用 `browser_act`，动作为 `{"kind":"click","ref":"<当前 ref>"}`。即使目标位于 iframe，点击也会按需自动滚动，重新确认命中目标后才派发输入。随后核对操作结果。旧引用失效时重新观察，不凭诊断重放结果不明的输入。
 
 显式 v2 会话还可在 `dom_evidence` 版本 1 可用时，用 `browser_evidence` 查找页面节点、读取节点事实或局部布局。诊断返回的 `node_id` 只能用于读取。若点击结果不明，先查原操作回执和页面结果。只有密码、验证码或本人验证需要人工接管。
 
