@@ -84,6 +84,29 @@ impl Capture {
         Ok(capture)
     }
 
+    pub(super) async fn hover_submit_icon(
+        &self,
+        page: &sem::Page<native::Port>,
+        tab: &str,
+        epoch: u64,
+        field: sem::evidence::Target,
+        source: sem::evidence::Target,
+        deadline: Instant,
+    ) -> Result<Value> {
+        if self.tab != tab || self.epoch != epoch || !self.sink.active() {
+            return Err(Failure::new("browser_capture_unavailable"));
+        }
+        let submit = self
+            .submit
+            .as_ref()
+            .ok_or_else(|| Failure::new("browser_icon_reason_unavailable"))?;
+        let port = page.access(false)?;
+        self.check_document(&port, deadline).await?;
+        submit
+            .hover_source(&self.sink, page, field, source, deadline)
+            .await
+    }
+
     pub(super) async fn read_or_stop(
         session: &Session,
         port: &native::Port,
@@ -150,16 +173,16 @@ impl Capture {
         let port = page.access(false)?;
         let capture = session
             .task_events
-            .as_ref()
+            .as_mut()
             .filter(|w| w.tab == tab && w.epoch == epoch && query["capture_id"] == w.id)
-            .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
-        let submit = capture
-            .submit
-            .as_ref()
             .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
         capture.check_document(&port, deadline).await?;
         // Reuse the capture lifetime and retirement checks even for a native refusal.
         capture.sink.page(0, Some(0), 1)?;
+        let submit = capture
+            .submit
+            .as_mut()
+            .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
         let outcome = submit
             .read(
                 &capture.sink,
@@ -175,6 +198,7 @@ impl Capture {
                 },
                 query["include_indicators"] == true,
                 query["include_pixel_indicators"] == true,
+                query["include_icon_candidates"] == true,
                 deadline,
             )
             .await?;

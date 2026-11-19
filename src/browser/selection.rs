@@ -75,6 +75,7 @@ pub(super) fn with_input_extensions(mut caps: Value, reason: Option<&str>) -> Va
         "submit_fields",
         "field_indicators",
         "pixel_indicators",
+        "icon_diagnostics",
         "submit_validation_field",
         "submit_validation",
     ] {

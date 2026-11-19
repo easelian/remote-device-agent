@@ -1757,17 +1757,21 @@ fn scope(params: &Value) -> page::Scope {
     }
 }
 
-fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
-    let invalid = || Failure::new("browser_invalid_params");
-    let fields = value.as_object().ok_or_else(invalid)?;
-    let id = value["capture_id"]
+fn scoped_handle(value: &Value, prefix: &str) -> bool {
+    value
         .as_str()
-        .and_then(|v| v.strip_prefix("cap_"))
+        .and_then(|v| v.strip_prefix(prefix))
         .is_some_and(|v| {
             v.len() == 32
                 && v.bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        });
+        })
+}
+
+fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
+    let invalid = || Failure::new("browser_invalid_params");
+    let fields = value.as_object().ok_or_else(invalid)?;
+    let id = scoped_handle(&value["capture_id"], "cap_");
     let number = |field: &str, min: u64, max: u64| {
         fields
             .get(field)
@@ -1801,10 +1805,17 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
         (false, Some("read_submit_fields")) => {
             let indicators = value.get("include_indicators");
             let pixels = value.get("include_pixel_indicators");
+            let icons = value.get("include_icon_candidates");
             id && fields.len()
                 == 2 + usize::from(indicators.is_some()) + usize::from(pixels.is_some())
+                    + usize::from(icons.is_some())
                 && indicators.is_none_or(|flag| flag == true)
                 && pixels.is_none_or(|flag| flag == true && value["include_indicators"] == true)
+                && icons.is_none_or(|flag| {
+                    flag == true
+                        && value["include_pixel_indicators"] == true
+                        && value["include_indicators"] == true
+                })
         }
         (false, Some("read_events")) => {
             id && fields.keys().all(|k| {
@@ -2149,6 +2160,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             }
             "click" => &["kind", "ref"],
             "hover" => &["kind", "ref"],
+            "hover_submit_icon" => &["kind", "capture_id", "field_node_id", "source_node_id"],
             "visual_click" | "visual_hover" => &["kind", "frame_id", "x", "y"],
             "visual_drag" => &["kind", "frame_id", "x", "y", "to_x", "to_y"],
             "drag" => &["kind", "ref", "target_ref"],
@@ -2195,6 +2207,18 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                 .is_some_and(|s| s.len() <= 4096 && page::url_allowed(s))
         {
             return Err(Failure::new("browser_url_denied"));
+        }
+        if kind == "hover_submit_icon"
+            && (!scoped_handle(&action["capture_id"], "cap_")
+                || !scoped_handle(&action["field_node_id"], "den_")
+                || !scoped_handle(&action["source_node_id"], "den_")
+                || action["field_node_id"] == action["source_node_id"]
+                || params["tab_id"].as_str().is_none_or(str::is_empty)
+                || params["control_epoch"]
+                    .as_u64()
+                    .is_none_or(|epoch| epoch == 0))
+        {
+            return Err(Failure::new("browser_invalid_params"));
         }
         if fields.contains(&"ref") && action["ref"].as_str().is_none_or(|s| s.len() > 128) {
             return Err(Failure::new("browser_invalid_params"));
@@ -2364,11 +2388,17 @@ mod tests {
         assert!(validate("browser_evidence", &enabled).is_ok());
         enabled["query"]["include_pixel_indicators"] = true.into();
         assert!(validate("browser_evidence", &enabled).is_ok());
+        enabled["query"]["include_icon_candidates"] = true.into();
+        assert!(validate("browser_evidence", &enabled).is_ok());
         enabled["query"]
             .as_object_mut()
             .unwrap()
             .remove("include_indicators");
         assert!(validate("browser_evidence", &enabled).is_err());
+        let mut icon_without_pixels = base.clone();
+        icon_without_pixels["query"]["include_indicators"] = true.into();
+        icon_without_pixels["query"]["include_icon_candidates"] = true.into();
+        assert!(validate("browser_evidence", &icon_without_pixels).is_err());
         let mut disabled = base.clone();
         disabled["query"]["include_indicators"] = false.into();
         assert!(validate("browser_evidence", &disabled).is_err());

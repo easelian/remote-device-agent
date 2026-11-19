@@ -722,6 +722,9 @@ function(operation, args) {
       return box && !counts.has(box) && (box!==node || box.matches(summaryMarker+',ul,ol,.form-summary') || counts.get(box.parentElement)!==1);
     };
     function adjacent(field,node,safe,invalid) {
+      // A tooltip opened during icon diagnosis has its own freshness/ownership
+      // checks. It may sit next to the input without explaining its value.
+      if (registry.submitFeedback?.iconHover && node.closest('[role="tooltip"]')) return;
       if (links.has(node.id) || (extended && (isSummary(node) || validationIcon(node)))) return;
       const strong=invalid || node.matches('.field-error,.error,.invalid-feedback,.error-message,[data-error="true"]');
       add(field,node,strong?'adjacent_error':'adjacent_text',safe);
@@ -868,8 +871,7 @@ function(operation, args) {
     // nor CSS content crosses the protocol. Different bytes still require a
     // verified pixel change and independent rejection text for this field.
     function candidate(node, kind, rect, paint) {
-      if (paint.length>8192 || node.closest('label,button,a,[contenteditable]:not([contenteditable="false"])') ||
-          validationIcon(node)) return;
+      if (paint.length>8192 || node.closest('label,button,a,[contenteditable]:not([contenteditable="false"])')) return;
       const geo=pixelGeometry(node,field,form,rect,record);
       if (geo) candidates.push({node,kind,geo,paint});
     }
@@ -970,10 +972,10 @@ function(operation, args) {
       }
       const signature=JSON.stringify(markers);
       if (signature.length>16384) continue;
-      if (arm) sources.set(node,{field,wrapper,kind,paint,signature,interaction,lastPaint:paint,revision:0});
+      if (arm) sources.set(node,{field,wrapper,kind,paint,signature,interaction,metadata:iconMetadata(field,node,record,form,baseline.extended.foreign),lastPaint:paint,revision:0});
       const current=sources.get(node);
       if (paint!==current.lastPaint) { current.lastPaint=paint; current.revision++; }
-      slots.push({field_node:remember(field,true),source_node:remember(node,true),kind,...geo,
+      slots.push({field_node:remember(field,true),source_node:remember(node,true),kind,...geo,marked:validationIcon(node),
         paint_revision:current.revision,changed:!arm && interaction===current.interaction &&
           paint!==current.paint && (kind==='image_change' || signature!==current.signature)});
       if (slots.length>16) return result(empty);
@@ -982,6 +984,131 @@ function(operation, args) {
     if (arm) baseline.pixelSources=sources;
     return result({slots});
   }
+
+  // Only the source and its original field may supply metadata. A referenced
+  // node must have a unique id and no other owner, even in a neighboring form.
+  function iconMetadata(field,source,record,form,foreign) {
+    const items=[], refs=new Set();
+    const clean=s=>s && s.length<=256 && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(s) ? s.trim() : '';
+    for (const node of [field,source]) {
+      for (const [attr,kind] of [['title','title'],['aria-description','aria_description']]) {
+        const raw=node.getAttribute(attr);
+        if (!raw) continue;
+        const text=clean(raw);
+        if (!text) return null;
+        items.push({node,text,source:kind});
+      }
+      for (const attr of ['aria-errormessage','aria-describedby']) {
+        const raw=node.getAttribute(attr);
+        if (!raw) continue;
+        if (raw.length>256 || !/^\S+$/.test(raw)) return null;
+        refs.add(raw);
+      }
+    }
+    if (!refs.size) return items;
+    if (refs.size!==1) return null;
+    const [id]=refs;
+    let linked=null, valid=true;
+    walk(document,false,node=>{
+      if (node.nodeType!==Node.ELEMENT_NODE) return;
+      if (node.id===id) {
+        if (linked) valid=false;
+        linked=node;
+      }
+      if (node===field || node===source) return;
+      for (const attr of ['aria-describedby','aria-errormessage','aria-labelledby']) {
+        const value=node.getAttribute(attr);
+        if (value && (value.length>512 || value.split(/\s+/).includes(id))) valid=false;
+      }
+    });
+    if (!valid || limits.size || !linked || linked===field || linked===source ||
+        foreign.has(linked) || owner(linked)!==record || linked.closest('form')!==form) return null;
+    const text=iconText(linked);
+    if (text) items.push({node:linked,source:'aria_description',text});
+    return items;
+  }
+  function iconText(node) {
+    if (!node.matches('span,small,p,div,output,strong,em,[role="tooltip"]') ||
+        node.closest('button,a,label,input,textarea,select,script,style,[contenteditable]:not([contenteditable="false"])') ||
+        node.shadowRoot) return '';
+    let text='', safe=true;
+    walk(node,false,child=>{
+      if (child.nodeType===Node.ELEMENT_NODE && (!child.matches('span,b,strong,i,em,br') ||
+          child.hasAttribute('role') || child.shadowRoot || child.isContentEditable)) safe=false;
+      if (child.nodeType===Node.TEXT_NODE) {
+        if (text.length+child.length>256) safe=false;
+        else text+=child.data;
+      }
+    });
+    return safe && !limits.size && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(text) ? text.trim() : '';
+  }
+  function localIconTips(wrapper,record,form,baseline) {
+    const tips=[];
+    walk(wrapper,false,node=>{
+      if (node.nodeType===Node.ELEMENT_NODE && node.getAttribute('role')==='tooltip' &&
+          owner(node)===record && node.closest('form')===form && !baseline.extended.foreign.has(node) &&
+          feedbackVisible(node,record) && node.getClientRects().length) tips.push(node);
+    });
+    return tips;
+  }
+  if (operation==='submit_pixel_reason_read' || operation==='submit_pixel_hover_arm') {
+    const arm=operation==='submit_pixel_hover_arm', empty=arm?false:null;
+    const baseline=registry.submitFeedback, form=baseline?.form.deref();
+    const record=registry.nodes.get(args.record)?.weak.deref(), field=registry.nodes.get(args.field)?.weak.deref();
+    const source=registry.nodes.get(args.source)?.weak.deref(), old=source && baseline?.pixelSources?.get(source);
+    if (!old || !field || !form || !record || old.field!==field || old.metadata==null ||
+        record!==baseline.record.deref() || baseline.anchor!==args.anchor_text ||
+        !matchesRecord(record,true) || sensitiveControl(field) || !feedbackVisible(field,record,true) ||
+        field.form!==form || owner(field)!==record || owner(source)!==record || source.closest('form')!==form ||
+        !old.wrapper.contains(field) || !old.wrapper.contains(source)) return result(empty);
+    let controls=0;
+    walk(old.wrapper,false,n=>{
+      if (n.nodeType===Node.ELEMENT_NODE && n.matches('input,select,textarea,button,[contenteditable="true"]')) controls++;
+    });
+    if (controls!==1 || limits.size || JSON.stringify([field.id,field.name,field.type])!==baseline.extended.originals.get(field))
+      return result(empty);
+    const candidate=fieldPixelSlot(field,old.wrapper,form,record);
+    if (!candidate || candidate.node!==source || limits.size) return result(empty);
+    const tips=localIconTips(old.wrapper,record,form,baseline);
+    if (limits.size) return result(empty);
+    if (arm) {
+      if (!Object.entries(candidate.geo).every(([key,value])=>args.slot[key]===value) ||
+          candidate.kind!==args.slot.kind || old.lastPaint!==candidate.paint ||
+          old.revision!==args.slot.paint_revision) return result(false);
+      // Cache the state immediately before this pointer movement. Repeated
+      // reads never arm a hover or publish an unrelated pre-existing tooltip.
+      baseline.iconHover={source:new WeakRef(source),tips:new WeakSet(tips)};
+      return result(true);
+    }
+    const meta=iconMetadata(field,source,record,form,baseline.extended.foreign);
+    if (!meta || limits.size) return result(null);
+    const fresh=meta.filter(item=>!old.metadata.some(prior=>prior.text===item.text));
+    const hovered=baseline.iconHover?.source.deref()===source && source.matches(':hover');
+    if (hovered && tips.length===1 && !baseline.iconHover.tips.has(tips[0])) {
+      const tip=tips[0], text=iconText(tip);
+      // A local tooltip without an explicit reference must be exclusive too.
+      // A reference to another tooltip or multiple visible tooltips is ambiguous.
+      if (!text || meta.some(item=>item.text!==text) || (tip.id && !meta.some(item=>item.node===tip) &&
+          iconTipReferenced(tip.id))) return result(null);
+      return result(limits.size?null:{source:'tooltip',node:remember(tip,true),text});
+    }
+    const only=fresh[0];
+    if (!only || fresh.some(item=>item.text!==only.text) || tips.length>1 ||
+        only.node.getAttribute('role')==='tooltip' && hovered) return result(null);
+    return result({source:only.source,node:remember(only.node,true),text:only.text});
+  }
+  function iconTipReferenced(id) {
+    let linked=false;
+    walk(document,false,node=>{
+      if (node.nodeType!==Node.ELEMENT_NODE) return;
+      for (const attr of ['aria-describedby','aria-errormessage','aria-labelledby']) {
+        const value=node.getAttribute(attr);
+        if (value && (value.length>512 || value.split(/\s+/).includes(id))) linked=true;
+      }
+    });
+    return linked || limits.size;
+  }
+
 
   if (operation==='submit_fields_read') {
     const empty={fields:[],visual_changes:[]};

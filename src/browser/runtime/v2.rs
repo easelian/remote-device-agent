@@ -146,6 +146,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "check",
         "scroll",
         "hover",
+        "hover_submit_icon",
         "visual_click",
         "visual_hover",
         "visual_drag",
@@ -657,6 +658,30 @@ impl Browsers {
                     Ok(value)
                 }
                 "browser_act" => {
+                    if params["action"]["kind"] == "hover_submit_icon" {
+                        let capture_id = params["action"]["capture_id"]
+                            .as_str()
+                            .ok_or_else(|| Failure::new("browser_invalid_params"))?;
+                        let field_id = params["action"]["field_node_id"]
+                            .as_str()
+                            .ok_or_else(|| Failure::new("browser_invalid_params"))?;
+                        let source_id = params["action"]["source_node_id"]
+                            .as_str()
+                            .ok_or_else(|| Failure::new("browser_invalid_params"))?;
+                        let field = session.evidence.lookup(field_id, &tab, epoch)?;
+                        let source = session.evidence.lookup(source_id, &tab, epoch)?;
+                        session.clear_references();
+                        session.presentation.clear();
+                        session.visual_frame.take();
+                        let capture = session
+                            .task_events
+                            .as_ref()
+                            .filter(|capture| capture.id == capture_id)
+                            .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
+                        return capture
+                            .hover_submit_icon(&page, &tab, epoch, field, source, deadline)
+                            .await;
+                    }
                     if let Some(previous) = &mut session.task_events {
                         previous.stop_if_action_owned();
                     }

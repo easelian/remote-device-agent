@@ -110,6 +110,19 @@ pub(crate) enum Program {
         record: u64,
         anchor_text: String,
     },
+    SubmitIconHoverArm {
+        marker: Marker,
+        record: u64,
+        slot: PixelSlot,
+        anchor_text: String,
+    },
+    SubmitPixelReasonRead {
+        marker: Marker,
+        record: u64,
+        field: u64,
+        source: u64,
+        anchor_text: String,
+    },
     Release,
 }
 pub(crate) const VISUAL_TARGET_NODE: &str = include_str!("visual-target.js");
@@ -216,6 +229,7 @@ pub(crate) struct PixelSlot {
     pub viewport_height: u32,
     pub scroll_x: i32,
     pub scroll_y: i32,
+    pub marked: bool,
     pub paint_revision: u32,
     pub changed: bool,
 }
@@ -223,6 +237,20 @@ pub(crate) struct PixelSlot {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PixelSlotsReply {
     pub slots: Vec<PixelSlot>,
+}
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PixelReasonSource {
+    Title,
+    AriaDescription,
+    Tooltip,
+}
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PixelReason {
+    pub source: PixelReasonSource,
+    pub node: u64,
+    pub text: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -371,6 +399,7 @@ pub(crate) enum Output {
     Feedback(Option<FeedbackNodes>),
     Fields(SubmitFieldsReply),
     PixelSlots(Vec<PixelSlot>),
+    PixelReason(Option<PixelReason>),
 }
 impl Program {
     pub fn source(&self) -> &'static str {
@@ -382,6 +411,8 @@ impl Program {
                 | Self::SubmitRecordRead { .. }
                 | Self::SubmitFeedbackRead { .. }
                 | Self::SubmitPixelSlotsRead { .. }
+                | Self::SubmitIconHoverArm { .. }
+                | Self::SubmitPixelReasonRead { .. }
         ) {
             super::evidence::SOURCE
         } else {
@@ -521,6 +552,29 @@ impl Program {
                     "record":record,"anchor_text":anchor_text,
                     "elements":512,"text_nodes":256,"other_nodes":256}),
             ),
+            Self::SubmitIconHoverArm {
+                marker,
+                record,
+                slot,
+                anchor_text,
+            } => (
+                "submit_pixel_hover_arm",
+                json!({"realm":marker.realm,"restoration":marker.restoration,
+                "record":record,"field":slot.field_node,"source":slot.source_node,"slot":slot,"anchor_text":anchor_text,
+                "elements":512,"text_nodes":256,"other_nodes":256}),
+            ),
+            Self::SubmitPixelReasonRead {
+                marker,
+                record,
+                field,
+                source,
+                anchor_text,
+            } => (
+                "submit_pixel_reason_read",
+                json!({"realm":marker.realm,"restoration":marker.restoration,
+                    "record":record,"field":field,"source":source,"anchor_text":anchor_text,
+                    "elements":512,"text_nodes":256,"other_nodes":256}),
+            ),
             Self::SubmitFeedbackRead {
                 marker,
                 record,
@@ -632,6 +686,17 @@ impl Program {
                     return Err(types::decode());
                 }
                 Ok(Output::PixelSlots(reply.slots))
+            }
+            Self::SubmitIconHoverArm { .. } => Ok(Output::Applied(parse(text)?)),
+            Self::SubmitPixelReasonRead { .. } => {
+                let value: Option<PixelReason> = parse(text)?;
+                if value
+                    .as_ref()
+                    .is_some_and(|r| !valid_evidence_id(r.node) || !valid_page_reason(&r.text))
+                {
+                    return Err(types::decode());
+                }
+                Ok(Output::PixelReason(value))
             }
             Self::SubmitFeedbackRead { fields: false, .. } => {
                 let feedback: Option<FeedbackNodes> = parse(text)?;

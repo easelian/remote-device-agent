@@ -9,6 +9,7 @@ pub(super) enum Read {
     Fields,
 }
 
+#[derive(PartialEq, Eq)]
 enum Dispatch {
     NativeInvalid,
     Submitted,
@@ -48,7 +49,8 @@ async fn capture_crops(
             if frame.size() != (slot.viewport_width, slot.viewport_height) {
                 return None;
             }
-            Some((slot, frame.crop(slot.x, slot.y, slot.width, slot.height)?))
+            let crop = frame.crop(slot.x, slot.y, slot.width, slot.height)?;
+            Some((slot, crop))
         })
         .collect()
 }
@@ -75,6 +77,7 @@ pub(super) struct Attempt {
     endpoint: RequestEndpoint,
     dispatch: Dispatch,
     before: Option<Crops>,
+    published: Vec<(u64, u64)>,
 }
 
 impl Attempt {
@@ -123,6 +126,7 @@ impl Attempt {
                 target,
                 endpoint: binding.endpoint.clone(),
                 dispatch: Dispatch::Unconfirmed,
+                published: Vec::new(),
             },
             binding,
         )))
@@ -144,13 +148,81 @@ impl Attempt {
         };
     }
 
+    pub(super) async fn hover_source(
+        &self,
+        sink: &Sink,
+        page: &sem::Page<native::Port>,
+        field: sem::evidence::Target,
+        source: sem::evidence::Target,
+        deadline: Instant,
+    ) -> Result<Value> {
+        let unavailable = || Failure::new("browser_stale_reference");
+        let target = self.target;
+        if self.dispatch != Dispatch::Submitted
+            || !sink.active()
+            || !self.published.contains(&(field.node, source.node))
+            || field
+                != (sem::evidence::Target {
+                    node: field.node,
+                    ..target
+                })
+            || source
+                != (sem::evidence::Target {
+                    node: source.node,
+                    ..target
+                })
+        {
+            return Err(unavailable());
+        }
+        let SubmitResponse::Response {
+            request_id,
+            status: 422,
+        } = sink.submit_response(&self.endpoint, Method::Post)?
+        else {
+            return Err(unavailable());
+        };
+        let before = self.before.as_ref().ok_or_else(unavailable)?;
+        let current = capture_crops(page, target, &self.record.anchor_text, deadline)
+            .await
+            .ok_or_else(unavailable)?;
+        let (slot, _) = current
+            .into_iter()
+            .find(|(slot, crop)| {
+                slot.field_node == field.node
+                    && slot.source_node == source.node
+                    && before.iter().any(|(first, old)| {
+                        corresponding_slot(first, slot) && old.changed_icon(crop)
+                    })
+            })
+            .ok_or_else(unavailable)?;
+        let anchor_text = self.record.anchor_text.clone();
+        let endpoint = self.endpoint.clone();
+        let sink = sink.clone();
+        page.command(false,false,deadline, move |port| async move {
+            let frames=port.frames(deadline).await?;
+            let root=frames.iter().find(|f|f.parent.is_none() && f.context==target.context).ok_or_else(unavailable)?;
+            if sem::evidence::target(&frames,root,target.node)?!=target {return Err(unavailable());}
+            let armed=port.program(root, sem::program::Program::SubmitIconHoverArm {
+                marker:root.marker.clone(),record:target.node,slot,anchor_text
+            },deadline).await?;
+            if !matches!(armed,sem::program::Output::Applied(Some(true))) || !sink.active() ||
+                !matches!(sink.submit_response(&endpoint,Method::Post)?, SubmitResponse::Response {request_id:id,status:422} if id==request_id) {
+                return Err(unavailable());
+            }
+            port.visual_hover(f64::from(slot.x)+f64::from(slot.width)/2.,
+                              f64::from(slot.y)+f64::from(slot.height)/2.,deadline).await?;
+            Ok(json!({"input_acknowledged":true,"business_result_verified":false}))
+        }).await
+    }
+
     pub(super) fn supersede(&mut self) {
         self.dispatch = Dispatch::Unconfirmed;
         self.before = None;
+        self.published.clear();
     }
 
     pub(super) async fn read(
-        &self,
+        &mut self,
         sink: &Sink,
         page: &sem::Page<native::Port>,
         registry: &mut evidence::Registry,
@@ -159,8 +231,12 @@ impl Attempt {
         mode: Read,
         query_include_indicators: bool,
         include_pixels: bool,
+        include_icons: bool,
         deadline: Instant,
     ) -> Result<Value> {
+        if include_icons {
+            self.published.clear();
+        }
         let unknown = || json!({"state":"undetermined"});
         let response = || sink.submit_response(&self.endpoint, Method::Post);
         match self.dispatch {
@@ -222,37 +298,50 @@ impl Attempt {
             (Vec::new(), Vec::new(), Vec::new())
         };
         let mut pixel_rows = Vec::new();
+        let mut suspects = Vec::new();
         if include_pixels
-            && !fields.is_empty()
+            && (!fields.is_empty() || include_icons && status == 422)
             && let Some(before) = &self.before
             && let Some(after) =
                 capture_crops(page, target, &self.record.anchor_text, deadline).await
-        {
-            // Text may change during the image read. Require the same DOM
-            // pair, reason and association on both sides of that read.
-            if let Ok((confirmed, _, _)) = page
+            && let Ok((confirmed, _, _)) = page
                 .read_submit_fields(target, &self.record.anchor_text, true, deadline)
                 .await
-            {
-                for (slot, crop) in &after {
-                    let Some(field) = fields.iter().find(|f| f.field.node == slot.field_node)
-                    else {
-                        continue;
-                    };
-                    if (status != 422 && !field.association.is_strong())
-                        || !confirmed.iter().any(|f| {
+        {
+            for (slot, crop) in after {
+                if !before.iter().any(|(old_slot, old)| {
+                    corresponding_slot(old_slot, &slot) && old.changed_icon(&crop)
+                }) {
+                    continue;
+                }
+                if let Some(field) = fields.iter().find(|f| f.field.node == slot.field_node) {
+                    if !slot.marked
+                        && (status == 422 || field.association.is_strong())
+                        && confirmed.iter().any(|f| {
                             f.field == field.field
                                 && f.message == field.message
                                 && f.association == field.association
                                 && f.reason == field.reason
                         })
                     {
-                        continue;
+                        pixel_rows.push(slot);
                     }
-                    if before.iter().any(|(first, old)| {
-                        corresponding_slot(first, slot) && old.changed_icon(crop)
-                    }) {
-                        pixel_rows.push(*slot);
+                } else if include_icons
+                    && status == 422
+                    && !confirmed.iter().any(|f| f.field.node == slot.field_node)
+                {
+                    let reason = page
+                        .read_pixel_reason(
+                            target,
+                            slot.field_node,
+                            slot.source_node,
+                            &self.record.anchor_text,
+                            deadline,
+                        )
+                        .await?;
+                    // A separate field's message cannot explain this icon.
+                    if reason.is_some() || fields.is_empty() && confirmed.is_empty() {
+                        suspects.push((slot, reason));
                     }
                 }
             }
@@ -319,7 +408,7 @@ impl Attempt {
         }
         if !fields.is_empty() {
             let mut rows = Vec::with_capacity(fields.len());
-            for item in fields {
+            for item in &fields {
                 rows.push(json!({
                     "field_node_id": registry.feedback_id(item.field, tab, epoch)?,
                     "message_node_id": registry.feedback_id(item.message, tab, epoch)?,
@@ -328,6 +417,28 @@ impl Attempt {
                 }));
             }
             result["fields"] = rows.into();
+        }
+        if !suspects.is_empty() {
+            let mut rows = Vec::new();
+            for (slot, reason) in suspects {
+                let field = sem::evidence::Target {
+                    node: slot.field_node,
+                    ..target
+                };
+                let source = sem::evidence::Target {
+                    node: slot.source_node,
+                    ..target
+                };
+                let mut row = json!({"field_node_id":registry.feedback_id(field,tab,epoch)?,
+                    "source_node_id":registry.feedback_id(source,tab,epoch)?,"kind":slot.kind});
+                if let Some(reason) = reason {
+                    row["reason"] = json!(reason.text);
+                    row["reason_source"] = json!(reason.source);
+                }
+                self.published.push((slot.field_node, slot.source_node));
+                rows.push(row);
+            }
+            result["suspected_fields"] = rows.into();
         }
         if query_include_indicators && (!indicators.is_empty() || !pixel_rows.is_empty()) {
             if indicators.len() + pixel_rows.len() > 32 {
