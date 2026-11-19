@@ -1,7 +1,7 @@
 //! Shared event ownership covers both queued and consumer-held payloads.
 use super::*;
 #[cfg(feature = "experimental-browser-bidi")]
-use crate::browser::semantic::task_events::{Method, RequestUpdate};
+use crate::browser::semantic::task_events::{Method, RequestEndpoint, RequestUpdate};
 
 pub(super) const MAX_EVENTS: usize = 256;
 pub(super) const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
@@ -148,7 +148,7 @@ impl Inner {
             _ => None,
         };
         let progress = if sink.wants_progress() {
-            Self::progress_update(method, &value["params"])
+            Self::progress_update(method, &value["params"], sink.tracks_submit())
         } else {
             Vec::new()
         };
@@ -163,7 +163,11 @@ impl Inner {
     }
 
     #[cfg(feature = "experimental-browser-bidi")]
-    fn progress_update(method: &str, params: &Value) -> Vec<(String, RequestUpdate)> {
+    fn progress_update(
+        method: &str,
+        params: &Value,
+        track_submit: bool,
+    ) -> Vec<(String, RequestUpdate)> {
         let request_id = || {
             params["requestId"]
                 .as_str()
@@ -195,6 +199,14 @@ impl Inner {
                     request_id,
                     RequestUpdate::Start {
                         method,
+                        endpoint: params["request"]["url"]
+                            .as_str()
+                            .filter(|_| track_submit)
+                            .and_then(RequestEndpoint::from_url),
+                        context: params["frameId"]
+                            .as_str()
+                            .filter(|id| track_submit && !id.is_empty() && id.len() <= 256)
+                            .map(Into::into),
                         hop: None,
                         redirect,
                     },
@@ -343,6 +355,7 @@ mod progress_tests {
                 "request":{"method":"GET","url":"https://secret.invalid/private"},
                 "redirectResponse":{"status":302,"url":"https://secret.invalid/old"}
             }),
+            false,
         );
         assert_eq!(updates.len(), 2);
         assert!(matches!(
@@ -360,6 +373,7 @@ mod progress_tests {
         let response = Inner::progress_update(
             "Network.responseReceived",
             &json!({"requestId":"r","response":{"status":204,"url":"secret"}}),
+            false,
         );
         assert!(matches!(
             response.as_slice(),
@@ -368,6 +382,7 @@ mod progress_tests {
         let failed = Inner::progress_update(
             "Network.loadingFailed",
             &json!({"requestId":"r","canceled":false,"errorText":"net::ERR_NAME_NOT_RESOLVED","url":"secret"}),
+            false,
         );
         assert!(matches!(
             failed.as_slice(),
@@ -379,7 +394,7 @@ mod progress_tests {
                 }
             )]
         ));
-        let missing = Inner::progress_update("Network.requestWillBeSent", &json!({}));
+        let missing = Inner::progress_update("Network.requestWillBeSent", &json!({}), false);
         assert_eq!(missing.len(), 1);
         assert!(matches!(
             missing.as_slice(),
@@ -388,6 +403,7 @@ mod progress_tests {
         let oversized = Inner::progress_update(
             "Network.responseReceived",
             &json!({"requestId":"x".repeat(257),"response":{"status":200}}),
+            false,
         );
         assert!(matches!(
             oversized.as_slice(),
@@ -396,6 +412,7 @@ mod progress_tests {
         let failed = Inner::progress_update(
             "Network.loadingFailed",
             &json!({"requestId":"r","errorText":"net::ERR_FAILED"}),
+            false,
         );
         assert!(matches!(
             failed.as_slice(),

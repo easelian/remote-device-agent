@@ -67,7 +67,13 @@ pub(super) fn extension(reason: Option<&str>) -> Value {
     json!({"version":1,"available":reason.is_none(),"reason":reason})
 }
 pub(super) fn with_input_extensions(mut caps: Value, reason: Option<&str>) -> Value {
-    for name in ["visual_click", "visual_gestures", "submit_validation"] {
+    for name in [
+        "visual_click",
+        "visual_gestures",
+        "submit_outcome",
+        "submit_validation_field",
+        "submit_validation",
+    ] {
         caps["extensions"][name] = extension(reason);
     }
     caps

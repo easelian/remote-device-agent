@@ -80,15 +80,35 @@ pub(crate) enum Program {
         marker: Marker,
         node: u64,
         enter: bool,
+        register_field: bool,
     },
     SubmitProbeRead {
         marker: Marker,
         node: u64,
     },
+    SubmitRecordArm {
+        marker: Marker,
+        submitter: u64,
+        record: u64,
+        anchor_text: String,
+        expected_text: Option<String>,
+    },
+    SubmitRecordRead {
+        marker: Marker,
+        submitter: u64,
+        record: u64,
+    },
     Release,
 }
 pub(crate) const VISUAL_TARGET_NODE: &str = include_str!("visual-target.js");
 pub(crate) const NATIVE_NODE: &str = "function(serialized){const a=JSON.parse(serialized),s=globalThis.__rdhSemanticDomV1;return s&&s.document===document&&s.realm===a.realm&&s.restoration===a.restoration?s.nodes.get(a.node)||null:null;}";
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitValidation {
+    pub validation: super::evidence::Validation,
+    pub field_node: Option<u64>,
+}
+
 pub(crate) enum Output {
     Evidence(super::evidence::Raw),
     Marker(Marker),
@@ -100,11 +120,18 @@ pub(crate) enum Output {
     Geometry(Option<Geometry>),
     Stats(RegistryStats),
     Applied(Option<bool>),
-    Probe(Option<super::evidence::Validation>),
+    Probe(Option<SubmitValidation>),
+    SubmitEndpoint(Option<String>),
 }
 impl Program {
     pub fn source(&self) -> &'static str {
-        if matches!(self, Self::Evidence { .. }) {
+        if matches!(
+            self,
+            Self::Evidence { .. }
+                | Self::SubmitProbeRead { .. }
+                | Self::SubmitRecordArm { .. }
+                | Self::SubmitRecordRead { .. }
+        ) {
             super::evidence::SOURCE
         } else {
             SOURCE
@@ -200,12 +227,39 @@ impl Program {
                 marker,
                 node,
                 enter,
+                register_field,
             } => {
                 let mut args = target(marker, *node);
                 args["enter"] = (*enter).into();
+                args["register_field"] = (*register_field).into();
                 ("submit_probe_arm", args)
             }
             Self::SubmitProbeRead { marker, node } => ("submit_probe_read", target(marker, *node)),
+            Self::SubmitRecordArm {
+                marker,
+                submitter,
+                record,
+                anchor_text,
+                expected_text,
+            } => {
+                let mut args = target(marker, *submitter);
+                args["record"] = (*record).into();
+                args["anchor_text"] = anchor_text.clone().into();
+                args["expected_text"] = expected_text.clone().into();
+                args["elements"] = 512.into();
+                args["text_nodes"] = 256.into();
+                args["other_nodes"] = 256.into();
+                ("submit_record_arm", args)
+            }
+            Self::SubmitRecordRead {
+                marker,
+                submitter,
+                record,
+            } => {
+                let mut args = target(marker, *submitter);
+                args["record"] = (*record).into();
+                ("submit_record_read", args)
+            }
             Self::Release => ("release", json!({})),
         }
     }
@@ -271,9 +325,10 @@ impl Program {
                 Ok(Output::Checks(facts))
             }
             Self::SubmitProbeRead { .. } => {
-                let value: Option<super::evidence::Validation> = parse(text)?;
+                let value: Option<SubmitValidation> = parse(text)?;
                 Ok(Output::Probe(value))
             }
+            Self::SubmitRecordArm { .. } => Ok(Output::SubmitEndpoint(parse(text)?)),
             _ => Ok(Output::Applied(parse(text)?)),
         }
     }

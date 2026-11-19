@@ -97,6 +97,22 @@ impl Adapter {
         deadline: Instant,
     ) -> Result<()> {
         let session = self.session(context)?;
+        if sink.tracks_submit() {
+            let tree = self
+                .wire
+                .call(
+                    Some(session),
+                    Command::PageGetFrameTree,
+                    json!({}),
+                    deadline,
+                )
+                .await?;
+            let root = tree["frameTree"]["frame"]["id"]
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 256)
+                .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
+            sink.set_request_context(root);
+        }
         self.wire.set_task_events(session, sink.clone())?;
         if sink.wants_network() {
             self.wire

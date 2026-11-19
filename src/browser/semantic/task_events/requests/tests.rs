@@ -8,6 +8,8 @@ fn start(ledger: &mut Ledger, native: &str, hop: Option<u32>, method: Method, re
         native,
         RequestUpdate::Start {
             method,
+            endpoint: None,
+            context: None,
             hop,
             redirect,
         },
@@ -139,4 +141,222 @@ fn sink_stop_and_control_takeover_freeze_progress() {
         },
     );
     assert!(sink.requests().is_err());
+}
+
+#[test]
+fn endpoint_rejects_private_parts_and_keeps_no_public_url() {
+    let endpoint =
+        RequestEndpoint::from_url("https://Example.test/orders/B42?view=full#fragment").unwrap();
+    let same =
+        RequestEndpoint::from_url("https://example.test/orders/B42?view=full#other").unwrap();
+    assert_eq!(endpoint, same);
+    assert!(RequestEndpoint::from_url("https://user:pass@example.test/orders").is_none());
+}
+#[test]
+fn submit_response_requires_unique_observed_request() {
+    let endpoint = RequestEndpoint::from_url("https://example.test/orders/B42").unwrap();
+    let mut ledger = Ledger::default();
+    ledger.update(
+        "a",
+        RequestUpdate::Start {
+            method: Method::Post,
+            endpoint: Some(endpoint.clone()),
+            context: None,
+            hop: None,
+            redirect: false,
+        },
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::Pending
+    );
+    ledger.update(
+        "a",
+        RequestUpdate::Response {
+            status: 422,
+            hop: None,
+        },
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::Response {
+            request_id: 1,
+            status: 422
+        }
+    );
+    ledger.update(
+        "b",
+        RequestUpdate::Start {
+            method: Method::Post,
+            endpoint: Some(endpoint.clone()),
+            context: None,
+            hop: None,
+            redirect: false,
+        },
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::Undetermined
+    );
+}
+#[test]
+fn missing_endpoint_or_failed_request_is_undetermined() {
+    let endpoint = RequestEndpoint::from_url("https://example.test/orders/B42").unwrap();
+    let mut ledger = Ledger::default();
+    ledger.update(
+        "a",
+        RequestUpdate::Start {
+            method: Method::Post,
+            endpoint: None,
+            context: None,
+            hop: None,
+            redirect: false,
+        },
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::Undetermined
+    );
+}
+
+#[test]
+fn child_context_same_endpoint_is_not_top_level_evidence() {
+    let endpoint = RequestEndpoint::from_url("https://example.test/orders/B42").unwrap();
+    let mut ledger = Ledger::default();
+    ledger.update(
+        "top",
+        RequestUpdate::Start {
+            method: Method::Post,
+            endpoint: Some(endpoint.clone()),
+            context: Some("top-frame".into()),
+            hop: None,
+            redirect: false,
+        },
+    );
+    ledger.update(
+        "child",
+        RequestUpdate::Start {
+            method: Method::Post,
+            endpoint: Some(endpoint.clone()),
+            context: Some("child-frame".into()),
+            hop: None,
+            redirect: false,
+        },
+    );
+    ledger.update(
+        "child",
+        RequestUpdate::Response {
+            status: 200,
+            hop: None,
+        },
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, Some("top-frame"), true),
+        SubmitResponse::Pending
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, Some("child-frame"), true),
+        SubmitResponse::Response {
+            request_id: 2,
+            status: 200
+        }
+    );
+    // Omitting the native context is deliberately conservative: it must not
+    // select either frame, even when only one has completed.
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::NotObserved
+    );
+}
+
+#[test]
+fn action_epoch_rejects_completion_without_observed_start() {
+    let mut ledger = Ledger::for_action_epoch(1);
+    ledger.update(
+        "old",
+        RequestUpdate::Response {
+            status: 422,
+            hop: None,
+        },
+    );
+    let endpoint = RequestEndpoint::from_url("https://example.test/orders/B42").unwrap();
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::NotObserved
+    );
+    assert!(
+        ledger.snapshot("active")["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn submit_dispatch_excludes_old_starts_but_preserves_public_request_ids() {
+    let endpoint = RequestEndpoint::from_url("https://example.test/orders/B42").unwrap();
+    let mut ledger = Ledger::default();
+    ledger.update(
+        "old",
+        RequestUpdate::Start {
+            method: Method::Post,
+            endpoint: Some(endpoint.clone()),
+            context: None,
+            hop: None,
+            redirect: false,
+        },
+    );
+    ledger.submit_dispatch();
+    ledger.update(
+        "old",
+        RequestUpdate::Response {
+            status: 422,
+            hop: None,
+        },
+    );
+    assert_eq!(
+        ledger.submit_response(&endpoint, Method::Post, None, true),
+        SubmitResponse::NotObserved
+    );
+    assert_eq!(ledger.snapshot("active")["requests"][0]["request_id"], 1);
+    assert_eq!(ledger.snapshot("active")["requests"][0]["status"], 422);
+}
+
+#[test]
+fn incomplete_or_ended_submit_windows_do_not_attribute_a_response() {
+    let endpoint = RequestEndpoint::from_url("https://example.test/orders/B42").unwrap();
+    let mut ledger = Ledger::for_action_epoch(1);
+    let start = || RequestUpdate::Start {
+        method: Method::Post,
+        endpoint: Some(endpoint.clone()),
+        context: Some("root".into()),
+        hop: None,
+        redirect: false,
+    };
+    let result = |ledger: &Ledger, active| {
+        ledger.submit_response(&endpoint, Method::Post, Some("root"), active)
+    };
+    ledger.update("first", start());
+    ledger.update(
+        "first",
+        RequestUpdate::Response {
+            status: 422,
+            hop: None,
+        },
+    );
+    assert_eq!(result(&ledger, false), SubmitResponse::Undetermined);
+    ledger.update(
+        "first",
+        RequestUpdate::Redirect {
+            status: 303,
+            hop: None,
+        },
+    );
+    assert_eq!(result(&ledger, true), SubmitResponse::Undetermined);
+    let mut ledger = Ledger::for_action_epoch(1);
+    for i in 0..=LIMIT {
+        ledger.update(&i.to_string(), start());
+    }
+    assert!(ledger.evicted > 0);
+    assert_eq!(result(&ledger, true), SubmitResponse::Undetermined);
 }

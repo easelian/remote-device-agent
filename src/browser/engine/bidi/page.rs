@@ -276,6 +276,9 @@ impl Semantic {
         sink: crate::browser::semantic::task_events::Sink,
         _deadline: Instant,
     ) -> Result<()> {
+        if sink.tracks_submit() {
+            sink.set_request_context(self.root.as_str());
+        }
         self.channel.set_task_events(self.root.clone(), Some(sink));
         Ok(())
     }

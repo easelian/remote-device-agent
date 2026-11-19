@@ -37,6 +37,13 @@ impl Registry {
             .map(|e| e.target)
             .ok_or_else(sem::types::stale)
     }
+    pub fn publish_target(&mut self, target: dom::Target, tab: &str, epoch: u64) -> Result<String> {
+        let (id, binding) = entry(target, tab, epoch)?;
+        self.publish(Prepared {
+            entries: vec![binding],
+        });
+        Ok(id)
+    }
     pub fn publish(&mut self, prepared: Prepared) {
         self.expire(Instant::now());
         if self.entries.capacity() == 0 {

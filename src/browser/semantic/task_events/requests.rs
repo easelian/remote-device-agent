@@ -3,11 +3,21 @@
 use super::FailureKind;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+use url::Url;
 
 const LIMIT: usize = 32;
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SubmitResponse {
+    NotObserved,
+    Pending,
+    Undetermined,
+    Response { request_id: u64, status: u16 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub(crate) enum Method {
     Get,
@@ -34,10 +44,37 @@ impl Method {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct RequestEndpoint([u8; 32]);
+impl std::fmt::Debug for RequestEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RequestEndpoint").field(&"<digest>").finish()
+    }
+}
+impl RequestEndpoint {
+    pub(crate) fn from_url(raw: &str) -> Option<Self> {
+        if raw.is_empty() || raw.len() > 4096 || raw.bytes().any(|b| b.is_ascii_control()) {
+            return None;
+        }
+        let mut url = Url::parse(raw).ok()?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return None;
+        }
+        url.set_fragment(None);
+        Some(Self(Sha256::digest(url.as_str().as_bytes()).into()))
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum RequestUpdate {
     Start {
         method: Method,
+        endpoint: Option<RequestEndpoint>,
+        context: Option<Box<str>>,
         hop: Option<u32>,
         redirect: bool,
     },
@@ -76,6 +113,8 @@ struct Row {
     hop: Option<u32>,
     id: u64,
     method: Option<Method>,
+    endpoint: Option<RequestEndpoint>,
+    context: Option<Box<str>>,
     phase: Phase,
     from: Option<u64>,
     redirect: bool,
@@ -115,6 +154,7 @@ fn redirect_status(status: u16) -> bool {
 pub(super) struct Ledger {
     rows: VecDeque<Row>,
     require_start: bool,
+    submit_after: u64,
     evicted: u64,
     pub(super) untracked: u64,
 }
@@ -125,6 +165,13 @@ impl Ledger {
         Self {
             require_start: epoch != 1,
             ..Self::default()
+        }
+    }
+    pub(super) fn for_action_epoch(epoch: u64) -> Self {
+        // Action-owned captures must observe the request start themselves.
+        Self {
+            require_start: true,
+            ..Self::for_epoch(epoch)
         }
     }
     fn locate(&self, native: &str, hop: Option<u32>) -> Option<usize> {
@@ -153,6 +200,8 @@ impl Ledger {
             hop,
             id,
             method: None,
+            endpoint: None,
+            context: None,
             phase: Phase::AwaitingResponse,
             from,
             redirect,
@@ -167,6 +216,8 @@ impl Ledger {
         let (hop, phase) = match update {
             RequestUpdate::Start {
                 method,
+                endpoint,
+                context,
                 hop,
                 redirect,
             } => {
@@ -185,6 +236,8 @@ impl Ledger {
                     None => self.append(native, hop, redirect),
                 };
                 row.method = Some(method);
+                row.endpoint = endpoint;
+                row.context = context;
                 return;
             }
             RequestUpdate::Response { status, hop } if (100..=599).contains(&status) => {
@@ -217,6 +270,60 @@ impl Ledger {
             _ => row.phase = phase,
         }
     }
+    pub(super) fn submit_dispatch(&mut self) {
+        // Keep the public timeline and IDs stable. Only later starts can be
+        // evidence for this input, even when an older response arrives later.
+        self.submit_after = self.rows.back().map_or(self.evicted, |row| row.id);
+    }
+
+    pub(super) fn submit_response(
+        &self,
+        endpoint: &RequestEndpoint,
+        method: Method,
+        context: Option<&str>,
+        active: bool,
+    ) -> SubmitResponse {
+        if !active || self.untracked > 0 || self.evicted > 0 {
+            return SubmitResponse::Undetermined;
+        }
+        let mut matched = None;
+        for row in self.rows.iter().filter(|row| row.id > self.submit_after) {
+            if row.method.is_some_and(|observed| observed != method) {
+                continue;
+            }
+            if row
+                .endpoint
+                .as_ref()
+                .is_some_and(|observed| observed != endpoint)
+            {
+                continue;
+            }
+            if row.context.is_some() && row.context.as_deref() != context {
+                continue;
+            }
+            if row.method.is_none()
+                || row.endpoint.is_none()
+                || row.context.as_deref() != context
+                || row.redirect
+                || matched.is_some()
+            {
+                return SubmitResponse::Undetermined;
+            }
+            matched = Some(row);
+        }
+        match matched {
+            None => SubmitResponse::NotObserved,
+            Some(row) => match row.phase {
+                Phase::AwaitingResponse => SubmitResponse::Pending,
+                Phase::Response { status } => SubmitResponse::Response {
+                    request_id: row.id,
+                    status,
+                },
+                _ => SubmitResponse::Undetermined,
+            },
+        }
+    }
+
     pub(super) fn snapshot(&self, state: &str) -> Value {
         json!({"state":state, "requests": self.rows.iter().map(|r|r.public(self.evicted)).collect::<Vec<_>>(),
             "evicted_count":self.evicted, "untracked_count":self.untracked})

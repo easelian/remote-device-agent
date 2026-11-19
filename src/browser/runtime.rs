@@ -1795,7 +1795,7 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
         (false, Some("read_event" | "read_exception_location")) => {
             fields.len() == 3 && id && fields.contains_key("sequence") && number("sequence", 1, MAX)
         }
-        (false, Some("read_requests")) => fields.len() == 2 && id,
+        (false, Some("read_requests" | "read_submit_outcome")) => fields.len() == 2 && id,
         (false, Some("read_events")) => {
             id && fields.keys().all(|k| {
                 matches!(
@@ -1818,11 +1818,18 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
 struct RecordCondition {
     node_id: String,
     anchor_text: String,
-    expected_text: String,
+    expected_text: Option<String>,
 }
 
 impl RecordCondition {
     fn parse(value: &Value) -> Result<Self> {
+        if !value["expected_text"].is_string() {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        Self::parse_submit(value)
+    }
+
+    fn parse_submit(value: &Value) -> Result<Self> {
         let invalid = || Failure::new("browser_invalid_params");
         let condition: Self = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
         let valid_id = condition.node_id.strip_prefix("den_").is_some_and(|hex| {
@@ -1830,8 +1837,8 @@ impl RecordCondition {
         });
         let valid_text = |s: &str| !s.is_empty() && s.trim() == s && s.chars().count() <= 128
             && !s.chars().any(char::is_control);
-        if !valid_id || !valid_text(&condition.anchor_text) || !valid_text(&condition.expected_text)
-            || condition.anchor_text == condition.expected_text {
+        if !valid_id || !valid_text(&condition.anchor_text) || value.get("expected_text").is_some_and(Value::is_null)
+            || condition.expected_text.as_deref().is_some_and(|text| !valid_text(text) || condition.anchor_text == text) {
             return Err(invalid());
         }
         Ok(condition)
@@ -1949,7 +1956,13 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             validate_capture_query(&params["action"], true)?;
         } else if matches!(
             params["query"]["kind"].as_str(),
-            Some("read_events" | "read_event" | "read_requests" | "read_exception_location")
+            Some(
+                "read_events"
+                    | "read_event"
+                    | "read_requests"
+                    | "read_exception_location"
+                    | "read_submit_outcome"
+            )
         ) {
             validate_capture_query(&params["query"], false)?;
         } else {
@@ -2060,13 +2073,41 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                 return Err(Failure::new("browser_invalid_params"));
             }
             let mut start = options.clone();
+            if let Some(record) = start
+                .as_object_mut()
+                .and_then(|options| options.remove("rejection_record"))
+            {
+                if start["track_requests"] != true {
+                    return Err(Failure::new("browser_invalid_params"));
+                }
+                RecordCondition::parse_submit(&record)?;
+            }
             start["kind"] = "start".into();
             validate_capture_query(&start, true)?;
         }
         let fields: &[&str] = match kind {
             "navigate" => &["kind", "url"],
             "fill" => &["kind", "ref", "text"],
-            "press" if action.get("read_native_validation").is_some() && action["key"] == "Enter" => {
+            "press"
+                if action.get("read_validation_field").is_some() && action["key"] == "Enter" =>
+            {
+                &[
+                    "kind",
+                    "ref",
+                    "key",
+                    "read_native_validation",
+                    "read_validation_field",
+                ]
+            }
+            "click" if action.get("read_validation_field").is_some() => &[
+                "kind",
+                "ref",
+                "read_native_validation",
+                "read_validation_field",
+            ],
+            "press"
+                if action.get("read_native_validation").is_some() && action["key"] == "Enter" =>
+            {
                 &["kind", "ref", "key", "read_native_validation"]
             }
             "press" => &["kind", "ref", "key"],
@@ -2095,7 +2136,10 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "dialog" => &["kind", "accept", "dialog_id"],
             _ => return Err(Failure::new("browser_invalid_params")),
         };
-        if action.len() != fields.len()
+        if action
+            .get("read_validation_field")
+            .is_some_and(|v| v != true)
+            || action.len() != fields.len()
             || action.keys().any(|key| !fields.contains(&key.as_str()))
             || action
                 .get("read_native_validation")

@@ -217,6 +217,20 @@ impl Action {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq)]
+enum ValidationProbe {
+    Disabled,
+    Reasons,
+    Field,
+}
+
+pub(crate) struct SubmitRecordBinding {
+    pub endpoint: super::task_events::RequestEndpoint,
+    pub frame: Frame,
+    pub submitter: u64,
+    pub record: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Acknowledgement {
     pub changed: bool,
@@ -225,6 +239,8 @@ pub(crate) struct Acknowledgement {
     pub path: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_validation: Option<super::evidence::Validation>,
+    #[serde(skip)]
+    pub(crate) native_validation_target: Option<super::evidence::Target>,
 }
 
 impl<P: Port> Page<P> {
@@ -693,16 +709,127 @@ impl<P: Port> Page<P> {
         action: Action,
         deadline: Instant,
     ) -> Result<Acknowledgement> {
-        self.act_as(reference, action, false, deadline, false).await
+        self.act_as(
+            reference,
+            action,
+            false,
+            deadline,
+            ValidationProbe::Disabled,
+            None,
+        )
+        .await
     }
-    pub async fn act_with_validation(
+    pub async fn act_with_diagnostics(
         &self,
         reference: Reference,
         action: Action,
+        read_validation: bool,
+        register_field: bool,
+        submit_window: Option<task_events::Sink>,
         deadline: Instant,
     ) -> Result<Acknowledgement> {
-        self.act_as(reference, action, false, deadline, true).await
+        let probe = if register_field {
+            ValidationProbe::Field
+        } else if read_validation {
+            ValidationProbe::Reasons
+        } else {
+            ValidationProbe::Disabled
+        };
+        self.act_as(reference, action, false, deadline, probe, submit_window)
+            .await
     }
+    pub async fn prepare_submit_record(
+        &self,
+        reference: Reference,
+        target: super::evidence::Target,
+        anchor_text: &str,
+        expected_text: Option<&str>,
+        deadline: Instant,
+    ) -> Result<SubmitRecordBinding> {
+        if anchor_text.is_empty()
+            || anchor_text.chars().count() > 128
+            || expected_text.is_some_and(|text| text.is_empty() || text.chars().count() > 128)
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .map_err(|_| Failure::new("browser_busy"))?;
+        let (port, epoch) = self.authorization(false)?;
+        if reference.epoch != epoch {
+            return Err(types::stale());
+        }
+        let element = {
+            let state = self.0.state.lock().unwrap();
+            state
+                .refs
+                .get(&reference)
+                .cloned()
+                .ok_or_else(types::stale)?
+        };
+        if element.frame.parent.is_some() || target.context != element.frame.context {
+            return Err(types::stale());
+        }
+        let frames = port.frames(deadline).await?;
+        let actual_target = super::evidence::target(&frames, &element.frame, target.node)?;
+        if actual_target.context != target.context || actual_target.digest != target.digest {
+            return Err(types::stale());
+        }
+        let Output::SubmitEndpoint(Some(url)) = port
+            .program(
+                &element.frame,
+                Program::SubmitRecordArm {
+                    marker: element.frame.marker.clone(),
+                    submitter: element.facts.node,
+                    record: target.node,
+                    anchor_text: anchor_text.to_owned(),
+                    expected_text: expected_text.map(str::to_owned),
+                },
+                deadline,
+            )
+            .await?
+        else {
+            return Err(Failure::new("browser_not_actionable"));
+        };
+        let endpoint = super::task_events::RequestEndpoint::from_url(&url)
+            .ok_or_else(|| Failure::new("browser_not_actionable"))?;
+        self.delivery(epoch, false)?;
+        Ok(SubmitRecordBinding {
+            endpoint,
+            frame: element.frame,
+            submitter: element.facts.node,
+            record: target.node,
+        })
+    }
+
+    pub async fn submit_observed(
+        &self,
+        binding: &SubmitRecordBinding,
+        deadline: Instant,
+    ) -> Result<bool> {
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .map_err(|_| Failure::new("browser_busy"))?;
+        let (port, epoch) = self.authorization(false)?;
+        let output = port
+            .program(
+                &binding.frame,
+                Program::SubmitRecordRead {
+                    marker: binding.frame.marker.clone(),
+                    submitter: binding.submitter,
+                    record: binding.record,
+                },
+                deadline,
+            )
+            .await?;
+        self.delivery(epoch, false)?;
+        match output {
+            Output::Applied(Some(submitted)) => Ok(submitted),
+            Output::Applied(None) => Err(Failure::new("browser_not_actionable")),
+            _ => Err(types::decode()),
+        }
+    }
+
     pub async fn evidence(
         &self,
         query: &super::evidence::Query,
@@ -825,7 +952,15 @@ impl<P: Port> Page<P> {
         if reference.epoch != permit.epoch {
             return Err(types::stale());
         }
-        self.act_as(reference, action, true, deadline, false).await
+        self.act_as(
+            reference,
+            action,
+            true,
+            deadline,
+            ValidationProbe::Disabled,
+            None,
+        )
+        .await
     }
     async fn act_as(
         &self,
@@ -833,7 +968,8 @@ impl<P: Port> Page<P> {
         action: Action,
         human: bool,
         deadline: Instant,
-        submit_validation: bool,
+        submit_validation: ValidationProbe,
+        submit_window: Option<task_events::Sink>,
     ) -> Result<Acknowledgement> {
         let page = self.clone();
         self.0
@@ -867,8 +1003,15 @@ impl<P: Port> Page<P> {
                 }
             }
             let _owner = Owner(page.0.clone());
-            page.execute(reference, action, human, deadline, submit_validation)
-                .await
+            page.execute(
+                reference,
+                action,
+                human,
+                deadline,
+                submit_validation,
+                submit_window,
+            )
+            .await
         });
         let result = task.await.map_err(|_| Failure::unknown("browser_lost"))?;
         caller.armed = false;
@@ -880,7 +1023,8 @@ impl<P: Port> Page<P> {
         action: Action,
         human: bool,
         deadline: Instant,
-        submit_validation: bool,
+        submit_validation: ValidationProbe,
+        submit_window: Option<task_events::Sink>,
     ) -> Result<Acknowledgement> {
         let _observation = if human {
             None
@@ -929,6 +1073,7 @@ impl<P: Port> Page<P> {
             target.as_ref(),
             action,
             submit_validation,
+            submit_window.as_ref(),
             deadline,
         )
         .await;
@@ -1156,6 +1301,7 @@ async fn submit_probe_arm<P: Port>(
     marker: &Marker,
     node: u64,
     enter: bool,
+    register_field: bool,
     deadline: Instant,
 ) -> bool {
     matches!(
@@ -1165,6 +1311,7 @@ async fn submit_probe_arm<P: Port>(
                 marker: marker.clone(),
                 node,
                 enter,
+                register_field,
             },
             deadline,
         )
@@ -1179,7 +1326,7 @@ async fn submit_probe_read<P: Port>(
     marker: &Marker,
     node: u64,
     deadline: Instant,
-) -> Option<super::evidence::Validation> {
+) -> Option<super::program::SubmitValidation> {
     match port
         .program(
             frame,
@@ -1201,7 +1348,8 @@ async fn perform<P: Port>(
     element: &Element,
     target: Option<&Element>,
     action: Action,
-    submit_validation: bool,
+    submit_validation: ValidationProbe,
+    submit_window: Option<&task_events::Sink>,
     deadline: Instant,
 ) -> Result<Acknowledgement> {
     if let Action::Drag { .. } = &action {
@@ -1340,8 +1488,20 @@ async fn perform<P: Port>(
             "native_hover"
         }
         Action::Click | Action::Check(_) => {
-            let probe_armed = submit_validation
-                && submit_probe_arm(port, &element.frame, &marker, node, false, deadline).await;
+            let probe_armed = submit_validation != ValidationProbe::Disabled
+                && submit_probe_arm(
+                    port,
+                    &element.frame,
+                    &marker,
+                    node,
+                    false,
+                    submit_validation == ValidationProbe::Field,
+                    deadline,
+                )
+                .await;
+            if let Some(window) = submit_window {
+                window.submit_dispatch()?;
+            }
             port.input(
                 &element.frame,
                 NativeInput::Click {
@@ -1440,9 +1600,18 @@ async fn perform<P: Port>(
                 return Err(Failure::new("browser_not_actionable"));
             }
             inspect(port, element, deadline).await?;
-            let probe_armed = submit_validation
+            let probe_armed = submit_validation != ValidationProbe::Disabled
                 && matches!(key, Key::Enter)
-                && submit_probe_arm(port, &element.frame, &marker, node, true, deadline).await;
+                && submit_probe_arm(
+                    port,
+                    &element.frame,
+                    &marker,
+                    node,
+                    true,
+                    submit_validation == ValidationProbe::Field,
+                    deadline,
+                )
+                .await;
             port.input(&element.frame, NativeInput::Press(key), deadline)
                 .await?;
             if probe_armed {
@@ -1471,7 +1640,20 @@ async fn perform<P: Port>(
         Action::Drag { .. } => unreachable!("drag handled before ordinary action dispatch"),
     };
     let mut acknowledgement = ack(true, path);
-    acknowledgement.native_validation = native_validation;
+    if let Some(report) = native_validation {
+        if submit_validation == ValidationProbe::Field
+            && matches!(
+                report.validation.state,
+                super::evidence::ValidationState::Invalid
+            )
+            && let Some(node) = report.field_node
+            && let Ok(frames) = port.frames(deadline).await
+        {
+            acknowledgement.native_validation_target =
+                super::evidence::target(&frames, &element.frame, node).ok();
+        }
+        acknowledgement.native_validation = Some(report.validation);
+    }
     Ok(acknowledgement)
 }
 fn is_drag_endpoint(facts: &Facts) -> bool {
@@ -1592,5 +1774,6 @@ fn ack(changed: bool, path: &'static str) -> Acknowledgement {
         business_result_verified: false,
         path,
         native_validation: None,
+        native_validation_target: None,
     }
 }

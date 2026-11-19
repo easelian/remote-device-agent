@@ -549,6 +549,7 @@ function(operation, args, other) {
       if (probe.event || !event.isTrusted || field?.form !== form || field.getRootNode() !== root) return;
       const validation = state.nativeValidation(field);
       probe.event = validation.state === 'invalid' ? validation : {state:'omitted', reasons:[]};
+      if (args.register_field && validation.state === 'invalid') probe.field = new WeakRef(field);
     };
     probe.stop = () => {
       root.removeEventListener('invalid', listener, true);
@@ -559,12 +560,6 @@ function(operation, args, other) {
     probe.timer = setTimeout(probe.stop, 1000);
     state.submitProbe = probe;
     return result(true);
-  }
-  if (operation === 'submit_probe_read') {
-    const probe = state.submitProbe;
-    if (!probe) return result(null);
-    probe.stop();
-    return result(target() === probe.submitter ? probe.event : null);
   }
   if (operation === 'release') { state.nodes.clear(); state.scan=null;clearTimeout(state.timer);state.timer=null;state.expires=0;return result(true); }
   throw new Error('Unknown fixed semantic operation');

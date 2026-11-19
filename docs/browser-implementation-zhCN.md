@@ -53,7 +53,9 @@ v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记
 
 Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标签。显式打开 v2 会话，确认 `extensions.visual_click` 版本 1，然后调用 `browser_screenshot`。用返回的 MCP 图片定位目标，保留同一响应的 `frame_id`。点击使用图片左上角为原点的整数坐标。会话同时支持 `visual_gestures` 版本 1 时，还可悬停或在同一可视面内沿直线拖动。每个动作都需要新截图。Agent 在原生输入前重新截图、检查视口和文档，再命中测试目标。CDP 和 BiDi 只在设备端检查当前命中节点的类型和 closed shadow 标记。遇到遮挡或过期帧时重新定位。账户验证和敏感输入沿用人工接管流程。[截图与指针输入](../src/browser/runtime/v2/visual.rs)
 
-支持 `extensions.submit_validation` 的 v2 会话在通过 `ref` 点击提交按钮或按 Enter 提交表单、并触发原生 `invalid` 事件时，随动作回执返回 `native_validation`。Agent 只在获得字段证据读取权限时观察该次提交，并按原表单过滤事件。`invalid` 提供有界的原因枚举，`omitted` 表示触发事件的字段受保护。需要区分同名字段时，先在原业务记录上核对字段，再使用已有的 `read_validation`。提交完成后，仍须用原业务记录核对结果。
+支持 `extensions.submit_validation` 的 v2 会话在通过 `ref` 点击提交按钮或按 Enter 提交表单、并触发原生 `invalid` 事件时，随动作回执返回 `native_validation`。Agent 只在获得字段证据读取权限时观察该次提交，并按原表单过滤事件。`invalid` 提供有界的原因枚举，`omitted` 表示触发事件的字段受保护。支持 `submit_validation_field` 时，`invalid` 回执还可带 `node_id`。监听器按实际表单归属记录首个失败控件，包括用 `form=` 关联的外部字段。用同一标识调用 `read_node` 读字段名称、`read_validation` 复查约束。敏感控件只返回 `omitted` 和空原因列表。
+
+支持 `submit_outcome` 时，动作窗口在点击前检查同源顶层 POST 表单、显式提交按钮、原记录业务键和拒绝文字的基线。Agent 在隔离环境中观察该表单的真实提交事件，匹配方法、端点和请求进度。HTTP 200 还需在原记录上读到本次新增的拒绝文字；同名邻单、重定向和不完整的请求记录不能确立结果。查询只读取当前窗口，不触发输入。浏览器导航或控制代次切换后，沿原操作回执与业务记录恢复。[提交判定](../src/browser/runtime/v2/submit.rs)
 
 | 标识 | 可用于 | 失效与拒绝 |
 | --- | --- | --- |

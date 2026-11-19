@@ -11,6 +11,7 @@ mod file_approval;
 mod human;
 mod native;
 mod presentation;
+mod submit;
 mod visual;
 
 pub(super) struct Slot {
@@ -257,7 +258,9 @@ async fn wait_record(
     let query = sem::evidence::Query::MatchRecord {
         node_id: condition.node_id.clone(),
         anchor_text: condition.anchor_text,
-        expected_text: condition.expected_text,
+        expected_text: condition
+            .expected_text
+            .ok_or_else(|| Failure::new("browser_invalid_params"))?,
     };
     let interval = Duration::from_millis(100);
     let mut sampled = false;
@@ -578,6 +581,17 @@ impl Browsers {
                     prepared_presentation = prepared;
                     Ok(value)
                 }
+                "browser_evidence" if params["query"]["kind"] == "read_submit_outcome" => {
+                    capture::Capture::submit_outcome(
+                        &mut session,
+                        &page,
+                        &tab,
+                        epoch,
+                        &params["query"],
+                        deadline,
+                    )
+                    .await
+                }
                 "browser_evidence"
                     if matches!(
                         params["query"]["kind"].as_str(),
@@ -637,7 +651,7 @@ impl Browsers {
                     Ok(value)
                 }
                 "browser_act" => {
-                    if let Some(previous) = &session.task_events {
+                    if let Some(previous) = &mut session.task_events {
                         previous.stop_if_action_owned();
                     }
                     let frame = session.visual_frame.take();
@@ -675,6 +689,15 @@ impl Browsers {
                     };
                     // Keep the new window local until input is acknowledged. On error
                     // or cancellation its Drop invalidates the native subscription.
+                    let attempt = submit::Attempt::prepare(
+                        &mut session,
+                        &page,
+                        &tab,
+                        epoch,
+                        params,
+                        deadline,
+                    )
+                    .await?;
                     let capture = if let Some(options) = params.get("pre_action_diagnostics") {
                         Some(
                             capture::Capture::start(
@@ -693,9 +716,17 @@ impl Browsers {
                         paused,
                         deadline,
                         attachment,
+                        capture
+                            .as_ref()
+                            .filter(|_| attempt.is_some())
+                            .map(|c| c.sink.clone()),
                     )
                     .await?;
-                    if let Some(capture) = capture {
+                    if let Some(mut capture) = capture {
+                        if let Some((mut attempt, binding)) = attempt {
+                            attempt.acknowledge(&page, &binding, &value, deadline).await;
+                            capture.submit = Some(attempt);
+                        }
                         value["capture_id"] = json!(capture.id);
                         session.task_events = Some(capture);
                     }
@@ -1020,16 +1051,18 @@ async fn act(
     paused: bool,
     deadline: Instant,
     attachment: Option<files::Attachment>,
+    submit_window: Option<sem::task_events::Sink>,
 ) -> Result<Value> {
     let action = &params["action"];
     let kind = action["kind"].as_str().unwrap_or("");
+    let tab = port.tab_id()?;
     let reference = action["ref"]
         .as_str()
-        .map(|id| session.reference(id, &port.tab_id()?))
+        .map(|id| session.reference(id, &tab))
         .transpose()?;
     let drag_target = action["target_ref"]
         .as_str()
-        .map(|id| session.reference(id, &port.tab_id()?))
+        .map(|id| session.reference(id, &tab))
         .transpose()?;
     session.clear_references();
     if let Some(reference) = reference {
@@ -1053,13 +1086,30 @@ async fn act(
             },
             _ => return Err(Failure::new("browser_feature_unsupported")),
         };
-        let submit_validation = action["read_native_validation"] == true;
-        let mut value = serde_json::to_value(if submit_validation {
-            page.act_with_validation(reference, input, deadline).await?
+        let ack = if action["read_native_validation"] == true || submit_window.is_some() {
+            page.act_with_diagnostics(
+                reference,
+                input,
+                action["read_native_validation"] == true,
+                action["read_validation_field"] == true,
+                submit_window,
+                deadline,
+            )
+            .await?
         } else {
             page.act(reference, input, deadline).await?
-        })
-        .map_err(crate::browser::io_error)?;
+        };
+        let target = ack.native_validation_target;
+        let mut value = serde_json::to_value(ack).map_err(crate::browser::io_error)?;
+        if let Some(target) = target
+            && let Ok(id) = session.evidence.publish_target(
+                target,
+                &tab,
+                params["control_epoch"].as_u64().unwrap_or(0),
+            )
+        {
+            value["native_validation"]["node_id"] = id.into();
+        }
         if kind == "attach_file" {
             value["file_selected"] = true.into();
             value["file_grant_id"] = action["file_grant_id"].clone();

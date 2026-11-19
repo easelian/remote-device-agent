@@ -4,7 +4,7 @@ use super::{
     Command, ContextId, Event,
     event::{CORE_EVENTS, ConsoleLevel, Diagnostic, FetchErrorKind},
 };
-use crate::browser::semantic::task_events::{Fact, Method, RequestUpdate, Sink};
+use crate::browser::semantic::task_events::{Fact, Method, RequestEndpoint, RequestUpdate, Sink};
 use crate::browser::{
     Failure,
     control::{Control, Effect, Submission},
@@ -786,6 +786,11 @@ impl Inner {
         let update = match method {
             "network.beforeRequestSent" => RequestUpdate::Start {
                 method: Method::parse(params["request"]["method"].as_str().unwrap_or("")),
+                endpoint: params["request"]["url"]
+                    .as_str()
+                    .filter(|_| sink.tracks_submit())
+                    .and_then(RequestEndpoint::from_url),
+                context: sink.tracks_submit().then(|| context.as_str().into()),
                 redirect,
                 hop,
             },

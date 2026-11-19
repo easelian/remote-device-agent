@@ -7,8 +7,9 @@ pub(super) struct Capture {
     tab: String,
     epoch: u64,
     frame: sem::Frame,
-    sink: Sink,
+    pub(super) sink: Sink,
     action_owned: bool,
+    pub(super) submit: Option<submit::Attempt>,
 }
 impl Drop for Capture {
     fn drop(&mut self) {
@@ -17,7 +18,10 @@ impl Drop for Capture {
 }
 
 impl Capture {
-    pub(super) fn stop_if_action_owned(&self) {
+    pub(super) fn stop_if_action_owned(&mut self) {
+        if let Some(submit) = &mut self.submit {
+            submit.supersede();
+        }
         if self.action_owned {
             self.sink.stop();
         }
@@ -63,13 +67,15 @@ impl Capture {
             epoch,
             frame,
             action_owned,
-            sink: Sink::new_with_tracking(
+            submit: None,
+            sink: Sink::new_capture(
                 slot.control.clone(),
                 epoch,
                 console,
                 network,
                 track_requests,
                 track_exception_locations,
+                action_owned && action.get("rejection_record").is_some(),
             ),
         };
         port.enable_task_events(capture.sink.clone(), deadline)
@@ -131,6 +137,43 @@ impl Capture {
         capture.check_document(port, deadline).await?;
         value["capture_id"] = capture.id.clone().into();
         Ok(value)
+    }
+
+    pub(super) async fn submit_outcome(
+        session: &mut Session,
+        page: &sem::Page<native::Port>,
+        tab: &str,
+        epoch: u64,
+        query: &Value,
+        deadline: Instant,
+    ) -> Result<Value> {
+        let port = page.access(false)?;
+        let capture = session
+            .task_events
+            .as_ref()
+            .filter(|w| w.tab == tab && w.epoch == epoch && query["capture_id"] == w.id)
+            .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
+        let submit = capture
+            .submit
+            .as_ref()
+            .ok_or_else(|| Failure::new("browser_capture_unavailable"))?;
+        capture.check_document(&port, deadline).await?;
+        // Reuse the capture lifetime and retirement checks even for a native refusal.
+        capture.sink.page(0, Some(0), 1)?;
+        let outcome = submit
+            .read(
+                &capture.sink,
+                page,
+                &mut session.evidence,
+                tab,
+                epoch,
+                deadline,
+            )
+            .await?;
+        capture.check_document(&port, deadline).await?;
+        Ok(
+            json!({"kind":"read_submit_outcome","capture_id":capture.id,"content_trust":"untrusted_page","outcome":outcome}),
+        )
     }
 
     async fn check_document(&self, port: &native::Port, deadline: Instant) -> Result<()> {

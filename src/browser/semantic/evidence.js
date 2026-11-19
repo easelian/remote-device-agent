@@ -27,6 +27,18 @@ function(operation, args) {
     registry.nodes.set(id,{weak:new WeakRef(node),created:now});
     return id;
   };
+  if (operation === 'submit_probe_read') {
+    const probe = canonical.submitProbe;
+    if (!probe) return result(null);
+    probe.stop();
+    const submitter = canonical.nodes.get(args.node);
+    if (!probe.event || submitter !== probe.submitter) return result(null);
+    const field = probe.field?.deref();
+    if (!field?.isConnected || field.form !== submitter.form ||
+        field.getRootNode() !== submitter.getRootNode()) return result({validation:probe.event});
+    if (canonical.sensitiveControl(field)) return result({validation:{state:'omitted', reasons:[]}});
+    return result({validation:probe.event, field_node:remember(field)});
+  }
   const limits = new Set(), omitted = new Set();
   let elements = 0, texts = 0, others = 0;
   const visit = node => {
@@ -202,14 +214,14 @@ function(operation, args) {
     return style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse'
       && style.opacity !== '0' && style.contentVisibility !== 'hidden';
   }
-  function matchesRecord(record) {
+  function matchesRecord(record, baseline = false) {
     if (canonical.recordKind(record) !== 'record') return false;
     for (let item = record, depth = 0; item; item = parent(item), depth++) {
       if (depth >= 64) { limits.add('depth_limit'); return false; }
       if (!visit(item) || !allowsRecordText(item)) return false;
     }
     const stack = [{next:record.firstChild}];
-    let visited = 0, characters = 0, anchor = false, expected = false;
+    let visited = 0, characters = 0, anchors = 0, expected = false;
     while (stack.length) {
       const cursor = stack[stack.length - 1], item = cursor.next;
       if (!item) { stack.pop(); continue; }
@@ -232,12 +244,63 @@ function(operation, args) {
         range.selectNodeContents(item);
         const rect = range.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
-          anchor ||= text === args.anchor_text;
+          if (text === args.anchor_text) anchors++;
           expected ||= text === args.expected_text;
         }
       }
     }
-    return anchor && expected;
+    return baseline ? anchors === 1 && !expected : anchors > 0 && expected;
+  }
+  if (operation === 'submit_record_arm' || operation === 'submit_record_read') {
+    const entry = registry.nodes.get(args.record);
+    const record = entry?.weak.deref();
+    const submitter = canonical.nodes.get(args.node);
+    if (operation === 'submit_record_read') {
+      const probe = registry.submitProbe;
+      if (!probe) return result(null);
+      probe.stop();
+      return result(record === probe.record && submitter === probe.submitter && probe.observed);
+    }
+    registry.submitProbe?.stop();
+    if (!record?.isConnected || !submitter?.isConnected) return result(null);
+    const form = submitter.form;
+    const canSubmit = (submitter.localName === 'button' && submitter.type === 'submit') ||
+      (submitter.localName === 'input' && ['submit','image'].includes(submitter.type));
+    // Resolve submitter overrides only when the attribute is actually present.
+    const endpoint = () => {
+      const method = submitter.hasAttribute('formmethod') ? submitter.formMethod : form.method;
+      if (method !== 'post') return null;
+      const url = new URL(submitter.hasAttribute('formaction') ? submitter.formAction : form.action);
+      if (!['http:', 'https:'].includes(url.protocol) || url.origin !== location.origin ||
+          url.username || url.password || url.href.length > 4096) return null;
+      url.hash = '';
+      return url.href;
+    };
+    const owns = element => {
+      for (let node=element, depth=0; node && depth<64; node=node.parentElement, depth++) {
+        if (canonical.recordKind(node)) return node === record;
+      }
+      return false;
+    };
+    if (!canSubmit || !form || !owns(form) || !owns(submitter) ||
+        !matchesRecord(record, true) || limits.size) return result(null);
+    const url = endpoint();
+    if (!url) return result(null);
+    const probe = {submitter, record, observed:false};
+    const listener = event => {
+      if (event.isTrusted && event.target === form && event.submitter === submitter &&
+          submitter.form === form && owns(form) && owns(submitter) && endpoint() === url) probe.observed = true;
+    };
+    const root = form.getRootNode();
+    probe.stop = () => {
+      root.removeEventListener('submit', listener, true);
+      clearTimeout(probe.timer);
+      if (registry.submitProbe === probe) registry.submitProbe = null;
+    };
+    root.addEventListener('submit', listener, true);
+    probe.timer = setTimeout(probe.stop, 2000);
+    registry.submitProbe = probe;
+    return result(url);
   }
   let output;
   if (operation==='find_nodes') {

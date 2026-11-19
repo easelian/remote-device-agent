@@ -12,7 +12,7 @@ mod locations;
 mod requests;
 use locations::Locations;
 use requests::Ledger;
-pub(crate) use requests::{Method, RequestUpdate};
+pub(crate) use requests::{Method, RequestEndpoint, RequestUpdate, SubmitResponse};
 
 pub(crate) const MAX_EVENTS: usize = 128;
 pub(crate) const WINDOW: Duration = Duration::from_secs(30);
@@ -76,6 +76,7 @@ struct Window {
     invalid: bool,
     requests: Option<Ledger>,
     locations: Option<Locations>,
+    request_context: Option<Box<str>>,
 }
 struct Inner {
     control: Arc<Control>,
@@ -84,6 +85,7 @@ struct Inner {
     console: bool,
     network: bool,
     progress: bool,
+    track_submit: bool,
     location_start_ms: Option<u64>,
     window: Mutex<Window>,
 }
@@ -121,6 +123,26 @@ impl Sink {
         track_requests: bool,
         track_exception_locations: bool,
     ) -> Self {
+        Self::new_capture(
+            control,
+            epoch,
+            console,
+            network,
+            track_requests,
+            track_exception_locations,
+            false,
+        )
+    }
+
+    pub(crate) fn new_capture(
+        control: Arc<Control>,
+        epoch: u64,
+        console: bool,
+        network: bool,
+        track_requests: bool,
+        track_exception_locations: bool,
+        track_submit: bool,
+    ) -> Self {
         let progress = network && track_requests;
         let exception_locations = console && track_exception_locations;
         Self(Arc::new(Inner {
@@ -130,6 +152,7 @@ impl Sink {
             console,
             network,
             progress,
+            track_submit,
             location_start_ms: exception_locations
                 .then(|| {
                     SystemTime::now()
@@ -143,10 +166,48 @@ impl Sink {
                 last: 0,
                 stopped: None,
                 invalid: false,
-                requests: progress.then(|| Ledger::for_epoch(epoch)),
+                requests: progress.then(|| {
+                    if track_submit {
+                        Ledger::for_action_epoch(epoch)
+                    } else {
+                        Ledger::for_epoch(epoch)
+                    }
+                }),
                 locations: exception_locations.then(Locations::default),
+                request_context: None,
             }),
         }))
+    }
+
+    pub(crate) fn tracks_submit(&self) -> bool {
+        self.0.track_submit
+    }
+
+    /// Set the backend-owned root frame/context used for private request
+    /// correlation. It is never serialized in public task-event output.
+    pub(crate) fn set_request_context(&self, context: &str) {
+        if let Ok(mut w) = self.0.window.lock() {
+            w.request_context = Some(context.into());
+        }
+    }
+
+    /// Establish the exact action-submit barrier. Requests started before
+    /// this call cannot later be attributed to the action.
+    pub(crate) fn submit_dispatch(&self) -> Result<()> {
+        let authority = self.0.control.state.lock().unwrap();
+        let mut w = self.0.window.lock().unwrap();
+        if *authority != (self.0.epoch, false)
+            || w.invalid
+            || w.stopped.is_some()
+            || self.0.started.elapsed() >= WINDOW
+        {
+            return Err(Failure::new("browser_capture_unavailable"));
+        }
+        let Some(ledger) = w.requests.as_mut() else {
+            return Err(Failure::new("browser_capture_unavailable"));
+        };
+        ledger.submit_dispatch();
+        Ok(())
     }
 
     pub(crate) fn wants_console(&self) -> bool {
@@ -281,6 +342,26 @@ impl Sink {
                 .as_ref()
                 .map(|l| l.snapshot(state))
                 .ok_or_else(|| Failure::new("browser_capture_unavailable"))
+        })
+    }
+
+    pub(crate) fn submit_response(
+        &self,
+        endpoint: &requests::RequestEndpoint,
+        method: requests::Method,
+    ) -> Result<requests::SubmitResponse> {
+        self.read(|w, state| {
+            w.requests
+                .as_ref()
+                .ok_or_else(|| Failure::new("browser_capture_unavailable"))
+                .map(|ledger| {
+                    ledger.submit_response(
+                        endpoint,
+                        method,
+                        w.request_context.as_deref(),
+                        state == "active",
+                    )
+                })
         })
     }
 
