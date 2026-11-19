@@ -265,6 +265,17 @@ pub fn result_summary(value: &Value) -> Value {
             out.insert(key.into(), json!(value));
         }
     }
+    // Browser input can be acknowledged even if the site processes several requests.
+    if source.get("input_acknowledged").and_then(Value::as_bool) == Some(true)
+        && source
+            .get("business_result_verified")
+            .and_then(Value::as_bool)
+            == Some(false)
+    {
+        out.insert("input_acknowledged".into(), Value::Bool(true));
+        out.insert("business_result_verified".into(), Value::Bool(false));
+        out.insert("site_processing_count".into(), Value::Null);
+    }
     Value::Object(out)
 }
 
@@ -467,6 +478,24 @@ impl Receipts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_input_receipt_preserves_only_observed_acknowledgment() {
+        let confirmed = json!({"input_acknowledged": true, "business_result_verified": false,
+            "site_processing_count": null});
+        let mut untrusted = confirmed.clone();
+        untrusted["site_processing_count"] = 1.into();
+        assert_eq!(result_summary(&untrusted), confirmed);
+        assert_eq!(result_summary(&confirmed), confirmed);
+        for incomplete in [
+            json!({"input_acknowledged":true}),
+            json!({"input_acknowledged":"true","business_result_verified":false}),
+            json!({"input_acknowledged":true,"business_result_verified":true}),
+            json!({"site_processing_count":1}),
+        ] {
+            assert_eq!(result_summary(&incomplete), json!({}));
+        }
+    }
 
     #[test]
     fn browser_selection_summary_is_closed_and_contains_no_page_data() {

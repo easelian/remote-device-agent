@@ -49,6 +49,10 @@ Linux 上的 Firefox 会话归 Agent 进程所有。守护进程用 pidfd 等待
 2. 从最新观察取元素 `ref`，通过 `browser_act` 导航、操作控件、滚动、处理标签页或弹窗。v2 的 `fill` 走原生文本编辑，日期、时间、颜色和范围控件走 `select` 的固定设值路径。省略 `ref` 的 `scroll` 滚动主文档。会话声明 `extensions.scoped_scroll` 版本 1 时，观察可为具备名称、region 角色或焦点能力的垂直滚动容器签发 `kind: scrollable` 的 ref。使用 `{"kind":"scroll","ref":"…","delta_y":420}` 滚动该容器，正数向下，范围为 −2000 至 2000 CSS 像素。到达边缘时可返回 `changed: false`。重新观察可见记录后再操作；容器专用 ref 只授权滚动。会话声明 `extensions.ref_hover` 版本 1 时，对最新控件引用调用 `{"kind":"hover","ref":"…"}` 可展开悬停菜单。可以先用 `browser_inspect` 的 `action_kind: hover` 检查遮挡和几何稳定性。指针移动也可能触发站点脚本，应在新观察中找到要选择的菜单项，再单独点击。
 3. 用 `browser_wait` 等待明确的 URL 或文本，再观察目标记录的业务状态。`input_acknowledged` 只确认原生输入，`business_result_verified` 保持 `false`。一次提交即使收到了成功回执，仍需从网站读到与目标记录对应的结果。
 
+嵌套 iframe 中的语义动作先按目标文档的视口检查几何。需要滚动时，CDP 在子文档中将保留的目标滚到中央，再沿 frame 链映射命中点，复核节点身份、可见性、遮挡和位置稳定性。命中其他控件时，动作返回 `browser_not_actionable`。[CDP 语义操作](../src/browser/engine/cdp/semantic.rs)
+
+动作回执确认输入后，恢复摘要保留 `input_acknowledged: true`、`business_result_verified: false` 和 `site_processing_count: null`。原生表单导航在断线时可能为一次点击发出多个 POST。恢复时用原操作 ID 查询回执，再通过只读页面核对指定记录。网站的处理次数需要独立的业务回执或审计数据。
+
 v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记录材料有独立预算。closed shadow、canvas 内部像素和浏览器自身界面超出语义观察范围。相同 URL 重新加载、文档或 realm 替换、节点或所在记录改变，都可能使旧引用失效。续页替换上一页的动作绑定。出现 `browser_stale_reference` 时重新观察当前记录，按原 ref 派发的动作始终重新检查身份、敏感性、几何和命中条件。[页面算法](../src/browser/semantic/page.rs) · [共同语义语料](../tests/fixtures/semantic-dom-v1/oracle.json)
 
 Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标签。显式打开 v2 会话，确认 `extensions.visual_click` 版本 1，然后调用 `browser_screenshot`。用返回的 MCP 图片定位目标，保留同一响应的 `frame_id`。点击使用图片左上角为原点的整数坐标。会话同时支持 `visual_gestures` 版本 1 时，还可悬停或在同一可视面内沿直线拖动。每个动作都需要新截图。Agent 在原生输入前重新截图、检查视口和文档，再命中测试目标。CDP 和 BiDi 只在设备端检查当前命中节点的类型和 closed shadow 标记。遇到遮挡或过期帧时重新定位。账户验证和敏感输入沿用人工接管流程。[截图与指针输入](../src/browser/runtime/v2/visual.rs)

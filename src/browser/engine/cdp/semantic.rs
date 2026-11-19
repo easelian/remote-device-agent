@@ -1222,7 +1222,12 @@ impl Port for Semantic {
     ) -> Result<Output> {
         let native = self.native(frame)?;
         let world = self.world(&native, deadline).await?;
-        if let Program::Scroll { marker, node } = &program {
+        // In a clipped child viewport CDP can stop with the button still
+        // partly outside the frame. Center the retained target in its own
+        // document using the shared scroll program, then recheck the hit.
+        if frame.parent.is_none()
+            && let Program::Scroll { marker, node } = &program
+        {
             let node = self.native_node(&native, marker, *node, deadline).await?;
             self.engine().scroll_into_view(&node, deadline).await?;
             return Ok(Output::Applied(Some(true)));
