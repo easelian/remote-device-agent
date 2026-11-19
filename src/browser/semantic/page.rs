@@ -915,6 +915,43 @@ impl<P: Port> Page<P> {
         }))
     }
 
+    pub async fn submit_pixel_slots(
+        &self,
+        target: super::evidence::Target,
+        anchor: &str,
+        deadline: Instant,
+    ) -> Result<Vec<super::program::PixelSlot>> {
+        let deadline = deadline.min(Instant::now() + super::evidence::TIMEOUT);
+        let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
+            .await
+            .map_err(|_| Failure::new("browser_busy"))?;
+        let (port, epoch) = self.authorization(false)?;
+        let frames = port.frames(deadline).await?;
+        let frame = frames
+            .iter()
+            .find(|f| f.context == target.context && f.parent.is_none())
+            .ok_or_else(types::stale)?;
+        if super::evidence::target(&frames, frame, target.node)? != target {
+            return Err(types::stale());
+        }
+        let output = port
+            .program(
+                frame,
+                Program::SubmitPixelSlotsRead {
+                    marker: frame.marker.clone(),
+                    record: target.node,
+                    anchor_text: anchor.to_owned(),
+                },
+                deadline,
+            )
+            .await?;
+        self.delivery(epoch, false)?;
+        match output {
+            Output::PixelSlots(slots) => Ok(slots),
+            _ => Err(types::decode()),
+        }
+    }
+
     pub async fn read_submit_fields(
         &self,
         target: super::evidence::Target,

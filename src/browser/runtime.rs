@@ -1799,9 +1799,12 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
             fields.len() == 2 && id
         }
         (false, Some("read_submit_fields")) => {
-            fields.len() == 2 + usize::from(value.get("include_indicators").is_some())
-                && id
-                && value.get("include_indicators").is_none_or(|v| v == true)
+            let indicators = value.get("include_indicators");
+            let pixels = value.get("include_pixel_indicators");
+            id && fields.len()
+                == 2 + usize::from(indicators.is_some()) + usize::from(pixels.is_some())
+                && indicators.is_none_or(|flag| flag == true)
+                && pixels.is_none_or(|flag| flag == true && value["include_indicators"] == true)
         }
         (false, Some("read_events")) => {
             id && fields.keys().all(|k| {
@@ -2090,6 +2093,14 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                     return Err(Failure::new("browser_invalid_params"));
                 }
                 RecordCondition::parse_submit(&record)?;
+                if let Some(flag) = start
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("capture_field_pixels")
+                    && flag != true
+                {
+                    return Err(Failure::new("browser_invalid_params"));
+                }
             }
             start["kind"] = "start".into();
             validate_capture_query(&start, true)?;
@@ -2351,6 +2362,13 @@ mod tests {
         let mut enabled = base.clone();
         enabled["query"]["include_indicators"] = true.into();
         assert!(validate("browser_evidence", &enabled).is_ok());
+        enabled["query"]["include_pixel_indicators"] = true.into();
+        assert!(validate("browser_evidence", &enabled).is_ok());
+        enabled["query"]
+            .as_object_mut()
+            .unwrap()
+            .remove("include_indicators");
+        assert!(validate("browser_evidence", &enabled).is_err());
         let mut disabled = base.clone();
         disabled["query"]["include_indicators"] = false.into();
         assert!(validate("browser_evidence", &disabled).is_err());

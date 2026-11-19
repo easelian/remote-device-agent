@@ -65,6 +65,10 @@ Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标�
 
 启用 `field_indicators` 版本 1 后，`read_submit_fields` 可带上 `include_indicators: true`。Agent 在提交前记录原字段和最多四层单字段容器，读取回执时比较实际绘制的边框、轮廓、纯色背景和阴影，并检查新出现的有错误标记的图标。每条 `outcome.indicators` 包含字段句柄 `field_node_id`、视觉来源句柄 `source_node_id` 和类型 `kind`。焦点或激活状态变化时省略字段的样式差异。若重新排版只改变了悬停位置，来源节点还须改变样式类，并且同一字段须有明确的拒绝文案，Agent 才保留这条视觉线索。页面插入有错误标记的图标或移除原图标的隐藏标记时，可单独报告图标。一次最多返回 32 条视觉线索，超出时省略该列表。
 
+需要诊断无标记的错误图标时，先确认会话支持 `pixel_indicators` 版本 1。在提交动作的 `pre_action_diagnostics` 中指定 `rejection_record`，启用 `track_requests` 和 `capture_field_pixels`。Agent 在点击前截取视口，仅保留原字段旁候选区域的像素和位置。提交后使用原 `capture_id` 调用 `read_submit_fields`，同时启用 `include_indicators` 和 `include_pixel_indicators`。
+
+Agent 将同一记录、表单和字段内的局部像素变化与新出现的字段提示对应。`image_change` 表示图片区域发生变化，`pseudo_change` 表示伪元素区域发生变化。`source_node_id` 指向图片、承载新图片的原占位节点或伪元素宿主，可与 `field_node_id` 一起复查。字段随表单重排时按相对位置对齐。焦点状态变化、多个候选、缺少可比较的区域或缺少独立字段提示时，回执省略像素证据。回执只返回节点引用与已有的字段诊断。
+
 同一表单顶部或底部的摘要可以用指向原字段的 `#id` 链接，也可以用唯一字段标签加冒号逐项说明原因。`summary_error` 表示页面明确标记了错误，`summary_text` 表示可定位字段的普通反馈。字段独占容器内的提示可在输入框之前或之后，适用于上方、右侧和下方等布局。比较 `fields` 与 `indicators` 的 `field_node_id` 后，再用 `read_node` 复查文案和来源。存在同名歧义或归属冲突时，保留能独立确认的证据。
 
 异步提示可以在原窗口内重读。查询限定在原表单、原记录和同一文档，页面文字按不可信数据处理。记录被替换、读到邻单提示或多个错误归属不清时，保留网络层已知状态。导航或交还控制后，通过原操作和业务键重新观察记录。[提交判定](../src/browser/runtime/v2/submit.rs)

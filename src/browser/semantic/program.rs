@@ -105,6 +105,11 @@ pub(crate) enum Program {
         fields: bool,
         include_indicators: bool,
     },
+    SubmitPixelSlotsRead {
+        marker: Marker,
+        record: u64,
+        anchor_text: String,
+    },
     Release,
 }
 pub(crate) const VISUAL_TARGET_NODE: &str = include_str!("visual-target.js");
@@ -187,6 +192,37 @@ pub(crate) struct SubmitIndicator {
     pub field_node: u64,
     pub source_node: u64,
     pub kind: SubmitIndicatorKind,
+}
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PixelKind {
+    Reserved,
+    ImageChange,
+    PseudoChange,
+}
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct PixelSlot {
+    pub field_node: u64,
+    pub source_node: u64,
+    pub kind: PixelKind,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub field_x: i32,
+    pub field_y: i32,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    pub scroll_x: i32,
+    pub scroll_y: i32,
+    pub paint_revision: u32,
+    pub changed: bool,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PixelSlotsReply {
+    pub slots: Vec<PixelSlot>,
 }
 
 #[derive(serde::Deserialize)]
@@ -334,6 +370,7 @@ pub(crate) enum Output {
     SubmitEndpoint(Option<String>),
     Feedback(Option<FeedbackNodes>),
     Fields(SubmitFieldsReply),
+    PixelSlots(Vec<PixelSlot>),
 }
 impl Program {
     pub fn source(&self) -> &'static str {
@@ -344,6 +381,7 @@ impl Program {
                 | Self::SubmitRecordArm { .. }
                 | Self::SubmitRecordRead { .. }
                 | Self::SubmitFeedbackRead { .. }
+                | Self::SubmitPixelSlotsRead { .. }
         ) {
             super::evidence::SOURCE
         } else {
@@ -473,6 +511,16 @@ impl Program {
                 args["record"] = (*record).into();
                 ("submit_record_read", args)
             }
+            Self::SubmitPixelSlotsRead {
+                marker,
+                record,
+                anchor_text,
+            } => (
+                "submit_pixel_slots_read",
+                json!({"realm":marker.realm,"restoration":marker.restoration,
+                    "record":record,"anchor_text":anchor_text,
+                    "elements":512,"text_nodes":256,"other_nodes":256}),
+            ),
             Self::SubmitFeedbackRead {
                 marker,
                 record,
@@ -558,6 +606,33 @@ impl Program {
                 Ok(Output::Probe(value))
             }
             Self::SubmitRecordArm { .. } => Ok(Output::SubmitEndpoint(parse(text)?)),
+            Self::SubmitPixelSlotsRead { record, .. } => {
+                let reply: PixelSlotsReply = parse(text)?;
+                let mut ids = std::collections::HashSet::from([*record]);
+                if reply.slots.len() > 16
+                    || reply.slots.iter().any(|slot| {
+                        !valid_evidence_id(slot.field_node)
+                            || !valid_evidence_id(slot.source_node)
+                            || !ids.insert(slot.field_node)
+                            || !ids.insert(slot.source_node)
+                            || !(6..=64).contains(&slot.width)
+                            || !(6..=64).contains(&slot.height)
+                            || !(1..=1920).contains(&slot.viewport_width)
+                            || !(1..=1920).contains(&slot.viewport_height)
+                            || slot
+                                .x
+                                .checked_add(slot.width)
+                                .is_none_or(|x| x > slot.viewport_width)
+                            || slot
+                                .y
+                                .checked_add(slot.height)
+                                .is_none_or(|y| y > slot.viewport_height)
+                    })
+                {
+                    return Err(types::decode());
+                }
+                Ok(Output::PixelSlots(reply.slots))
+            }
             Self::SubmitFeedbackRead { fields: false, .. } => {
                 let feedback: Option<FeedbackNodes> = parse(text)?;
                 if feedback.as_ref().is_some_and(|item| !item.valid()) {

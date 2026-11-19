@@ -825,6 +825,153 @@ function(operation, args) {
     }
     return output;
   }
+  // Owned crops use CSS viewport pixels. Only the small slot may be sampled;
+  // the control, label and error text are never part of the requested crop.
+  function pixelGeometry(source, field, form, rect, record) {
+    const f=field.getBoundingClientRect(), gap=96;
+    const x=Math.ceil(rect.left), y=Math.ceil(rect.top);
+    // Keep the interior crop the same size across fractional-pixel reflow.
+    const width=Math.floor(rect.right-rect.left)-1, height=Math.floor(rect.bottom-rect.top)-1;
+    if (width<6 || height<6 || width>64 || height>64 || x<0 || y<0 ||
+        x+width>innerWidth || y+height>innerHeight || !f.width || !f.height ||
+        x>f.right+gap || x+width<f.left-gap || y>f.bottom+gap || y+height<f.top-gap ||
+        (x<f.right+1 && x+width>f.left-1 && y<f.bottom+1 && y+height>f.top-1)) return null;
+    for (let part=source; part; part=part.parentElement) {
+      const style=getComputedStyle(part);
+      if (part.hidden || part.inert || style.display==='none' || style.visibility!=='visible' ||
+          style.opacity==='0' || style.contentVisibility==='hidden' || style.transform!=='none' ||
+          style.filter!=='none' || (style.zoom && !['1','normal'].includes(style.zoom))) return null;
+    }
+    for (const i of [0.08,0.5,0.92]) for (const j of [0.08,0.5,0.92]) {
+      const top=document.elementFromPoint(x+width*i,y+height*j);
+      if (!top || (top!==source && !(top===source.firstElementChild && top.localName==='img')) ||
+          top.closest('form')!==form ||
+          owner(top)!==record || top.matches('input,textarea,select,button,a,iframe,canvas,video')) return null;
+    }
+    return {x,y,width,height,field_x:Math.round(rect.left-f.left),field_y:Math.round(rect.top-f.top),
+      viewport_width:innerWidth,viewport_height:innerHeight,scroll_x:scrollX,scroll_y:scrollY};
+  }
+  function fieldPixelSlot(field, wrapper, form, record) {
+    const candidates=[];
+    // Keep source changes private in the isolated realm. Neither an asset URL
+    // nor CSS content crosses the protocol. Different bytes still require a
+    // verified pixel change and independent rejection text for this field.
+    function candidate(node, kind, rect, paint) {
+      if (paint.length>8192 || node.closest('label,button,a,[contenteditable]:not([contenteditable="false"])') ||
+          validationIcon(node)) return;
+      const geo=pixelGeometry(node,field,form,rect,record);
+      if (geo) candidates.push({node,kind,geo,paint});
+    }
+    function pseudo(node) {
+      const active=[];
+      for (const type of ['::before','::after']) {
+        const ps=getComputedStyle(node,type);
+        if (ps.content==='none' || ps.content==='normal' || ps.display==='none') continue;
+        active.push([type,ps]);
+      }
+      return active;
+    }
+    walk(wrapper,false,node=>{
+      if (node.nodeType!==Node.ELEMENT_NODE || owner(node)!==record || node.closest('form')!==form) return;
+      if (node.matches('img')) {
+        if (node.parentElement?.matches('span,i') && node.parentElement.childElementCount===1 &&
+            node.parentElement.getBoundingClientRect().width<=64) return;
+        if (node.complete && node.naturalWidth) candidate(node,'image_change',node.getBoundingClientRect(),node.currentSrc);
+      } else if (node.matches('span,i,div') && node!==field && !editable(node)) {
+        const rect=node.getBoundingClientRect();
+        if (rect.width<6 || rect.height<6 || rect.width>64 || rect.height>64) return;
+        // A fixed empty slot can later host a newly inserted image or glyph.
+        if (node.childNodes.length!==node.childElementCount) return;
+        if (node.childElementCount) {
+          const img=node.firstElementChild;
+          if (node.childElementCount!==1 || img.localName!=='img' || !img.complete || !img.naturalWidth) return;
+          const r=img.getBoundingClientRect();
+          if (r.left<rect.left || r.right>rect.right || r.top<rect.top || r.bottom>rect.bottom) return;
+          candidate(node,'image_change',rect,img.currentSrc);return;
+        }
+        const painted=pseudo(node);
+        if (!painted.length) candidate(node,'reserved',rect,'');
+        else if (painted.length===1) {
+          const [type,ps]=painted[0];
+          if (ps.transform!=='none' || ps.position==='fixed' || ps.position==='absolute') return;
+          candidate(node,'pseudo_change',rect,[type,ps.content,ps.backgroundImage,ps.backgroundColor,ps.color,
+            ps.borderColor,ps.boxShadow,ps.opacity,ps.visibility].join('|'));
+        }
+      }
+    });
+    // A positioned wrapper may itself paint the glyph. Sample only an
+    // explicitly sized, axis-aligned absolute pseudo inside its padding box.
+    if (getComputedStyle(wrapper).position==='relative') {
+      const rect=wrapper.getBoundingClientRect(), painted=pseudo(wrapper);
+      if (painted.length===1) {
+        const [type,ps]=painted[0], px=v=>/^-?(?:\d+|\d*\.\d+)px$/.test(v)?parseFloat(v):NaN;
+        const width=px(ps.width),height=px(ps.height);
+        if (ps.position==='absolute' && ps.transform==='none' &&
+            ['margin','padding','border'].every(prop=>['Top','Bottom','Left','Right'].every(side=>
+              px(ps[prop+side+(prop==='border'?'Width':'')])===0))) {
+          const left=rect.left+wrapper.clientLeft+(ps.left!=='auto'?px(ps.left):wrapper.clientWidth-px(ps.right)-width);
+          const top=rect.top+wrapper.clientTop+(ps.top!=='auto'?px(ps.top):wrapper.clientHeight-px(ps.bottom)-height);
+          if ([left,top,width,height].every(Number.isFinite) && left>=rect.left && left+width<=rect.right &&
+              top>=rect.top && top+height<=rect.bottom) candidate(wrapper,'pseudo_change',
+            {left,top,right:left+width,bottom:top+height},[type,ps.content,ps.backgroundImage,ps.backgroundColor,ps.color,ps.borderColor,ps.boxShadow].join('|'));
+        }
+      }
+    }
+    return candidates.length===1?candidates[0]:null;
+  }
+  if (operation==='submit_pixel_slots_read') {
+    const empty={slots:[]}, baseline=registry.submitFeedback, form=baseline?.form.deref();
+    const record=registry.nodes.get(args.record)?.weak.deref(), vv=window.visualViewport;
+    if (!baseline?.extended || !form || !record || record!==baseline.record.deref() ||
+        baseline.anchor!==args.anchor_text || !matchesRecord(record,true) || !vv || vv.scale!==1 ||
+        vv.offsetLeft || vv.offsetTop || document!==form.getRootNode() || innerWidth>1920 || innerHeight>1920 ||
+        !Number.isInteger(scrollX) || !Number.isInteger(scrollY)) return result(empty);
+    const counts=new WeakMap(), controls=[];
+    walk(form,false,node=>{
+      if (node.nodeType!==Node.ELEMENT_NODE || !node.matches('input,select,textarea,button,[contenteditable="true"]')) return;
+      for (let p=node.parentElement; p && p!==form; p=p.parentElement) counts.set(p,1+(counts.get(p)||0));
+      if (node.form===form && baseline.extended.originals.has(node)) controls.push(node);
+    });
+    const slots=[], arm=!baseline.pixelSources, sources=baseline.pixelSources || new WeakMap();
+    for (const field of controls) {
+      let wrapper=field.parentElement;
+      for (let depth=1; wrapper && depth<4; depth++) {
+        const outer=wrapper.parentElement;
+        if (!outer || outer===form || counts.get(outer)!==1 || owner(outer)!==record) break;
+        wrapper=outer;
+      }
+      if (!wrapper || wrapper===form || counts.get(wrapper)!==1 || owner(wrapper)!==record ||
+          field.form!==form || sensitiveControl(field) || !feedbackVisible(field,record,true) ||
+          JSON.stringify([field.id,field.name,field.type])!==baseline.extended.originals.get(field)) continue;
+      const candidate=fieldPixelSlot(field,wrapper,form,record);
+      if (!candidate) continue;
+      const {node,kind,geo,paint}=candidate;
+      const old=sources.get(node);
+      if (!arm && (!old || old.field!==field || old.wrapper!==wrapper)) continue;
+      const interaction=[field,wrapper,node].map(n=>Number(n.matches(':focus-within'))+
+        2*Number(n.matches(':active'))+4*Number(n.matches(':focus-visible'))).join('');
+      // CSS interaction changes alone cannot prove that a glyph belongs to a refusal.
+      const markers=[];
+      for (let p=node; p && p!==wrapper.parentElement; p=p.parentElement) {
+        const c=p.getAttribute('class')||'', style=p.getAttribute('style')||'';
+        if (c.length+style.length>8192) return result(empty);
+        markers.push([c,style]);
+      }
+      const signature=JSON.stringify(markers);
+      if (signature.length>16384) continue;
+      if (arm) sources.set(node,{field,wrapper,kind,paint,signature,interaction,lastPaint:paint,revision:0});
+      const current=sources.get(node);
+      if (paint!==current.lastPaint) { current.lastPaint=paint; current.revision++; }
+      slots.push({field_node:remember(field,true),source_node:remember(node,true),kind,...geo,
+        paint_revision:current.revision,changed:!arm && interaction===current.interaction &&
+          paint!==current.paint && (kind==='image_change' || signature!==current.signature)});
+      if (slots.length>16) return result(empty);
+    }
+    if (limits.size) return result(empty);
+    if (arm) baseline.pixelSources=sources;
+    return result({slots});
+  }
+
   if (operation==='submit_fields_read') {
     const empty={fields:[],visual_changes:[]};
     const baseline=registry.submitFeedback, form=baseline?.form.deref();

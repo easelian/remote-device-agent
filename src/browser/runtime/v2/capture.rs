@@ -174,6 +174,7 @@ impl Capture {
                     _ => return Err(Failure::new("browser_invalid_params")),
                 },
                 query["include_indicators"] == true,
+                query["include_pixel_indicators"] == true,
                 deadline,
             )
             .await?;

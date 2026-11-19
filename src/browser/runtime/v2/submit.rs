@@ -15,11 +15,66 @@ enum Dispatch {
     Unconfirmed,
 }
 
+type PixelSlot = sem::program::PixelSlot;
+type Crops = Vec<(PixelSlot, pixels::Crop)>;
+
+// Bracket the screenshot with document-bound geometry reads. A moving slot,
+// changed source or stale frame invalidates the optional diagnostic.
+async fn capture_crops(
+    page: &sem::Page<native::Port>,
+    target: sem::evidence::Target,
+    anchor: &str,
+    deadline: Instant,
+) -> Option<Crops> {
+    let slots = page
+        .submit_pixel_slots(target, anchor, deadline)
+        .await
+        .ok()?;
+    if slots.is_empty() {
+        return None;
+    }
+    let image = page.access(false).ok()?.screenshot(deadline).await.ok()?;
+    let after = page
+        .submit_pixel_slots(target, anchor, deadline)
+        .await
+        .ok()?;
+    if after != slots {
+        return None;
+    }
+    let frame = pixels::Frame::decode(&image)?;
+    slots
+        .into_iter()
+        .map(|slot| {
+            if frame.size() != (slot.viewport_width, slot.viewport_height) {
+                return None;
+            }
+            Some((slot, frame.crop(slot.x, slot.y, slot.width, slot.height)?))
+        })
+        .collect()
+}
+
+fn corresponding_slot(before: &PixelSlot, after: &PixelSlot) -> bool {
+    before.field_node == after.field_node
+        && before.source_node == after.source_node
+        && (before.kind == after.kind || before.kind == sem::program::PixelKind::Reserved)
+        && after.kind != sem::program::PixelKind::Reserved
+        && after.changed
+        && before.width == after.width
+        && before.height == after.height
+        && before.field_x == after.field_x
+        && before.field_y == after.field_y
+        && before.viewport_width == after.viewport_width
+        && before.viewport_height == after.viewport_height
+        && before.scroll_x == after.scroll_x
+        && before.scroll_y == after.scroll_y
+}
+
 pub(super) struct Attempt {
     record: RecordCondition,
     target: sem::evidence::Target,
     endpoint: RequestEndpoint,
     dispatch: Dispatch,
+    before: Option<Crops>,
 }
 
 impl Attempt {
@@ -51,8 +106,19 @@ impl Attempt {
                 deadline,
             )
             .await?;
+        let before = if params["pre_action_diagnostics"]["capture_field_pixels"] == true {
+            // Leave time for the authorized input if optional image capture is slow.
+            let soft = deadline
+                .checked_sub(Duration::from_millis(400))
+                .unwrap_or(deadline)
+                .min(Instant::now() + Duration::from_millis(650));
+            capture_crops(page, target, &record.anchor_text, soft).await
+        } else {
+            None
+        };
         Ok(Some((
             Self {
+                before,
                 record,
                 target,
                 endpoint: binding.endpoint.clone(),
@@ -80,6 +146,7 @@ impl Attempt {
 
     pub(super) fn supersede(&mut self) {
         self.dispatch = Dispatch::Unconfirmed;
+        self.before = None;
     }
 
     pub(super) async fn read(
@@ -91,6 +158,7 @@ impl Attempt {
         epoch: u64,
         mode: Read,
         query_include_indicators: bool,
+        include_pixels: bool,
         deadline: Instant,
     ) -> Result<Value> {
         let unknown = || json!({"state":"undetermined"});
@@ -153,6 +221,42 @@ impl Attempt {
         } else {
             (Vec::new(), Vec::new(), Vec::new())
         };
+        let mut pixel_rows = Vec::new();
+        if include_pixels
+            && !fields.is_empty()
+            && let Some(before) = &self.before
+            && let Some(after) =
+                capture_crops(page, target, &self.record.anchor_text, deadline).await
+        {
+            // Text may change during the image read. Require the same DOM
+            // pair, reason and association on both sides of that read.
+            if let Ok((confirmed, _, _)) = page
+                .read_submit_fields(target, &self.record.anchor_text, true, deadline)
+                .await
+            {
+                for (slot, crop) in &after {
+                    let Some(field) = fields.iter().find(|f| f.field.node == slot.field_node)
+                    else {
+                        continue;
+                    };
+                    if (status != 422 && !field.association.is_strong())
+                        || !confirmed.iter().any(|f| {
+                            f.field == field.field
+                                && f.message == field.message
+                                && f.association == field.association
+                                && f.reason == field.reason
+                        })
+                    {
+                        continue;
+                    }
+                    if before.iter().any(|(first, old)| {
+                        corresponding_slot(first, slot) && old.changed_icon(crop)
+                    }) {
+                        pixel_rows.push(*slot);
+                    }
+                }
+            }
+        }
         let explicit_rejection = fields.iter().any(|item| item.association.is_strong())
             || observed.as_ref().is_some_and(|item| {
             matches!(
@@ -225,13 +329,30 @@ impl Attempt {
             }
             result["fields"] = rows.into();
         }
-        if query_include_indicators && !indicators.is_empty() {
+        if query_include_indicators && (!indicators.is_empty() || !pixel_rows.is_empty()) {
+            if indicators.len() + pixel_rows.len() > 32 {
+                pixel_rows.clear();
+            }
             let mut rows = Vec::with_capacity(indicators.len());
             for item in indicators {
                 rows.push(
                     json!({"field_node_id":registry.feedback_id(item.field,tab,epoch)?,
                     "source_node_id":registry.feedback_id(item.source,tab,epoch)?,
                     "kind":item.kind}),
+                );
+            }
+            for slot in pixel_rows {
+                let field = sem::evidence::Target {
+                    node: slot.field_node,
+                    ..target
+                };
+                let source = sem::evidence::Target {
+                    node: slot.source_node,
+                    ..target
+                };
+                rows.push(
+                    json!({"field_node_id":registry.feedback_id(field,tab,epoch)?,
+                    "source_node_id":registry.feedback_id(source,tab,epoch)?, "kind":slot.kind}),
                 );
             }
             result["indicators"] = rows.into();

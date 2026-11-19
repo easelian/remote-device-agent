@@ -10,6 +10,7 @@ mod evidence;
 mod file_approval;
 mod human;
 mod native;
+mod pixels;
 mod presentation;
 mod submit;
 mod visual;
