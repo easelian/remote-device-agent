@@ -35,6 +35,7 @@ pub(crate) enum Program {
         y: f64,
     },
     VisualRevision,
+    ViewRevision,
     VisualPath {
         x: f64,
         y: f64,
@@ -409,6 +410,7 @@ pub(crate) enum Output {
     Marker(Marker),
     Surface(super::surface::Metadata),
     Revision(u64),
+    ViewRevision(Option<u64>),
     Batch(Batch),
     Facts(Option<Box<Facts>>),
     Checks(Vec<Option<Facts>>),
@@ -466,6 +468,7 @@ impl Program {
             Self::NativeFrameFocused => ("native_focused_frame", json!({})),
             Self::FrameAtPoint { x, y } => ("frame_at_point", json!({"x":x,"y":y})),
             Self::VisualRevision => ("visual_revision", json!({})),
+            Self::ViewRevision => ("view_revision", json!({})),
             Self::VisualPath { x, y, to_x, to_y } => (
                 "visual_path",
                 json!({"x":x, "y":y, "to_x":to_x, "to_y":to_y}),
@@ -639,6 +642,7 @@ impl Program {
                 Ok(Output::Marker(marker))
             }
             Self::VisualRevision => Ok(Output::Revision(parse(text)?)),
+            Self::ViewRevision => Ok(Output::ViewRevision(parse(text)?)),
             Self::Stats => {
                 let stats: RegistryStats = parse(text)?;
                 stats.validate()?;

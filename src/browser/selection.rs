@@ -68,6 +68,7 @@ pub(super) fn extension(reason: Option<&str>) -> Value {
 }
 pub(super) fn with_input_extensions(mut caps: Value, reason: Option<&str>) -> Value {
     for name in [
+        "after_action_view",
         "visual_click",
         "visual_gestures",
         "submit_outcome",

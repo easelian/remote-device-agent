@@ -400,6 +400,10 @@ function(operation, args, other) {
     pending.push(node); return true;
   };
   const result = value => JSON.stringify(value);
+  if (operation === 'view_revision') {
+    const ready = document.readyState === 'complete' && !document.querySelector('[aria-busy="true" i]');
+    return result(ready ? state.revision : null);
+  }
   if (operation === 'visual_revision') return result(state.revision);
   if (operation === 'stamp') return result(stamp());
   if (operation === 'ready') return result(document.readyState === 'complete');

@@ -57,6 +57,7 @@ impl Fixture {
             references: HashMap::new(),
             reference_tab: None,
             frames: HashMap::new(),
+            overview_baseline: None,
             cursor: None,
             presentation: Cache::default(),
             evidence: crate::browser::runtime::v2::evidence::Registry::default(),

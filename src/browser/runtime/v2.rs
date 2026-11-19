@@ -5,6 +5,7 @@ use crate::browser::{
     semantic::{self as sem, Port as _},
 };
 use sem::surface::{Focus, Metadata};
+mod action_view;
 mod capture;
 mod evidence;
 mod file_approval;
@@ -38,6 +39,7 @@ struct Session {
     references: HashMap<String, sem::Reference>,
     reference_tab: Option<String>,
     frames: HashMap<String, sem::Context>,
+    overview_baseline: Option<action_view::Baseline>,
     cursor: Option<(String, sem::Continuation, sem::Query)>,
     presentation: presentation::Cache,
     evidence: evidence::Registry,
@@ -57,6 +59,7 @@ impl Session {
         self.references.clear();
         self.reference_tab = None;
         self.frames.clear();
+        self.overview_baseline = None;
         self.cursor = None;
     }
     async fn close(&mut self) -> Result<()> {
@@ -391,6 +394,7 @@ impl Browsers {
                 references: HashMap::new(),
                 reference_tab: None,
                 frames: HashMap::new(),
+                overview_baseline: None,
                 cursor: None,
                 presentation: presentation::Cache::default(),
                 evidence: evidence::Registry::default(),
@@ -558,6 +562,12 @@ impl Browsers {
         if !dialog && page.input_pending() {
             return Err(Failure::unknown("browser_input_pending"));
         }
+        let wants_view = operation == "browser_act" && params["after_action_view"] == true;
+        let baseline = if wants_view && session.reference_tab.as_deref() == Some(&tab) {
+            session.overview_baseline.take()
+        } else {
+            None
+        };
         let mut prepared_presentation = None;
         let mut prepared_evidence = None;
         let result = async {
@@ -809,6 +819,22 @@ impl Browsers {
             }
         }
         .await;
+        let result = match result {
+            Ok(mut receipt) if wants_view => {
+                if slot.control.snapshot() != (epoch, paused) {
+                    return Err(Failure::unknown("browser_control_changed"));
+                }
+                if let Some(fields) = receipt.as_object_mut() {
+                    fields.remove("reusable_refs");
+                }
+                receipt["after_action_view"] = action_view::sample(
+                    &mut session, &page, &port, baseline, epoch, deadline,
+                ).await;
+                receipt["tab_id"] = tab.clone().into();
+                Ok(receipt)
+            }
+            other => other,
+        };
         *slot.active.lock().unwrap() = session.active.clone();
         if result.as_ref().is_err_and(|e| e.state == "unknown") {
             slot.pause();
@@ -816,7 +842,13 @@ impl Browsers {
         }
         let mut value = result?;
         if slot.control.snapshot() != (epoch, paused) {
-            return Err(Failure::unknown("browser_control_changed"));
+            if !wants_view {
+                return Err(Failure::unknown("browser_control_changed"));
+            }
+            // Input had already finished under this epoch before the optional read.
+            // Discard that read if control changed while it was in progress.
+            session.clear_references();
+            value["after_action_view"] = json!({"state":"continue_observing","reason":"control_changed"});
         }
         value["session_id"] = id.into();
         value["control_epoch"] = epoch.into();
@@ -1062,6 +1094,11 @@ async fn observe(
             !result.complete || result.changed_during_read || !result.omitted.is_empty(),
             max_chars,
         );
+    }
+    if let Some(overview) = value.get("frame_overview")
+        && !result.changed_during_read
+    {
+        session.overview_baseline = Some(action_view::baseline(overview, &session.frames, &before));
     }
     value["nodes"] = nodes.into();
     value["page"]["tab_id"] = port.tab_id()?.into();

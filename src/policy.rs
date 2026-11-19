@@ -558,6 +558,7 @@ fn browser_action_permission_denial(
         Some("visual_click" | "visual_hover" | "visual_drag")
     );
     [
+        ("browser_observe", params.get("after_action_view").is_some()),
         ("browser_capture", capture),
         // The private submit-validation hint is never allowed to bypass the
         // evidence permission: it produces a diagnostic disclosure.

@@ -393,7 +393,7 @@ impl Browsers {
             }
         }
         if operation == "browser_act"
-            && (params.get("pre_action_diagnostics").is_some()
+            && (params.get("after_action_view").is_some() || params.get("pre_action_diagnostics").is_some()
                 || matches!(
                     params["action"]["kind"].as_str(),
                     Some("visual_click" | "visual_hover" | "visual_drag")
@@ -1914,6 +1914,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "control_epoch",
             "action",
             "pre_action_diagnostics",
+            "after_action_view",
         ],
         "browser_wait" => &[
             "session_id",
@@ -2082,6 +2083,11 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             .as_object()
             .ok_or_else(|| Failure::new("browser_invalid_params"))?;
         let kind = action.get("kind").and_then(Value::as_str).unwrap_or("");
+        if let Some(view) = params.get("after_action_view")
+            && (view != true || !matches!(kind, "click" | "check" | "select" | "fill" | "press" | "hover" | "scroll" | "drag" | "navigate" | "visual_click" | "visual_hover" | "visual_drag"))
+        {
+            return Err(Failure::new("browser_invalid_params"));
+        }
         if let Some(options) = params.get("pre_action_diagnostics") {
             if kind != "click"
                 || !map.contains_key("tab_id")
