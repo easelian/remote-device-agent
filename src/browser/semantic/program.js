@@ -29,6 +29,31 @@ function(operation, args, other) {
       if (recordRoles.has(tokens[0])) return 'record';
       return tokens.some(token => recordRoles.has(token)) ? 'ambiguous' : null;
     };
+    state.sensitiveControl = (node, onAttributeLimit) => {
+      const fields=[node.getAttribute('name'),node.getAttribute('id'),node.getAttribute('autocomplete')];
+      // An oversized sensitivity hint cannot be declared non-sensitive after
+      // truncating away the suffix that identifies it.
+      if(fields.some(value=>value && value.length>256)) { onAttributeLimit?.(); return true; }
+      return ['password','file'].includes(node.type) || /(?:pass(?:word|code)?|secret|token|one-time-code|cc-number|cc-csc)/i.test(fields.join(' '));
+    };
+    state.nativeValidation = (node, onAttributeLimit) => {
+      if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement)) {
+        return {state:'not_applicable',reasons:[]};
+      }
+      if (state.sensitiveControl(node, onAttributeLimit)) return {state:'omitted',reasons:[]};
+      if (!node.willValidate) return {state:'not_applicable',reasons:[]};
+      // Reading validity flags does not dispatch an invalid event or reveal the site-provided message.
+      const validity = node.validity;
+      if (validity.valid) return {state:'valid',reasons:[]};
+      const flags = [
+        ['valueMissing','value_missing'], ['typeMismatch','type_mismatch'],
+        ['patternMismatch','pattern_mismatch'], ['tooLong','too_long'], ['tooShort','too_short'],
+        ['rangeUnderflow','range_underflow'], ['rangeOverflow','range_overflow'],
+        ['stepMismatch','step_mismatch'], ['badInput','bad_input'], ['customError','custom_error']
+      ];
+      const reasons = flags.filter(([flag]) => validity[flag]).map(([,reason]) => reason);
+      return {state:reasons.length ? 'invalid' : 'omitted',reasons};
+    };
     Object.defineProperty(globalThis, SLOT, {value:state, configurable:true});
     addEventListener('pageshow', event => {
       if (event.persisted) { state.restoration++; state.nodes.clear(); state.scan = null; }
@@ -303,6 +328,7 @@ function(operation, args, other) {
     pending.push(node); return true;
   };
   const result = value => JSON.stringify(value);
+  if (operation === 'visual_revision') return result(state.revision);
   if (operation === 'stamp') return result(stamp());
   if (operation === 'ready') return result(document.readyState === 'complete');
   if (operation === 'stats') return result({nodes:state.nodes.size,scans:state.scan?1:0,pending:state.scan?.pending.length||0});
@@ -374,6 +400,19 @@ function(operation, args, other) {
     }
     return node;
   };
+  if (operation === 'visual_path') {
+    const surface = viewportHit(args.x, args.y);
+    if (!surface) return result(false);
+    // Include the destination and sample the native pointer's straight path.
+    const distance = Math.max(Math.abs(args.to_x - args.x), Math.abs(args.to_y - args.y));
+    const steps = Math.max(1, Math.ceil(distance / 4));
+    for (let i = 1; i <= steps; i++) {
+      const x = args.x + (args.to_x - args.x) * i / steps;
+      const y = args.y + (args.to_y - args.y) * i / steps;
+      if (viewportHit(x, y) !== surface) return result(false);
+    }
+    return result(true);
+  }
   if(operation==='frame_at_point')return result(['iframe','frame'].includes(viewportHit(args.x,args.y)?.localName));
   if(operation==='native_frame_point'){
     const node=other;
@@ -490,6 +529,42 @@ function(operation, args, other) {
     node.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
     node.dispatchEvent(new Event('change',{bubbles:true}));
     return result(node.isConnected&&node.value===expected?true:null);
+  }
+  if (operation === 'submit_probe_arm') {
+    const node = target();
+    if (!node?.isConnected) return result(false);
+    const isSubmitter = (node.localName === 'button' && node.type === 'submit') ||
+      (node.localName === 'input' && ['submit', 'image'].includes(node.type));
+    const root = node.getRootNode();
+    const isEnterTarget = args.enter && root.activeElement === node && node.localName === 'input' &&
+      ['text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month', 'week',
+       'time', 'datetime-local', 'number'].includes(node.type);
+    const form = node.form;
+    if ((!isSubmitter && !isEnterTarget) || !form || form.noValidate ||
+        (isSubmitter && node.formNoValidate)) return result(false);
+    state.submitProbe?.stop();
+    const probe = {submitter:node, event:null};
+    const listener = event => {
+      const field = event.target;
+      if (probe.event || !event.isTrusted || field?.form !== form || field.getRootNode() !== root) return;
+      const validation = state.nativeValidation(field);
+      probe.event = validation.state === 'invalid' ? validation : {state:'omitted', reasons:[]};
+    };
+    probe.stop = () => {
+      root.removeEventListener('invalid', listener, true);
+      clearTimeout(probe.timer);
+      if (state.submitProbe === probe) state.submitProbe = null;
+    };
+    root.addEventListener('invalid', listener, true);
+    probe.timer = setTimeout(probe.stop, 1000);
+    state.submitProbe = probe;
+    return result(true);
+  }
+  if (operation === 'submit_probe_read') {
+    const probe = state.submitProbe;
+    if (!probe) return result(null);
+    probe.stop();
+    return result(target() === probe.submitter ? probe.event : null);
   }
   if (operation === 'release') { state.nodes.clear(); state.scan=null;clearTimeout(state.timer);state.timer=null;state.expires=0;return result(true); }
   throw new Error('Unknown fixed semantic operation');

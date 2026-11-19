@@ -33,7 +33,7 @@ fn scene_html(scene: Scene) -> &'static str {
             "<section data-rdh-record='large'><p id='huge'></p><button id='large'>Large record</button></section><button id='long-name'></button>"
         }
         Scene::Shadow => {
-            "<span id='outer-label'>Outer label</span><div id='host'></div><div id='closed-host'></div>"
+            "<span id='outer-label'>Outer label</span><div id='host'></div><div id='closed-host'></div><canvas id='canvas' width=40 height=20></canvas>"
         }
         Scene::Controls => {
             "<label>Check<input id='check' type='checkbox'></label><select id='select' aria-label='Choose'><option value='a'>A</option><option value='b'>B</option><option value='disabled' disabled>Disabled</option></select><input id='date' type='date' aria-label='Date'><input id='color' type='color' aria-label='Color'><input id='range' type='range' min='0' max='100' step='1' aria-label='Range'><input id='secret' type='password' aria-label='Secret' value='never-observe-this'><input id='readonly' readonly aria-label='Read only' value='fixed'><div id='inferred' tabindex='0'>Inferred</div><textarea id='keys' aria-label='Keys'>x</textarea><div id='outer' role='button' style='display:inline-block;padding:0'><button id='inner' style='margin:0'>Nested</button></div><button id='disabled' disabled>Disabled</button>"
@@ -425,6 +425,11 @@ pub(super) async fn assert_observation<P: Harness>(port: P) -> Value {
         shadow
             .omitted
             .contains(&"closed_shadow_not_observable".into())
+    );
+    assert!(
+        shadow
+            .omitted
+            .contains(&"canvas_pixels_outside_profile".into())
     );
     json!({"unrelated_record_preserved":true,"own_record_rejected":true,"replaced_detached_retyped_rejected":true,"hash_history_preserved":true,"occlusion_rejected":true,"scroll_verified":true,"pagination":ids,"find_record_text":true,"viewport_filter":true,"incomplete_and_long_name_no_ref":true,"shadow_tree_scope":true})
 }

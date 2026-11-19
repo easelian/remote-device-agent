@@ -47,6 +47,11 @@ pub(super) enum Command {
         context: ContextId,
         program: Program,
     },
+    VisualTarget {
+        context: ContextId,
+        x: f64,
+        y: f64,
+    },
     Document(ContextId),
     Node {
         context: ContextId,
@@ -217,6 +222,17 @@ impl Command {
                 json!({"phases":["beforeRequestSent","responseStarted"]}),
                 Effect::None,
             ),
+            Self::VisualTarget { context, x, y } => {
+                let (method, mut params, effect) = semantic_call_function(
+                    context,
+                    program::VISUAL_TARGET_NODE.into(),
+                    json!([{"type":"number","value":x},{"type":"number","value":y}]),
+                    Effect::None,
+                );
+                params["serializationOptions"] =
+                    json!({"maxDomDepth":0,"maxObjectDepth":0,"includeShadowTree":"none"});
+                (method, params, effect)
+            }
             Self::Program { context, program } => {
                 let (operation, args) = program.encode();
                 semantic_call_function(

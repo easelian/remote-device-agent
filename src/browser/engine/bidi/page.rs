@@ -617,6 +617,94 @@ impl Semantic {
         }
         Err(Failure::new("browser_frame_limit"))
     }
+    pub async fn visual_target_allowed(
+        &self,
+        frame: &sem::Frame,
+        x: f64,
+        y: f64,
+        deadline: Instant,
+    ) -> Result<bool> {
+        let context = self.context(frame)?;
+        let reply = self
+            .channel
+            .call(Command::VisualTarget { context, x, y }, deadline)
+            .await
+            .map_err(failure)?
+            .value;
+        if reply["type"] != "success" {
+            return Err(Failure::new("browser_script_exception"));
+        }
+        let target = &reply["result"];
+        if target["type"] != "node" {
+            return Ok(false);
+        }
+        let node = &target["value"];
+        Ok(node["localName"] == "canvas" || node["shadowRoot"]["value"]["mode"] == "closed")
+    }
+
+    pub async fn visual_hover(&self, x: f64, y: f64, deadline: Instant) -> Result<()> {
+        self.action(&self.root, Action::Move { x, y }, deadline)
+            .await
+    }
+
+    pub async fn visual_drag(
+        &self,
+        x: f64,
+        y: f64,
+        to_x: f64,
+        to_y: f64,
+        deadline: Instant,
+    ) -> Result<()> {
+        let (channel, effects) = self.channel.track_effects();
+        let port = Self {
+            channel,
+            ..self.clone()
+        };
+        let context = &port.root;
+        let result = async {
+            port.action(context, Action::Move { x, y }, deadline)
+                .await?;
+            port.action(context, Action::Button { down: true }, deadline)
+                .await?;
+            for step in 1..=8 {
+                let ratio = f64::from(step) / 8.0;
+                port.action(
+                    context,
+                    Action::Move {
+                        x: x + (to_x - x) * ratio,
+                        y: y + (to_y - y) * ratio,
+                    },
+                    deadline,
+                )
+                .await?;
+            }
+            port.action(context, Action::Button { down: false }, deadline)
+                .await
+        }
+        .await;
+        if effects.load(std::sync::atomic::Ordering::Acquire) {
+            let cleanup = port
+                .channel
+                .release_inputs(
+                    context.clone(),
+                    deadline.max(Instant::now() + Duration::from_secs(1)),
+                )
+                .await
+                .map_err(failure);
+            if cleanup.is_err() {
+                port.channel.stop();
+            }
+            return result.and(cleanup.map(drop)).map_err(|mut error| {
+                error.state = "unknown";
+                error
+            });
+        }
+        result
+    }
+
+    pub async fn visual_click(&self, x: f64, y: f64, deadline: Instant) -> Result<()> {
+        self.human_input(HumanInput::Click { x, y }, deadline).await
+    }
     pub async fn human_input(&self, input: HumanInput, deadline: Instant) -> Result<()> {
         let (channel, effects) = self.channel.track_effects();
         let port = Self {

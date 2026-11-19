@@ -53,13 +53,7 @@ function(operation, args) {
   const normalized = (value, maximum, reason) => prefix(value,maximum,reason)
     .replace(/[\t\n\f\r ]+/g,' ').trim();
   const parent = node => node.parentElement || node.getRootNode().host || null;
-  const sensitiveControl = node => {
-    const fields=[node.getAttribute('name'),node.getAttribute('id'),node.getAttribute('autocomplete')];
-    // An oversized sensitivity hint cannot be declared non-sensitive after
-    // truncating away the suffix that identifies it.
-    if(fields.some(value=>value && value.length>256)) { limits.add('attribute_limit'); return true; }
-    return ['password','file'].includes(node.type) || /(?:pass(?:word|code)?|secret|token|one-time-code|cc-number|cc-csc)/i.test(fields.join(' '));
-  };
+  const sensitiveControl = node => canonical.sensitiveControl(node, () => limits.add('attribute_limit'));
   const sensitive = node => node.localName === 'input' && sensitiveControl(node);
   // Style guards inspect only ordinary parentElement ancestors. This stops at
   // shadow-root and slot boundaries and is distinct from semantic parent().
@@ -77,24 +71,7 @@ function(operation, args) {
     }
     return false;
   };
-  function nativeValidation(node) {
-    if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement)) {
-      return {state:'not_applicable',reasons:[]};
-    }
-    if (sensitiveControl(node)) return {state:'omitted',reasons:[]};
-    if (!node.willValidate) return {state:'not_applicable',reasons:[]};
-    // Reading validity flags does not dispatch an invalid event or reveal the site-provided message.
-    const validity = node.validity;
-    if (validity.valid) return {state:'valid',reasons:[]};
-    const flags = [
-      ['valueMissing','value_missing'], ['typeMismatch','type_mismatch'],
-      ['patternMismatch','pattern_mismatch'], ['tooLong','too_long'], ['tooShort','too_short'],
-      ['rangeUnderflow','range_underflow'], ['rangeOverflow','range_overflow'],
-      ['stepMismatch','step_mismatch'], ['badInput','bad_input'], ['customError','custom_error']
-    ];
-    const reasons = flags.filter(([flag]) => validity[flag]).map(([,reason]) => reason);
-    return {state:reasons.length ? 'invalid' : 'omitted',reasons};
-  }
+  const nativeValidation = node => canonical.nativeValidation(node, () => limits.add('attribute_limit'));
   const excludesText = node => ['input','textarea','select','script','style','template','noscript'].includes(node.localName) || node.isContentEditable;
   function textAllowed(node) {
     for (let item=node,depth=0; item; item=parent(item),depth++) {

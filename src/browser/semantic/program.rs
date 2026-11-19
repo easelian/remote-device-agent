@@ -17,6 +17,13 @@ pub(crate) enum Program {
         x: f64,
         y: f64,
     },
+    VisualRevision,
+    VisualPath {
+        x: f64,
+        y: f64,
+        to_x: f64,
+        to_y: f64,
+    },
     NativeFramePoint,
     ScrollViewport {
         delta: f64,
@@ -69,19 +76,31 @@ pub(crate) enum Program {
         node: u64,
         value: String,
     },
+    SubmitProbeArm {
+        marker: Marker,
+        node: u64,
+        enter: bool,
+    },
+    SubmitProbeRead {
+        marker: Marker,
+        node: u64,
+    },
     Release,
 }
+pub(crate) const VISUAL_TARGET_NODE: &str = include_str!("visual-target.js");
 pub(crate) const NATIVE_NODE: &str = "function(serialized){const a=JSON.parse(serialized),s=globalThis.__rdhSemanticDomV1;return s&&s.document===document&&s.realm===a.realm&&s.restoration===a.restoration?s.nodes.get(a.node)||null:null;}";
 pub(crate) enum Output {
     Evidence(super::evidence::Raw),
     Marker(Marker),
     Surface(super::surface::Metadata),
+    Revision(u64),
     Batch(Batch),
     Facts(Option<Box<Facts>>),
     Checks(Vec<Option<Facts>>),
     Geometry(Option<Geometry>),
     Stats(RegistryStats),
     Applied(Option<bool>),
+    Probe(Option<super::evidence::Validation>),
 }
 impl Program {
     pub fn source(&self) -> &'static str {
@@ -115,6 +134,11 @@ impl Program {
             Self::Surface => ("surface", json!({})),
             Self::NativeFrameFocused => ("native_focused_frame", json!({})),
             Self::FrameAtPoint { x, y } => ("frame_at_point", json!({"x":x,"y":y})),
+            Self::VisualRevision => ("visual_revision", json!({})),
+            Self::VisualPath { x, y, to_x, to_y } => (
+                "visual_path",
+                json!({"x":x, "y":y, "to_x":to_x, "to_y":to_y}),
+            ),
             Self::NativeFramePoint => ("native_frame_point", json!({})),
             Self::ScrollViewport { delta } => ("scroll_viewport", json!({"delta":delta})),
             Self::Ready => ("ready", json!({})),
@@ -172,6 +196,16 @@ impl Program {
                 args["value"] = value.clone().into();
                 ("form_check", args)
             }
+            Self::SubmitProbeArm {
+                marker,
+                node,
+                enter,
+            } => {
+                let mut args = target(marker, *node);
+                args["enter"] = (*enter).into();
+                ("submit_probe_arm", args)
+            }
+            Self::SubmitProbeRead { marker, node } => ("submit_probe_read", target(marker, *node)),
             Self::Release => ("release", json!({})),
         }
     }
@@ -196,6 +230,7 @@ impl Program {
                 marker.validate()?;
                 Ok(Output::Marker(marker))
             }
+            Self::VisualRevision => Ok(Output::Revision(parse(text)?)),
             Self::Stats => {
                 let stats: RegistryStats = parse(text)?;
                 stats.validate()?;
@@ -234,6 +269,10 @@ impl Program {
                     facts.validate()?;
                 }
                 Ok(Output::Checks(facts))
+            }
+            Self::SubmitProbeRead { .. } => {
+                let value: Option<super::evidence::Validation> = parse(text)?;
+                Ok(Output::Probe(value))
             }
             _ => Ok(Output::Applied(parse(text)?)),
         }

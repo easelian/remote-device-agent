@@ -66,6 +66,13 @@ fn installed(path: &std::path::Path) -> bool {
 pub(super) fn extension(reason: Option<&str>) -> Value {
     json!({"version":1,"available":reason.is_none(),"reason":reason})
 }
+pub(super) fn with_input_extensions(mut caps: Value, reason: Option<&str>) -> Value {
+    for name in ["visual_click", "visual_gestures", "submit_validation"] {
+        caps["extensions"][name] = extension(reason);
+    }
+    caps
+}
+
 pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: bool) -> Value {
     let compiled = cfg!(all(
         target_os = "linux",
@@ -95,7 +102,7 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
     .into_iter()
     .map(|(backend, family, exists)| {
         let why = reason.or((!exists).then_some("browser_not_installed"));
-        json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
+        let caps = json!({"id":backend.id(),"browser_family":family,"available":why.is_none(),
                 "reason":why,"stage":"candidate","observation_profiles":["semantic_dom_v1"],
                 "extensions":{"exception_locations":extension(why), "actionability":extension(why),
                     "observation_delta":extension(why), "scoped_scroll":extension(why), "ref_hover":extension(why), "dom_evidence":extension(why), "form_validation":extension(why), "virtual_list":extension(why), "record_wait":extension(why),
@@ -103,7 +110,8 @@ pub(super) fn capability(settings: &Settings, common_reason: Option<&str>, cdp: 
                     "ref_drag":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "matched_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
                     "ancestor_styles":extension(why.or((backend==Backend::Bidi).then_some("browser_feature_unsupported"))),
-                    "task_events":{"version":1,"available":why.is_none(),"categories":["console","network"] }, "action_capture":{"version":1,"available":why.is_none() }, "network_progress":{"version":1,"available":why.is_none(),"reason":why}}})
+                    "task_events":{"version":1,"available":why.is_none(),"categories":["console","network"] }, "action_capture":{"version":1,"available":why.is_none() }, "network_progress":{"version":1,"available":why.is_none(),"reason":why}}});
+        with_input_extensions(caps, why)
     })
     .collect();
     let available = backends.iter().any(|b| b["available"] == true);

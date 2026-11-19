@@ -510,6 +510,67 @@ impl Semantic {
         }
         Ok(child.session == self.root)
     }
+    pub async fn visual_hover(&self, x: f64, y: f64, deadline: Instant) -> Result<()> {
+        self.adapter
+            .wire
+            .call(
+                Some(self.adapter.session(&self.root)?),
+                Command::InputMouseMove,
+                json!({"type":"mouseMoved","x":x,"y":y,"button":"none","buttons":0}),
+                deadline,
+            )
+            .await
+            .map(drop)
+    }
+
+    pub async fn visual_drag(
+        &self,
+        x: f64,
+        y: f64,
+        to_x: f64,
+        to_y: f64,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.visual_hover(x, y, deadline).await?;
+        let wire = &self.adapter.wire;
+        let session = Some(self.adapter.session(&self.root)?);
+        let mut result = wire.call(session, Command::InputMousePress,
+            json!({"type":"mousePressed","x":x,"y":y,"button":"left","buttons":1,"clickCount":1}), deadline).await.map(drop);
+        if result.as_ref().is_err_and(|e| e.state == "not_sent") {
+            return result;
+        }
+        let mut last = (x, y);
+        for step in 1..=8 {
+            if result.is_err() {
+                break;
+            }
+            let ratio = f64::from(step) / 8.0;
+            let point = (x + (to_x - x) * ratio, y + (to_y - y) * ratio);
+            result = wire.call(session, Command::InputMouseMove,
+                json!({"type":"mouseMoved","x":point.0,"y":point.1,"button":"left","buttons":1}), deadline).await.map(drop);
+            if result.is_ok() {
+                last = point;
+            }
+        }
+        let released = wire.cleanup().call(session, Command::InputMouseRelease,
+            json!({"type":"mouseReleased","x":last.0,"y":last.1,"button":"left","buttons":0,"clickCount":1}),
+            deadline.max(Instant::now() + std::time::Duration::from_secs(1))).await;
+        if released
+            .as_ref()
+            .is_err_and(|e| e.code != "browser_dialog_open")
+        {
+            self.adapter.stop();
+        }
+        result.and(released.map(drop)).map_err(|mut error| {
+            error.state = "unknown";
+            error
+        })
+    }
+    pub async fn visual_click(&self, x: f64, y: f64, deadline: Instant) -> Result<()> {
+        self.engine()
+            .click(&self.root, super::Point { x, y }, deadline)
+            .await
+    }
     pub async fn human_input(&self, input: HumanInput, deadline: Instant) -> Result<()> {
         let engine = self.engine();
         match input {
@@ -1307,5 +1368,49 @@ mod tests {
         ] {
             assert!(decode_program(&Program::Stamp, reply).is_err());
         }
+    }
+}
+
+impl Semantic {
+    pub async fn visual_target_allowed(
+        &self,
+        frame: &sem::Frame,
+        x: f64,
+        y: f64,
+        deadline: Instant,
+    ) -> Result<bool> {
+        let native = self.native(frame)?;
+        let world = self.world(&native, deadline).await?;
+        let session = Some(self.adapter.session(&native.session)?);
+        let wire = &self.adapter.wire;
+        let binding = wire.scoped_call(
+            session, Command::RuntimeCallFunction(Effect::None),
+            json!({"executionContextId":world, "functionDeclaration":sem::program::VISUAL_TARGET_NODE,
+                   "arguments":[{"value":x},{"value":y}], "objectGroup":"rdh-visual-target", "returnByValue":false}),
+            deadline,
+        ).await?;
+        let value = binding.value();
+        if value.get("exceptionDetails").is_some() {
+            return Err(Failure::new("browser_script_exception"));
+        }
+        if value["result"]["subtype"] != "node" {
+            return Ok(false);
+        }
+        let object = value["result"]["objectId"]
+            .as_str()
+            .ok_or_else(sem::types::decode)?;
+        let described = wire
+            .call(
+                session,
+                Command::DomDescribeNode,
+                json!({"objectId":object, "depth":0}),
+                deadline,
+            )
+            .await?;
+        let node = &described["node"];
+        Ok(node["localName"] == "canvas"
+            || node["shadowRoots"]
+                .as_array()
+                .is_some_and(|roots| roots.iter().any(|root| root["shadowRootType"] == "closed")))
     }
 }

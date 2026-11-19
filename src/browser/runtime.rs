@@ -392,7 +392,13 @@ impl Browsers {
                 return Ok(json!({"sessions":self.v2_listing(principal,false)}));
             }
         }
-        if operation == "browser_act" && params.get("pre_action_diagnostics").is_some() {
+        if operation == "browser_act"
+            && (params.get("pre_action_diagnostics").is_some()
+                || matches!(
+                    params["action"]["kind"].as_str(),
+                    Some("visual_click" | "visual_hover" | "visual_drag")
+                ))
+        {
             return Err(Failure::new("browser_feature_unsupported"));
         }
         if matches!(
@@ -2060,6 +2066,9 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         let fields: &[&str] = match kind {
             "navigate" => &["kind", "url"],
             "fill" => &["kind", "ref", "text"],
+            "press" if action.get("read_native_validation").is_some() && action["key"] == "Enter" => {
+                &["kind", "ref", "key", "read_native_validation"]
+            }
             "press" => &["kind", "ref", "key"],
             "check" => &["kind", "ref", "checked"],
             "select" => &["kind", "ref", "value"],
@@ -2074,15 +2083,47 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                     &["kind", "delta_y"]
                 }
             }
-            "click" | "hover" => &["kind", "ref"],
+            "click" if action.get("read_native_validation").is_some() => {
+                &["kind", "ref", "read_native_validation"]
+            }
+            "click" => &["kind", "ref"],
+            "hover" => &["kind", "ref"],
+            "visual_click" | "visual_hover" => &["kind", "frame_id", "x", "y"],
+            "visual_drag" => &["kind", "frame_id", "x", "y", "to_x", "to_y"],
             "drag" => &["kind", "ref", "target_ref"],
             "new_tab" | "close_tab" | "select_tab" => &["kind"],
             "dialog" => &["kind", "accept", "dialog_id"],
             _ => return Err(Failure::new("browser_invalid_params")),
         };
-        if action.len() != fields.len() || action.keys().any(|key| !fields.contains(&key.as_str()))
+        if action.len() != fields.len()
+            || action.keys().any(|key| !fields.contains(&key.as_str()))
+            || action
+                .get("read_native_validation")
+                .is_some_and(|value| value != true)
         {
             return Err(Failure::new("browser_invalid_params"));
+        }
+        if matches!(kind, "visual_click" | "visual_hover" | "visual_drag") {
+            let valid_frame = action["frame_id"]
+                .as_str()
+                .and_then(|id| id.strip_prefix("vfrm_"))
+                .is_some_and(|hex| {
+                    hex.len() == 32
+                        && hex
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                });
+            if !valid_frame
+                || fields[2..]
+                    .iter()
+                    .any(|&key| action[key].as_u64().is_none_or(|n| n >= 1920))
+                || params["tab_id"].as_str().is_none_or(str::is_empty)
+                || params["control_epoch"]
+                    .as_u64()
+                    .is_none_or(|epoch| epoch == 0)
+            {
+                return Err(Failure::new("browser_invalid_params"));
+            }
         }
         if kind == "navigate"
             && !action["url"]

@@ -11,6 +11,7 @@ mod file_approval;
 mod human;
 mod native;
 mod presentation;
+mod visual;
 
 pub(super) struct Slot {
     owner: String,
@@ -36,6 +37,7 @@ struct Session {
     presentation: presentation::Cache,
     evidence: evidence::Registry,
     task_events: Option<capture::Capture>,
+    visual_frame: Option<visual::Frame>,
     human: Option<human::Lease>,
     touched: Instant,
 }
@@ -44,6 +46,7 @@ impl Session {
         self.clear_references();
         self.presentation.clear();
         self.evidence.clear();
+        self.visual_frame = None;
     }
     fn clear_references(&mut self) {
         self.references.clear();
@@ -141,6 +144,9 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
         "check",
         "scroll",
         "hover",
+        "visual_click",
+        "visual_hover",
+        "visual_drag",
         "dialog",
         "new_tab",
         "close_tab",
@@ -149,7 +155,7 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
     if backend == Backend::Cdp {
         actions.push("drag");
     }
-    json!({"managed_lifecycle":true,"document_identity":true,"observation":true,"input":true,"screenshot":true,
+    let caps = json!({"managed_lifecycle":true,"document_identity":true,"observation":true,"input":true,"screenshot":true,
         "dialogs":true,"human_takeover":true,"navigation_policy":true,"conservative_recovery":true,
         "download_cancellation":if backend==Backend::Bidi{"session"}else{"file"},"max_tabs":8,"max_frames":32,"named_profiles":settings.persistent_profiles,"uploads":settings.uploads,"downloads":settings.downloads,"native_ax":backend==Backend::Cdp,"devtools":false,
         "human_text":"focused_native_text_controls","network_isolation":false,"observed_connection_address":false,
@@ -165,7 +171,8 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
             "ref_drag":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "matched_styles":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
             "ancestor_styles":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported")),
-            "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}})
+            "native_ax":crate::browser::selection::extension((backend==Backend::Bidi).then_some("browser_feature_unsupported"))}});
+    crate::browser::selection::with_input_extensions(caps, None)
 }
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
@@ -380,6 +387,7 @@ impl Browsers {
                 presentation: presentation::Cache::default(),
                 evidence: evidence::Registry::default(),
                 task_events: None,
+                visual_frame: None,
                 human: None,
                 touched: Instant::now(),
             }),
@@ -621,10 +629,27 @@ impl Browsers {
                     value["tab_id"] = port.tab_id()?.into();
                     Ok(value)
                 }
-                "browser_screenshot" => capture(&page.access(false)?, deadline).await.map(|v| v.0),
+                "browser_screenshot" => {
+                    session.visual_frame = None;
+                    let (value, frame) =
+                        visual::Frame::capture(&page, &tab, epoch, deadline).await?;
+                    session.visual_frame = frame;
+                    Ok(value)
+                }
                 "browser_act" => {
                     if let Some(previous) = &session.task_events {
                         previous.stop_if_action_owned();
+                    }
+                    let frame = session.visual_frame.take();
+                    if matches!(
+                        params["action"]["kind"].as_str(),
+                        Some("visual_click" | "visual_hover" | "visual_drag")
+                    ) {
+                        let frame = frame.ok_or_else(|| Failure::new("browser_stale_frame"))?;
+                        session.clear_references();
+                        return frame
+                            .act(&page, &tab, epoch, &params["action"], deadline)
+                            .await;
                     }
                     let attachment = if params["action"]["kind"] == "attach_file" {
                         if !self.settings.uploads {
@@ -731,7 +756,8 @@ impl Browsers {
         value["session_id"] = id.into();
         value["control_epoch"] = epoch.into();
         value["selection"] = serde_json::to_value(&slot.selection).unwrap();
-        if operation == "browser_evidence"
+        if value.get("native_validation").is_some()
+            || operation == "browser_evidence"
             || operation == "browser_act" && params.get("pre_action_diagnostics").is_some()
             || operation == "browser_capture"
             || (operation == "browser_wait" && params.get("record").is_some())
@@ -1027,8 +1053,13 @@ async fn act(
             },
             _ => return Err(Failure::new("browser_feature_unsupported")),
         };
-        let mut value = serde_json::to_value(page.act(reference, input, deadline).await?)
-            .map_err(crate::browser::io_error)?;
+        let submit_validation = action["read_native_validation"] == true;
+        let mut value = serde_json::to_value(if submit_validation {
+            page.act_with_validation(reference, input, deadline).await?
+        } else {
+            page.act(reference, input, deadline).await?
+        })
+        .map_err(crate::browser::io_error)?;
         if kind == "attach_file" {
             value["file_selected"] = true.into();
             value["file_grant_id"] = action["file_grant_id"].clone();

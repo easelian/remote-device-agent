@@ -223,6 +223,8 @@ pub(crate) struct Acknowledgement {
     pub input_acknowledged: bool,
     pub business_result_verified: bool,
     pub path: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_validation: Option<super::evidence::Validation>,
 }
 
 impl<P: Port> Page<P> {
@@ -691,7 +693,15 @@ impl<P: Port> Page<P> {
         action: Action,
         deadline: Instant,
     ) -> Result<Acknowledgement> {
-        self.act_as(reference, action, false, deadline).await
+        self.act_as(reference, action, false, deadline, false).await
+    }
+    pub async fn act_with_validation(
+        &self,
+        reference: Reference,
+        action: Action,
+        deadline: Instant,
+    ) -> Result<Acknowledgement> {
+        self.act_as(reference, action, false, deadline, true).await
     }
     pub async fn evidence(
         &self,
@@ -815,7 +825,7 @@ impl<P: Port> Page<P> {
         if reference.epoch != permit.epoch {
             return Err(types::stale());
         }
-        self.act_as(reference, action, true, deadline).await
+        self.act_as(reference, action, true, deadline, false).await
     }
     async fn act_as(
         &self,
@@ -823,6 +833,7 @@ impl<P: Port> Page<P> {
         action: Action,
         human: bool,
         deadline: Instant,
+        submit_validation: bool,
     ) -> Result<Acknowledgement> {
         let page = self.clone();
         self.0
@@ -856,7 +867,8 @@ impl<P: Port> Page<P> {
                 }
             }
             let _owner = Owner(page.0.clone());
-            page.execute(reference, action, human, deadline).await
+            page.execute(reference, action, human, deadline, submit_validation)
+                .await
         });
         let result = task.await.map_err(|_| Failure::unknown("browser_lost"))?;
         caller.armed = false;
@@ -868,6 +880,7 @@ impl<P: Port> Page<P> {
         action: Action,
         human: bool,
         deadline: Instant,
+        submit_validation: bool,
     ) -> Result<Acknowledgement> {
         let _observation = if human {
             None
@@ -910,7 +923,15 @@ impl<P: Port> Page<P> {
             (element, target)
         };
         let (port, effects) = port.tracked();
-        let result = perform(&port, &element, target.as_ref(), action, deadline).await;
+        let result = perform(
+            &port,
+            &element,
+            target.as_ref(),
+            action,
+            submit_validation,
+            deadline,
+        )
+        .await;
         match result {
             Ok(result) => {
                 self.delivery(epoch, human).map_err(|mut error| {
@@ -1129,11 +1150,58 @@ async fn prepare_input_target<P: Port>(
     Ok(steady)
 }
 
+async fn submit_probe_arm<P: Port>(
+    port: &P,
+    frame: &Frame,
+    marker: &Marker,
+    node: u64,
+    enter: bool,
+    deadline: Instant,
+) -> bool {
+    matches!(
+        port.program(
+            frame,
+            Program::SubmitProbeArm {
+                marker: marker.clone(),
+                node,
+                enter,
+            },
+            deadline,
+        )
+        .await,
+        Ok(Output::Applied(Some(true)))
+    )
+}
+
+async fn submit_probe_read<P: Port>(
+    port: &P,
+    frame: &Frame,
+    marker: &Marker,
+    node: u64,
+    deadline: Instant,
+) -> Option<super::evidence::Validation> {
+    match port
+        .program(
+            frame,
+            Program::SubmitProbeRead {
+                marker: marker.clone(),
+                node,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(Output::Probe(validation)) => validation,
+        _ => None,
+    }
+}
+
 async fn perform<P: Port>(
     port: &P,
     element: &Element,
     target: Option<&Element>,
     action: Action,
+    submit_validation: bool,
     deadline: Instant,
 ) -> Result<Acknowledgement> {
     if let Action::Drag { .. } = &action {
@@ -1222,6 +1290,7 @@ async fn perform<P: Port>(
         Action::Check(value) => Some(*value),
         _ => None,
     };
+    let mut native_validation = None;
     let path = match action {
         Action::Scroll { delta } => {
             let output = port
@@ -1271,6 +1340,8 @@ async fn perform<P: Port>(
             "native_hover"
         }
         Action::Click | Action::Check(_) => {
+            let probe_armed = submit_validation
+                && submit_probe_arm(port, &element.frame, &marker, node, false, deadline).await;
             port.input(
                 &element.frame,
                 NativeInput::Click {
@@ -1281,6 +1352,10 @@ async fn perform<P: Port>(
                 deadline,
             )
             .await?;
+            if probe_armed {
+                native_validation =
+                    submit_probe_read(port, &element.frame, &marker, node, deadline).await;
+            }
             if let Some(expected) = expected_check {
                 same_document(
                     &element.frame,
@@ -1351,15 +1426,29 @@ async fn perform<P: Port>(
         }
         Action::Press(key) => {
             if !matches!(
-                port.program(&element.frame, Program::Focus { marker, node }, deadline)
-                    .await?,
+                port.program(
+                    &element.frame,
+                    Program::Focus {
+                        marker: marker.clone(),
+                        node
+                    },
+                    deadline
+                )
+                .await?,
                 Output::Applied(Some(true))
             ) {
                 return Err(Failure::new("browser_not_actionable"));
             }
             inspect(port, element, deadline).await?;
+            let probe_armed = submit_validation
+                && matches!(key, Key::Enter)
+                && submit_probe_arm(port, &element.frame, &marker, node, true, deadline).await;
             port.input(&element.frame, NativeInput::Press(key), deadline)
                 .await?;
+            if probe_armed {
+                native_validation =
+                    submit_probe_read(port, &element.frame, &marker, node, deadline).await;
+            }
             "native_key"
         }
         Action::SetFormValue(value) => {
@@ -1381,7 +1470,9 @@ async fn perform<P: Port>(
         }
         Action::Drag { .. } => unreachable!("drag handled before ordinary action dispatch"),
     };
-    Ok(ack(true, path))
+    let mut acknowledgement = ack(true, path);
+    acknowledgement.native_validation = native_validation;
+    Ok(acknowledgement)
 }
 fn is_drag_endpoint(facts: &Facts) -> bool {
     matches!(facts.kind.as_str(), "drag_source" | "drop_target")
@@ -1500,5 +1591,6 @@ fn ack(changed: bool, path: &'static str) -> Acknowledgement {
         input_acknowledged: true,
         business_result_verified: false,
         path,
+        native_validation: None,
     }
 }

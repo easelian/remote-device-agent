@@ -51,9 +51,14 @@ Linux 上的 Firefox 会话归 Agent 进程所有。守护进程用 pidfd 等待
 
 v2 逐 frame 遍历 DOM 与 open shadow tree。名称带有来源和质量，记录材料有独立预算。closed shadow、canvas 内部像素和浏览器自身界面超出语义观察范围。相同 URL 重新加载、文档或 realm 替换、节点或所在记录改变，都可能使旧引用失效。续页替换上一页的动作绑定。出现 `browser_stale_reference` 时重新观察当前记录，按原 ref 派发的动作始终重新检查身份、敏感性、几何和命中条件。[页面算法](../src/browser/semantic/page.rs) · [共同语义语料](../tests/fixtures/semantic-dom-v1/oracle.json)
 
+Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标签。显式打开 v2 会话，确认 `extensions.visual_click` 版本 1，然后调用 `browser_screenshot`。用返回的 MCP 图片定位目标，保留同一响应的 `frame_id`。点击使用图片左上角为原点的整数坐标。会话同时支持 `visual_gestures` 版本 1 时，还可悬停或在同一可视面内沿直线拖动。每个动作都需要新截图。Agent 在原生输入前重新截图、检查视口和文档，再命中测试目标。CDP 和 BiDi 只在设备端检查当前命中节点的类型和 closed shadow 标记。遇到遮挡或过期帧时重新定位。账户验证和敏感输入沿用人工接管流程。[截图与指针输入](../src/browser/runtime/v2/visual.rs)
+
+支持 `extensions.submit_validation` 的 v2 会话在通过 `ref` 点击提交按钮或按 Enter 提交表单、并触发原生 `invalid` 事件时，随动作回执返回 `native_validation`。Agent 只在获得字段证据读取权限时观察该次提交，并按原表单过滤事件。`invalid` 提供有界的原因枚举，`omitted` 表示触发事件的字段受保护。需要区分同名字段时，先在原业务记录上核对字段，再使用已有的 `read_validation`。提交完成后，仍须用原业务记录核对结果。
+
 | 标识 | 可用于 | 失效与拒绝 |
 | --- | --- | --- |
 | `ref`、`next_cursor` | 操作当前元素或续读原扫描 | 绑定会话、tab、文档、控制代次和读取序列。旧标识不能按同名或同位置重新匹配 |
+| `frame_id`（AI 截图） | 按当前图片点击、悬停或同面拖动 | 最长 30 秒。新截图、输入、导航或控制权变更后重新截图 |
 | `node_id` | 读取节点诊断或等待同一记录的业务状态 | 与动作 ref 独立。会话注册表保留 128 项、32 KiB，创建后 60 秒过期。换代、节点替换或被回收后需重新查找 |
 | `revision` | 受控接收端应用观察增量 | 不赋予输入资格。重新连接、换代或基线失效后从完整观察重建，每次替换全部 ref 和 frame 绑定 |
 | `file_grant_id` | 给一个当前的文件输入控件选择经用户批准的文件 | 绑定原主体、会话、tab、站点与一次选择。结果不明也不会恢复次数 |
@@ -105,7 +110,7 @@ compare snapshot
 
 #### 动作期间的事件
 
-v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。当前两个后端均可声明 `console` 和 `network`。客户端只请求所选会话公布的类别，旧版 CDP Agent 可继续使用 `network`。AI 在操作前调用 `browser_capture` 开窗，等待返回后执行一次已授权操作，再用 `browser_evidence` 读窗口。两种工具都要求 `version: 1`、同一会话、tab 和当前控制代次。启停使用独立的操作回执，启动响应丢失时按原操作 ID 找回 `capture_id`。动作本身继续使用原有的输入回执。
+v2 会话通过 `extensions.task_events` 公布 `version: 1` 和 `categories`。当前两个后端均可声明 `console` 和 `network`。客户端只请求所选会话公布的类别，旧版 CDP Agent 可继续使用 `network`。若需要独立采集窗口，AI 在操作前调用 `browser_capture` 开窗，执行一次已授权操作后用 `browser_evidence` 读取。两种工具都要求 `version: 1`、同一会话、tab 和当前控制代次。启停使用独立的操作回执，启动响应丢失时按原操作 ID 找回 `capture_id`。动作本身继续使用原有的输入回执。
 
 诊断一次提交时，若当前后端和会话都报告 `extensions.action_capture.version == 1` 且可用，客户端可将采集选项放入同一个 `browser_act.pre_action_diagnostics`。例如，`{"categories":["console"],"track_exception_locations":true}` 要求已启用异常位置扩展。Agent 先核对会话、tab 和控制代次，再开窗并派发一次带 ref 的点击。回包内的 `capture_id` 可用于 `read_events` 和 `read_exception_location`。若客户端丢失成功回包，可从原操作回执恢复窗口标识。原生输入结果未知时，先查原回执并只读核对记录；缺少窗口标识时应报告诊断证据不足。
 

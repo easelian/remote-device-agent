@@ -24,6 +24,20 @@ pub(super) enum Port {
     Cdp(cdp::Semantic),
     Bidi(bidi::Semantic),
 }
+impl Port {
+    pub async fn visual_target_allowed(
+        &self,
+        frame: &sem::Frame,
+        x: f64,
+        y: f64,
+        deadline: Instant,
+    ) -> Result<bool> {
+        match self {
+            Self::Cdp(p) => p.visual_target_allowed(frame, x, y, deadline).await,
+            Self::Bidi(p) => p.visual_target_allowed(frame, x, y, deadline).await,
+        }
+    }
+}
 impl Session {
     pub fn port(&self) -> Port {
         match self {
@@ -115,6 +129,22 @@ impl sem::Port for Port {
     }
 }
 impl Port {
+    pub async fn visual_hover(&self, x: f64, y: f64, deadline: Instant) -> Result<()> {
+        asynchronous!(self, visual_hover(x, y, deadline))
+    }
+    pub async fn visual_drag(
+        &self,
+        x: f64,
+        y: f64,
+        to_x: f64,
+        to_y: f64,
+        deadline: Instant,
+    ) -> Result<()> {
+        asynchronous!(self, visual_drag(x, y, to_x, to_y, deadline))
+    }
+    pub async fn visual_click(&self, x: f64, y: f64, deadline: Instant) -> Result<()> {
+        asynchronous!(self, visual_click(x, y, deadline))
+    }
     pub async fn enable_task_events(
         &self,
         sink: crate::browser::semantic::task_events::Sink,

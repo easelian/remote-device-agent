@@ -451,15 +451,12 @@ impl Policy {
             });
         }
         if operation == "browser_act"
-            && params.get("pre_action_diagnostics").is_some()
             && let Some(allowed) = &self.allowed
-            && let Some(missing) = ["browser_capture", "browser_evidence"]
-                .into_iter()
-                .find(|op| !allowed.contains(*op))
+            && let Some(missing) = browser_action_permission_denial(params, allowed)
         {
             return Some(Denial {
                 code: "policy_operation_denied",
-                message: format!("Policy denied: action diagnostics require {missing}"),
+                message: format!("Policy denied: this browser action requires {missing}"),
             });
         }
         if !WRITE_OPERATIONS.contains(&operation) {
@@ -549,6 +546,29 @@ impl Policy {
         json!({"allowed_operations": self.allowed, "readonly_roots":self.readonly_roots, "protected_paths":self.protected_paths()})
     }
 }
+fn browser_action_permission_denial(
+    params: &Value,
+    allowed: &BTreeSet<String>,
+) -> Option<&'static str> {
+    let action = &params["action"];
+    let capture = params.get("pre_action_diagnostics").is_some();
+    let native_validation = action["read_native_validation"] == true;
+    let visual = matches!(
+        action["kind"].as_str(),
+        Some("visual_click" | "visual_hover" | "visual_drag")
+    );
+    [
+        ("browser_capture", capture),
+        // The private submit-validation hint is never allowed to bypass the
+        // evidence permission: it produces a diagnostic disclosure.
+        ("browser_evidence", capture || native_validation),
+        ("browser_screenshot", visual),
+    ]
+    .into_iter()
+    .find_map(|(operation, required)| {
+        (required && !allowed.contains(operation)).then_some(operation)
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -593,6 +613,57 @@ mod tests {
         assert_eq!(
             sidecar_path(Path::new("/tmp/device.json")),
             Path::new("/tmp/device.policy.json")
+        );
+    }
+
+    #[test]
+    fn submit_validation_hint_cannot_bypass_evidence_permission() {
+        let permissions = ["browser_act", "browser_screenshot"];
+        let policy = Policy::parse(
+            &json!({"version":1,"allowed_operations":permissions}),
+            &config(),
+        )
+        .unwrap();
+        let action = json!({"action":{"kind":"click","ref":"r","read_native_validation":true}});
+        assert_eq!(
+            policy.denial("browser_act", &action).map(|d| d.code),
+            Some("policy_operation_denied")
+        );
+        let allowed = Policy::parse(
+            &json!({"version":1,"allowed_operations":["browser_act","browser_evidence"]}),
+            &config(),
+        )
+        .unwrap();
+        assert!(allowed.denial("browser_act", &action).is_none());
+    }
+
+    #[test]
+    fn every_visual_action_requires_screenshot_permission() {
+        for kind in ["visual_click", "visual_hover", "visual_drag"] {
+            let policy = Policy::parse(
+                &json!({"version":1,"allowed_operations":["browser_act"]}),
+                &config(),
+            )
+            .unwrap();
+            let action = json!({"action":{"kind":kind}});
+            assert_eq!(
+                policy.denial("browser_act", &action).map(|d| d.code),
+                Some("policy_operation_denied")
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_ref_click_has_no_extra_policy_requirement() {
+        let policy = Policy::parse(
+            &json!({"version":1,"allowed_operations":["browser_act"]}),
+            &config(),
+        )
+        .unwrap();
+        assert!(
+            policy
+                .denial("browser_act", &json!({"action":{"kind":"click","ref":"r"}}))
+                .is_none()
         );
     }
 
