@@ -100,14 +100,17 @@ for failure handling and platform limits.
 [prepare-release.cjs](../packaging/prepare-release.cjs) assembles the eight native
 platform artifacts after checking their versions, source commits, inventories,
 checksums and licenses. It includes raw binaries, archives, bootstrap scripts,
-an npm tarball and `SHA256SUMS`. Additional generated metadata is not the source
+nine npm tarballs and `SHA256SUMS`. Additional generated metadata is not the source
 used by `rdh update`.
 
-The npm package contains native binaries and a Node launcher that selects the
-matching platform and forwards the public `rdh` commands. Running that package
-requires Node 22.14 or later. Native binaries and bootstrap installations do not
-require Node or npm. Installing an npm package does not perform device pairing;
-run `rdh` afterward in an interactive terminal.
+Install the stable npm release with `npm install -g @easelian/remote-device-agent`.
+Use `npm install -g @easelian/remote-device-agent@next` for prereleases. The main
+package contains a Node launcher. npm installs the optional native build for
+the current operating system and CPU, with separate glibc and musl builds on
+Linux. The Linux GNU builds for x64 and ARM64 target glibc 2.35 or later.
+The npm package requires Node 22.14 or later. The native binaries and
+bootstrap installers run independently of Node and npm. Run `rdh` in an
+interactive terminal to pair the device after installation.
 
 The [release workflow](../.github/workflows/release.yml) checks the tag against the
 workspace version, invokes native CI, assembles and attests artifacts, then creates
@@ -115,10 +118,25 @@ a draft release. Review the actual native test results, artifacts and version
 before publication. The manifest's `release_ready: false` field does not indicate
 publication status.
 
-The separate [npm workflow](../.github/workflows/npm-publish.yml) consumes a
-published release tag and verifies the selected tarball before registry
-publication. Artifact generation, attestation and draft creation do not establish
-that a release was published, deployed, platform-signed or notarized.
+The [npm workflow](../.github/workflows/npm-publish.yml) runs when a GitHub
+Release is published. To retry a split-package release, select the release tag
+in the manual workflow and pass the same tag as input. The workflow verifies
+all nine tarballs against the release checksums and GitHub attestations. It
+publishes the eight platform versions first and verifies their registry
+integrities before publishing the launcher to `latest` or `next`. A retry
+reuses published versions with matching integrity.
+
+All nine versions share the npm package name `@easelian/remote-device-agent`.
+Platform versions add a suffix such as `-linux-x64-gnu`; the launcher pins
+these versions by npm alias. The workflow publishes platform versions under
+the `native` dist-tag. The launcher uses the ordinary release version and is
+the installation entry point.
+
+For a new npm package, a maintainer with access to the npm organization can
+create it by publishing one verified split platform tarball to `native`.
+Configure Trusted Publishing on the package for
+`easelian/remote-device-agent` and `npm-publish.yml`, with permission for
+direct publish, then retry the npm workflow for that release.
 
 ### Windows installer repair option
 

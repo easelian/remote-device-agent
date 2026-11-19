@@ -2,7 +2,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 
 const arch = { x64: 'x64', arm64: 'arm64' }[process.arch];
 let platform;
@@ -20,7 +20,17 @@ if (!platform) {
   console.error(`Unsupported platform: ${process.platform}/${process.arch}`);
   process.exit(1);
 }
-const executable = join(__dirname, 'native', platform, process.platform === 'win32' ? 'rdh.exe' : 'rdh');
+const nativePackage = `@easelian/remote-device-agent-${platform}`;
+let nativeManifest;
+try {
+  nativeManifest = require.resolve(`${nativePackage}/package.json`);
+} catch (error) {
+  if (error.code !== 'MODULE_NOT_FOUND') throw error;
+  const version = require('./package.json').version;
+  console.error(`Missing the Agent binary for ${platform}. Reinstall with optional dependencies enabled: npm install -g @easelian/remote-device-agent@${version} --include=optional`);
+  process.exit(1);
+}
+const executable = join(dirname(nativeManifest), process.platform === 'win32' ? 'rdh.exe' : 'rdh');
 const child = spawn(executable, process.argv.slice(2), { stdio: 'inherit', windowsHide: false });
 child.on('error', (error) => {
   console.error(`Unable to start the native Agent: ${error.message}`);

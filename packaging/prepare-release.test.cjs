@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { smokeInstall } = require('./npm/smoke-install.cjs');
 const root = path.resolve(__dirname, '..');
 const script = path.join(__dirname, 'prepare-release.cjs');
 const version = '1.2.3-test.1';
@@ -56,7 +57,7 @@ function run(inputs, output, temp) {
   });
 }
 
-test('assembles eight checked inputs and rejects tampering or missing targets', () => {
+test('assembles eight checked inputs and rejects tampering or missing targets', async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'rdh-release-assembly-'));
   try {
     const inputs = fixture(temp);
@@ -64,7 +65,7 @@ test('assembles eight checked inputs and rejects tampering or missing targets', 
     assert.equal(first.status, 0, first.stderr);
     const out = path.join(temp, 'ok');
     const outputNames = fs.readdirSync(out).sort();
-    assert.equal(outputNames.length, 21);
+    assert.equal(outputNames.length, 29);
     assert.ok(outputNames.includes('SHA256SUMS'));
     assert.ok(!outputNames.some((name) => name.endsWith('.sha256')));
     for (const name of ['install.sh', 'install.ps1']) {
@@ -85,16 +86,13 @@ test('assembles eight checked inputs and rejects tampering or missing targets', 
     const packageLicense = spawnSync('tar', ['-xOf', tarball, 'package/LICENSE']);
     assert.equal(packageLicense.status, 0, packageLicense.stderr.toString());
     assert.deepEqual(packageLicense.stdout, fs.readFileSync(path.join(root, 'LICENSE')));
-    const install = path.join(temp, 'install');
-    fs.mkdirSync(install);
-    fs.writeFileSync(path.join(install, 'package.json'), '{"private":true}\n');
-    const installed = spawnSync('npm', ['install', '--prefix', install, '--ignore-scripts', '--no-audit', '--no-fund', tarball], {
-      encoding: 'utf8', env: {...process.env, npm_config_cache: path.join(temp, 'npm-cache')},
-    });
-    assert.equal(installed.status, 0, installed.stderr);
-    const launched = spawnSync(path.join(install, 'node_modules', '.bin', 'rdh'), ['--version'], {encoding: 'utf8'});
-    assert.equal(launched.status, 0, launched.stderr);
-    assert.equal(launched.stdout.trim(), version);
+    const mainFiles = spawnSync('tar', ['-tf', tarball], {encoding: 'utf8'});
+    assert.equal(mainFiles.status, 0, mainFiles.stderr);
+    assert.deepEqual(mainFiles.stdout.trimEnd().split('\n').sort(), [
+      'package/LICENSE', 'package/package.json', 'package/rdh.cjs',
+    ]);
+    const current = process.platform === 'linux' && `linux-${process.arch}-${process.report.getReport().header.glibcVersionRuntime ? 'gnu' : 'musl'}`;
+    await smokeInstall(out, version, Object.values(targets), current);
     const channel = JSON.parse(fs.readFileSync(path.join(out, `rdh-${version}.canary.json`)));
     assert.equal(Object.keys(channel.platforms).length, 8);
     assert.equal(channel.platforms['linux-x64-gnu'].format, 'native-binary');

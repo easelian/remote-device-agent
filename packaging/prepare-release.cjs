@@ -7,16 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
-const targets = {
-  'x86_64-unknown-linux-gnu': 'linux-x64-gnu',
-  'aarch64-unknown-linux-gnu': 'linux-arm64-gnu',
-  'x86_64-unknown-linux-musl': 'linux-x64-musl',
-  'aarch64-unknown-linux-musl': 'linux-arm64-musl',
-  'x86_64-apple-darwin': 'darwin-x64',
-  'aarch64-apple-darwin': 'darwin-arm64',
-  'x86_64-pc-windows-msvc': 'win32-x64',
-  'aarch64-pc-windows-msvc': 'win32-arm64',
-};
+const { name, targets, platformVersion, tarballName } = require('./npm/packages.cjs');
 const [inputs, output, version, commit, repository] = process.argv.slice(2);
 function fail(message) { throw new Error(message); }
 if (process.argv.length !== 7 || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version || '') ||
@@ -52,7 +43,24 @@ const assets = [];
 const channels = {};
 fs.mkdirSync(output, { recursive: true });
 const staging = path.join(output, '.npm-stage');
-fs.mkdirSync(path.join(staging, 'native'), { recursive: true });
+fs.mkdirSync(staging);
+const packageMetadata = {
+  name, description: 'Native Remote Device Agent', license: 'Apache-2.0',
+  repository: { type: 'git', url: `https://github.com/${repository}.git` },
+  publishConfig: { access: 'public' },
+};
+
+function pack(directory, manifest) {
+  fs.writeFileSync(path.join(directory, 'package.json'), `${JSON.stringify({ ...packageMetadata, ...manifest }, null, 2)}\n`);
+  const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', path.resolve(output)], {
+    cwd: directory, encoding: 'utf8',
+  }));
+  const expected = tarballName(manifest.version);
+  if (packed.length !== 1 || packed[0].filename !== expected) fail(`Unexpected npm pack output for ${expected}`);
+  assets.push(expected);
+}
+
+const optionalDependencies = {};
 try {
   for (const [target, platform] of Object.entries(targets)) {
     const base = `rdh-${version}-${platform}`;
@@ -80,27 +88,31 @@ try {
       fs.copyFileSync(file, path.join(output, name), fs.constants.COPYFILE_EXCL);
       assets.push(name);
     }
-    const dest = path.join(staging, 'native', platform);
+    const dest = path.join(staging, platform);
     fs.mkdirSync(dest);
     fs.copyFileSync(raw, path.join(dest, binaryName));
     if (binaryName === 'rdh') fs.chmodSync(path.join(dest, binaryName), 0o755);
     fs.cpSync(path.join(tree, 'licenses'), path.join(dest, 'licenses'), { recursive: true, errorOnExist: true });
-    fs.copyFileSync(path.join(tree, 'PROJECT_LICENSE'), path.join(dest, 'PROJECT_LICENSE'));
+    fs.copyFileSync(path.join(tree, 'PROJECT_LICENSE'), path.join(dest, 'LICENSE'));
     equal(sha(path.join(tree, 'PROJECT_LICENSE')), sha(path.resolve(__dirname, '..', 'LICENSE')), `${platform}: project license differs`);
+    const [os, cpu, linuxAbi] = platform.split('-');
+    const nativeVersion = platformVersion(version, platform);
+    pack(dest, {
+      version: nativeVersion, os: [os], cpu: [cpu],
+      ...(linuxAbi && { libc: [linuxAbi === 'gnu' ? 'glibc' : linuxAbi] }),
+      files: [binaryName, 'licenses', 'LICENSE'],
+    });
+    optionalDependencies[`${name}-${platform}`] = `npm:${name}@${nativeVersion}`;
     channels[platform] = { format: 'native-binary', url: `https://github.com/${repository}/releases/download/v${version}/${rawName}`, sha256: rawHash, bytes: fs.statSync(raw).size };
   }
   const root = path.resolve(__dirname, '..');
   fs.copyFileSync(path.join(root, 'LICENSE'), path.join(staging, 'LICENSE'));
   fs.copyFileSync(path.join(__dirname, 'npm', 'rdh.cjs'), path.join(staging, 'rdh.cjs'));
-  fs.writeFileSync(path.join(staging, 'package.json'), `${JSON.stringify({
-    name: '@easelian/remote-device-agent', version, description: 'Native Remote Device Agent',
-    license: 'Apache-2.0', repository: { type: 'git', url: `https://github.com/${repository}.git` },
-    engines: { node: '>=22.14.0' }, bin: { rdh: 'rdh.cjs', 'remote-device-agent': 'rdh.cjs', 'remote-device-hub': 'rdh.cjs' },
-    files: ['rdh.cjs', 'native', 'LICENSE'], publishConfig: { access: 'public' },
-  }, null, 2)}\n`);
-  const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', path.resolve(output)], { cwd: staging, encoding: 'utf8' }));
-  if (packed.length !== 1 || !/^easelian-remote-device-agent-.*\.tgz$/.test(packed[0].filename)) fail('Unexpected npm pack output');
-  assets.push(packed[0].filename);
+  pack(staging, {
+    version, engines: { node: '>=22.14.0' },
+    bin: { rdh: 'rdh.cjs', 'remote-device-agent': 'rdh.cjs', 'remote-device-hub': 'rdh.cjs' },
+    files: ['rdh.cjs', 'LICENSE'], optionalDependencies,
+  });
   for (const name of ['install.sh', 'install.ps1']) {
     fs.copyFileSync(path.join(__dirname, name), path.join(output, name), fs.constants.COPYFILE_EXCL);
     assets.push(name);

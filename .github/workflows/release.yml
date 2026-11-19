@@ -75,6 +75,6 @@ jobs:
         run: |
           current=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$RDH_VERSION" --jq .sha)
           [[ "$current" == "$GITHUB_SHA" ]]
-          args=(--draft --verify-tag --title "v$RDH_VERSION" --notes "Native artifacts and the npm tarball were built from $GITHUB_SHA after all native checks passed. Review before publishing.")
+          args=(--draft --verify-tag --title "v$RDH_VERSION" --notes "Native artifacts and the npm tarballs were built from $GITHUB_SHA after all native checks passed. Review before publishing.")
           if [[ "$RDH_VERSION" == *-* ]]; then args+=(--prerelease); fi
           gh release create "v$RDH_VERSION" "${args[@]}" "$RUNNER_TEMP"/rdh-release/*
