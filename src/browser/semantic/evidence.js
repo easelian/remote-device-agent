@@ -482,15 +482,16 @@ function(operation, args) {
   function indicatorSources(field,form,record,counts,iconCandidates,appearance,previous,baseline,found) {
     if (!form.contains(field)) return;
     const old=previous?.indicatorFields.get(field);
-    if (previous && (!old || old.interaction!==appearance.interaction)) return;
-    const paint=new WeakMap(), icons=new WeakSet(), wrappers=[];
+    if (previous && !old) return;
+    const sameInteraction=old?.interaction===appearance.interaction;
+    const paint=new WeakMap(), icons=new WeakSet(), hiddenIcons=new WeakSet(), wrappers=[];
     for (let node=field, depth=0; node && depth<=4 && node!==form && node!==record; node=node.parentElement,depth++) {
       if (node!==field && (counts.get(node)!==1 || owner(node)!==record || node.closest('form')!==form)) break;
       if (node!==field) wrappers.push(node);
       if (!feedbackVisible(node,record,node===field) || !node.getClientRects().length) continue;
       const current=indicatorPaint(node,field), before=old?.paint.get(node);
       paint.set(node,current);
-      if (before) for (const kind of Object.keys(current)) {
+      if (before && sameInteraction) for (const kind of Object.keys(current)) {
         if (current[kind] && before[kind]!==undefined && before[kind]!==current[kind]) found.push({field,source:node,kind});
       }
     }
@@ -501,15 +502,21 @@ function(operation, args) {
           !icon.getClientRects().length) continue;
       icons.add(icon);
       if (!old || old.icons.has(icon)) continue;
+      // Pointer and focus can move while validation inserts or unhides a glyph.
+      // A CSS-only visibility change at that moment cannot establish its cause.
+      if (!sameInteraction && previous.existing.has(icon) && !old.hiddenIcons.has(icon)) continue;
       // A known source must still belong to its original single-field wrapper.
       if (previous.existing.has(icon) && previous.indicatorOwners.get(icon)!==field) continue;
       found.push({field,source:icon,kind:'icon'});
     }
-    baseline.indicatorFields.set(field,{paint,icons,interaction:appearance.interaction});
+    baseline.indicatorFields.set(field,{paint,icons,hiddenIcons,interaction:appearance.interaction});
     // Remember unmarked and hidden elements too. Moving an old element from a
     // different field and then marking it must not manufacture a new indicator.
     if (!previous && wrapper) for (const node of iconCandidates) {
-      if (wrapper.contains(node)) baseline.indicatorOwners.set(node,field);
+      if (wrapper.contains(node)) {
+        baseline.indicatorOwners.set(node,field);
+        if (node.closest('[hidden]')) hiddenIcons.add(node);
+      }
     }
   }
 

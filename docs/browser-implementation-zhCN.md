@@ -63,7 +63,7 @@ Canvas 自绘控件或 closed shadow 内的按钮可能只有图上可见的标�
 
 为同一个原始字段补充视觉线索时，Agent 比较输入前后有宽度的可见边框、轮廓及纯色背景的 CSS 计算值，并以同一 `field_node_id` 发布 `visual_changes`。保护字段、替换后的字段以及焦点、悬停等交互状态改变的字段省略颜色证据。纯样式变化可以触发 HTTP 200 的 `page_feedback`，共有颜色或相同文字都不能单独确立字段归属。
 
-启用 `field_indicators` 版本 1 后，`read_submit_fields` 可带上 `include_indicators: true`。Agent 在提交前记录原字段和最多四层单字段容器，读取回执时比较实际绘制的边框、轮廓、纯色背景和阴影，并检查新出现的有错误标记的图标。每条 `outcome.indicators` 包含字段句柄 `field_node_id`、视觉来源句柄 `source_node_id` 和类型 `kind`。焦点、悬停或激活状态变化时跳过该字段的视觉比较。一次最多返回 32 条视觉线索，超出时省略该列表。
+启用 `field_indicators` 版本 1 后，`read_submit_fields` 可带上 `include_indicators: true`。Agent 在提交前记录原字段和最多四层单字段容器，读取回执时比较实际绘制的边框、轮廓、纯色背景和阴影，并检查新出现的有错误标记的图标。每条 `outcome.indicators` 包含字段句柄 `field_node_id`、视觉来源句柄 `source_node_id` 和类型 `kind`。焦点、悬停或激活状态变化时跳过该字段的样式比较。若页面同时插入了明确的错误图标，或移除了该图标的隐藏标记，仍可按原字段单独报告图标。一次最多返回 32 条视觉线索，超出时省略该列表。
 
 同一表单顶部或底部的摘要可以用指向原字段的 `#id` 链接，也可以用唯一字段标签加冒号逐项说明原因。`summary_error` 表示页面明确标记了错误，`summary_text` 表示可定位字段的普通反馈。字段独占容器内的提示可在输入框之前或之后，适用于上方、右侧和下方等布局。比较 `fields` 与 `indicators` 的 `field_node_id` 后，再用 `read_node` 复查文案和来源。存在同名歧义或归属冲突时，保留能独立确认的证据。
 
