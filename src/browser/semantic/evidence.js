@@ -408,14 +408,16 @@ function(operation, args) {
     // its own wrappers so normal focus, blur and hover paint isn't evidence.
     let interaction=field.matches(':disabled')?'d':'e';
     interaction+=field.readOnly?'r':'w';
+    let hover='';
     for (let node=field; node && (node===field || counts.get(node)===1); node=node.parentElement) {
       interaction+=String(Number(node.matches(':focus-within'))+
-        2*Number(node.matches(':hover'))+4*Number(node.matches(':active'))+8*Number(node.matches(':focus-visible')));
+        2*Number(node.matches(':active'))+4*Number(node.matches(':focus-visible')));
+      hover+=node.matches(':hover')?'1':'0';
     }
-    return {paint,interaction};
+    return {paint,interaction,hover};
   }
   function appearanceChanges(before,after) {
-    if (!before || before.interaction!==after.interaction) return [];
+    if (!before || before.interaction!==after.interaction || before.hover!==after.hover) return [];
     return Object.keys(after.paint).filter(part=>
       after.paint[part]!==undefined && before.paint[part]!==undefined && before.paint[part]!==after.paint[part]
     ).map(part=>({part,before:before.paint[part],after:after.paint[part]}));
@@ -483,16 +485,24 @@ function(operation, args) {
     if (!form.contains(field)) return;
     const old=previous?.indicatorFields.get(field);
     if (previous && !old) return;
-    const sameInteraction=old?.interaction===appearance.interaction;
+    const sameFocus=old?.interaction===appearance.interaction;
+    const sameInteraction=sameFocus && old.hover===appearance.hover;
     const paint=new WeakMap(), icons=new WeakSet(), hiddenIcons=new WeakSet(), wrappers=[];
     for (let node=field, depth=0; node && depth<=4 && node!==form && node!==record; node=node.parentElement,depth++) {
       if (node!==field && (counts.get(node)!==1 || owner(node)!==record || node.closest('form')!==form)) break;
       if (node!==field) wrappers.push(node);
       if (!feedbackVisible(node,record,node===field) || !node.getClientRects().length) continue;
       const current=indicatorPaint(node,field), before=old?.paint.get(node);
-      paint.set(node,current);
-      if (before && sameInteraction) for (const kind of Object.keys(current)) {
-        if (current[kind] && before[kind]!==undefined && before[kind]!==current[kind]) found.push({field,source:node,kind});
+      const classes=node.getAttribute('class') || '';
+      const marker=classes.length<=256 ? classes : null;
+      paint.set(node,{parts:current,marker});
+      // A reflow may put the cursor over a different field. Retain a candidate
+      // only if the source also changed class and this field has its own
+      // explicit rejection message. Focus and active paint stay suppressed.
+      const changedMarker=before && marker!==null && before.marker!==null && marker!==before.marker;
+      if (before && sameFocus && (sameInteraction || changedMarker)) for (const kind of Object.keys(current)) {
+        if (current[kind] && before.parts[kind]!==undefined && before.parts[kind]!==current[kind])
+          found.push({field,source:node,kind,needsMessage:!sameInteraction});
       }
     }
     const wrapper=wrappers.at(-1);
@@ -509,7 +519,7 @@ function(operation, args) {
       if (previous.existing.has(icon) && previous.indicatorOwners.get(icon)!==field) continue;
       found.push({field,source:icon,kind:'icon'});
     }
-    baseline.indicatorFields.set(field,{paint,icons,hiddenIcons,interaction:appearance.interaction});
+    baseline.indicatorFields.set(field,{paint,icons,hiddenIcons,interaction:appearance.interaction,hover:appearance.hover});
     // Remember unmarked and hidden elements too. Moving an old element from a
     // different field and then marking it must not manufacture a new indicator.
     if (!previous && wrapper) for (const node of iconCandidates) {
@@ -793,21 +803,23 @@ function(operation, args) {
     if (extended && entries.length) summaryFeedback(record,controls,safeFields,entries,ids,links,counts,previous,additional,pairs);
     if (limits.size) return null;
     if (!previous) return {originals,excluded,visibleText,oldByField,priorOwner,appearances,...additional};
-    const rows=[];
+    const rows=[], markedFields=new Set();
     for (const [field,byNode] of pairs) {
       const owned=[...byNode.values()].filter(item=>priorOwner.get(item.node)===field);
       const marked=owned.filter(item=>item.association!=='adjacent_text' && item.association!=='summary_text');
       const choices=marked.length?marked:owned;
       if (choices.length!==1) continue;
       const {node,text,association}=choices[0];
+      if (marked.length) markedFields.add(field);
       rows.push({field_node:remember(field,true),message_node:remember(node,true),reason:text,association});
       if (rows.length>16) break;
     }
     const output={fields:rows.length<=16?rows:[],visual_changes:visual.length<=16?
       visual.map(({field,changes})=>({field_node:remember(field,true),changes})):[]};
-    if (extended && indicators.length<=32) {
+    const attributable=indicators.filter(item=>!item.needsMessage || (output.fields.length && markedFields.has(item.field)));
+    if (extended && attributable.length<=32) {
       const messages=new Set(output.fields.map(row=>row.message_node));
-      output.indicators=indicators.map(({field,source,kind})=>({
+      output.indicators=attributable.map(({field,source,kind})=>({
         field_node:remember(field,true),source_node:remember(source,true),kind,
       })).filter(row=>!messages.has(row.source_node));
     }
