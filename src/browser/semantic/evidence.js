@@ -829,6 +829,17 @@ function(operation, args) {
   // the control, label and error text are never part of the requested crop.
   function pixelGeometry(source, field, form, rect, record) {
     const f=field.getBoundingClientRect(), gap=96;
+    // A native input can overflow its grid track by a few pixels. Discard
+    // that shared edge before sampling. A glyph inside the input is ambiguous.
+    if (rect.left<f.right+1 && rect.right>f.left-1 && rect.top<f.bottom+1 && rect.bottom>f.top-1) {
+      const r={left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};
+      if (f.right+1-r.left<=4) r.left=f.right+1;
+      else if (r.right-f.left+1<=4) r.right=f.left-1;
+      else if (f.bottom+1-r.top<=4) r.top=f.bottom+1;
+      else if (r.bottom-f.top+1<=4) r.bottom=f.top-1;
+      else return null;
+      rect=r;
+    }
     const x=Math.ceil(rect.left), y=Math.ceil(rect.top);
     // Keep the interior crop the same size across fractional-pixel reflow.
     const width=Math.floor(rect.right-rect.left)-1, height=Math.floor(rect.bottom-rect.top)-1;
