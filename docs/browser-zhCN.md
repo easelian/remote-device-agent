@@ -111,6 +111,10 @@ shell 权限和浏览器会话是两个独立的开关。设备两者都开时�
 
 AI 通过 `browser_open` 打开会话，使用 `browser_observe` 读取页面，再以返回的元素引用调用 `browser_act`。操作后通过 `browser_wait` 等待预期状态，并重新观察结果。当前支持普通文本框、原生单选下拉框、复选框、链接、按钮、页面滚动、标签页及受支持的 frame。日期、时间、颜色和滑块按值填写，值须符合该字段自身的格式，例如 `2026-03-04`、`09:30`、`#ff8800`、`7`。密码和验证码应在人工网页输入，不放进 AI 工具参数。
 
+v2 会话首次读取页面以及操作后核对结果时，直接调用不带筛选条件的 `browser_observe`。`frame_overview.frames` 按 frame 汇集本次观察到的标题、文字和控件引用，iframe 排在主页面前面。控件的 `record` 来自同一条记录中可明确归属的标题。总览有数量和长度限制，结合 `truncated` 与 `coverage` 判断是否需要继续读取。若 iframe 只显示“已保存”，而主页面有多条记录，应回到站点的记录视图核对目标单的状态。
+
+`within` 只接受当前标签页、当前控制代次最近一次观察返回的 `frame_id`。每次成功观察（含续页）都会替换 ID，执行动作也会使旧 ID 失效，即使 iframe 仍然可见。导航、文档替换、人工交还或收到 `browser_stale_reference` 后，先省略 `within` 重新观察。保留原写操作的 `operation_id`，以便查回执。
+
 在支持 `submit_validation` 的 v2 会话里，点击原生提交按钮或在单行输入框中按 Enter 后，先看动作回执。若 `native_validation` 给出 `type_mismatch` 等原因，可用 `read_validation` 确认原表单中需要修正的字段。修正后核对原记录的状态。
 
 显式 v2 会话在设备与打开结果均声明 `extensions.actionability` 版本 1 可用时，可以用 `browser_inspect` 检查一个当前 ref 的动作前置条件。`ready_now` 表示采样时条件满足，`needs_scroll` 表示当前视口外，`blocked` 表示已有阻止条件，`indeterminate` 表示无法证明。检查不滚动、聚焦或输入，不续期引用；点击检查返回 `needs_scroll`（`outside_viewport`）时，可直接用同一有效 `ref` 调用 `browser_act`，动作为 `{"kind":"click","ref":"<当前 ref>"}`。即使目标位于 iframe，点击也会按需自动滚动，重新确认命中目标后才派发输入。随后核对操作结果。旧引用失效时重新观察，不凭诊断重放结果不明的输入。
@@ -138,7 +142,7 @@ Canvas 绘制的控件和 closed Shadow DOM 的内部节点没有语义引用。
 | `filter: "interactive"` | 控件和标题，不含它们之间的文字。 |
 | `filter: "viewport"` | 当前视口内的内容。 |
 | `find` | 含有某段文字（最长 128 个字符）的各处，每一处连同它所在的记录一起返回。记录指表格行、列表项、article 或对话框，不含其内部嵌套的记录。写着某位客户的那一行会带着编辑这位客户的按钮一起返回。 |
-| `within` | 一个 frame，用先前观察里某个节点的 `frame_id` 指明。 |
+| `within` | 用最近一次观察返回的 `frame_id` 选定一个 frame。v2 每次动作后都应重新观察以取得新 ID。 |
 
 这些参数可以组合，引用照常签发，续读沿用序列第一次调用的参数。查找不区分大小写，连续的空白视为一个空格。它查的是页面显示的文字、控件的名称和标签、字段当前的值，从不查密码框的值。最多返回 20 处（各 frame 合计），每条记录最多 30 个节点；`coverage.matches` 是返回的处数，超出时 `coverage.omitted` 里有 `find_match_limit` 或 `find_record_clipped`。被标记拆开的文字在记录内能找到，在记录外找不到。`viewport` 在每个 frame 里按该 frame 自己的窗口判定，不考虑被页面内滚动区域遮住的内容。
 

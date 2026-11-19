@@ -10,6 +10,9 @@ mod evidence;
 mod file_approval;
 mod human;
 mod native;
+mod overview;
+#[cfg(test)]
+mod overview_tests;
 mod pixels;
 mod presentation;
 mod submit;
@@ -1000,19 +1003,20 @@ async fn observe(
             within,
         }
     };
+    let max_chars = params["max_chars"].as_u64().unwrap_or(20000) as usize;
     let before = port.frames(deadline).await?;
-    let result = page
+    let mut result = page
         .observe(
             query.clone(),
             params["max_nodes"].as_u64().unwrap_or(200) as usize,
-            params["max_chars"].as_u64().unwrap_or(20000) as usize,
+            max_chars,
             continuation.map(|v| v.0),
             deadline,
         )
         .await?;
     session.clear_references();
     let mut nodes = Vec::new();
-    for row in result.rows {
+    for row in &mut result.rows {
         let frame = if let Some((id, _)) = session
             .frames
             .iter()
@@ -1024,15 +1028,15 @@ async fn observe(
             session.frames.insert(id.clone(), row.context);
             id
         };
-        let facts = row.facts;
-        let entries: Vec<_> = facts.record.entries.into_iter().map(|entry|json!({"tag":entry.tag,"attributes":entry.attributes,"text":entry.text,"value":entry.value,"checked":entry.checked})).collect();
+        let facts = &row.facts;
+        let entries: Vec<_> = facts.record.entries.iter().map(|entry|json!({"tag":entry.tag,"attributes":entry.attributes,"text":entry.text,"value":entry.value,"checked":entry.checked})).collect();
         let mut node = json!({"role":facts.role,"kind":facts.kind,"tag":facts.tag,"input_type":facts.input_type,"name":facts.name,"name_source":facts.name_source,"name_quality":facts.name_quality,"frame_id":frame,
             "file_input":facts.tag=="input"&&facts.input_type=="file","enabled":facts.enabled,"readonly":facts.readonly,"editable":facts.editable,"sensitive":facts.sensitive,"checked":facts.checked,"in_view":facts.in_view,"record_complete":facts.record.complete,
             "record":{"entries":entries,"complete":facts.record.complete,"limits":facts.record.limits}});
-        if let Some(value) = facts.value {
+        if let Some(value) = facts.value.as_deref() {
             node["value"] = value.into();
         }
-        if let Some(reference) = row.reference {
+        if let Some(reference) = row.reference.take() {
             let id = token()?;
             session.references.insert(id.clone(), reference);
             node["ref"] = id.into();
@@ -1045,8 +1049,21 @@ async fn observe(
         return Err(Failure::new("browser_stale_reference"));
     }
     session.reference_tab = Some(port.tab_id()?);
-    let mut value = json!({"observation_profile":"semantic_dom_v1","nodes":nodes,"page":meta.public(),
+    let mut value = json!({"observation_profile":"semantic_dom_v1","page":meta.public(),
         "coverage":{"complete":result.complete,"changed_during_read":result.changed_during_read,"omitted":result.omitted,"scanned":result.scanned},"content_trust":"untrusted_page"});
+    if params.get("cursor").is_none()
+        && params.get("presentation").is_none()
+        && query == sem::Query::default()
+    {
+        value["frame_overview"] = overview::build(
+            &result.rows,
+            &nodes,
+            &before,
+            !result.complete || result.changed_during_read || !result.omitted.is_empty(),
+            max_chars,
+        );
+    }
+    value["nodes"] = nodes.into();
     value["page"]["tab_id"] = port.tab_id()?.into();
     if let Some(cursor) = result.cursor {
         let id = token()?;

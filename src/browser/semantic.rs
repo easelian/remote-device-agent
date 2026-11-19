@@ -14,7 +14,7 @@ pub(crate) mod types;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use page::HumanPermit;
 #[allow(unused_imports)]
-pub(crate) use page::{Acknowledgement, Action, Continuation, Observation, Page, Reference};
+pub(crate) use page::{Acknowledgement, Action, Continuation, Observation, Page, Reference, Row};
 pub(crate) use page::{Coordination, DragEndpoint, SubmitRecordBinding, check_drag_endpoints};
 pub(crate) use program::SubmitFeedbackKind;
 pub(crate) use types::*;
