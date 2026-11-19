@@ -90,6 +90,7 @@ impl Attempt {
         tab: &str,
         epoch: u64,
         mode: Read,
+        query_include_indicators: bool,
         deadline: Instant,
     ) -> Result<Value> {
         let unknown = || json!({"state":"undetermined"});
@@ -141,15 +142,18 @@ impl Attempt {
         } else {
             None
         };
-        let (fields, visuals) = if mode == Read::Fields {
-            page.read_submit_fields(target, &self.record.anchor_text, deadline)
-                .await?
+        let (fields, visuals, indicators) = if mode == Read::Fields {
+            page.read_submit_fields(
+                target,
+                &self.record.anchor_text,
+                query_include_indicators,
+                deadline,
+            )
+            .await?
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
-        let explicit_rejection = fields
-            .iter()
-            .any(|item| item.association != sem::SubmitFieldAssociation::AdjacentText)
+        let explicit_rejection = fields.iter().any(|item| item.association.is_strong())
             || observed.as_ref().is_some_and(|item| {
             matches!(
                 item.kind,
@@ -161,6 +165,7 @@ impl Attempt {
             if !rejected
                 && fields.is_empty()
                 && visuals.is_empty()
+                && indicators.is_empty()
                 && let Some(expected) = expected
             {
                 let query = sem::evidence::Query::MatchRecord {
@@ -182,7 +187,12 @@ impl Attempt {
                     result = json!({"state":"pending"});
                 }
             }
-            if rejected || observed.is_some() || !fields.is_empty() || !visuals.is_empty() {
+            if rejected
+                || observed.is_some()
+                || !fields.is_empty()
+                || !visuals.is_empty()
+                || !indicators.is_empty()
+            {
                 result = json!({"state": if rejected {"business_rejected"} else {"page_feedback"},
                     "http_status":200,"request_id":request_id,"record_node_id":self.record.node_id});
             }
@@ -214,6 +224,17 @@ impl Attempt {
                 }));
             }
             result["fields"] = rows.into();
+        }
+        if query_include_indicators && !indicators.is_empty() {
+            let mut rows = Vec::with_capacity(indicators.len());
+            for item in indicators {
+                rows.push(
+                    json!({"field_node_id":registry.feedback_id(item.field,tab,epoch)?,
+                    "source_node_id":registry.feedback_id(item.source,tab,epoch)?,
+                    "kind":item.kind}),
+                );
+            }
+            result["indicators"] = rows.into();
         }
         if !visuals.is_empty() {
             let mut rows = Vec::with_capacity(visuals.len());

@@ -103,6 +103,7 @@ pub(crate) enum Program {
         record: u64,
         anchor_text: String,
         fields: bool,
+        include_indicators: bool,
     },
     Release,
 }
@@ -121,6 +122,8 @@ pub(crate) enum SubmitFieldAssociation {
     Aria,
     AdjacentError,
     AdjacentText,
+    SummaryError,
+    SummaryText,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +132,11 @@ pub(crate) struct SubmitField {
     pub message_node: u64,
     pub reason: String,
     pub association: SubmitFieldAssociation,
+}
+impl SubmitFieldAssociation {
+    pub(crate) fn is_strong(self) -> bool {
+        matches!(self, Self::Aria | Self::AdjacentError | Self::SummaryError)
+    }
 }
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -163,17 +171,41 @@ pub(crate) struct SubmitVisualField {
     pub field_node: u64,
     pub changes: Vec<SubmitVisualChange>,
 }
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubmitIndicatorKind {
+    WrapperBorder,
+    WrapperOutline,
+    WrapperBackground,
+    FieldShadow,
+    WrapperShadow,
+    Icon,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubmitIndicator {
+    pub field_node: u64,
+    pub source_node: u64,
+    pub kind: SubmitIndicatorKind,
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SubmitFieldsReply {
     pub fields: Vec<SubmitField>,
     pub visual_changes: Vec<SubmitVisualField>,
+    pub indicators: Option<Vec<SubmitIndicator>>,
 }
 impl SubmitFieldsReply {
-    fn valid(&self) -> bool {
+    fn valid(&self, record: u64) -> bool {
         use std::collections::HashSet;
+        if !valid_evidence_id(record) {
+            return false;
+        }
         if self.fields.len() > 16 || self.visual_changes.len() > 16 {
+            return false;
+        }
+        if self.indicators.as_ref().is_some_and(|v| v.len() > 32) {
             return false;
         }
         let mut fields = HashSet::new();
@@ -182,6 +214,8 @@ impl SubmitFieldsReply {
             if !valid_page_reason(&item.reason)
                 || !valid_evidence_id(item.field_node)
                 || !valid_evidence_id(item.message_node)
+                || item.field_node == record
+                || item.message_node == record
                 || !fields.insert(item.field_node)
                 || !messages.insert(item.message_node)
             {
@@ -192,10 +226,35 @@ impl SubmitFieldsReply {
             return false;
         }
         let mut visual = HashSet::new();
+        if let Some(indicators) = &self.indicators {
+            let mut triples = HashSet::new();
+            let mut owners = std::collections::HashMap::new();
+            fields.extend(self.visual_changes.iter().map(|item| item.field_node));
+            fields.extend(indicators.iter().map(|item| item.field_node));
+            for item in indicators {
+                let (field, source) = (item.field_node, item.source_node);
+                if !valid_evidence_id(field)
+                    || !valid_evidence_id(source)
+                    || field == record
+                    || source == record
+                    || messages.contains(&field)
+                    || messages.contains(&source)
+                    || (item.kind == SubmitIndicatorKind::FieldShadow) != (source == field)
+                    || (source != field && fields.contains(&source))
+                    || owners
+                        .insert(source, field)
+                        .is_some_and(|owner| owner != field)
+                    || !triples.insert((field, source, item.kind))
+                {
+                    return false;
+                }
+            }
+        }
         self.visual_changes.iter().all(|item| {
             let mut parts = HashSet::new();
             valid_evidence_id(item.field_node)
                 && !messages.contains(&item.field_node)
+                && item.field_node != record
                 && visual.insert(item.field_node)
                 && (1..=6).contains(&item.changes.len())
                 && item.changes.iter().all(|c| {
@@ -419,6 +478,7 @@ impl Program {
                 record,
                 anchor_text,
                 fields,
+                include_indicators,
             } => (
                 if *fields {
                     "submit_fields_read"
@@ -426,7 +486,8 @@ impl Program {
                     "submit_feedback_read"
                 },
                 json!({"realm":marker.realm,"restoration":marker.restoration,
-                    "record":record,"anchor_text":anchor_text,"elements":512,"text_nodes":256,"other_nodes":256}),
+                    "record":record,"anchor_text":anchor_text,"include_indicators":*include_indicators,
+                    "elements":512,"text_nodes":256,"other_nodes":256}),
             ),
             Self::Release => ("release", json!({})),
         }
@@ -504,14 +565,141 @@ impl Program {
                 }
                 Ok(Output::Feedback(feedback))
             }
-            Self::SubmitFeedbackRead { fields: true, .. } => {
+            Self::SubmitFeedbackRead {
+                fields: true,
+                include_indicators,
+                record,
+                ..
+            } => {
                 let reply: SubmitFieldsReply = parse(text)?;
-                if !reply.valid() {
+                if !reply.valid(*record)
+                    || (!include_indicators
+                        && (reply.indicators.is_some()
+                            || reply.fields.iter().any(|item| {
+                                matches!(
+                                    item.association,
+                                    SubmitFieldAssociation::SummaryText
+                                        | SubmitFieldAssociation::SummaryError
+                                )
+                            })))
+                {
                     return Err(types::decode());
                 }
                 Ok(Output::Fields(reply))
             }
             _ => Ok(Output::Applied(parse(text)?)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fields_program(include_indicators: bool) -> Program {
+        Program::SubmitFeedbackRead {
+            marker: Marker {
+                realm: "r".into(),
+                restoration: 0,
+                url: "https://example.test/".into(),
+            },
+            record: 1,
+            anchor_text: "Order B42".into(),
+            fields: true,
+            include_indicators,
+        }
+    }
+
+    fn valid_reply() -> String {
+        serde_json::json!({
+            "fields": [{
+                "field_node": 11,
+                "message_node": 12,
+                "reason": "Required",
+                "association": "summary_error"
+            }],
+            "visual_changes": [],
+            "indicators": [{
+                "field_node": 11,
+                "source_node": 11,
+                "kind": "field_shadow"
+            }]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn submit_fields_requires_opt_in_for_indicators() {
+        assert!(fields_program(true).decode(&valid_reply()).is_ok());
+        assert!(fields_program(false).decode(&valid_reply()).is_err());
+    }
+
+    #[test]
+    fn legacy_fields_decodes_only_original_associations() {
+        let mut reply: serde_json::Value = serde_json::from_str(&valid_reply()).unwrap();
+        reply.as_object_mut().unwrap().remove("indicators");
+        assert!(fields_program(false).decode(&reply.to_string()).is_err());
+        reply["fields"][0]["association"] = "adjacent_text".into();
+        assert!(matches!(
+            fields_program(false).decode(&reply.to_string()),
+            Ok(Output::Fields(_))
+        ));
+    }
+
+    #[test]
+    fn submit_fields_accepts_summary_associations() {
+        let mut value: serde_json::Value = serde_json::from_str(&valid_reply()).unwrap();
+        value["fields"][0]["association"] = "summary_text".into();
+        assert!(fields_program(true).decode(&value.to_string()).is_ok());
+    }
+
+    #[test]
+    fn submit_fields_rejects_shared_indicator_source() {
+        let mut value: serde_json::Value = serde_json::from_str(&valid_reply()).unwrap();
+        value["indicators"] = serde_json::json!([
+            {"field_node":11,"source_node":20,"kind":"wrapper_border"},
+            {"field_node":13,"source_node":20,"kind":"wrapper_outline"}
+        ]);
+        assert!(fields_program(true).decode(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn submit_fields_allows_multiple_indicator_kinds_for_one_field() {
+        let mut value: serde_json::Value = serde_json::from_str(&valid_reply()).unwrap();
+        value["indicators"] = serde_json::json!([
+            {"field_node":11,"source_node":20,"kind":"wrapper_border"},
+            {"field_node":11,"source_node":20,"kind":"wrapper_outline"}
+        ]);
+        assert!(fields_program(true).decode(&value.to_string()).is_ok());
+    }
+
+    #[test]
+    fn submit_fields_rejects_record_collision() {
+        let mut value: serde_json::Value = serde_json::from_str(&valid_reply()).unwrap();
+        value["indicators"][0]["source_node"] = 1.into();
+        assert!(fields_program(true).decode(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn submit_fields_rejects_indicator_message_collision() {
+        let mut value: serde_json::Value = serde_json::from_str(&valid_reply()).unwrap();
+        value["indicators"][0]["source_node"] = 12.into();
+        assert!(fields_program(true).decode(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn legacy_feedback_rejects_fields_payload() {
+        let program = Program::SubmitFeedbackRead {
+            marker: Marker {
+                realm: "r".into(),
+                restoration: 0,
+                url: "https://example.test/".into(),
+            },
+            record: 1,
+            anchor_text: "Order B42".into(),
+            fields: false,
+            include_indicators: false,
+        };
+        assert!(program.decode(&valid_reply()).is_err());
     }
 }

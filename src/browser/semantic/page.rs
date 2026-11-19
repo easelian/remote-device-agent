@@ -240,6 +240,11 @@ pub(crate) struct SubmitVisualField {
     pub field: super::evidence::Target,
     pub changes: Vec<super::program::SubmitVisualChange>,
 }
+pub(crate) struct SubmitIndicator {
+    pub field: super::evidence::Target,
+    pub source: super::evidence::Target,
+    pub kind: super::program::SubmitIndicatorKind,
+}
 
 pub(crate) struct SubmitRecordBinding {
     pub endpoint: super::task_events::RequestEndpoint,
@@ -852,6 +857,7 @@ impl<P: Port> Page<P> {
         target: super::evidence::Target,
         anchor: &str,
         fields: bool,
+        include_indicators: bool,
         deadline: Instant,
     ) -> Result<Output> {
         let deadline = deadline.min(Instant::now() + super::evidence::TIMEOUT);
@@ -875,6 +881,7 @@ impl<P: Port> Page<P> {
                     record: target.node,
                     anchor_text: anchor.to_owned(),
                     fields,
+                    include_indicators,
                 },
                 deadline,
             )
@@ -890,7 +897,7 @@ impl<P: Port> Page<P> {
         deadline: Instant,
     ) -> Result<Option<SubmitFeedback>> {
         let Output::Feedback(feedback) = self
-            .submit_feedback_snapshot(target, anchor, false, deadline)
+            .submit_feedback_snapshot(target, anchor, false, false, deadline)
             .await?
         else {
             return Err(types::decode());
@@ -912,10 +919,15 @@ impl<P: Port> Page<P> {
         &self,
         target: super::evidence::Target,
         anchor: &str,
+        include_indicators: bool,
         deadline: Instant,
-    ) -> Result<(Vec<SubmitField>, Vec<SubmitVisualField>)> {
+    ) -> Result<(
+        Vec<SubmitField>,
+        Vec<SubmitVisualField>,
+        Vec<SubmitIndicator>,
+    )> {
         let Output::Fields(reply) = self
-            .submit_feedback_snapshot(target, anchor, true, deadline)
+            .submit_feedback_snapshot(target, anchor, true, include_indicators, deadline)
             .await?
         else {
             return Err(types::decode());
@@ -947,7 +959,23 @@ impl<P: Port> Page<P> {
                 changes: item.changes,
             })
             .collect();
-        Ok((fields, visuals))
+        let indicators = reply
+            .indicators
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| SubmitIndicator {
+                field: super::evidence::Target {
+                    node: item.field_node,
+                    ..target
+                },
+                source: super::evidence::Target {
+                    node: item.source_node,
+                    ..target
+                },
+                kind: item.kind,
+            })
+            .collect();
+        Ok((fields, visuals, indicators))
     }
 
     pub async fn evidence(

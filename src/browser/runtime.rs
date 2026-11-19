@@ -1795,15 +1795,14 @@ fn validate_capture_query(value: &Value, mutation: bool) -> Result<()> {
         (false, Some("read_event" | "read_exception_location")) => {
             fields.len() == 3 && id && fields.contains_key("sequence") && number("sequence", 1, MAX)
         }
-        (
-            false,
-            Some(
-                "read_requests"
-                | "read_submit_outcome"
-                | "read_submit_feedback"
-                | "read_submit_fields",
-            ),
-        ) => fields.len() == 2 && id,
+        (false, Some("read_requests" | "read_submit_outcome" | "read_submit_feedback")) => {
+            fields.len() == 2 && id
+        }
+        (false, Some("read_submit_fields")) => {
+            fields.len() == 2 + usize::from(value.get("include_indicators").is_some())
+                && id
+                && value.get("include_indicators").is_none_or(|v| v == true)
+        }
         (false, Some("read_events")) => {
             id && fields.keys().all(|k| {
                 matches!(
@@ -2339,6 +2338,31 @@ mod tests {
         let mut old = read.clone();
         old["version"] = 2.into();
         assert!(validate("browser_evidence", &old).is_err());
+    }
+
+    #[test]
+    fn submit_fields_validator_scopes_indicator_opt_in() {
+        let cap = format!("cap_{}", "a".repeat(32));
+        let base = json!({
+            "version":1,"session_id":"s","tab_id":"t","control_epoch":1,
+            "query":{"kind":"read_submit_fields","capture_id":cap}
+        });
+        assert!(validate("browser_evidence", &base).is_ok());
+        let mut enabled = base.clone();
+        enabled["query"]["include_indicators"] = true.into();
+        assert!(validate("browser_evidence", &enabled).is_ok());
+        let mut disabled = base.clone();
+        disabled["query"]["include_indicators"] = false.into();
+        assert!(validate("browser_evidence", &disabled).is_err());
+        let mut legacy = json!({
+            "version":1,"session_id":"s","tab_id":"t","control_epoch":1,
+            "query":{"kind":"read_submit_feedback","capture_id":cap}
+        });
+        legacy["query"]["include_indicators"] = true.into();
+        assert!(validate("browser_evidence", &legacy).is_err());
+        let mut extra = base;
+        extra["query"]["unexpected"] = true.into();
+        assert!(validate("browser_evidence", &extra).is_err());
     }
 
     #[test]

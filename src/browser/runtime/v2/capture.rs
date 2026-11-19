@@ -173,6 +173,7 @@ impl Capture {
                     Some("read_submit_fields") => submit::Read::Fields,
                     _ => return Err(Failure::new("browser_invalid_params")),
                 },
+                query["include_indicators"] == true,
                 deadline,
             )
             .await?;

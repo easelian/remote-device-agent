@@ -410,7 +410,7 @@ function(operation, args) {
     interaction+=field.readOnly?'r':'w';
     for (let node=field; node && (node===field || counts.get(node)===1); node=node.parentElement) {
       interaction+=String(Number(node.matches(':focus-within'))+
-        2*Number(node.matches(':hover'))+4*Number(node.matches(':active')));
+        2*Number(node.matches(':hover'))+4*Number(node.matches(':active'))+8*Number(node.matches(':focus-visible')));
     }
     return {paint,interaction};
   }
@@ -421,24 +421,256 @@ function(operation, args) {
     ).map(part=>({part,before:before.paint[part],after:after.paint[part]}));
   }
 
+  // An aria-hidden glyph can still be painted. Expose only its evidence
+  // handle and kind. Its enclosing field must pass the normal visibility check.
+  function paintedIcon(node,wrapper) {
+    const rect=node.getBoundingClientRect();
+    if (!rect.width || !rect.height) return false;
+    for (let part=node; part && part!==wrapper; part=part.parentElement) {
+      const style=getComputedStyle(part);
+      if (part.hidden || part.inert || style.display==='none' || style.visibility!=='visible' ||
+          style.opacity==='0' || style.contentVisibility==='hidden') return false;
+    }
+    return feedbackVisible(wrapper,owner(wrapper));
+  }
+  function validationIcon(node) {
+    if (!node.matches('i,img,svg,[role="img"],span[class]')) return false;
+    const classes=node.getAttribute('class') || '';
+    if (node.localName==='span' && node.getAttribute('role')!=='img' &&
+        !/(?:^|[\s_-])(?:icon|glyph)(?:$|[\s_-])/i.test(classes)) return false;
+    const marker=[classes,node.getAttribute('aria-label'),node.getAttribute('alt'),node.getAttribute('title')].join(' ');
+    if (marker.length>512 || /(?:no[-_ ]error|error[-_ ]free|(?:^|[\s_-])(?:success|valid|check|info|help)(?:$|[\s_-]))/i.test(marker)) return false;
+    return /(?:^|[\s_-])(?:error|invalid|warning|alert|exclamation)(?:$|[\s_-])|错误|无效|警告/i.test(marker);
+  }
+  function shadowSignature(style) {
+    // Keep CSS private. Compare the visible layers including their geometry.
+    const css=style.boxShadow;
+    if (css==='none') return '';
+    if (css.length>1024) return undefined;
+    const layers=css.split(/,(?![^()]*\))/), painted=[];
+    for (const layer of layers) {
+      const rgb=layer.match(/rgba?\([^()]*\)/);
+      if (!rgb) return undefined;
+      const color=paintColor(rgb[0]);
+      if (color===undefined) return undefined;
+      const geometry=layer.replace(rgb[0],'').trim().split(/\s+/);
+      if (color && geometry.some(token=>token.endsWith('px') && parseFloat(token)!==0)) painted.push(layer.trim());
+    }
+    return painted.join(',');
+  }
+  function indicatorPaint(node, field) {
+    const style=getComputedStyle(node);
+    const paint=Object.create(null);
+    paint[node===field?'field_shadow':'wrapper_shadow']=shadowSignature(style);
+    if (node!==field) {
+      for (const [kind,parts] of [['wrapper_border',['top','right','bottom','left']],['wrapper_outline',['outline']]]) {
+        if (kind==='wrapper_border' && style.borderImageSource!=='none') continue;
+        const sides=[];
+        for (const part of parts) {
+          const prop=part==='outline'?'outline':'border-'+part;
+          const width=style.getPropertyValue(prop+'-width'), line=style.getPropertyValue(prop+'-style');
+          const color=paintColor(style.getPropertyValue(prop+'-color'));
+          if (color===undefined) break;
+          sides.push(color && parseFloat(width)>0 && !['none','hidden'].includes(line) ? [width,line,color].join(' ') : '');
+        }
+        if (sides.length===parts.length) paint[kind]=sides.some(Boolean)?sides.join('|'):'';
+      }
+      if (style.backgroundImage==='none') paint.wrapper_background=paintColor(style.backgroundColor);
+    }
+    return paint;
+  }
+  function indicatorSources(field,form,record,counts,iconCandidates,appearance,previous,baseline,found) {
+    if (!form.contains(field)) return;
+    const old=previous?.indicatorFields.get(field);
+    if (previous && (!old || old.interaction!==appearance.interaction)) return;
+    const paint=new WeakMap(), icons=new WeakSet(), wrappers=[];
+    for (let node=field, depth=0; node && depth<=4 && node!==form && node!==record; node=node.parentElement,depth++) {
+      if (node!==field && (counts.get(node)!==1 || owner(node)!==record || node.closest('form')!==form)) break;
+      if (node!==field) wrappers.push(node);
+      if (!feedbackVisible(node,record,node===field) || !node.getClientRects().length) continue;
+      const current=indicatorPaint(node,field), before=old?.paint.get(node);
+      paint.set(node,current);
+      if (before) for (const kind of Object.keys(current)) {
+        if (current[kind] && before[kind]!==undefined && before[kind]!==current[kind]) found.push({field,source:node,kind});
+      }
+    }
+    const wrapper=wrappers.at(-1);
+    if (wrapper) for (const icon of iconCandidates) {
+      if (!wrapper.contains(icon) || !validationIcon(icon) || !paintedIcon(icon,wrapper) ||
+          icon.closest('form')!==form || icon.closest('a,button,[contenteditable="true"]') ||
+          !icon.getClientRects().length) continue;
+      icons.add(icon);
+      if (!old || old.icons.has(icon)) continue;
+      // A known source must still belong to its original single-field wrapper.
+      if (previous.existing.has(icon) && previous.indicatorOwners.get(icon)!==field) continue;
+      found.push({field,source:icon,kind:'icon'});
+    }
+    baseline.indicatorFields.set(field,{paint,icons,interaction:appearance.interaction});
+    // Remember unmarked and hidden elements too. Moving an old element from a
+    // different field and then marking it must not manufacture a new indicator.
+    if (!previous && wrapper) for (const node of iconCandidates) {
+      if (wrapper.contains(node)) baseline.indicatorOwners.set(node,field);
+    }
+  }
+
+  const summaryMarker='.error-summary,.validation-summary-errors,[data-error-summary]:not([data-error-summary="false"])';
+  const summarySelector=summaryMarker+',.form-summary,[role="alert"],[role="status"],ul,ol';
+  function fieldSummary(node,form,record) {
+    if (!node || !form.contains(node)) return null;
+    // A list item used solely to present a summary entry may sit inside a
+    // record. An independently marked business record is always a boundary.
+    let listItem=null;
+    for (let part=node,depth=0; part && part!==form && depth<64; part=part.parentElement,depth++) {
+      if (canonical.recordKind(part)) {
+        if (listItem || part.localName!=='li' || part.matches('[data-rdh-record],[role],article,tr') ||
+            !part.parentElement?.matches('ol,ul')) return null;
+        listItem=part;
+      }
+      if (part.matches(summarySelector) && owner(part)===record && part.closest('form')===form) {
+        if (part.matches('ul,ol')) {
+          const marked=part.parentElement?.closest(summaryMarker+',.form-summary,[role="alert"],[role="status"]');
+          if (marked && form.contains(marked) && owner(marked)===record) return marked;
+          if (part.parentElement!==form) continue;
+        }
+        return part;
+      }
+      if ((part===form.firstElementChild || part===form.lastElementChild) &&
+          part.matches('div,section,p,small') && owner(part)===record) return part;
+    }
+    return null;
+  }
+  function summaryLine(node,box,previous,link,links) {
+    for (let item=node,depth=0; item; item=parent(item),depth++) {
+      if (depth>=64 || editable(item) || !allowsRecordText(item) ||
+          (box.contains(item) && (previous?.foreign.has(item) || links.has(item.id)))) return null;
+      if (item===box && !item.isConnected) return null;
+    }
+    let text='', valid=true;
+    walk(node,false,child=>{
+      if (previous?.foreign.has(child)) { valid=false; return false; }
+      if (child.nodeType===Node.ELEMENT_NODE) {
+        if (links.has(child.id) || (child!==link && !child.matches('span,strong,em,b,i,code')) || !allowsRecordText(child) ||
+            editable(child) || child.shadowRoot) { valid=false; return false; }
+      } else if (child.nodeType===Node.TEXT_NODE) {
+        if (child.length>512 || child.length+text.length>512) { valid=false; return false; }
+        if (child.data.trim()) {
+          const range=document.createRange(); range.selectNodeContents(child);
+          const rect=range.getBoundingClientRect();
+          if (!rect.width || !rect.height) { valid=false; return false; }
+        }
+        text+=child.data;
+      }
+    });
+    text=text.replace(/[\t\n\r\f ]+/g,' ').trim();
+    return valid && text && Array.from(text).length<=256 && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(text)?text:null;
+  }
+  function summaryFeedback(record,controls,safeFields,entries,ids,links,counts,old,now,pairs) {
+    const labels=new Map(), names=new Map();
+    for (const field of controls) {
+      const explicit=normalized(field.getAttribute('aria-label'),256,'attribute_limit');
+      let label=explicit;
+      if (!label && field.labels?.length===1) {
+        const node=field.labels[0];
+        if (owner(node)===record && feedbackVisible(node,record)) label=textOf(node,256,'name_limit',true);
+      }
+      if (label) {
+        names.set(field,label);
+        labels.set(label,labels.has(label)?null:field);
+      }
+    }
+    for (const [node,box] of entries) {
+      if (counts.has(box)) continue;
+      let link=node.localName==='a' ? node : null;
+      if (node.localName==='li') {
+        const child=node.firstElementChild;
+        if (child?.matches('a[href]')) {
+          // A label-only link followed by a reason belongs to the same line.
+          // A sole link is processed as its own message node.
+          if (child===node.lastChild && child===node.firstChild) continue;
+          link=child;
+        }
+      }
+      const text=summaryLine(node,box,old,link,links);
+      if (!text) continue;
+      now.summaryTexts.set(node,text);
+      let field, prefixField, hasLabel=false;
+      for (const [label,candidate] of labels) {
+        if (text.startsWith(label) && /^\s*[:：]\s*\S/u.test(text.slice(label.length))) {
+          if (hasLabel) { prefixField=null; break; }
+          prefixField=candidate; hasLabel=true;
+        }
+      }
+      if (link) {
+        const href=link.getAttribute('href') || '';
+        if (!/^#[^#\s]+$/u.test(href) || href.length>257) continue;
+        try {
+          const target=new URL(href,document.baseURI), current=new URL(document.URL);
+          if (target.origin!==current.origin || target.pathname!==current.pathname || target.search!==current.search) continue;
+          field=ids.get(decodeURIComponent(target.hash.slice(1)));
+        } catch { continue; }
+        if (hasLabel && prefixField!==field) continue;
+        // A jump link carrying just the destination name supplies no reason.
+        if (names.get(field)===text) continue;
+      } else {
+        field=prefixField;
+      }
+      if (!field || !safeFields.has(field) || links.has(node.id) ||
+          field.hasAttribute('aria-errormessage') ||
+          (field.getAttribute('aria-invalid')==='true' && field.hasAttribute('aria-describedby'))) continue;
+      now.summaryOwners.set(node,field);
+      if (!now.summaryReasons.has(field)) now.summaryReasons.set(field,new Set());
+      now.summaryReasons.get(field).add(text);
+      if (!old || (old.priorOwner.has(node) && old.priorOwner.get(node)!==field) ||
+          old.summaryTexts.get(node)===text || old.visibleText.get(node)===text ||
+          old.summaryReasons.get(field)?.has(text) ||
+          (old.summaryOwners.has(node) && old.summaryOwners.get(node)!==field)) continue;
+      const association=box.matches(summaryMarker) || field.getAttribute('aria-invalid')==='true'?'summary_error':'summary_text';
+      if (!pairs.has(field)) pairs.set(field,new Map());
+      pairs.get(field).set(node,{node,text,association});
+      now.priorOwner.set(node,field);
+    }
+  }
+
   // Keep field attribution separate from the single-message query. Weak keys
   // retain the pre-click identities without keeping detached controls alive.
-  function fieldSnapshot(record, form, previous) {
-    try { return collectFields(record, form, previous); }
+  function fieldSnapshot(record, form, previous, extended=false) {
+    try { return collectFields(record, form, previous, extended); }
     catch { return null; } // Named form controls may shadow DOM methods.
   }
-  function collectFields(record, form, previous) {
+  function collectFields(record, form, previous, extended=false) {
     if (!record.isConnected || !form.isConnected || owner(form)!==record) return null;
     const ids=new Map(), links=new Map(), controls=[], counts=new Map(), candidates=[];
     const excluded=new WeakSet(), originals=new WeakMap(), visibleText=new WeakMap();
     const oldByField=new WeakMap(), priorOwner=new WeakMap(), appearances=new WeakMap(), visual=[];
     const eligible=node=>node && owner(node)===record &&
       (!node.closest('form') || node.closest('form')===form);
+    const additional=extended ? {existing:new WeakSet(),foreign:new WeakSet(),indicatorFields:new WeakMap(),
+      indicatorOwners:new WeakMap(),summaryTexts:new WeakMap(),summaryReasons:new WeakMap(),
+      summaryOwners:new WeakMap(),priorOwner} : null;
+    const safeFields=new Set(), iconCandidates=[], entries=[], indicators=[];
     const inputSelector='input,select,textarea';
     const messageTag=node=>node.matches('small,span,p,div,output,strong,em,[role="alert"],[role="status"]');
     walk(form.getRootNode(),false,node=>{
       const element=node.nodeType===Node.ELEMENT_NODE ? node : node.parentElement;
       if (!element || !eligible(element)) excluded.add(node);
+      if (extended) {
+        const box=fieldSummary(element,form,record);
+        if (!previous) {
+          additional.existing.add(node);
+          if (!eligible(element) && !box) additional.foreign.add(node);
+        }
+        if (node.nodeType===Node.ELEMENT_NODE) {
+          if (eligible(node) && node.matches('i,img,svg,span,[role="img"]')) iconCandidates.push(node);
+          if (box && (node.matches('li,p,small,a[href]') ||
+              ((node.parentElement===box || node===box) && node.matches('span,div')))) {
+            const item=node.closest('li');
+            // A fragment link in a list belongs to this line only when the
+            // line contains that link and ordinary formatting, no other field.
+            if (!item || node===item || (node.parentElement===item && node===item.firstChild && node===item.lastChild))
+              entries.push([node,box]);
+          }
+        }
+      }
       if (node.nodeType!==Node.ELEMENT_NODE) return;
       const id=prefix(node.id,256,'attribute_limit');
       if (id) ids.set(id,ids.has(id)?null:node);
@@ -468,6 +700,15 @@ function(operation, args) {
       }
       return reasons.get(node);
     };
+    const isSummary=node=>{
+      const box=fieldSummary(node,form,record);
+      return box && !counts.has(box) && (box!==node || box.matches(summaryMarker+',ul,ol,.form-summary') || counts.get(box.parentElement)!==1);
+    };
+    function adjacent(field,node,safe,invalid) {
+      if (links.has(node.id) || (extended && (isSummary(node) || validationIcon(node)))) return;
+      const strong=invalid || node.matches('.field-error,.error,.invalid-feedback,.error-message,[data-error="true"]');
+      add(field,node,strong?'adjacent_error':'adjacent_text',safe);
+    }
     // Remember visible text before it becomes linked, including a formerly
     // generic container which the page later promotes to an error message.
     if (!previous) for (const node of candidates) textOfMessage(node);
@@ -476,7 +717,8 @@ function(operation, args) {
       if (priorOwner.has(node) && priorOwner.get(node)!==field) {
         priorOwner.set(node,null);
       } else if (!priorOwner.has(node)) priorOwner.set(node,field);
-      if (!safe || (previous?.priorOwner.has(node) && previous.priorOwner.get(node)!==field)) return;
+      if (!safe || (extended && previous?.summaryOwners.has(node) && previous.summaryOwners.get(node)!==field) ||
+          (previous?.priorOwner.has(node) && previous.priorOwner.get(node)!==field)) return;
       for (let p=node.parentElement; p && p!==record; p=p.parentElement) {
         if (links.has(p.id)) return;
       }
@@ -499,6 +741,10 @@ function(operation, args) {
       if (safe) {
         originals.set(field,identity);
         const appearance=fieldAppearance(field,counts);
+        if (extended) {
+          safeFields.add(field);
+          indicatorSources(field,form,record,counts,iconCandidates,appearance,previous,additional,indicators);
+        }
         if (previous) {
           const changes=appearanceChanges(previous.appearances.get(field),appearance);
           if (changes.length) visual.push({field,changes});
@@ -520,40 +766,56 @@ function(operation, args) {
         // Bare form children are meaningful only after a labelled control or
         // a wrapper containing exactly one. This rules out paired bare inputs.
         const bareOK=part===field ? Boolean(field.labels?.length) : counts.get(part)===1;
+        if (extended && !directForm) {
+          for (let msg=part.previousElementSibling; msg; msg=msg.previousElementSibling) {
+            if (msg.localName==='label' && msg.control===field) continue;
+            if (!messageTag(msg) || counts.has(msg) || canonical.recordKind(msg) || !eligible(msg)) break;
+            adjacent(field,msg,safe,invalid);
+          }
+        }
         if (!directForm || bareOK) {
           for (let msg=part.nextElementSibling; msg && messageTag(msg); msg=msg.nextElementSibling) {
             if (counts.has(msg) || canonical.recordKind(msg) || !eligible(msg)) break;
-            if (links.has(msg.id)) continue;
-            const strong=invalid || msg.matches('.field-error,.error,.invalid-feedback,.error-message,[data-error="true"]');
-            add(field,msg,strong?'adjacent_error':'adjacent_text',safe);
+            adjacent(field,msg,safe,invalid);
           }
         }
         if (directForm) break;
       }
     }
     if (limits.size) return null;
-    if (!previous) return {originals,excluded,visibleText,oldByField,priorOwner,appearances};
+    if (extended && entries.length) summaryFeedback(record,controls,safeFields,entries,ids,links,counts,previous,additional,pairs);
+    if (limits.size) return null;
+    if (!previous) return {originals,excluded,visibleText,oldByField,priorOwner,appearances,...additional};
     const rows=[];
     for (const [field,byNode] of pairs) {
       const owned=[...byNode.values()].filter(item=>priorOwner.get(item.node)===field);
-      const marked=owned.filter(item=>item.association!=='adjacent_text');
+      const marked=owned.filter(item=>item.association!=='adjacent_text' && item.association!=='summary_text');
       const choices=marked.length?marked:owned;
       if (choices.length!==1) continue;
       const {node,text,association}=choices[0];
       rows.push({field_node:remember(field,true),message_node:remember(node,true),reason:text,association});
       if (rows.length>16) break;
     }
-    return {fields:rows.length<=16?rows:[],visual_changes:visual.length<=16?
+    const output={fields:rows.length<=16?rows:[],visual_changes:visual.length<=16?
       visual.map(({field,changes})=>({field_node:remember(field,true),changes})):[]};
+    if (extended && indicators.length<=32) {
+      const messages=new Set(output.fields.map(row=>row.message_node));
+      output.indicators=indicators.map(({field,source,kind})=>({
+        field_node:remember(field,true),source_node:remember(source,true),kind,
+      })).filter(row=>!messages.has(row.source_node));
+    }
+    return output;
   }
   if (operation==='submit_fields_read') {
     const empty={fields:[],visual_changes:[]};
     const baseline=registry.submitFeedback, form=baseline?.form.deref();
     const record=registry.nodes.get(args.record)?.weak.deref();
-    if (!baseline?.fields || !form || !record || record!==baseline.record.deref() ||
+    if (!baseline || !form || !record || record!==baseline.record.deref() ||
         baseline.anchor!==args.anchor_text || !matchesRecord(record,true) || limits.size) return result(empty);
     remember(record,true);
-    return result(fieldSnapshot(record,form,baseline.fields) || empty);
+    const extended=args.include_indicators===true && Boolean(baseline.extended);
+    const prior=extended?baseline.extended:baseline.fields;
+    return result((prior && fieldSnapshot(record,form,prior,extended)) || empty);
   }
 
   if (operation === 'submit_feedback_read') {
@@ -611,9 +873,11 @@ function(operation, args) {
     // omits only its own diagnostic evidence and cannot veto the input.
     elements=0; texts=0; others=0; limits.clear();
     const fields=fieldSnapshot(record,form,null);
-    if (snapshot || fields) {
+    elements=0; texts=0; others=0; limits.clear();
+    const extended=fieldSnapshot(record,form,null,true);
+    if (snapshot || fields || extended) {
       const baseline={record:new WeakRef(record),form:new WeakRef(form),anchor:args.anchor_text,
-        fields,texts:snapshot && new Set(snapshot.found.map(item=>item.text)),rejected:snapshot?.rejected};
+        fields,extended,texts:snapshot && new Set(snapshot.found.map(item=>item.text)),rejected:snapshot?.rejected};
       baseline.expiry=setTimeout(()=>{if (registry.submitFeedback===baseline) registry.submitFeedback=null;},30000);
       registry.submitFeedback=baseline;
     }
