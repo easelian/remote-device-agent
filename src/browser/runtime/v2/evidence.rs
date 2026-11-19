@@ -40,9 +40,17 @@ impl Registry {
     pub fn feedback_id(&mut self, target: dom::Target, tab: &str, epoch: u64) -> Result<String> {
         self.expire(Instant::now());
         let tab_digest: [u8; 32] = Sha256::digest(tab.as_bytes()).into();
-        if let Some(index) = self.entries.iter().position(|entry| {
-            entry.tab == tab_digest && entry.epoch == epoch && entry.target == target
-        }) {
+        // A separate find_nodes/read_layout can publish another handle for the
+        // same DOM target. Prefer the oldest live handle across repeated reads.
+        if let Some((index, _)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.tab == tab_digest && entry.epoch == epoch && entry.target == target
+            })
+            .min_by_key(|(_, entry)| (entry.created, entry.id))
+        {
             // Reserve this handle ahead of the rest of this bounded response
             // without extending its original TTL.
             let existing = self.entries.remove(index);

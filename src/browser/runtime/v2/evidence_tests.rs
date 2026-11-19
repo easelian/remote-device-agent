@@ -101,7 +101,12 @@ fn publishing_field_list_preserves_reused_handles_at_capacity() {
     let mut table = Registry::default();
     let first = table.feedback_id(target, "tab", 7).unwrap();
     let created = table.entries[0].created;
-    for node in 2..=MAX_ENTRIES as u64 {
+    let alias = table.publish_target(target, "tab", 7).unwrap();
+    assert_ne!(first, alias);
+    for _ in 0..3 {
+        assert_eq!(table.feedback_id(target, "tab", 7).unwrap(), first);
+    }
+    for node in 3..=MAX_ENTRIES as u64 {
         table
             .publish_target(dom::Target { node, ..target }, "tab", 7)
             .unwrap();
