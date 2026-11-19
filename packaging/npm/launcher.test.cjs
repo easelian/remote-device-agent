@@ -8,10 +8,10 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const source = fs.readFileSync(path.join(__dirname, 'rdh.cjs'), 'utf8');
 
-function launch(platform, arch, glibc, withReport = true, installed = true) {
+function launch(platform, arch, glibc, withReport = true, installed = true, args = ['--version', 'a b']) {
   const events = new EventEmitter();
   const proc = Object.assign(events, {
-    platform, arch, argv: ['node', 'rdh', '--version', 'a b'], exitCode: undefined,
+    platform, arch, argv: ['node', '/bin/rdh', ...args], env: { OTHER: 'kept' }, exitCode: undefined,
     report: withReport ? { getReport: () => ({ header: glibc ? { glibcVersionRuntime: '2.39' } : {} }) } : undefined,
     exit: (code) => { throw new Error(`exit ${code}`); },
     kill: () => {}, pid: 123,
@@ -52,6 +52,15 @@ test('selects each supported platform and preserves arguments', () => {
     assert.deepEqual(Array.from(launched.args), ['--version', 'a b']);
     assert.equal(launched.options.stdio, 'inherit');
   }
+});
+
+test('passes the npm command entry to update and doctor', () => {
+  for (const command of ['update', 'doctor']) {
+    const { launched } = launch('linux', 'x64', true, true, true, [command]);
+    assert.equal(launched.options.env.RDH_NPM_ENTRY, '/bin/rdh');
+    assert.equal(launched.options.env.OTHER, 'kept');
+  }
+  assert.equal(launch('linux', 'x64', true).launched.options.env, undefined);
 });
 
 test('rejects unsupported platforms and unavailable Linux reports', () => {

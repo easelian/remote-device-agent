@@ -1,4 +1,4 @@
-//! The public CLI has one start action and two lifecycle commands.
+//! The public CLI has start, lifecycle, and diagnostic commands.
 use crate::error::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -8,6 +8,7 @@ pub enum Action {
     Launch,
     Unbind,
     Update,
+    Doctor,
 }
 
 pub fn parse(argv: &[String]) -> Result<Action> {
@@ -20,6 +21,7 @@ pub fn parse(argv: &[String]) -> Result<Action> {
         [] => Ok(Action::Launch),
         ["unbind"] => Ok(Action::Unbind),
         ["update"] => Ok(Action::Update),
+        ["doctor"] => Ok(Action::Doctor),
         ["--help" | "-h"] => Ok(Action::Help),
         ["--version" | "-V"] => Ok(Action::Version),
         _ => Err(Error::message("Unknown command or option. Use rdh --help")),
@@ -28,7 +30,7 @@ pub fn parse(argv: &[String]) -> Result<Action> {
 
 pub fn help() -> String {
     format!(
-        "Remote Device Agent {}\n\n  rdh          Start; open the browser and wait for approval when unbound\n  rdh unbind   Revoke access, disable automatic startup, and stop the Agent\n  rdh update   Update the Agent\n  rdh --help   Show this help\n  rdh --version  Show the version\n",
+        "Remote Device Agent {}\n\n  rdh          Start; open the browser and wait for approval when unbound\n  rdh unbind   Revoke access, disable automatic startup, and stop the Agent\n  rdh update   Update a native installation\n  rdh doctor   Show installation and automatic startup paths\n  rdh --help   Show this help\n  rdh --version  Show the version\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -45,6 +47,7 @@ mod tests {
             (vec![], Action::Launch),
             (vec!["unbind"], Action::Unbind),
             (vec!["update"], Action::Update),
+            (vec!["doctor"], Action::Doctor),
             (vec!["--help"], Action::Help),
             (vec!["--version"], Action::Version),
         ] {

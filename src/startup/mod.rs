@@ -236,6 +236,16 @@ fn state_path(config: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+pub(crate) fn diagnostic_binding(config: &Path) -> Result<Option<Binding>> {
+    Startup::read_file(&state_path(config))
+        .map(|state| state.binding)
+        .map_err(|error| Error::message(error.message))
+}
+
+pub(crate) fn diagnostic_executable(config: &Path, binding: &Binding) -> Result<PathBuf> {
+    native::NativeStartup::new(config.to_path_buf())?.configured_executable(binding)
+}
+
 impl Startup {
     pub fn new(config: &Path) -> Result<Self> {
         let config = config.canonicalize()?;

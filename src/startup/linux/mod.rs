@@ -55,6 +55,53 @@ impl NativeStartup {
         self.checked(&args)
     }
 
+    pub(crate) fn configured_executable(&self, binding: &Binding) -> Result<PathBuf> {
+        let wrapper = crate::binding::sidecar(&self.config, ".startup-run");
+        let mut args = Vec::new();
+        if binding.mode == Mode::User {
+            args.push("--user");
+        }
+        args.extend(["show", "--property=ExecStart", "--value", &binding.name]);
+        let entry = match self.run(&args) {
+            Ok((status, output)) if status.success() && !output.is_empty() => {
+                unit_executable(&output)
+            }
+            _ if binding.mode == Mode::User && binding.name == "rdh.service" => {
+                // A non-interactive shell may not have access to the user bus.
+                // Only recognize the unit the Agent writes for this profile.
+                let directory = self.config_base.join("systemd/user");
+                let unit = crate::storage::read_private(&directory.join(&binding.name))?;
+                let expected =
+                    format!(
+                        "ExecStart=\"{}\"",
+                        unit_quote(wrapper.to_str().ok_or_else(|| Error::message(
+                            "Startup wrapper path is not Unicode"
+                        ),)?)
+                    );
+                let unit = String::from_utf8_lossy(&unit);
+                if unit
+                    .lines()
+                    .filter(|line| line.starts_with("ExecStart="))
+                    .eq([expected.as_str()])
+                {
+                    Ok(wrapper.clone())
+                } else {
+                    Err(Error::message(
+                        "Startup unit does not match the recorded profile",
+                    ))
+                }
+            }
+            _ => Err(Error::message(
+                "Startup manager could not read the registration",
+            )),
+        }?;
+        if entry != wrapper {
+            return Ok(entry);
+        }
+        let script = crate::storage::read_private(&wrapper)?;
+        wrapper_executable(&script)
+    }
+
     fn run(&self, args: &[&str]) -> Result<(ExitStatus, String)> {
         super::posix::run(&self.systemctl, args, self.timeout)
     }
@@ -65,6 +112,37 @@ impl NativeStartup {
         }
         Ok(())
     }
+}
+
+fn unit_executable(output: &str) -> Result<PathBuf> {
+    let path = output
+        .strip_prefix("{ path=")
+        .filter(|value| !value.contains("{ path="))
+        .and_then(|value| value.split_once(" ; argv[]="))
+        .map(|(path, _)| PathBuf::from(path))
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| Error::message("Unrecognized systemd ExecStart value"))?;
+    Ok(path)
+}
+
+fn wrapper_executable(contents: &[u8]) -> Result<PathBuf> {
+    let invalid = || Error::message("Unrecognized Agent startup wrapper");
+    let script = std::str::from_utf8(contents).map_err(|_| invalid())?;
+    let quoted = script
+        .lines()
+        .last()
+        .and_then(|line| line.strip_prefix("exec "))
+        .ok_or_else(invalid)?;
+    let executable = quoted
+        .strip_prefix("'")
+        .and_then(|value| value.strip_suffix("'"))
+        .ok_or_else(invalid)?
+        .replace("'\\''", "'");
+    let path = PathBuf::from(&executable);
+    if !path.is_absolute() || shell_quote(&executable) != quoted {
+        return Err(invalid());
+    }
+    Ok(path)
 }
 
 fn shell_quote(value: &str) -> String {
@@ -142,9 +220,7 @@ impl StartupBackend for NativeStartup {
             .parent()
             .and_then(Path::to_str)
             .ok_or_else(|| Error::message("Invalid startup config parent"))?;
-        let mut wrapper_path = self.config.as_os_str().to_os_string();
-        wrapper_path.push(".startup-run");
-        let wrapper_path = PathBuf::from(wrapper_path);
+        let wrapper_path = crate::binding::sidecar(&self.config, ".startup-run");
         let wrapper = wrapper_path
             .to_str()
             .ok_or_else(|| Error::message("Startup wrapper path is not Unicode"))?;

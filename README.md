@@ -75,7 +75,8 @@ The public commands are:
 | --- | --- |
 | `rdh` | Start the Agent; request browser approval when unbound. |
 | `rdh unbind` | Stop the Agent and managed work, revoke the binding, and cancel recorded automatic startup. |
-| `rdh update` | Update the executable after the Agent has stopped. |
+| `rdh update` | Update a native installation after the Agent has stopped. |
+| `rdh doctor` | Show the command entry, installation source, other installations, and recorded startup executable. |
 | `rdh --help` | Show command help. |
 | `rdh --version` | Show the executable version. |
 
@@ -93,7 +94,7 @@ for a later pairing.
 
 ### Update
 
-Finish managed work and stop the Agent, then run:
+Finish managed work and stop the Agent. For a native installation, run the updater.
 
 ```sh
 rdh update
@@ -102,6 +103,10 @@ rdh update
 The updater selects the newest published GitHub release, including prereleases,
 and verifies the candidate before replacing the executable. Binding and startup
 settings are preserved. Run `rdh` after a successful update to reconnect.
+For an npm installation, stop the Agent and run
+`npm install -g @easelian/remote-device-agent`. Run `rdh doctor` to compare the
+command you invoked with the executable configured for automatic startup. It
+also looks for other `rdh` commands on `PATH` and in known installer directories.
 See [Maintenance](docs/maintenance.md#update-the-agent) for failure handling.
 
 ## Permissions, startup and network

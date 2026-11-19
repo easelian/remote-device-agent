@@ -60,6 +60,11 @@ fn main() {
         }
         Ok(Action::Unbind) => run_async(rdh_agent::binding::unbind()),
         Ok(Action::Update) => run_async(rdh_agent::binding::update()),
+        Ok(Action::Doctor) => {
+            if let Err(error) = rdh_agent::installation::diagnose() {
+                fail(error);
+            }
+        }
         Err(error) => fail(error),
     }
 }

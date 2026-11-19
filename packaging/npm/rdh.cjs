@@ -2,7 +2,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
-const { dirname, join } = require('node:path');
+const { dirname, join, resolve } = require('node:path');
 
 const arch = { x64: 'x64', arm64: 'arm64' }[process.arch];
 let platform;
@@ -31,7 +31,12 @@ try {
   process.exit(1);
 }
 const executable = join(dirname(nativeManifest), process.platform === 'win32' ? 'rdh.exe' : 'rdh');
-const child = spawn(executable, process.argv.slice(2), { stdio: 'inherit', windowsHide: false });
+const args = process.argv.slice(2);
+const options = { stdio: 'inherit', windowsHide: false };
+if (args.length === 1 && ['doctor', 'update'].includes(args[0])) {
+  options.env = { ...process.env, RDH_NPM_ENTRY: resolve(process.argv[1]) };
+}
+const child = spawn(executable, args, options);
 child.on('error', (error) => {
   console.error(`Unable to start the native Agent: ${error.message}`);
   process.exitCode = 1;

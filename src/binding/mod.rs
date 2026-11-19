@@ -172,6 +172,11 @@ pub(crate) async fn finish_pending(config: &Path, paths: &[PathBuf]) -> Result<(
 }
 
 pub async fn update() -> Result<()> {
+    if crate::installation::npm_managed()? {
+        return Err(Error::message(
+            "This Agent is managed by npm. Run npm install -g @easelian/remote-device-agent to upgrade.",
+        ));
+    }
     let options = prepare_options(false)?;
     if report_existing(&options.config)? {
         return Err(Error::message(

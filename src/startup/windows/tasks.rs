@@ -88,6 +88,14 @@ pub(super) fn enabled(name: &str) -> Result<bool> {
     let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
     Ok(unsafe { task.Enabled()? }.0 != 0)
 }
+pub(super) fn executable(name: &str) -> Result<String> {
+    let scheduler = Scheduler::connect()?;
+    let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };
+    let action: IExecAction = unsafe { task.Definition()?.Actions()?.get_Item(1)?.cast()? };
+    let mut executable = BSTR::new();
+    unsafe { action.Path(&mut executable)? };
+    Ok(executable.to_string())
+}
 pub(super) fn set(name: &str, enabled: bool) -> Result<bool> {
     let scheduler = Scheduler::connect()?;
     let task = unsafe { scheduler.folder.GetTask(&BSTR::from(name))? };

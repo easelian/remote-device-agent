@@ -18,6 +18,14 @@ pub(crate) struct NativeStartup;
     all(windows, feature = "experimental-windows-startup")
 )))]
 impl NativeStartup {
+    pub(crate) fn configured_executable(
+        &self,
+        _: &crate::startup::Binding,
+    ) -> crate::error::Result<std::path::PathBuf> {
+        Err(crate::error::Error::message(
+            "Native startup is unsupported on this platform",
+        ))
+    }
     pub(crate) fn new(_: std::path::PathBuf) -> crate::error::Result<Self> {
         Err(crate::error::Error::message(
             "Native startup is unsupported on this platform",

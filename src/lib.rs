@@ -8,6 +8,7 @@ pub mod config;
 pub mod deployment_defaults;
 pub mod error;
 pub mod files;
+pub mod installation;
 mod json_number;
 pub mod network;
 pub mod pairing;

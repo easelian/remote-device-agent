@@ -78,7 +78,7 @@ impl Service {
         }
         Ok(Self(service))
     }
-    fn enabled(&self) -> Result<bool> {
+    fn configuration(&self) -> Result<Vec<usize>> {
         let mut bytes = 0;
         unsafe { QueryServiceConfigW(self.0, null_mut(), 0, &mut bytes) };
         if io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
@@ -93,9 +93,55 @@ impl Service {
         {
             return Err(io::Error::last_os_error().into());
         }
+        Ok(buffer)
+    }
+
+    fn enabled(&self) -> Result<bool> {
+        let buffer = self.configuration()?;
         let configuration = unsafe { &*buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>() };
         Ok(configuration.dwStartType == SERVICE_AUTO_START)
     }
+
+    fn executable(&self) -> Result<PathBuf> {
+        let buffer = self.configuration()?;
+        let configuration = unsafe { &*buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>() };
+        let address = configuration.lpBinaryPathName as usize;
+        let length = std::mem::size_of_val(buffer.as_slice());
+        let invalid = || Error::message("Invalid Windows service executable");
+        let offset = address
+            .checked_sub(buffer.as_ptr() as usize)
+            .ok_or_else(invalid)?;
+        if offset >= length || offset % size_of::<u16>() != 0 {
+            return Err(invalid());
+        }
+        // QueryServiceConfigW stores the NUL-terminated command in this buffer.
+        let command = unsafe {
+            std::slice::from_raw_parts(
+                configuration.lpBinaryPathName,
+                (length - offset) / size_of::<u16>(),
+            )
+        };
+        let end = command
+            .iter()
+            .position(|&value| value == 0)
+            .ok_or_else(invalid)?;
+        let command = String::from_utf16(&command[..end]).map_err(|_| invalid())?;
+        let executable = if let Some(quoted) = command.strip_prefix('"') {
+            quoted.split_once('"').map(|(path, _)| path)
+        } else {
+            command.split_ascii_whitespace().next()
+        };
+        executable
+            .map(PathBuf::from)
+            .filter(|path| {
+                path.is_absolute()
+                    && path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+            })
+            .ok_or_else(invalid)
+    }
+
     fn set(&self, enabled: bool) -> Result<()> {
         // Only future start type changes. No running-service control is sent.
         if unsafe {
@@ -163,6 +209,25 @@ impl NativeStartup {
         }
         Ok(Self { config, executable })
     }
+    pub(crate) fn configured_executable(&self, binding: &Binding) -> Result<PathBuf> {
+        match binding.mode {
+            Mode::User => tasks::executable(&binding.name)
+                .map(PathBuf::from)
+                .map_err(task_error)
+                .and_then(|path| {
+                    if path.is_absolute() {
+                        Ok(path)
+                    } else {
+                        Err(Error::message(
+                            "Windows startup executable is missing or relative",
+                        ))
+                    }
+                }),
+            Mode::Service => Service::open(&binding.name, false)?.executable(),
+            Mode::None => Err(Error::message("Invalid startup binding")),
+        }
+    }
+
     fn create_named_user(&self, requested_name: Option<&str>) -> Result<Binding> {
         // Task Scheduler starts with the account's persistent environment.
         // A process-local XDG override cannot be carried by a native Exec action.

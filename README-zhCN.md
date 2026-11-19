@@ -50,7 +50,8 @@ rdh
 | --- | --- |
 | `rdh` | 启动 Agent；未绑定时请求浏览器批准。 |
 | `rdh unbind` | 停止 Agent 和受管工作，撤销绑定，并取消已记录的自动启动。 |
-| `rdh update` | 在 Agent 停止后更新可执行文件。 |
+| `rdh update` | 在 Agent 停止后更新原生安装。 |
+| `rdh doctor` | 查看命令入口、安装来源、其他安装和自启动程序路径。 |
 | `rdh --help` | 查看命令帮助。 |
 | `rdh --version` | 查看程序版本。 |
 
@@ -62,13 +63,13 @@ rdh
 
 ### 更新
 
-结束受管工作并停止 Agent 后运行：
+原生安装的 Agent 需要先结束受管工作并停止，再执行更新。
 
 ```sh
 rdh update
 ```
 
-更新器选择 GitHub 上最新发布的 Release，包括预发布版，验证候选程序后替换可执行文件。绑定和启动设置保持不变。更新成功后运行 `rdh` 重新连接。失败处理见[维护说明](docs/maintenance.md#update-the-agent)。
+更新器选择 GitHub 上最新发布的 Release，包括预发布版，验证候选程序后替换可执行文件。绑定和启动设置保持不变。更新成功后运行 `rdh` 重新连接。npm 安装的 Agent 停止后，用 `npm install -g @easelian/remote-device-agent` 升级。可以用 `rdh doctor` 核对当前命令、自启动路径，并查看 `PATH` 和已知安装目录里的其他入口。失败处理见[维护说明](docs/maintenance.md#update-the-agent)。
 
 ## 权限、启动与网络
 

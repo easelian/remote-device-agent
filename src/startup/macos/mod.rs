@@ -160,7 +160,7 @@ impl NativeStartup {
         }
         Ok(output)
     }
-    fn registered(&self, binding: &Binding) -> Result<()> {
+    fn registered(&self, binding: &Binding) -> Result<PathBuf> {
         self.domain(binding)?;
         let (directory, owner) = if binding.mode == Mode::User {
             (self.home.join("Library/LaunchAgents"), self.uid)
@@ -168,7 +168,7 @@ impl NativeStartup {
             (PathBuf::from("/Library/LaunchDaemons"), 0)
         };
         let file = directory.join(format!("{}.plist", binding.name));
-        let metadata = fs::symlink_metadata(file)?;
+        let metadata = fs::symlink_metadata(&file)?;
         if !metadata.is_file()
             || metadata.nlink() != 1
             || metadata.uid() != owner
@@ -178,8 +178,33 @@ impl NativeStartup {
                 "Startup registration must be an owned regular file without aliases or external write access",
             ));
         }
-        Ok(())
+        Ok(file)
     }
+
+    #[cfg_attr(all(test, target_os = "linux"), allow(dead_code))]
+    pub(crate) fn configured_executable(&self, binding: &Binding) -> Result<PathBuf> {
+        let file = self.registered(binding)?;
+        let file = file
+            .to_str()
+            .ok_or_else(|| Error::message("Startup registration path is not Unicode"))?;
+        let (status, output) = super::posix::run(
+            Path::new("/usr/bin/plutil"),
+            &["-convert", "json", "-o", "-", "--", file],
+            self.timeout,
+        )?;
+        if !status.success() {
+            return Err(Error::message("Cannot read launchd startup registration"));
+        }
+        let plist: serde_json::Value = serde_json::from_str(&output)?;
+        plist
+            .get("Program")
+            .or_else(|| plist["ProgramArguments"].get(0))
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| Error::message("Launchd startup executable is missing or relative"))
+    }
+
     fn user_directory(&self) -> Result<PathBuf> {
         let directory = self.home.join("Library/LaunchAgents");
         for path in [&self.home, &self.home.join("Library"), &directory] {

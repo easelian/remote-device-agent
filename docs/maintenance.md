@@ -1,8 +1,8 @@
 # Agent maintenance
 
 Use this guide to build the Agent, update its executable, and complete a binding
-removal. The user commands are `rdh`, `rdh unbind`, `rdh update`, `rdh --help` and
-`rdh --version`. Local state is resolved by the Agent.
+removal. The user commands are `rdh`, `rdh unbind`, `rdh update`, `rdh doctor`,
+`rdh --help` and `rdh --version`. Local state is resolved by the Agent.
 
 ## Build and validate
 
@@ -64,7 +64,11 @@ checks.
 
 ## Update the Agent
 
-Finish managed work and stop the Agent before updating:
+Run `rdh doctor` to see which executable you invoked and the startup executable
+for the selected profile. It also lists other commands found on `PATH` and in
+known installer directories, without running them. Finish managed work and stop
+the Agent before updating
+a native installation with `rdh update`.
 
 ```sh
 rdh update
@@ -77,6 +81,10 @@ download, checks SHA256SUMS, and executes the candidate's version check before
 replacement. The binding, shared-directory settings and startup configuration
 are retained. After success, run `rdh --version`, then `rdh`, and confirm the
 expected device reconnects.
+
+Upgrade an npm installation with `npm install -g @easelian/remote-device-agent`.
+Use `@next` to follow the prerelease channel. `rdh update` directs npm users to
+npm without replacing the npm-managed executable.
 
 Download, checksum and candidate-check failures leave the installed executable
 in place. On Unix, replacement uses an atomic rename and retains the original
