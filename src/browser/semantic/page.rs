@@ -450,7 +450,12 @@ impl<P: Port> Page<P> {
         deadline: Instant,
     ) -> Result<Observation> {
         query.validate()?;
-        if !(1..=MAX_NODES).contains(&nodes) || !(1024..=MAX_CHARACTERS).contains(&characters) {
+        let (most_nodes, most_characters) = if query.compact {
+            (MAX_COMPACT_NODES, MAX_COMPACT_CHARACTERS)
+        } else {
+            (MAX_NODES, MAX_CHARACTERS)
+        };
+        if !(1..=most_nodes).contains(&nodes) || !(1024..=most_characters).contains(&characters) {
             return Err(Failure::new("browser_invalid_params"));
         }
         let _operation = tokio::time::timeout_at(deadline.into(), self.0.operation.lock())
@@ -585,6 +590,8 @@ impl<P: Port> Page<P> {
         // A compact read goes on through a long document while its budget
         // lasts, so that a search need not be continued by the caller.
         let mut continued = 0;
+        // Eight segments serve the default budget; a larger one is given segments in proportion.
+        let segments = (characters / 8000).max(8);
         let mut refs = HashMap::new();
         while scan.frame < scan.frames.len() && observation.rows.len() < nodes && remaining >= 1024
         {
@@ -743,7 +750,7 @@ impl<P: Port> Page<P> {
                 scan.sequence = 0;
                 scan.opened = false;
                 continued = 0;
-            } else if query.compact && continued < 7 {
+            } else if query.compact && continued + 1 < segments {
                 continued += 1;
             } else {
                 break;
@@ -801,7 +808,7 @@ impl<P: Port> Page<P> {
             return Err(Failure::new("browser_control_changed"));
         }
         if query.changed {
-            if state.generation != generation || state.refs.len() + refs.len() > 2 * MAX_NODES {
+            if state.generation != generation || state.refs.len() + refs.len() > MAX_NODES + most_nodes {
                 return Err(types::stale());
             }
             state.refs.extend(refs);

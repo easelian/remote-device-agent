@@ -9,6 +9,9 @@ use std::{
 pub(crate) const MAX_FRAMES: usize = 32;
 pub(crate) const MAX_NODES: usize = 1000;
 pub(crate) const MAX_CHARACTERS: usize = 64_000;
+/// A compact read may be asked for more, so that a long table is read in one call.
+pub(crate) const MAX_COMPACT_NODES: usize = 10_000;
+pub(crate) const MAX_COMPACT_CHARACTERS: usize = 200_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(crate) struct Context {
@@ -387,7 +390,8 @@ pub(crate) struct RegistryStats {
 }
 impl RegistryStats {
     pub fn validate(&self) -> Result<()> {
-        if self.nodes > MAX_NODES || self.scans > 1 || self.pending > 50000 {
+        // The largest compact read, and what a view after an action may add to it.
+        if self.nodes > MAX_COMPACT_NODES + 2 * MAX_NODES || self.scans > 1 || self.pending > 50000 {
             return Err(decode());
         }
         Ok(())

@@ -678,7 +678,7 @@ impl Program {
             }
             Self::Recheck { nodes, .. } => {
                 let facts: Vec<Option<Facts>> = parse(text)?;
-                if facts.len() != nodes.len() || facts.len() > MAX_NODES {
+                if facts.len() != nodes.len() || facts.len() > MAX_COMPACT_NODES {
                     return Err(types::decode());
                 }
                 for facts in facts.iter().flatten() {

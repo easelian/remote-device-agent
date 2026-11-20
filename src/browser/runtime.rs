@@ -597,6 +597,12 @@ impl Browsers {
                 let mut again = !continuing;
                 let (mut value, refs) = loop {
                     let result=async {
+                        // The larger limits belong to the compact format, which v1 does not have.
+                        if params["max_nodes"].as_u64() > Some(1000)
+                            || params["max_chars"].as_u64() > Some(64000)
+                        {
+                            return Err(Failure::new("browser_invalid_params"));
+                        }
                         let (mut value, refs) = page::observe_next(
                             &engine,
                             &mut read.cursor,
@@ -2067,8 +2073,8 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         }
     }
     for (key, min, max) in [
-        ("max_nodes", 1, 1000),
-        ("max_chars", 128, 64000),
+        ("max_nodes", 1, 10_000),
+        ("max_chars", 128, 200_000),
         ("control_epoch", 1, 9_007_199_254_740_991),
     ] {
         if let Some(value) = map.get(key)
@@ -2076,6 +2082,15 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         {
             return Err(Failure::new("browser_invalid_params"));
         }
+    }
+    // Only a compact read, or the continuation of one, takes more than the ordinary limits.
+    // The read itself checks a continuation against the format it continues.
+    if map.get("format").and_then(Value::as_str) != Some("compact")
+        && !map.contains_key("cursor")
+        && (map.get("max_nodes").and_then(Value::as_u64) > Some(1000)
+            || map.get("max_chars").and_then(Value::as_u64) > Some(64000))
+    {
+        return Err(Failure::new("browser_invalid_params"));
     }
     if let Some(url) = map.get("url")
         && !url

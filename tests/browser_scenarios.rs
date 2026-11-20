@@ -1180,6 +1180,47 @@ async fn scenario_pool() {
         );
     }
 
+    // The same two thousand rows in one call, by asking for a larger page.
+    if wanted("big-whole") {
+        let mut run = Run::open(&mut peer, &site.url("big")).await;
+        let started = std::time::Instant::now();
+        let whole = run
+            .observe(json!({"max_nodes":10000,"max_chars":200000}))
+            .await;
+        let read_ms = started.elapsed().as_millis();
+        let rows = whole["text"].as_str().unwrap().matches("<tr>").count();
+        let target = find_control(&whole, "Approve", "Order G1999");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let over = run.call("browser_observe", json!({"max_nodes":1001})).await;
+        let cost = run.close().await;
+        let writes = site.writes("big");
+        record(
+            "big-whole",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "one call lists every row",
+                    rows == 2000
+                        && whole["coverage"]["complete"] == true
+                        && whole.get("next_cursor").is_none(),
+                ),
+                (
+                    "a row near the end can be acted on and the view stays small",
+                    writes.last().is_some_and(|last| last == "G1999")
+                        && view_of(&acted)["state"] == "sampled"
+                        && view_of(&acted).get("truncated").is_none()
+                        && view_of(&acted).to_string().len() < 1000,
+                ),
+                (
+                    "the larger limits are refused outside the compact format",
+                    over["error_code"] == "browser_invalid_params",
+                ),
+            ],
+            json!({"read_ms":read_ms,"bytes":whole.to_string().len(),"act":outcome(&acted)}),
+        );
+    }
+
     let report = Value::Object(report);
     if let Ok(path) = std::env::var("RDH_SCENARIO_REPORT") {
         fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();

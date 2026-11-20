@@ -473,7 +473,7 @@ function(operation, args, other) {
       outer.sort((a,b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 1 : -1);
       // References issued earlier stay usable, so their nodes are kept; refuse to grow without bound.
       state.scan = {pending:outer,query:args,revision:state.revision,sequence:0,scanned:0,
-        limit:state.dirtyLimit || state.nodes.size > 2000,removed:state.removed};
+        limit:state.dirtyLimit || state.nodes.size > 12000,removed:state.removed};
     } else {
       state.clearNodes();
       // A compact read says how far through the document it got: elements read, and elements in all.
