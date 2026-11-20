@@ -309,6 +309,15 @@ impl<'a> Run<'a> {
         self.bytes += reply
             .get("result")
             .map_or(0, |result| result.to_string().len());
+        if let Some(path) = std::env::var_os("RDH_SCENARIO_DUMP") {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(file, "{}", json!({"operation":operation,"reply":reply})).unwrap();
+        }
         reply
     }
     async fn observe(&mut self, mut params: Value) -> Value {

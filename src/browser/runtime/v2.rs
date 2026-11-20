@@ -1167,6 +1167,7 @@ async fn observe_frames(
     if compact {
         // The frames already group the nodes, so the separate overview is left out.
         compact::write(&mut value, &result.rows, &nodes, before);
+        compact::trim(&mut value);
     } else {
         if let Some(overview) = overview {
             value["frame_overview"] = overview;

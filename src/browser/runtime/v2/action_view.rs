@@ -84,11 +84,20 @@ async fn read(
     if groups.as_array().is_none_or(Vec::is_empty) && !removed {
         return Ok(json!({"state":"continue_observing","reason":"no_visible_change"}));
     }
-    Ok(
-        json!({"state":"sampled","content_trust":"untrusted_page","scope":"changed_regions",
-        "format":"compact_v1","frames":groups,"records":view["records"].take(),
-        "removed":removed,"settled":settled,"truncated":view["coverage"]["complete"] != true}),
-    )
+    // The three flags are written only when they depart from the ordinary case:
+    // nothing disappeared, the page had settled, and every changed part fitted.
+    let mut sampled = json!({"state":"sampled","content_trust":"untrusted_page",
+        "frames":groups,"records":view["records"].take()});
+    if removed {
+        sampled["removed"] = true.into();
+    }
+    if !settled {
+        sampled["settled"] = false.into();
+    }
+    if view["coverage"]["complete"] != true {
+        sampled["truncated"] = true.into();
+    }
+    Ok(sampled)
 }
 
 pub(super) async fn sample(

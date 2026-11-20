@@ -91,19 +91,36 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 
 默认观察为每个节点重复输出所属记录和全部状态字段，一个节点约占 1 KB，行数多的页面要连续读取多页。v2 会话声明 `extensions.compact_observation` 版本 1 时，可向 `browser_observe` 传入 `"format":"compact"`，用更少的字符取得同一次观察。Core 在会话支持时把这个参数放进 `browser_open` 返回的 `first_observe`，客户端原样传回即可。
 
-紧凑结果用 `format: "compact_v1"` 标明，以 `frames` 和 `records` 取代 `nodes` 与 `frame_overview`，`page`、`coverage`、`next_cursor` 不变。
+紧凑结果用 `format: "compact_v1"` 标明，以 `frames` 和 `records` 取代 `nodes` 与 `frame_overview`，`next_cursor` 不变。`page` 和 `coverage` 只写出偏离常态的部分，见[不写出的固定内容](#不写出的固定内容)。
 
 | 字段 | 读法 |
 | --- | --- |
-| `frames[].nodes` | 按阅读顺序排列，归在所属 frame 下。同一 frame 被其他 frame 的内容隔开时会出现多次 |
-| 省略的节点字段 | 取通常值：没有 `role` 的节点是页面文本，`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。可编辑字段的空值仍会写出 |
+| `frames[].nodes` | 按阅读顺序排列，归在所属 frame 下。iframe 的分组带 `scope: "iframe"` 和 `frame_id`；两者都没有的分组属于页面自身的文档。同一 frame 被其他 frame 的内容隔开时会出现多次 |
+| 省略的节点字段 | 取通常值：没有 `role` 的节点是页面文本，`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。可编辑字段的空值仍会写出。提交按钮不写 `input_type` |
 | `record` | `records` 的下标。同一行或列表项的记录只写一次，同名控件靠各自的记录区分 |
 | `records[i].entries` | 字符串是记录内的文本；`[tag]` 或 `[tag, {attributes, value, checked, text}]` 是元素。没有属性、值和状态的布局容器（如 `td`、`div`、`span`）不写出，记录自身的元素除外 |
 | `ref` | 形如 `r6aa6558` 的短引用，用法与失效规则同普通引用。一个会话内不重复签发，前缀随会话变化 |
 
-记录已经列出的文本不再单独成为节点：返回了该记录的控件时，文本只出现在 `entries` 中；记录只有文本时保留第一段文本，使记录留在页面中的原位置。记录不完整或文本被截断时，文本节点照常返回。
+记录已经列出的文本不再单独成为节点：返回了该记录的控件时，文本只出现在 `entries` 中；记录只有文本时保留第一段文本，使记录留在页面中的原位置。记录不完整或文本被截断时，文本节点照常返回。角色不在本画像之内、没有名称也没有引用的容器（例如只带 `role="listitem"` 的 `div`）不单独成为节点，它的角色仍写在记录的首个元素上。
 
 紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按紧凑输出的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。普通读取每次调用在一个文档内最多遍历 5,000 个节点；紧凑读取在预算未用完时继续遍历，最多 8 段，所以在几千行的表格里按文字查找通常一次调用即可返回。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
+
+#### 不写出的固定内容
+
+紧凑观察和带视图的动作回执不重复请求中已有的内容，也不写每次都相同的内容。下表列出省略的字段，以及它们出现时的含义。
+
+| 位置 | 省略的内容 | 仍会出现的情况 |
+| --- | --- | --- |
+| `coverage.omitted` | 画像的三条固定限制：`closed_shadow_not_observable`、`canvas_pixels_outside_profile`、`browser_ui_outside_profile` | 本次读取另有遗漏原因时只列出那些原因 |
+| `coverage.changed_during_read` | `false` | 读取期间页面发生变化时为 `true` |
+| `page.scroll_x`、`page.scroll_y` | `0` | 页面已滚动 |
+| 视图的 `removed`、`truncated` | `false` | 有内容被移除或替换；变更部分超出预算 |
+| 视图的 `settled` | `true` | 采样前后页面仍在变化时为 `false` |
+| 回复顶层的 `session_id`、`control_epoch`、`selection`、`observation_profile` | 与请求相同或会话内固定 | 不出现 |
+| `tab_id`（观察在 `page` 内） | 请求指定了同一个标签页 | 请求未指定标签页，或动作落在另一个标签页 |
+| 回执的 `input_acknowledged`、`business_result_verified`、`site_processing_count` | `true`、`false`、`null` | 不带视图的回执照常写出 |
+
+前五行由 Agent 省略，[紧凑投影](../src/browser/runtime/v2/compact.rs)和[视图](../src/browser/runtime/v2/action_view.rs)各自处理。后三行由 Core 在交给 MCP 客户端之前省略：Agent 发给 Core 的回复仍带这些字段，Core 先按请求核对。`coverage.complete` 和 `coverage.scanned` 始终写出。带视图的回执成功即表示输入已确认；它不核实业务结果，也无法得知站点处理了几次，这一点与不带视图的回执相同，只是不再逐次写出。
 
 ### 动作后只读取变更的部分
 
@@ -113,7 +130,7 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 
 | 回执中的 `after_action_view` | 含义与下一步 |
 | --- | --- |
-| `state: "sampled"` | `frames`、`records` 列出变更区域，`scope` 为 `changed_regions`。其中的 `ref` 新签发，可直接使用。`removed` 表示有内容被移除或替换，`truncated` 表示变更区域超出 100 节点或 16,000 字符的预算。`settled: false` 表示采样前后页面仍在变化，例如带时钟或实时数据的页面 |
+| `state: "sampled"` | `frames`、`records` 列出变更区域，页面其余部分不在其中。其中的 `ref` 新签发，可直接使用。`removed: true` 表示有内容被移除或替换，`truncated: true` 表示变更区域超出 100 节点或 16,000 字符的预算，`settled: false` 表示采样前后页面仍在变化，例如带时钟或实时数据的页面。这三个字段只在取这些值时出现 |
 | `continue_observing` / `no_visible_change` | 没有记录到变更。上次观察的引用继续有效。只由样式规则或脚本属性改变、又不在被操作控件旁边的内容不在记录之内 |
 | `continue_observing` / `view_unavailable_or_changing` | 文档未就绪或带 `aria-busy`、单个文档的变更元素超过 64 个、有文档被替换或新增，或读取超出约 900 ms。所有引用失效，需重新观察。页面用 `pushState` 改地址而文档不变时视图照常返回 |
 | `continue_observing` / `control_changed` | 读取期间控制权变更，结果被丢弃 |
@@ -141,7 +158,7 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked \
 scripts/browser-scenarios-agent-browser.sh /opt/google/chrome/chrome
 ```
 
-第一条命令经 Agent RPC 驱动 v2/CDP 会话，逐项断言并打印每个场景的调用次数、返回字节数和写入；设置 `RDH_SCENARIO_REPORT` 可把结果存为 JSON，设置 `RDH_SCENARIO_ONLY=sort,pager` 只运行列出的第二批场景。第二条用 `agent-browser` 驱动同一批页面，每个场景输出一行 JSON 供对照，需要 `python3` 和已安装的 `agent-browser`。新增场景时加一个页面、在 [场景测试](../tests/browser_scenarios.rs) 中加一段步骤和断言，并在对照脚本中加同样的步骤。
+第一条命令经 Agent RPC 驱动 v2/CDP 会话，逐项断言并打印每个场景的调用次数、返回字节数和写入；设置 `RDH_SCENARIO_REPORT` 可把结果存为 JSON，设置 `RDH_SCENARIO_ONLY=sort,pager` 只运行列出的第二批场景，设置 `RDH_SCENARIO_DUMP` 可把每次调用的回复逐行追加到指定文件。这里统计的是 Agent 发给 Core 的字节数，Core 交给 MCP 客户端之前还会省略[与请求重复的字段](#不写出的固定内容)。第二条用 `agent-browser` 驱动同一批页面，每个场景输出一行 JSON 供对照，需要 `python3` 和已安装的 `agent-browser`。新增场景时加一个页面、在 [场景测试](../tests/browser_scenarios.rs) 中加一段步骤和断言，并在对照脚本中加同样的步骤。
 
 ### 用拖放移动看板卡片
 

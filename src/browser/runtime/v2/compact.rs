@@ -74,6 +74,42 @@ fn plain(facts: &sem::Facts) -> bool {
         })
 }
 
+/// A container whose role this profile does not model, with no name and no
+/// reference, tells the reader nothing that its record does not.
+fn silent(facts: &sem::Facts, full: &Value) -> bool {
+    facts.role == "unsupported" && facts.name.is_empty() && full.get("ref").is_none()
+}
+
+/// Limits that hold for every page under this profile; the contract states them once.
+const STANDING: [&str; 3] = [
+    "closed_shadow_not_observable",
+    "canvas_pixels_outside_profile",
+    "browser_ui_outside_profile",
+];
+
+/// Leave out of a compact observation what holds for every reply: the standing
+/// limits of the profile, a read that did not change, and a page that is not scrolled.
+pub(super) fn trim(value: &mut Value) {
+    if let Some(coverage) = value["coverage"].as_object_mut() {
+        if let Some(omitted) = coverage.get_mut("omitted").and_then(Value::as_array_mut) {
+            omitted.retain(|item| !item.as_str().is_some_and(|item| STANDING.contains(&item)));
+            if omitted.is_empty() {
+                coverage.remove("omitted");
+            }
+        }
+        if coverage.get("changed_during_read") == Some(&Value::Bool(false)) {
+            coverage.remove("changed_during_read");
+        }
+    }
+    if let Some(page) = value["page"].as_object_mut() {
+        for axis in ["scroll_x", "scroll_y"] {
+            if page.get(axis).and_then(Value::as_f64) == Some(0.0) {
+                page.remove(axis);
+            }
+        }
+    }
+}
+
 fn node(facts: &sem::Facts, full: &Value, record: Option<usize>) -> Value {
     let mut node = Map::new();
     // A node with no role is text of the page.
@@ -127,7 +163,10 @@ fn node(facts: &sem::Facts, full: &Value, record: Option<usize>) -> Value {
     if facts.name_source != "content" && !facts.name.is_empty() {
         node.insert("name_source".into(), facts.name_source.as_str().into());
     }
-    if !matches!(facts.input_type.as_str(), "" | "button" | "text") {
+    // A button that submits is the ordinary kind of button.
+    let ordinary = matches!(facts.input_type.as_str(), "" | "button" | "text")
+        || (facts.input_type == "submit" && facts.role == "button");
+    if !ordinary {
         node.insert("input_type".into(), facts.input_type.as_str().into());
     }
     if facts.role.is_empty() || facts.kind == "inferred" {
@@ -187,7 +226,7 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
                     members.push((false, position));
                     records.len() - 1
                 });
-            members[index].0 |= !is_text(facts);
+            members[index].0 |= !is_text(facts) && !silent(facts, &full[position]);
             Some(index)
         })
         .collect();
@@ -198,9 +237,12 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
             let child = frames
                 .iter()
                 .any(|frame| frame.context == context && frame.parent.is_some());
-            groups.push(
-                json!({"frame_id":id,"scope":if child {"iframe"} else {"page"},"nodes":nodes}),
-            );
+            // Only a child frame is labelled; a group without a label is the page itself.
+            groups.push(if child {
+                json!({"frame_id":id,"scope":"iframe","nodes":nodes})
+            } else {
+                json!({"nodes":nodes})
+            });
         }
     };
     for (position, ((row, full), record)) in rows.iter().zip(full).zip(&assigned).enumerate() {
@@ -224,6 +266,9 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
                 .iter()
                 .any(|entry| entry.tag == "#text" && entry.text.trim() == facts.name.trim())
         {
+            continue;
+        }
+        if silent(facts, full) {
             continue;
         }
         open.as_mut().unwrap().2.push(node(facts, full, *record));

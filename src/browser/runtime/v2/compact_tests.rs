@@ -1,4 +1,4 @@
-use super::compact::{reference, write};
+use super::compact::{reference, trim, write};
 use crate::browser::semantic::{Context, Entry, Facts, Frame, Identities, Marker, Material, Row};
 use serde_json::{Value, json};
 
@@ -111,7 +111,7 @@ fn a_record_shared_by_several_nodes_is_written_once_and_defaults_are_left_out() 
             "records":[
                 {"entries":[["tr"],"Order B42","Approve"]},
                 {"entries":[["tr"],"Order B43","Approve"]}],
-            "frames":[{"frame_id":"f","scope":"page","nodes":[
+            "frames":[{"nodes":[
                 {"role":"heading","name":"Orders"},
                 {"role":"button","name":"Approve","ref":"r1","record":0},
                 {"role":"button","name":"Approve","ref":"r2","record":1}]}]})
@@ -184,12 +184,9 @@ fn nodes_stay_in_reading_order_under_their_own_frame_and_documents_share_no_reco
     assert_eq!(
         frames
             .iter()
-            .map(|f| (
-                f["frame_id"].as_str().unwrap(),
-                f["scope"].as_str().unwrap()
-            ))
+            .map(|f| (f["frame_id"].as_str(), f["scope"].as_str()))
             .collect::<Vec<_>>(),
-        [("top", "page"), ("child", "iframe"), ("top", "page")]
+        [(None, None), (Some("child"), Some("iframe")), (None, None)]
     );
     assert_eq!(value["records"].as_array().unwrap().len(), 2);
     assert_eq!(frames[1]["nodes"][0]["record"], 1);
@@ -230,6 +227,62 @@ fn text_already_listed_by_a_record_is_not_repeated_beside_its_control() {
     assert_eq!(
         value["records"][1],
         json!({"entries":[["tr"],"Fruit","Pear"]})
+    );
+}
+
+#[test]
+fn what_holds_for_every_reply_is_left_out() {
+    let mut ids = Identities::new();
+    let top = frame(&mut ids, "top", None);
+    let item = |root| vec![element(root, "li"), text(root + 1, "Order B42")];
+    let holder = |name: &str| {
+        let mut holder = row(&top, 1, "unsupported", name, item(20));
+        holder.facts.kind = "aria".into();
+        holder.facts.name_quality = vec!["unsupported_role".into()];
+        holder
+    };
+    let mut submit = row(&top, 4, "button", "Save", item(20));
+    submit.facts.input_type = "submit".into();
+    let rows = [
+        holder(""),
+        holder("Orders"),
+        holder(""),
+        row(&top, 3, "text", "Order B42", item(20)),
+        submit,
+    ];
+    let full = [
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f","ref":"r1"}),
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f","ref":"r2"}),
+    ];
+    let value = project(&rows, &full, &[top]);
+    let nodes = value["frames"][0]["nodes"].as_array().unwrap();
+    // The unnamed container without a reference is gone; a named or referenced one stays.
+    assert_eq!(nodes.len(), 4, "{value}");
+    assert_eq!(nodes[0]["name"], "Orders");
+    assert_eq!(nodes[1]["ref"], "r1");
+    assert_eq!(nodes[2], json!({"name":"Order B42"}));
+    assert_eq!(
+        nodes[3],
+        json!({"role":"button","name":"Save","ref":"r2","record":0})
+    );
+
+    let mut reply = json!({"page":{"url":"u","scroll_x":0.0,"scroll_y":12.5},
+        "coverage":{"complete":true,"changed_during_read":false,"scanned":3,"omitted":[
+            "closed_shadow_not_observable","canvas_pixels_outside_profile","browser_ui_outside_profile"]}});
+    trim(&mut reply);
+    assert_eq!(
+        reply,
+        json!({"page":{"url":"u","scroll_y":12.5},"coverage":{"complete":true,"scanned":3}})
+    );
+    let mut reply = json!({"coverage":{"complete":false,"changed_during_read":true,"scanned":3,
+        "omitted":["browser_ui_outside_profile","node_limit"]}});
+    trim(&mut reply);
+    assert_eq!(
+        reply["coverage"],
+        json!({"complete":false,"changed_during_read":true,"scanned":3,"omitted":["node_limit"]})
     );
 }
 
