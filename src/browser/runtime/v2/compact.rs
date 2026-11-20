@@ -1,9 +1,10 @@
-//! A dense projection of one observation. A field left out has its ordinary
-//! value, and a record shared by several nodes is written once.
+//! A dense projection of one observation, written as lines of text. A fact
+//! left out has its ordinary value, and a record is written once, above the
+//! nodes that belong to it.
 use super::sem;
 use crate::browser::Result;
-use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use serde_json::Value;
+use std::fmt::Write;
 
 /// A short reference that is never issued twice by this session. The prefix
 /// differs between sessions, so a reference carried to another session misses.
@@ -22,39 +23,12 @@ const LAYOUT: [&str; 12] = [
     "td", "div", "span", "p", "b", "i", "em", "strong", "small", "u", "button", "tbody",
 ];
 
-/// A button's type is reported on its own node as input_type.
+/// A button's type is reported on its own node as `type`.
 fn attributes(entry: &sem::Entry) -> impl Iterator<Item = &(String, String)> {
     entry
         .attributes
         .iter()
         .filter(move |(name, _)| !(name == "type" && entry.tag == "button"))
-}
-
-fn entry(entry: &sem::Entry) -> Value {
-    let mut detail = Map::new();
-    let attributes: Map<_, _> = attributes(entry)
-        .map(|(name, value)| (name.clone(), Value::from(value.as_str())))
-        .collect();
-    if !attributes.is_empty() {
-        detail.insert("attributes".into(), attributes.into());
-    }
-    if let Some(value) = entry.value.as_deref().filter(|value| !value.is_empty()) {
-        detail.insert("value".into(), value.into());
-    }
-    if entry.checked {
-        detail.insert("checked".into(), true.into());
-    }
-    if entry.tag == "#text" && detail.is_empty() {
-        return entry.text.as_str().into();
-    }
-    if !entry.text.is_empty() {
-        detail.insert("text".into(), entry.text.as_str().into());
-    }
-    if detail.is_empty() {
-        json!([entry.tag])
-    } else {
-        json!([entry.tag, detail])
-    }
 }
 
 /// The material says nothing beyond the node's own name, value and state.
@@ -78,6 +52,10 @@ fn plain(facts: &sem::Facts) -> bool {
 /// reference, tells the reader nothing that its record does not.
 fn silent(facts: &sem::Facts, full: &Value) -> bool {
     facts.role == "unsupported" && facts.name.is_empty() && full.get("ref").is_none()
+}
+
+fn is_text(facts: &sem::Facts) -> bool {
+    facts.kind == "text" && facts.role == "text"
 }
 
 /// Limits that hold for every page under this profile; the contract states them once.
@@ -110,24 +88,195 @@ pub(super) fn trim(value: &mut Value) {
     }
 }
 
-fn node(facts: &sem::Facts, full: &Value, record: Option<usize>) -> Value {
-    let mut node = Map::new();
-    // A node with no role is text of the page.
-    if facts.kind != "text" || facts.role != "text" {
-        node.insert("role".into(), facts.role.as_str().into());
+/// A value after `=`. Anything that could be taken for the end of the value is quoted.
+fn word(value: &str) -> String {
+    let bare = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || "_-.:/@#%+,~".contains(c));
+    if bare {
+        value.into()
+    } else {
+        Value::from(value).to_string()
     }
-    node.insert("name".into(), facts.name.as_str().into());
-    if let Some(reference) = full.get("ref") {
-        node.insert("ref".into(), reference.clone());
-        if !facts.in_view {
-            node.insert("offscreen".into(), true.into());
+}
+
+/// Page text on one line. Within a record `<` opens an element and `|` parts two texts.
+fn inline(text: &str, record: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '<' | '|' if record => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
         }
     }
-    if let Some(record) = record {
-        node.insert("record".into(), record.into());
+    out
+}
+
+enum Item {
+    Text(String),
+    Element(String),
+}
+
+/// The line of a record: its own element, then the text and the elements with
+/// facts of their own that it holds, in page order.
+struct Record {
+    items: Vec<Item>,
+    notes: String,
+}
+
+impl Record {
+    /// `None` when the record is the node's own element and adds nothing to its line.
+    fn of(facts: &sem::Facts) -> Option<Self> {
+        let material = &facts.record;
+        // A record of one element is the node's own element. What the node's
+        // line already states is not stated again.
+        let own = material.entries.len() == 1;
+        let mut items = Vec::new();
+        for (index, entry) in material.entries.iter().enumerate() {
+            let value = entry.value.as_deref().filter(|value| !value.is_empty());
+            if entry.tag == "#text"
+                && entry.attributes.is_empty()
+                && value.is_none()
+                && !entry.checked
+            {
+                if !entry.text.trim().is_empty() {
+                    items.push(Item::Text(entry.text.trim().into()));
+                }
+                continue;
+            }
+            let mut element = format!("<{}", entry.tag);
+            let bare = element.len();
+            for (name, value) in attributes(entry) {
+                let restated = own
+                    && match name.as_str() {
+                        "type" => *value == facts.input_type,
+                        "aria-label" => value.trim() == facts.name.trim(),
+                        "readonly" => facts.readonly,
+                        "disabled" => !facts.enabled,
+                        _ => false,
+                    };
+                if restated {
+                    continue;
+                }
+                if value.is_empty() {
+                    let _ = write!(element, " {name}");
+                } else {
+                    let _ = write!(element, " {name}={}", word(value));
+                }
+            }
+            if let Some(value) = value.filter(|_| !(own && entry.value == facts.value)) {
+                let _ = write!(element, " value={}", word(value));
+            }
+            if entry.checked && !(own && facts.checked) {
+                element.push_str(" checked");
+            }
+            if index > 0
+                && element.len() == bare
+                && entry.text.is_empty()
+                && LAYOUT.contains(&entry.tag.as_str())
+            {
+                continue;
+            }
+            let said = element.len() > bare;
+            element.push('>');
+            if own
+                && !said
+                && entry.text.is_empty()
+                && material.complete
+                && material.limits.is_empty()
+            {
+                return None;
+            }
+            items.push(Item::Element(element));
+            if !entry.text.trim().is_empty() {
+                items.push(Item::Text(entry.text.trim().into()));
+            }
+        }
+        let mut notes: Vec<&str> = Vec::new();
+        if !material.complete {
+            notes.push("incomplete");
+        }
+        notes.extend(material.limits.iter().map(String::as_str));
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", notes.join(", "))
+        };
+        Some(Self { items, notes })
+    }
+
+    /// `names` are the names of the controls listed under this line. A text of
+    /// the record that only repeats one of them is left to that control's line.
+    fn line(&self, mut names: Vec<&str>) -> String {
+        let mut out = String::new();
+        let mut after_text = false;
+        // Where the latest element starts, while no text has followed it.
+        let mut element_at = None;
+        for (index, item) in self.items.iter().enumerate() {
+            match item {
+                Item::Text(text) => {
+                    if let Some(at) = names.iter().position(|name| name.trim() == text) {
+                        names.swap_remove(at);
+                        // The element before it is the control's own. With no
+                        // fact of its own it goes too; otherwise the next text
+                        // is parted from it, so it is not read as its content.
+                        match element_at.take() {
+                            Some(start) if !out[start..].contains(' ') => {
+                                out.truncate(start.saturating_sub(1));
+                            }
+                            Some(_) => after_text = true,
+                            None => {}
+                        }
+                        continue;
+                    }
+                    element_at = None;
+                    if out.is_empty() {
+                        out.push_str("<>");
+                    }
+                    out.push_str(if after_text { " | " } else { " " });
+                    out.push_str(&inline(text, true));
+                    after_text = true;
+                }
+                Item::Element(element) => {
+                    if !out.is_empty() {
+                        out.push(' ');
+                    }
+                    element_at = (index > 0).then_some(out.len());
+                    out.push_str(element);
+                    after_text = false;
+                }
+            }
+        }
+        if out.is_empty() {
+            out.push_str("<>");
+        }
+        out + &self.notes
+    }
+}
+
+fn node(facts: &sem::Facts, full: &Value) -> String {
+    let mut out = String::from(if is_text(facts) {
+        "text"
+    } else if facts.role.is_empty() {
+        "element"
+    } else {
+        facts.role.as_str()
+    });
+    if let Some(reference) = full.get("ref").and_then(Value::as_str) {
+        let _ = write!(out, " [{reference}]");
+        if !facts.in_view {
+            out.push_str(" offscreen");
+        }
     }
     if !matches!(facts.kind.as_str(), "native" | "text") {
-        node.insert("kind".into(), facts.kind.as_str().into());
+        let _ = write!(out, " kind={}", word(&facts.kind));
     }
     // An empty value is reported only where one can be typed.
     if let Some(value) = facts
@@ -135,151 +284,147 @@ fn node(facts: &sem::Facts, full: &Value, record: Option<usize>) -> Value {
         .as_deref()
         .filter(|value| !value.is_empty() || facts.editable)
     {
-        node.insert("value".into(), value.into());
-    }
-    if !facts.enabled {
-        node.insert("disabled".into(), true.into());
+        let _ = write!(out, " value={}", word(value));
     }
     for (name, set) in [
+        ("disabled", !facts.enabled),
         ("readonly", facts.readonly),
         ("editable", facts.editable),
         ("sensitive", facts.sensitive),
     ] {
         if set {
-            node.insert(name.into(), true.into());
+            let _ = write!(out, " {name}");
         }
     }
-    if facts.checked
-        || matches!(
-            facts.role.as_str(),
-            "radio" | "checkbox" | "switch" | "menuitemcheckbox" | "menuitemradio"
-        )
-    {
-        node.insert("checked".into(), facts.checked.into());
+    if facts.checked {
+        out.push_str(" checked");
+    } else if matches!(
+        facts.role.as_str(),
+        "radio" | "checkbox" | "switch" | "menuitemcheckbox" | "menuitemradio"
+    ) {
+        out.push_str(" unchecked");
     }
     if !facts.name_quality.is_empty() {
-        node.insert("name_quality".into(), json!(facts.name_quality));
+        let _ = write!(out, " quality={}", word(&facts.name_quality.join(",")));
     }
     if facts.name_source != "content" && !facts.name.is_empty() {
-        node.insert("name_source".into(), facts.name_source.as_str().into());
+        let _ = write!(out, " name-from={}", word(&facts.name_source));
     }
     // A button that submits is the ordinary kind of button.
     let ordinary = matches!(facts.input_type.as_str(), "" | "button" | "text")
         || (facts.input_type == "submit" && facts.role == "button");
     if !ordinary {
-        node.insert("input_type".into(), facts.input_type.as_str().into());
+        let _ = write!(out, " type={}", word(&facts.input_type));
     }
     if facts.role.is_empty() || facts.kind == "inferred" {
-        node.insert("tag".into(), facts.tag.as_str().into());
+        let _ = write!(out, " tag={}", word(&facts.tag));
     }
-    node.into()
+    if !facts.name.is_empty() {
+        out.push_str(": ");
+        out.push_str(&inline(&facts.name, false));
+    }
+    out
 }
 
-/// Replace the per-node projection in `value`. `full` holds the ordinary
-/// projection of the same rows, from which frame IDs and references are taken.
+/// Replace the per-node projection in `value` by lines of text. `full` holds
+/// the ordinary projection of the same rows, from which frame IDs and
+/// references are taken.
 ///
-/// Text that a written record already lists is not repeated as a node of its
-/// own when a control of that record is returned. With no such control the
-/// first text of the record stays, so the record keeps its place in the page.
+/// A node with a record is indented under the line of that record. Text that
+/// the record line already lists is not written again as a node.
 pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames: &[sem::Frame]) {
-    let mut records = Vec::new();
-    let mut known: HashMap<(sem::Context, String), usize> = HashMap::new();
-    // For each record: whether a returned node other than text belongs to it,
-    // and the first row that does.
-    let mut members: Vec<(bool, usize)> = Vec::new();
-    let is_text = |facts: &sem::Facts| facts.kind == "text" && facts.role == "text";
-    let assigned: Vec<Option<usize>> = rows
+    let mut records: Vec<Option<(Record, String)>> = rows
         .iter()
-        .enumerate()
-        .map(|(position, row)| {
-            let facts = &row.facts;
-            if plain(facts) {
-                return None;
-            }
-            let mut body = Map::new();
-            let entries: Vec<_> = facts
-                .record
-                .entries
-                .iter()
-                .enumerate()
-                .map(|(index, item)| (index, entry(item)))
-                .filter(|(index, value)| {
-                    *index == 0
-                        || value.as_array().is_none_or(|parts| {
-                            parts.len() > 1 || !LAYOUT.contains(&parts[0].as_str().unwrap_or(""))
-                        })
-                })
-                .map(|(_, value)| value)
-                .collect();
-            body.insert("entries".into(), entries.into());
-            if !facts.record.complete {
-                body.insert("complete".into(), false.into());
-            }
-            if !facts.record.limits.is_empty() {
-                body.insert("limits".into(), json!(facts.record.limits));
-            }
-            let body = Value::Object(body);
-            let index = *known
-                .entry((row.context, body.to_string()))
-                .or_insert_with(|| {
-                    records.push(body);
-                    members.push((false, position));
-                    records.len() - 1
-                });
-            members[index].0 |= !is_text(facts) && !silent(facts, &full[position]);
-            Some(index)
+        .map(|row| {
+            Record::of(&row.facts).map(|record| {
+                let key = record.line(Vec::new());
+                (record, key)
+            })
         })
         .collect();
-    let mut groups: Vec<Value> = Vec::new();
-    let mut open: Option<(sem::Context, Value, Vec<Value>)> = None;
-    let mut close = |open: &mut Option<(sem::Context, Value, Vec<Value>)>| {
-        if let Some((context, id, nodes)) = open.take() {
-            let child = frames
-                .iter()
-                .any(|frame| frame.context == context && frame.parent.is_some());
-            // Only a child frame is labelled; a group without a label is the page itself.
-            groups.push(if child {
-                json!({"frame_id":id,"scope":"iframe","nodes":nodes})
-            } else {
-                json!({"nodes":nodes})
-            });
+    // A run of nodes that share a record is headed by its line, unless the
+    // record says nothing beyond what each of those nodes says itself.
+    let mut start = 0;
+    while start < rows.len() {
+        let key = records[start].as_ref().map(|record| record.1.clone());
+        let end = (start + 1..rows.len())
+            .find(|&next| {
+                rows[next].context != rows[start].context
+                    || key.is_none()
+                    || records[next].as_ref().map(|record| &record.1) != key.as_ref()
+            })
+            .unwrap_or(rows.len());
+        if rows[start..end].iter().all(|row| plain(&row.facts)) {
+            records[start..end]
+                .iter_mut()
+                .for_each(|record| *record = None);
         }
+        start = end;
+    }
+    let same = |a: usize, b: usize| {
+        rows[a].context == rows[b].context
+            && match (&records[a], &records[b]) {
+                (Some(a), Some(b)) => a.1 == b.1,
+                _ => false,
+            }
     };
-    for (position, ((row, full), record)) in rows.iter().zip(full).zip(&assigned).enumerate() {
-        let facts = &row.facts;
-        if open
-            .as_ref()
-            .is_none_or(|(context, ..)| *context != row.context)
-        {
-            close(&mut open);
-            open = Some((row.context, full["frame_id"].clone(), Vec::new()));
-        }
-        if let Some(index) = record
+    // Text the record lists, read whole, with nothing to act on.
+    let repeated = |position: usize| {
+        let facts = &rows[position].facts;
+        records[position].is_some()
             && is_text(facts)
-            && full.get("ref").is_none()
+            && full[position].get("ref").is_none()
             && facts.record.complete
             && facts.name_quality.is_empty()
-            && (members[*index].0 || members[*index].1 != position)
             && facts
                 .record
                 .entries
                 .iter()
                 .any(|entry| entry.tag == "#text" && entry.text.trim() == facts.name.trim())
+    };
+    let mut lines: Vec<String> = Vec::new();
+    // The child frame whose heading the latest line stands under.
+    let mut section: Option<sem::Context> = None;
+    let mut head = |lines: &mut Vec<String>, position: usize| {
+        let context = rows[position].context;
+        let child = frames
+            .iter()
+            .any(|frame| frame.context == context && frame.parent.is_some());
+        if child && section != Some(context) {
+            let id = full[position]["frame_id"].as_str().unwrap_or_default();
+            lines.push(format!("--- iframe {id}"));
+            section = Some(context);
+        } else if !child && section.is_some() {
+            lines.push("--- page".into());
+            section = None;
+        }
+    };
+    for position in 0..rows.len() {
+        let facts = &rows[position].facts;
+        if let Some((record, _)) = &records[position]
+            && (position == 0 || !same(position - 1, position))
         {
+            let names = (position..rows.len())
+                .take_while(|&next| same(position, next))
+                .filter(|&next| {
+                    !is_text(&rows[next].facts) && !silent(&rows[next].facts, &full[next])
+                })
+                .map(|next| rows[next].facts.name.as_str())
+                .collect();
+            head(&mut lines, position);
+            lines.push(record.line(names));
+        }
+        if repeated(position) || silent(facts, &full[position]) {
             continue;
         }
-        if silent(facts, full) {
-            continue;
-        }
-        open.as_mut().unwrap().2.push(node(facts, full, *record));
+        head(&mut lines, position);
+        let indent = if records[position].is_some() {
+            "  "
+        } else {
+            ""
+        };
+        lines.push(format!("{indent}{}", node(facts, &full[position])));
     }
-    close(&mut open);
-    groups.retain(|group| {
-        group["nodes"]
-            .as_array()
-            .is_some_and(|nodes| !nodes.is_empty())
-    });
     value["format"] = "compact_v1".into();
-    value["records"] = records.into();
-    value["frames"] = groups.into();
+    value["text"] = lines.join("\n").into();
 }

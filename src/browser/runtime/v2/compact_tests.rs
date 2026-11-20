@@ -76,6 +76,9 @@ fn order(root: u64, label: &str) -> Vec<Entry> {
         text(root + 4, "Approve"),
     ]
 }
+fn lines(value: &Value) -> Vec<&str> {
+    value["text"].as_str().unwrap().lines().collect()
+}
 fn project(rows: &[Row], full: &[Value], frames: &[Frame]) -> Value {
     let mut value = json!({});
     write(&mut value, rows, full, frames);
@@ -105,17 +108,18 @@ fn a_record_shared_by_several_nodes_is_written_once_and_defaults_are_left_out() 
         json!({"frame_id":"f","ref":"r2"}),
     ];
     let value = project(&rows, &full, &[top]);
+    assert_eq!(value["format"], "compact_v1");
     assert_eq!(
-        value,
-        json!({"format":"compact_v1",
-            "records":[
-                {"entries":[["tr"],"Order B42","Approve"]},
-                {"entries":[["tr"],"Order B43","Approve"]}],
-            "frames":[{"nodes":[
-                {"role":"heading","name":"Orders"},
-                {"role":"button","name":"Approve","ref":"r1","record":0},
-                {"role":"button","name":"Approve","ref":"r2","record":1}]}]})
+        lines(&value),
+        [
+            "heading: Orders",
+            "<tr> Order B42",
+            "  button [r1]: Approve",
+            "<tr> Order B43",
+            "  button [r2]: Approve"
+        ]
     );
+    assert_eq!(value.as_object().unwrap().len(), 2);
 }
 
 #[test]
@@ -148,20 +152,15 @@ fn a_node_keeps_every_fact_that_differs_from_the_ordinary_one() {
     ];
     let value = project(&[field, agree, option, secret], &full, &[top]);
     assert_eq!(
-        value["frames"][0]["nodes"],
-        json!([
-            {"role":"textbox","name":"Email","ref":"r1","offscreen":true,"value":"a@example.test",
-                "editable":true,"name_source":"label","input_type":"email"},
-            {"role":"checkbox","name":"Agree","disabled":true,"checked":false},
-            {"role":"option","name":"Blue","record":0,"kind":"aria"},
-            {"role":"textbox","name":"Secret","sensitive":true,"input_type":"password"}])
+        lines(&value),
+        [
+            "textbox [r1] offscreen value=a@example.test editable name-from=label type=email: Email",
+            "checkbox disabled unchecked: Agree",
+            "<div aria-posinset=3> (incomplete, record_node_limit)",
+            "  option kind=aria: Blue",
+            "textbox sensitive type=password: Secret"
+        ]
     );
-    assert_eq!(
-        value["records"],
-        json!([{"entries":[["div",{"attributes":{"aria-posinset":"3"}}]],
-            "complete":false,"limits":["record_node_limit"]}])
-    );
-    assert!(!value.to_string().contains("a@example.test\",\"value"));
 }
 
 #[test]
@@ -180,17 +179,20 @@ fn nodes_stay_in_reading_order_under_their_own_frame_and_documents_share_no_reco
         json!({"frame_id":"top"}),
     ];
     let value = project(&rows, &full, &[top, child]);
-    let frames = value["frames"].as_array().unwrap();
+    // Only a child frame is headed, and the page is named again after it.
     assert_eq!(
-        frames
-            .iter()
-            .map(|f| (f["frame_id"].as_str(), f["scope"].as_str()))
-            .collect::<Vec<_>>(),
-        [(None, None), (Some("child"), Some("iframe")), (None, None)]
+        lines(&value),
+        [
+            "<tr> Order B42",
+            "  button: Approve",
+            "--- iframe child",
+            "<tr> Order B42",
+            "  button: Approve",
+            "--- page",
+            "text: After"
+        ]
     );
-    assert_eq!(value["records"].as_array().unwrap().len(), 2);
-    assert_eq!(frames[1]["nodes"][0]["record"], 1);
-    assert_eq!(project(&[], &[], &[])["frames"], json!([]));
+    assert_eq!(project(&[], &[], &[])["text"], "");
 }
 
 #[test]
@@ -216,17 +218,98 @@ fn text_already_listed_by_a_record_is_not_repeated_beside_its_control() {
     ];
     let full = vec![json!({"frame_id":"f"}); rows.len()];
     let value = project(&rows, &full, &[top]);
+    // A record with no control stands for its text. One met again is written
+    // again, and names its button's text when the button is not under it.
     assert_eq!(
-        value["frames"][0]["nodes"],
-        json!([
-            {"role":"button","name":"Approve","record":0},
-            {"name":"Fruit","record":1},
-            {"name":"Long","record":0,"name_quality":["text_character_limit"]},
-            {"name":"Elsewhere","record":0}])
+        lines(&value),
+        [
+            "<tr> Order B42",
+            "  button: Approve",
+            "<tr> Fruit | Pear",
+            "<tr> Order B42 | Approve",
+            "  text quality=text_character_limit: Long",
+            "  text: Elsewhere"
+        ]
     );
+}
+
+#[test]
+fn a_record_does_not_restate_its_node_and_page_text_stays_on_its_line() {
+    let mut ids = Identities::new();
+    let top = frame(&mut ids, "top", None);
+    let input = |attributes: &[(&str, &str)]| {
+        let mut input = element(5, "input");
+        input.attributes = attributes
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        input.value = Some("on".into());
+        input.checked = true;
+        let mut node = row(&top, 1, "checkbox", "Show advanced", vec![input]);
+        node.facts.value = Some("on".into());
+        node.facts.checked = true;
+        node.facts.readonly = true;
+        node.facts.input_type = "checkbox".into();
+        node.facts.name_source = "aria-label".into();
+        node
+    };
+    let restated = [
+        ("aria-label", "Show advanced"),
+        ("type", "checkbox"),
+        ("readonly", ""),
+    ];
+    let mut more = restated.to_vec();
+    more.extend([("id", "adv"), ("title", "Shows more")]);
+    let mut odd = row(
+        &top,
+        2,
+        "text",
+        "a\\b\nc: d",
+        vec![element(7, "li"), text(8, "x < y | z"), text(9, "tail")],
+    );
+    odd.facts.name_quality = vec!["text_character_limit".into()];
+    let full = vec![json!({"frame_id":"f"}); 3];
+    let value = project(&[input(&restated), input(&more), odd], &full, &[top]);
+    let node =
+        "checkbox value=on readonly checked name-from=aria-label type=checkbox: Show advanced";
     assert_eq!(
-        value["records"][1],
-        json!({"entries":[["tr"],"Fruit","Pear"]})
+        lines(&value),
+        [
+            node,
+            "<input id=adv title=\"Shows more\">",
+            &format!("  {node}"),
+            "<li> x \\< y \\| z | tail",
+            "  text quality=text_character_limit: a\\\\b\\nc: d"
+        ]
+    );
+}
+
+#[test]
+fn text_named_by_a_control_leaves_the_record_with_its_bare_element() {
+    let mut ids = Identities::new();
+    let top = frame(&mut ids, "top", None);
+    let mut link = element(4, "a");
+    link.attributes = vec![("href".into(), "/k1".into())];
+    let card = vec![
+        element(1, "article"),
+        element(2, "h3"),
+        text(3, "Order K1"),
+        link,
+        text(5, "Open"),
+        text(6, "Pending"),
+    ];
+    let rows = [
+        row(&top, 1, "heading", "Order K1", card.clone()),
+        row(&top, 2, "link", "Open", card),
+    ];
+    let full = vec![json!({"frame_id":"f"}); 2];
+    assert_eq!(
+        lines(&project(&rows, &full, &[top])),
+        [
+            "<article> <a href=/k1> | Pending",
+            "  heading: Order K1",
+            "  link: Open"
+        ]
     );
 }
 
@@ -258,15 +341,15 @@ fn what_holds_for_every_reply_is_left_out() {
         json!({"frame_id":"f","ref":"r2"}),
     ];
     let value = project(&rows, &full, &[top]);
-    let nodes = value["frames"][0]["nodes"].as_array().unwrap();
     // The unnamed container without a reference is gone; a named or referenced one stays.
-    assert_eq!(nodes.len(), 4, "{value}");
-    assert_eq!(nodes[0]["name"], "Orders");
-    assert_eq!(nodes[1]["ref"], "r1");
-    assert_eq!(nodes[2], json!({"name":"Order B42"}));
     assert_eq!(
-        nodes[3],
-        json!({"role":"button","name":"Save","ref":"r2","record":0})
+        lines(&value),
+        [
+            "<li> Order B42",
+            "  unsupported kind=aria quality=unsupported_role: Orders",
+            "  unsupported [r1] kind=aria quality=unsupported_role",
+            "  button [r2]: Save"
+        ]
     );
 
     let mut reply = json!({"page":{"url":"u","scroll_x":0.0,"scroll_y":12.5},

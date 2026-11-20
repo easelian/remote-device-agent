@@ -349,41 +349,79 @@ impl<'a> Run<'a> {
     }
 }
 
-/// The nodes of a compact observation or of a sampled view.
+/// The nodes of a compact observation or of a sampled view. `within` of a node
+/// is its record line and the names of the nodes under that line.
 fn listed(view: &Value) -> Vec<Value> {
-    view["frames"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .flat_map(|frame| frame["nodes"].as_array().cloned().unwrap_or_default())
-        .collect()
+    let mut nodes: Vec<Value> = Vec::new();
+    // Where the nodes under the current record line start, and that line.
+    let mut record = (0, String::new());
+    let close = |nodes: &mut Vec<Value>, record: &(usize, String)| {
+        let block = nodes[record.0..]
+            .iter()
+            .fold(record.1.clone(), |block, node| {
+                format!("{block}\n{}", node["name"].as_str().unwrap())
+            });
+        nodes[record.0..]
+            .iter_mut()
+            .for_each(|node| node["within"] = block.clone().into());
+    };
+    for line in view["text"].as_str().unwrap_or_default().lines() {
+        if line.starts_with('<') || line.starts_with("---") || !line.starts_with("  ") {
+            close(&mut nodes, &record);
+            record = (
+                nodes.len(),
+                line.strip_prefix('<')
+                    .map(|_| line.to_string())
+                    .unwrap_or_default(),
+            );
+            if line.starts_with('<') || line.starts_with("---") {
+                continue;
+            }
+        }
+        // The name follows the first `: ` outside a quoted value.
+        let (mut quoted, mut escaped, mut split) = (false, false, None);
+        for (at, c) in line.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if quoted => escaped = true,
+                '"' => quoted = !quoted,
+                ':' if !quoted && line[at..].starts_with(": ") => {
+                    split = Some(at);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let (head, name) = split.map_or((line, ""), |at| (&line[..at], &line[at + 2..]));
+        let mut node = json!({"role":head.split_whitespace().next(),"name":name});
+        if let Some(reference) = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|word| word.strip_prefix('[')?.strip_suffix(']'))
+        {
+            node["ref"] = reference.into();
+        }
+        for (key, value) in head
+            .split_whitespace()
+            .filter_map(|word| word.split_once('='))
+        {
+            node[key] = value.trim_matches('"').into();
+        }
+        nodes.push(node);
+    }
+    close(&mut nodes, &record);
+    nodes
 }
 /// The reference of the one control with this name whose record holds `within`.
 fn control(view: &Value, name: &str, within: &str) -> Value {
-    let found: Vec<_> = listed(view)
-        .into_iter()
-        .filter(|node| node["name"] == name && node.get("ref").is_some())
-        .filter(|node| {
-            within.is_empty()
-                || node["record"].as_u64().is_some_and(|index| {
-                    view["records"][index as usize].to_string().contains(within)
-                })
-        })
-        .collect();
-    assert_eq!(found.len(), 1, "{name} within {within:?}: {view}");
-    found[0]["ref"].clone()
+    find_control(view, name, within).unwrap_or_else(|| panic!("{name} within {within:?}: {view}"))
 }
 /// As [`control`], for a view that may not hold the control.
 fn find_control(view: &Value, name: &str, within: &str) -> Option<Value> {
     let found: Vec<_> = listed(view)
         .into_iter()
         .filter(|node| node["name"] == name && node.get("ref").is_some())
-        .filter(|node| {
-            within.is_empty()
-                || node["record"].as_u64().is_some_and(|index| {
-                    view["records"][index as usize].to_string().contains(within)
-                })
-        })
+        .filter(|node| node["within"].as_str().unwrap().contains(within))
         .collect();
     (found.len() == 1).then(|| found[0]["ref"].clone())
 }
@@ -536,7 +574,7 @@ async fn scenario_pool() {
                 ),
                 (
                     "an observation shows both",
-                    shows(&after, "Reset everything") && shows(&after, "\"20\""),
+                    shows(&after, "Reset everything") && shows(&after, "value=20"),
                 ),
             ],
             json!({"tick":outcome(&ticked),"select":outcome(&chosen)}),
@@ -1015,7 +1053,7 @@ async fn scenario_pool() {
                     shows(&after, "Card K2") && shows(&after, "Card K3"),
                 ),
             ],
-            json!({"move":outcome(&moved),"other":outcome(&other),"view":view_of(&moved)["frames"]}),
+            json!({"move":outcome(&moved),"other":outcome(&other),"view":view_of(&moved)["text"]}),
         );
     }
     // A header stays on top and covers what scrolls under it.

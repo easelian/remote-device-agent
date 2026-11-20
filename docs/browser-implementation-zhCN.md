@@ -91,19 +91,42 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 
 默认观察为每个节点重复输出所属记录和全部状态字段，一个节点约占 1 KB，行数多的页面要连续读取多页。v2 会话声明 `extensions.compact_observation` 版本 1 时，可向 `browser_observe` 传入 `"format":"compact"`，用更少的字符取得同一次观察。Core 在会话支持时把这个参数放进 `browser_open` 返回的 `first_observe`，客户端原样传回即可。
 
-紧凑结果用 `format: "compact_v1"` 标明，以 `frames` 和 `records` 取代 `nodes` 与 `frame_overview`，`next_cursor` 不变。`page` 和 `coverage` 只写出偏离常态的部分，见[不写出的固定内容](#不写出的固定内容)。
+紧凑结果用 `format: "compact_v1"` 标明，以一个字符串字段 `text` 取代 `nodes` 与 `frame_overview`，`next_cursor` 不变。`page` 和 `coverage` 只写出偏离常态的部分，见[不写出的固定内容](#不写出的固定内容)。
 
-| 字段 | 读法 |
+`text` 逐行书写，每行一个节点，按阅读顺序排列。下面是一个设置页的例子：
+
+```text
+heading: Settings
+<input id=adv>
+  checkbox [r78884] value=on checked name-from=aria-label type=checkbox: Show advanced
+text: Advanced settings
+button [r78885]: Reset everything
+<select id=plan value=free> <option value=free> Free <option value=pro> Pro
+  combobox [r78886] value=free name-from=label type=select-one: Plan
+--- iframe becce19351371f63231e1adb4c1298a0
+<tr> Order X1 | Pending
+  button [r0d4c1]: Approve
+```
+
+| 行 | 读法 |
 | --- | --- |
-| `frames[].nodes` | 按阅读顺序排列，归在所属 frame 下。iframe 的分组带 `scope: "iframe"` 和 `frame_id`；两者都没有的分组属于页面自身的文档。同一 frame 被其他 frame 的内容隔开时会出现多次 |
-| 省略的节点字段 | 取通常值：没有 `role` 的节点是页面文本，`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。可编辑字段的空值仍会写出。提交按钮不写 `input_type` |
-| `record` | `records` 的下标。同一行或列表项的记录只写一次，同名控件靠各自的记录区分 |
-| `records[i].entries` | 字符串是记录内的文本；`[tag]` 或 `[tag, {attributes, value, checked, text}]` 是元素。没有属性、值和状态的布局容器（如 `td`、`div`、`span`）不写出，记录自身的元素除外 |
-| `ref` | 形如 `r6aa6558` 的短引用，用法与失效规则同普通引用。一个会话内不重复签发，前缀随会话变化 |
+| 节点行 | 依次是角色、可操作时的 `[ref]`、状态、冒号和名称。方括号内是引用，形如 `r6aa6558`，用法与失效规则同普通引用；一个会话内不重复签发，前缀随会话变化。角色 `text` 是页面文本；`element` 是没有角色的元素，并带 `tag=` |
+| 节点行的状态 | 没写出的取通常值：`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。`unchecked` 表示可勾选而未勾选。`type=` 是输入类型，提交按钮不写；`name-from=` 是名称来源，来自内容时不写；`quality=` 列出名称受到的限制。可编辑字段的空值写作 `value=""` |
+| 记录行 | 以 `<` 开头，是包住下方缩进节点的表格行、列表项等记录。先写记录自身的标签和属性，再按页面顺序写它包含的文本，以及带属性、值或状态的元素；相邻两段文本用 ` \| ` 分开。没有属性、值和状态的布局容器（如 `td`、`div`、`span`）不写出。行尾的 `(incomplete, …)` 表示记录在所列限制处被截断 |
+| `--- iframe <frame_id>` | 此后的行属于这个子 frame，直到下一个 `---` 行。`--- page` 表示回到页面自身的文档。页面开头的内容不带这一行 |
 
-记录已经列出的文本不再单独成为节点：返回了该记录的控件时，文本只出现在 `entries` 中；记录只有文本时保留第一段文本，使记录留在页面中的原位置。记录不完整或文本被截断时，文本节点照常返回。角色不在本画像之内、没有名称也没有引用的容器（例如只带 `role="listitem"` 的 `div`）不单独成为节点，它的角色仍写在记录的首个元素上。
+记录行和节点行之间不重复内容，规则有四条：
 
-紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按紧凑输出的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。普通读取每次调用在一个文档内最多遍历 5,000 个节点；紧凑读取在预算未用完时继续遍历，最多 8 段，所以在几千行的表格里按文字查找通常一次调用即可返回。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
+- 记录中的文本如果正是下方某个控件的名称，只写在该控件的行上。它前面的元素如果没有属性，也一并不写。
+- 记录行已经列出的文本不再单独成为节点行。记录不完整或文本被截断时，文本节点照常写出。
+- 记录只有节点自己这一个元素时，节点行已经表达的属性（`type`、与名称相同的 `aria-label`、`readonly`、`disabled`、值和勾选状态）不再写在记录行上。此时如果没有剩余属性，就不写记录行。
+- 角色不在本画像之内、没有名称也没有引用的容器（例如只带 `role="listitem"` 的 `div`）不单独成为节点行，它的角色仍写在记录行的首个元素上。
+
+同名控件靠各自上方的记录行区分。同一记录的节点被其他内容隔开时，记录行会再写一次。
+
+页面文本中的换行写作 `\n`，反斜杠写作 `\\`；记录行里的 `\<` 和 `\|` 表示这两个字符本身。`=` 后的值只含字母、数字和 `_-.:/@#%+,~` 时直接写出，否则写成 JSON 字符串。
+
+紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按写出的行的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。普通读取每次调用在一个文档内最多遍历 5,000 个节点；紧凑读取在预算未用完时继续遍历，最多 8 段，所以在几千行的表格里按文字查找通常一次调用即可返回。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
 
 #### 不写出的固定内容
 
@@ -130,7 +153,7 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 
 | 回执中的 `after_action_view` | 含义与下一步 |
 | --- | --- |
-| `state: "sampled"` | `frames`、`records` 列出变更区域，页面其余部分不在其中。其中的 `ref` 新签发，可直接使用。`removed: true` 表示有内容被移除或替换，`truncated: true` 表示变更区域超出 100 节点或 16,000 字符的预算，`settled: false` 表示采样前后页面仍在变化，例如带时钟或实时数据的页面。这三个字段只在取这些值时出现 |
+| `state: "sampled"` | `text` 逐行列出变更区域，写法同紧凑观察，页面其余部分不在其中。其中的 `ref` 新签发，可直接使用。`removed: true` 表示有内容被移除或替换，`truncated: true` 表示变更区域超出 100 节点或 16,000 字符的预算，`settled: false` 表示采样前后页面仍在变化，例如带时钟或实时数据的页面。这三个字段只在取这些值时出现 |
 | `continue_observing` / `no_visible_change` | 没有记录到变更。上次观察的引用继续有效。只由样式规则或脚本属性改变、又不在被操作控件旁边的内容不在记录之内 |
 | `continue_observing` / `view_unavailable_or_changing` | 文档未就绪或带 `aria-busy`、单个文档的变更元素超过 64 个、有文档被替换或新增，或读取超出约 900 ms。所有引用失效，需重新观察。页面用 `pushState` 改地址而文档不变时视图照常返回 |
 | `continue_observing` / `control_changed` | 读取期间控制权变更，结果被丢弃 |

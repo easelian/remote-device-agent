@@ -490,29 +490,29 @@ function(operation, args, other) {
     if (scan.limit) omitted.add('changed_region_limit');
     if (scan.removed) omitted.add('changed_content_removed');
     let count = 0, characters = 0, raw = 0;
-    // A compact read budgets each row by its public cost: a record shared by several rows counts once.
+    // A compact read budgets each row by the line it is written as: a record shared by several rows counts once.
     // The private batch still carries every row in full, so its encoded size is bounded separately.
     const counted = scan.query.compact===true ? new Set() : null;
     const compactLayout = new Set(['td','div','span','p','b','i','em','strong','small','u','button','tbody']);
     const cost = row => {
       const encoded = JSON.stringify(row);
       if (!counted) return {length:scalars(encoded).length,raw:0,root:0};
-      let length = 56 + scalars(row.name).length + scalars(row.value||'',4097).length;
+      let length = 40 + scalars(row.name).length + scalars(row.value||'',4097).length;
       const root = row.record.entries.length ? row.record.entries[0].identity : 0;
       // Text of a record that is already counted is listed by that record and seldom repeated.
-      if (row.kind==='text' && root && counted.has(root)) return {length:8,raw:encoded.length,root};
+      if (row.kind==='text' && root && counted.has(root)) return {length:2,raw:encoded.length,root};
       // Text that is its own whole record is written as a bare node.
       if (row.kind==='text' && row.record.complete && row.record.entries.every(entry => entry.tag==='#text' ? entry.text===row.name : !entry.attributes.length && !entry.value && !entry.checked))
-        return {length:16+scalars(row.name).length,raw:encoded.length,root:0};
+        return {length:8+scalars(row.name).length,raw:encoded.length,root:0};
       if (!root || !counted.has(root)) {
-        length += 20;
+        length += 4;
         row.record.entries.forEach((entry,index) => {
           const attributes = entry.attributes.filter(pair => !(pair[0]==='type' && entry.tag==='button'));
-          if (entry.tag==='#text') { length += 4 + scalars(entry.text).length; return; }
+          if (entry.tag==='#text') { length += 3 + scalars(entry.text).length; return; }
           // The compact projection leaves out a bare layout container that is not the record itself.
           if (index && !attributes.length && !entry.value && !entry.checked && compactLayout.has(entry.tag)) return;
-          length += 6 + entry.tag.length + scalars(entry.value||'',4097).length + (entry.checked ? 16 : 0)
-            + (attributes.length ? 20 + attributes.reduce((sum,pair)=>sum+pair[0].length+scalars(pair[1]).length+6,0) : 0);
+          length += 4 + entry.tag.length + (entry.value ? 9 + scalars(entry.value,4097).length : 0) + (entry.checked ? 8 : 0)
+            + attributes.reduce((sum,pair)=>sum+pair[0].length+scalars(pair[1]).length+4,0);
         });
       }
       return {length,raw:encoded.length,root};

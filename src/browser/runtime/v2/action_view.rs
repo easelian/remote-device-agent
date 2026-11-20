@@ -80,14 +80,14 @@ async fn read(
     let settled = view["coverage"]["changed_during_read"] != true
         && revisions(&reader, &frames, deadline).await? == initial;
     let removed = omitted("changed_content_removed");
-    let groups = view["frames"].take();
-    if groups.as_array().is_none_or(Vec::is_empty) && !removed {
+    let text = view["text"].take();
+    if text.as_str().is_none_or(str::is_empty) && !removed {
         return Ok(json!({"state":"continue_observing","reason":"no_visible_change"}));
     }
     // The three flags are written only when they depart from the ordinary case:
     // nothing disappeared, the page had settled, and every changed part fitted.
     let mut sampled = json!({"state":"sampled","content_trust":"untrusted_page",
-        "frames":groups,"records":view["records"].take()});
+        "text":text});
     if removed {
         sampled["removed"] = true.into();
     }
