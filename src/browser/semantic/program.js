@@ -496,6 +496,8 @@ function(operation, args, other) {
     // The private batch still carries every row in full, so its encoded size is bounded separately.
     const counted = scan.query.compact===true ? new Set() : null;
     const compactLayout = new Set(['td','div','span','p','b','i','em','strong','small','u','button','tbody']);
+    // The compact projection writes these only to tell apart controls that read alike.
+    const compactAddress = new Set(['id','name','for','tabindex','aria-labelledby']);
     const cost = row => {
       const encoded = JSON.stringify(row);
       if (!counted) return {length:scalars(encoded).length,raw:0,root:0};
@@ -511,7 +513,7 @@ function(operation, args, other) {
       if (!root || !counted.has(root)) {
         length += 4;
         row.record.entries.forEach((entry,index) => {
-          const attributes = entry.attributes.filter(pair => !(pair[0]==='type' && entry.tag==='button'));
+          const attributes = entry.attributes.filter(pair => !(pair[0]==='type' && entry.tag==='button') && !compactAddress.has(pair[0]));
           if (entry.tag==='#text') { length += 3 + scalars(entry.text).length; return; }
           // The compact projection leaves out a bare layout container that is not the record itself.
           if (index && !attributes.length && !entry.value && !entry.checked && compactLayout.has(entry.tag)) return;

@@ -154,7 +154,7 @@ fn a_node_keeps_every_fact_that_differs_from_the_ordinary_one() {
     assert_eq!(
         lines(&value),
         [
-            "textbox [r1] offscreen value=a@example.test editable name-from=label type=email: Email",
+            "textbox [r1] offscreen value=a@example.test type=email: Email",
             "checkbox disabled unchecked: Agree",
             "<div aria-posinset=3> (incomplete, record_node_limit)",
             "  option kind=aria: Blue",
@@ -270,13 +270,12 @@ fn a_record_does_not_restate_its_node_and_page_text_stays_on_its_line() {
     odd.facts.name_quality = vec!["text_character_limit".into()];
     let full = vec![json!({"frame_id":"f"}); 3];
     let value = project(&[input(&restated), input(&more), odd], &full, &[top]);
-    let node =
-        "checkbox value=on readonly checked name-from=aria-label type=checkbox: Show advanced";
+    let node = "checkbox readonly checked: Show advanced";
     assert_eq!(
         lines(&value),
         [
             node,
-            "<input id=adv title=\"Shows more\">",
+            "<input title=\"Shows more\">",
             &format!("  {node}"),
             "<li> x \\< y \\| z | tail",
             "  text quality=text_character_limit: a\\\\b\\nc: d"
@@ -309,6 +308,129 @@ fn text_named_by_a_control_leaves_the_record_with_its_bare_element() {
             "<article> <a href=/k1> | Pending",
             "  heading: Order K1",
             "  link: Open"
+        ]
+    );
+}
+
+#[test]
+fn what_another_line_says_is_left_out_and_addresses_only_part_twins() {
+    let mut ids = Identities::new();
+    let top = frame(&mut ids, "top", None);
+    let with = |mut entry: Entry, attributes: &[(&str, &str)], value: Option<&str>| {
+        entry.attributes = attributes
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        entry.value = value.map(Into::into);
+        entry
+    };
+    let label = vec![
+        with(element(10, "label"), &[("for", "plan")], None),
+        text(11, "Plan"),
+    ];
+    let mut plan = row(
+        &top,
+        12,
+        "combobox",
+        "Plan",
+        vec![
+            with(element(12, "select"), &[("id", "plan")], Some("free")),
+            with(element(13, "option"), &[], Some("free")),
+            text(14, "Free"),
+            with(element(15, "option"), &[], Some("pro")),
+            text(16, "Pro"),
+        ],
+    );
+    plan.facts.tag = "select".into();
+    plan.facts.value = Some("free".into());
+    plan.facts.name_source = "label".into();
+    plan.facts.input_type = "select-one".into();
+    let mut dialog = row(
+        &top,
+        20,
+        "unsupported",
+        "Confirm",
+        vec![
+            with(
+                element(20, "div"),
+                &[("role", "dialog"), ("aria-label", "Confirm")],
+                None,
+            ),
+            text(21, "Delete order B42?"),
+            element(22, "button"),
+            text(23, "Cancel"),
+        ],
+    );
+    dialog.facts.kind = "aria".into();
+    dialog.facts.name_source = "aria-label".into();
+    dialog.facts.name_quality = vec!["unsupported_role".into()];
+    let button = |node, name: &str, id| {
+        row(
+            &top,
+            node,
+            "button",
+            name,
+            vec![
+                with(element(node, "button"), &[("id", id)], None),
+                text(node + 1, name),
+            ],
+        )
+    };
+    let status = || {
+        vec![
+            with(element(60, "p"), &[("role", "status")], None),
+            text(61, "Deleted B42"),
+        ]
+    };
+    let mut holder = row(&top, 60, "unsupported", "", status());
+    holder.facts.kind = "aria".into();
+    let rows = [
+        holder,
+        row(&top, 61, "text", "Deleted B42", status()),
+        row(&top, 1, "text", "Plan", label),
+        plan,
+        dialog,
+        row(
+            &top,
+            21,
+            "text",
+            "Delete order B42?",
+            vec![text(21, "Delete order B42?")],
+        ),
+        button(22, "Cancel", "no"),
+        button(30, "Remove", "first"),
+        button(40, "Remove", "second"),
+        button(50, "Next", "next"),
+    ];
+    let full = [
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f","ref":"r1"}),
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f"}),
+        json!({"frame_id":"f","ref":"r2"}),
+        json!({"frame_id":"f","ref":"r3"}),
+        json!({"frame_id":"f","ref":"r4"}),
+        json!({"frame_id":"f","ref":"r5"}),
+    ];
+    // A container that has no line keeps its role on the record. The label is
+    // the name of its control, a container's content is listed by the nodes
+    // inside it, and an id is written only for controls that read alike.
+    assert_eq!(
+        lines(&project(&rows, &full, &[top])),
+        [
+            "<p role=status> Deleted B42",
+            "<select> <option value=free> Free <option value=pro> Pro",
+            "  combobox [r1] value=free: Plan",
+            "dialog kind=aria: Confirm",
+            "text: Delete order B42?",
+            "button [r2]: Cancel",
+            "<button id=first>",
+            "  button [r3]: Remove",
+            "<button id=second>",
+            "  button [r4]: Remove",
+            "button [r5]: Next"
         ]
     );
 }

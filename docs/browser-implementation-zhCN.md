@@ -97,12 +97,12 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 
 ```text
 heading: Settings
-<input id=adv>
-  checkbox [r78884] value=on checked name-from=aria-label type=checkbox: Show advanced
+checkbox [r78884] checked: Show advanced
 text: Advanced settings
 button [r78885]: Reset everything
-<select id=plan value=free> <option value=free> Free <option value=pro> Pro
-  combobox [r78886] value=free name-from=label type=select-one: Plan
+<select> <option value=free> Free <option value=pro> Pro
+  combobox [r78886] value=free: Plan
+textbox [r78887] value=0 readonly: Price
 --- iframe becce19351371f63231e1adb4c1298a0
 <tr> Order X1 | Pending
   button [r0d4c1]: Approve
@@ -110,17 +110,22 @@ button [r78885]: Reset everything
 
 | 行 | 读法 |
 | --- | --- |
-| 节点行 | 依次是角色、可操作时的 `[ref]`、状态、冒号和名称。方括号内是引用，形如 `r6aa6558`，用法与失效规则同普通引用；一个会话内不重复签发，前缀随会话变化。角色 `text` 是页面文本；`element` 是没有角色的元素，并带 `tag=` |
-| 节点行的状态 | 没写出的取通常值：`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。`unchecked` 表示可勾选而未勾选。`type=` 是输入类型，提交按钮不写；`name-from=` 是名称来源，来自内容时不写；`quality=` 列出名称受到的限制。可编辑字段的空值写作 `value=""` |
+| 节点行 | 依次是角色、可操作时的 `[ref]`、状态、冒号和名称。方括号内是引用，形如 `r6aa6558`，用法与失效规则同普通引用；一个会话内不重复签发，前缀随会话变化。角色 `text` 是页面文本；`element` 是没有角色的元素，并带 `tag=`。容器的角色不在本画像之内时，写页面自己声明的角色，例如 `dialog kind=aria: Confirm` |
+| 节点行的状态 | 没写出的取通常值：`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。`unchecked` 表示可勾选而未勾选。`type=` 是输入类型，角色已经确定类型时不写，例如提交按钮、`checkbox` 和原生下拉框。原生文本框都可编辑，不写 `editable`，只在不可改时写 `readonly`。复选框和单选框的值是默认的 `on` 时不写。`quality=` 列出名称受到的限制。可编辑字段的空值写作 `value=""`。名称来源不写出 |
 | 记录行 | 以 `<` 开头，是包住下方缩进节点的表格行、列表项等记录。先写记录自身的标签和属性，再按页面顺序写它包含的文本，以及带属性、值或状态的元素；相邻两段文本用 ` \| ` 分开。没有属性、值和状态的布局容器（如 `td`、`div`、`span`）不写出。行尾的 `(incomplete, …)` 表示记录在所列限制处被截断 |
 | `--- iframe <frame_id>` | 此后的行属于这个子 frame，直到下一个 `---` 行。`--- page` 表示回到页面自身的文档。页面开头的内容不带这一行 |
 
-记录行和节点行之间不重复内容，规则有四条：
+另一行已经表达的内容不再写出，规则如下：
 
 - 记录中的文本如果正是下方某个控件的名称，只写在该控件的行上。它前面的元素如果没有属性，也一并不写。
 - 记录行已经列出的文本不再单独成为节点行。记录不完整或文本被截断时，文本节点照常写出。
-- 记录只有节点自己这一个元素时，节点行已经表达的属性（`type`、与名称相同的 `aria-label`、`readonly`、`disabled`、值和勾选状态）不再写在记录行上。此时如果没有剩余属性，就不写记录行。
+- 记录从节点自己的元素开始时，节点行已经表达的属性不再写在这个元素上，包括 `type`、`role`、与名称相同的 `aria-label`、`readonly`、`disabled`、值和勾选状态。
+- 记录从节点自己的元素开始时，元素内的文本如果是节点自己的名称，或者是记录之外某个节点的名称，就不写在记录行上。原生下拉框例外，它的选项只出现在记录行上。
+- 经过以上省略，记录行只剩一个没有属性的元素时，不写记录行，节点行不缩进。
+- `label` 的文本如果正是它所标注控件的名称，不单独写出。
 - 角色不在本画像之内、没有名称也没有引用的容器（例如只带 `role="listitem"` 的 `div`）不单独成为节点行，它的角色仍写在记录行的首个元素上。
+
+`id`、`name`、`for`、`tabindex` 和 `aria-labelledby` 是页面代码用来定位元素的属性，通常不写出。两个带引用的控件如果角色、名称和记录行都相同，它们的记录行才写出这些属性，例如 `<button id=first>` 和 `<button id=second>`。
 
 同名控件靠各自上方的记录行区分。同一记录的节点被其他内容隔开时，记录行会再写一次。
 
