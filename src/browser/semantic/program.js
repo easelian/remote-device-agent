@@ -476,7 +476,9 @@ function(operation, args, other) {
         limit:state.dirtyLimit || state.nodes.size > 2000,removed:state.removed};
     } else {
       state.clearNodes();
-      state.scan = {pending:document.documentElement ? [document.documentElement] : [],query:args,revision:state.revision,sequence:0,scanned:0};
+      // A compact read says how far through the document it got: elements read, and elements in all.
+      state.scan = {pending:document.documentElement ? [document.documentElement] : [],query:args,revision:state.revision,sequence:0,scanned:0,
+        elements:0,total:args.compact===true ? document.getElementsByTagName('*').length : 0};
     }
     state.dirty.clear(); state.dirtyLimit = false; state.removed = false;
     return result(stamp());
@@ -501,6 +503,8 @@ function(operation, args, other) {
       const root = row.record.entries.length ? row.record.entries[0].identity : 0;
       // Text of a record that is already counted is listed by that record and seldom repeated.
       if (row.kind==='text' && root && counted.has(root)) return {length:2,raw:encoded.length,root};
+      // Text that opens a record is listed by the record line and has no line of its own.
+      if (row.kind==='text' && root && row.record.complete && !row.name_quality.length) length = 2;
       // Text that is its own whole record is written as a bare node.
       if (row.kind==='text' && row.record.complete && row.record.entries.every(entry => entry.tag==='#text' ? entry.text===row.name : !entry.attributes.length && !entry.value && !entry.checked))
         return {length:8+scalars(row.name).length,raw:encoded.length,root:0};
@@ -536,6 +540,7 @@ function(operation, args, other) {
         rows.push(row);characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);continue;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (scan.total) scan.elements++;
       if (['script','style','template','noscript'].includes(node.localName)) continue;
       const endpoints = scan.query.filter === 'drag_endpoints';
       const mapped = endpoints ? null : role(node);
@@ -562,7 +567,8 @@ function(operation, args, other) {
     scan.sequence++;
     if(!scan.pending.length)state.scan=null;
     return result({stamp:stamp(),revision:scan.revision,rows,sequence:scan.sequence,more:scan.pending.length>0,scanned:count,
-      changed:scan.revision !== state.revision,omitted:Array.from(omitted).sort(),characters});
+      changed:scan.revision !== state.revision,omitted:Array.from(omitted).sort(),characters,
+      progress:scan.total ? [Math.min(scan.elements,scan.total),scan.total] : null});
   }
   if (operation === 'reusable_submit') {
     const radio = target();

@@ -53,6 +53,9 @@ pub(crate) struct Observation {
     pub changed_during_read: bool,
     pub omitted: Vec<String>,
     pub scanned: usize,
+    /// How far a compact read got through the page's own document: elements read, elements in all.
+    #[serde(skip)]
+    pub progress: Option<[u32; 2]>,
 }
 #[derive(Clone)]
 struct Element {
@@ -576,6 +579,7 @@ impl<P: Port> Page<P> {
             changed_during_read: scan.changed,
             omitted: scan.omitted.clone(),
             scanned: 0,
+            progress: None,
         };
         let mut remaining = characters;
         // A compact read goes on through a long document while its budget
@@ -642,6 +646,12 @@ impl<P: Port> Page<P> {
             observation.revisions.insert(frame.context, batch.revision);
             remaining = remaining.saturating_sub(batch.characters);
             observation.scanned += batch.scanned;
+            // Only the first frame is the page's own document.
+            observation.progress = if scan.frame == 0 && batch.more {
+                batch.progress
+            } else {
+                None
+            };
             observation.changed_during_read |= batch.changed;
             observation.omitted.extend(batch.omitted);
             let candidates = batch

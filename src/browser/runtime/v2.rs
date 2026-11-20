@@ -1179,6 +1179,11 @@ async fn observe_frames(
         let id = token()?;
         session.cursor = Some((id.clone(), cursor, query.clone()));
         value["next_cursor"] = id.into();
+        // What a caller needs to choose between reading on and searching.
+        if let Some([read, total]) = result.progress.filter(|[_, total]| *total > 0) {
+            value["coverage"]["read_percent"] =
+                (u64::from(read) * 100 / u64::from(total)).clamp(1, 99).into();
+        }
     }
     let prepared = if let Some(request) = params.get("presentation") {
         let key = presentation::key(

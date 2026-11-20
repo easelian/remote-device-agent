@@ -126,7 +126,7 @@ button [r78885]: Reset everything
 
 页面文本中的换行写作 `\n`，反斜杠写作 `\\`；记录行里的 `\<` 和 `\|` 表示这两个字符本身。`=` 后的值只含字母、数字和 `_-.:/@#%+,~` 时直接写出，否则写成 JSON 字符串。
 
-紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按写出的行的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。普通读取每次调用在一个文档内最多遍历 5,000 个节点；紧凑读取在预算未用完时继续遍历，最多 8 段，所以在几千行的表格里按文字查找通常一次调用即可返回。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
+紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按写出的行的估算字符数计费，同一记录只计一次。估算偏保守，两千行表格的一页约 200 行、14 KB，读完需要 10 次调用；要找某一行时用 `find`，一次调用即可。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。普通读取每次调用在一个文档内最多遍历 5,000 个节点；紧凑读取在预算未用完时继续遍历，最多 8 段，所以在几千行的表格里按文字查找通常一次调用即可返回。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
 
 #### 不写出的固定内容
 
@@ -143,7 +143,7 @@ button [r78885]: Reset everything
 | `tab_id`（观察在 `page` 内） | 请求指定了同一个标签页 | 请求未指定标签页，或动作落在另一个标签页 |
 | 回执的 `input_acknowledged`、`business_result_verified`、`site_processing_count` | `true`、`false`、`null` | 不带视图的回执照常写出 |
 
-前五行由 Agent 省略，[紧凑投影](../src/browser/runtime/v2/compact.rs)和[视图](../src/browser/runtime/v2/action_view.rs)各自处理。后三行由 Core 在交给 MCP 客户端之前省略：Agent 发给 Core 的回复仍带这些字段，Core 先按请求核对。`coverage.complete` 和 `coverage.scanned` 始终写出。带视图的回执成功即表示输入已确认；它不核实业务结果，也无法得知站点处理了几次，这一点与不带视图的回执相同，只是不再逐次写出。
+前五行由 Agent 省略，[紧凑投影](../src/browser/runtime/v2/compact.rs)和[视图](../src/browser/runtime/v2/action_view.rs)各自处理。后三行由 Core 在交给 MCP 客户端之前省略：Agent 发给 Core 的回复仍带这些字段，Core 先按请求核对。`coverage.complete` 和 `coverage.scanned` 始终写出。读取未完成并带有 `next_cursor` 时，另有 `coverage.read_percent`，是已列出部分占页面自身文档的大致百分比（按元素个数计，1 到 99），调用方据此决定续读还是改用 `find`。带视图的回执成功即表示输入已确认；它不核实业务结果，也无法得知站点处理了几次，这一点与不带视图的回执相同，只是不再逐次写出。
 
 ### 动作后只读取变更的部分
 
@@ -164,14 +164,14 @@ button [r78885]: Reset everything
 
 ### 用场景池核对页面变化的各种方式
 
-`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 21 个场景：
+`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 22 个场景：
 
 | 类别 | 场景 |
 | --- | --- |
 | 元素被复用或替换 | `recycle`（虚拟列表滚动）、`pager`（翻页复用行元素）、`rerender`（整表重绘）、`sort`（行只移动） |
 | 变化不经 DOM 或不在原地 | `css-state`（样式规则与属性）、`modal`（确认框渲染在别处）、`toplayer`（原生模态对话框）、`kanban`（卡片换列） |
 | 异步与噪声 | `optimistic`（乐观更新后回滚）、`autocomplete`（迟到的建议）、`ticker`（持续变化）、`feed`（不断下推的信息流）、`lazy`（滚动加载） |
-| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`sticky`（粘性表头遮挡）、`big`（两千行表格） |
+| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`sticky`（粘性表头遮挡）、`big`（两千行表格中按文字查找一行）、`big-read`（不查找，逐页读完两千行） |
 | 表单流程 | `dependent`（联动字段）、`inline`（行内编辑）、`wizard`（多步向导） |
 `server.py` 记录页面发出的每次写入，场景以站点实际收到的写入和页面终态判定，不采信工具自己的回执。
 

@@ -1140,6 +1140,46 @@ async fn scenario_pool() {
         );
     }
 
+    // Reading two thousand rows without a search.
+    if wanted("big-read") {
+        let mut run = Run::open(&mut peer, &site.url("big")).await;
+        let started = std::time::Instant::now();
+        let first = run.observe(json!({})).await;
+        let first_ms = started.elapsed().as_millis();
+        let mut pages = vec![first.to_string().len()];
+        let mut rows = first["text"].as_str().unwrap().matches("<tr>").count();
+        let mut last = first.clone();
+        while let Some(cursor) = last["next_cursor"].as_str().map(str::to_owned) {
+            if pages.len() >= 40 {
+                break;
+            }
+            last = run.observe(json!({"cursor":cursor})).await;
+            pages.push(last.to_string().len());
+            rows += last["text"].as_str().unwrap().matches("<tr>").count();
+        }
+        let all_ms = started.elapsed().as_millis();
+        let cost = run.close().await;
+        let percent = first["coverage"]["read_percent"].as_u64();
+        record(
+            "big-read",
+            cost,
+            Vec::new(),
+            vec![
+                (
+                    "the first page says how far it got",
+                    first["next_cursor"].is_string()
+                        && percent.is_some_and(|p| (5..=20).contains(&p)),
+                ),
+                ("every row is listed once", rows == 2000),
+                (
+                    "a page stays within the budget",
+                    pages.iter().all(|&bytes| bytes < 21_000),
+                ),
+            ],
+            json!({"pages":pages,"read_percent":percent,"first_ms":first_ms,"all_ms":all_ms}),
+        );
+    }
+
     let report = Value::Object(report);
     if let Ok(path) = std::env::var("RDH_SCENARIO_REPORT") {
         fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();

@@ -378,6 +378,7 @@ impl Port for Fake {
                             "browser_ui_outside_profile".into(),
                         ],
                         characters: 100,
+                        progress: None,
                     }))
                 }
                 Program::Inspect { node, .. } => Ok(Output::Facts(

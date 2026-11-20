@@ -363,6 +363,9 @@ pub(crate) struct Batch {
     pub changed: bool,
     pub omitted: Vec<String>,
     pub characters: usize,
+    /// Elements read so far and elements in the document, for a compact read.
+    #[serde(default)]
+    pub progress: Option<[u32; 2]>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
