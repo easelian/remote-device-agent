@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>State held by CSS</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<style>.panel{display:none}#adv:checked~.panel{display:block}</style>
+<h1>Settings</h1>
+<!-- Ticking the box changes no element and no attribute. A style rule alone reveals the panel. -->
+<input type=checkbox id=adv aria-label="Show advanced">
+<div class=panel><p>Advanced settings</p><button type=button onclick="record('css-state','reset')">Reset everything</button></div>
+<p><label for=plan>Plan</label> <select id=plan onchange="document.getElementById('price').value=this.value==='pro'?'20':'0'">
+<option value=free>Free</option><option value=pro>Pro</option></select>
+<label>Price <input id=price readonly value=0></label></p>

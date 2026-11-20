@@ -1,0 +1,14 @@
+<!doctype html><meta charset=utf-8><title>A choice that rebuilds another field</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<h1>Shipping</h1>
+<!-- Choosing a country replaces the options of the city field and reveals a note. -->
+<form onsubmit="event.preventDefault();record('dependent',country.value+'/'+city.value);document.getElementById('done').textContent='Saved '+city.value">
+<label for=country>Country</label> <select id=country><option value="">Choose</option><option value=fr>France</option><option value=jp>Japan</option></select>
+<label for=city>City</label> <select id=city disabled><option value="">Choose a country first</option></select>
+<p id=note hidden>Customs form required.</p>
+<button>Save address</button></form><p id=done></p>
+<script>
+const cities={fr:['Paris','Lyon'],jp:['Tokyo','Osaka']};
+country.onchange=()=>{const list=cities[country.value]||[];city.disabled=!list.length;
+  city.innerHTML=list.map(c=>'<option>'+c+'</option>').join('')||'<option value="">Choose a country first</option>';
+  document.getElementById('note').hidden=country.value!=='jp';};
+</script>

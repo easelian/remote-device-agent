@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>A page that never stops changing</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<h1>Live board</h1>
+<!-- A clock and a progress bar change twenty times a second, unrelated to what the reader does. -->
+<p>Now: <span id=clock>0</span></p><div id=bar style="height:6px;background:#39f;width:0"></div>
+<table><tbody>
+<tr><td>Order T01</td><td class=s>Pending</td><td><button type=button>Approve</button></td></tr>
+<tr><td>Order T02</td><td class=s>Pending</td><td><button type=button>Approve</button></td></tr>
+<tr><td>Order T03</td><td class=s>Pending</td><td><button type=button>Approve</button></td></tr></tbody></table>
+<script>
+let n=0;setInterval(()=>{n++;document.getElementById('clock').textContent=n;document.getElementById('bar').style.width=(n%100)+'%';},50);
+document.querySelector('tbody').onclick=e=>{if(e.target.tagName!=='BUTTON')return;const r=e.target.closest('tr');
+  record('ticker',r.children[0].textContent);r.querySelector('.s').textContent='Approved';};
+</script>

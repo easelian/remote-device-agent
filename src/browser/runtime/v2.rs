@@ -36,6 +36,11 @@ pub(super) struct Slot {
     session: AsyncMutex<Session>,
     _storage_lock: Arc<crate::profile_lock::ProfileLocks>,
 }
+type Carried = (
+    HashMap<String, sem::Reference>,
+    HashMap<String, sem::Context>,
+    Vec<sem::Frame>,
+);
 struct Session {
     native: Option<native::Session>,
     active: String,
@@ -43,7 +48,12 @@ struct Session {
     short_references: (String, u64),
     reference_tab: Option<String>,
     frames: HashMap<String, sem::Context>,
-    overview_baseline: Option<action_view::Baseline>,
+    /// The frame tree at the latest observation, for the view after an action.
+    observed_frames: Vec<sem::Frame>,
+    /// What an action that asked for a view set aside: the references, frame
+    /// IDs and frame tree of the observation it acted on. A view that
+    /// establishes what changed puts them back.
+    carried: Option<Carried>,
     cursor: Option<(String, sem::Continuation, sem::Query)>,
     presentation: presentation::Cache,
     evidence: evidence::Registry,
@@ -63,7 +73,8 @@ impl Session {
         self.references.clear();
         self.reference_tab = None;
         self.frames.clear();
-        self.overview_baseline = None;
+        self.observed_frames.clear();
+        self.carried = None;
         self.cursor = None;
     }
     async fn close(&mut self) -> Result<()> {
@@ -399,7 +410,8 @@ impl Browsers {
                 short_references: (String::new(), 0),
                 reference_tab: None,
                 frames: HashMap::new(),
-                overview_baseline: None,
+                observed_frames: Vec::new(),
+                carried: None,
                 cursor: None,
                 presentation: presentation::Cache::default(),
                 evidence: evidence::Registry::default(),
@@ -568,11 +580,6 @@ impl Browsers {
             return Err(Failure::unknown("browser_input_pending"));
         }
         let wants_view = operation == "browser_act" && params["after_action_view"] == true;
-        let baseline = if wants_view && session.reference_tab.as_deref() == Some(&tab) {
-            session.overview_baseline.take()
-        } else {
-            None
-        };
         let mut prepared_presentation = None;
         let mut prepared_evidence = None;
         let result = async {
@@ -832,14 +839,22 @@ impl Browsers {
                 if let Some(fields) = receipt.as_object_mut() {
                     fields.remove("reusable_refs");
                 }
-                receipt["after_action_view"] = action_view::sample(
-                    &mut session, &page, &port, baseline, epoch, deadline,
-                ).await;
+                receipt["after_action_view"] =
+                    if let Some((references, frames, observed)) = session.carried.take() {
+                        session.references = references;
+                        session.frames = frames;
+                        session.observed_frames = observed;
+                        session.reference_tab = Some(tab.clone());
+                        action_view::sample(&mut session, &page, &port, epoch, deadline).await
+                    } else {
+                        json!({"state":"continue_observing","reason":"view_unavailable_or_changing"})
+                    };
                 receipt["tab_id"] = tab.clone().into();
                 Ok(receipt)
             }
             other => other,
         };
+        session.carried = None;
         *slot.active.lock().unwrap() = session.active.clone();
         if result.as_ref().is_err_and(|e| e.state == "unknown") {
             slot.pause();
@@ -1063,6 +1078,8 @@ async fn observe_frames(
             find: params["find"].as_str().map(str::to_owned),
             within,
             compact: params["format"] == "compact",
+            // Set only by the view after an action; public requests cannot carry it.
+            changed: params["changed"] == true,
         }
     };
     // A continuation keeps the format of the read it continues.
@@ -1086,7 +1103,12 @@ async fn observe_frames(
             deadline,
         )
         .await?;
-    session.clear_references();
+    if query.changed {
+        session.cursor = None;
+    } else {
+        session.clear_references();
+        session.observed_frames = before.to_vec();
+    }
     let mut nodes = Vec::new();
     for row in &mut result.rows {
         let frame = if let Some((id, _)) = session
@@ -1142,17 +1164,6 @@ async fn observe_frames(
                 max_chars,
             )
         });
-    if let Some(overview) = &overview
-        && !result.changed_during_read
-    {
-        session.overview_baseline = Some(action_view::baseline(
-            overview,
-            &session.frames,
-            before,
-            &result.revisions,
-            result.complete && result.cursor.is_none(),
-        ));
-    }
     if compact {
         // The frames already group the nodes, so the separate overview is left out.
         compact::write(&mut value, &result.rows, &nodes, before);
@@ -1211,7 +1222,20 @@ async fn act(
         .map(|id| session.reference(id, &tab))
         .transpose()?;
     let original_refs = std::mem::take(&mut session.references);
+    // Every action retires the references of the observation it used. An
+    // action that also asks for a view may get the untouched ones back.
+    let carried = (params["after_action_view"] == true
+        && reference.is_some()
+        && session.reference_tab.as_deref() == Some(tab.as_str()))
+    .then(|| {
+        (
+            original_refs.clone(),
+            session.frames.clone(),
+            session.observed_frames.clone(),
+        )
+    });
     session.clear_references();
+    session.carried = carried;
     if let Some(reference) = reference {
         let input = match kind {
             "attach_file" => sem::Action::AttachFile(

@@ -1,0 +1,15 @@
+<!doctype html><meta charset=utf-8><title>Confirmation rendered elsewhere</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<style>[role=dialog]{position:fixed;left:30%;top:30%;background:#fff;border:2px solid #333;padding:16px}</style>
+<h1>Orders</h1>
+<table><tbody id=rows></tbody></table>
+<!-- The dialog and the notice are appended to the end of the body, far from the row that opened them. -->
+<script>
+const rows=document.getElementById('rows');
+for(const id of['B41','B42','B43'])rows.insertAdjacentHTML('beforeend','<tr><td>Order '+id+'</td><td><button type=button data-id='+id+'>Delete</button></td></tr>');
+rows.onclick=e=>{const id=e.target.dataset.id;if(!id)return;
+  const d=document.createElement('div');d.setAttribute('role','dialog');d.setAttribute('aria-label','Confirm');
+  d.innerHTML='<p>Delete order '+id+'?</p><button type=button>Confirm</button> <button type=button>Cancel</button>';
+  d.children[1].onclick=()=>{record('modal',id);e.target.closest('tr').remove();d.remove();
+    const t=document.createElement('p');t.setAttribute('role','status');t.textContent='Deleted '+id;document.body.append(t);setTimeout(()=>t.remove(),3000);};
+  d.children[2].onclick=()=>d.remove();document.body.append(d);};
+</script>

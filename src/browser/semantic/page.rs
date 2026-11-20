@@ -472,8 +472,13 @@ impl<P: Port> Page<P> {
             {
                 return Err(types::stale());
             }
-            state.refs.clear();
-            std::mem::take(&mut state.retained)
+            if query.changed {
+                // References issued earlier stay valid beside the regions read now.
+                Vec::new()
+            } else {
+                state.refs.clear();
+                std::mem::take(&mut state.retained)
+            }
         };
         for frame in retained {
             let _ = port
@@ -501,7 +506,8 @@ impl<P: Port> Page<P> {
             scan
         } else {
             let old = self.0.state.lock().unwrap().cursor.take();
-            if let Some(old) = old {
+            // Releasing a document drops the nodes of its references as well.
+            if let Some(old) = old.filter(|_| !query.changed) {
                 for frame in &old.frames {
                     let _ = port.program(frame, Program::Release, deadline).await;
                 }
@@ -548,12 +554,17 @@ impl<P: Port> Page<P> {
         } else {
             same_document(&scan.top, &port.refresh(&scan.top, deadline).await?)?;
         }
-        let generation = {
+        let (generation, first) = {
             let mut state = self.0.state.lock().unwrap();
-            state.refs.clear();
             state.cursor = None;
-            state.generation = state.generation.checked_add(1).ok_or_else(types::decode)?;
-            state.generation
+            if query.changed {
+                let first = state.refs.keys().map(|known| known.index + 1).max();
+                (state.generation, first.unwrap_or(0))
+            } else {
+                state.refs.clear();
+                state.generation = state.generation.checked_add(1).ok_or_else(types::decode)?;
+                (state.generation, 0)
+            }
         };
         let mut observation = Observation {
             end_frames: Vec::new(),
@@ -675,7 +686,7 @@ impl<P: Port> Page<P> {
                     .then(|| Reference {
                         scope: self.0.scope,
                         generation,
-                        index: observation.rows.len(),
+                        index: first + observation.rows.len(),
                         epoch,
                     });
                 if let Some(reference) = &reference {
@@ -772,9 +783,17 @@ impl<P: Port> Page<P> {
         if *control != (epoch, human) {
             return Err(Failure::new("browser_control_changed"));
         }
-        state.refs = refs;
+        if query.changed {
+            if state.generation != generation || state.refs.len() + refs.len() > 2 * MAX_NODES {
+                return Err(types::stale());
+            }
+            state.refs.extend(refs);
+        } else {
+            state.refs = refs;
+        }
         state.expires = Some(Instant::now() + Duration::from_secs(300));
-        if scan.frame < scan.frames.len() {
+        // A read of changed regions is never continued.
+        if scan.frame < scan.frames.len() && !query.changed {
             observation.cursor = Some(Continuation {
                 scope: self.0.scope,
                 generation,

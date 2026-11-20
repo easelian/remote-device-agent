@@ -16,7 +16,7 @@ function(operation, args, other) {
   const picked = new Set(['date','time','datetime-local','month','week','color','range']);
   let state = globalThis[SLOT];
   if (!state || state.document !== document) {
-    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null};
+    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null, dirty:new Set(), dirtyLimit:false, removed:false};
     // The evidence program in this isolated realm uses the same boundaries for record waits.
     // A fallback-only record role is opaque: never attribute its text to an outer record.
     const recordRoles = new Set(['row','listitem','article','option']);
@@ -63,7 +63,43 @@ function(operation, args, other) {
     addEventListener('pageshow', event => {
       if (event.persisted) { state.restoration++; state.clearNodes(); state.scan = null; }
     });
-    state.observer = new MutationObserver(() => state.revision++);
+    // Remember which parts were altered since they were last read, so that a
+    // view after an action can return those parts alone. Attributes that do
+    // not change what a reader sees or can operate are not recorded.
+    const shown = new Set(['class','style','hidden','open','disabled','checked','selected','value','src','href','title','alt','role','inert','data-state']);
+    const skipped = new Set(['script','style','head','meta','link','title','noscript','template']);
+    const mark = node => {
+      if (node && node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) node = node.host;
+      if (!node || node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.localName)) return;
+      if (state.dirty.size >= 64 && !state.dirty.has(node)) { state.dirtyLimit = true; return; }
+      state.dirty.add(node);
+    };
+    state.track = records => {
+      for (const record of records) {
+        if (record.type === 'attributes') {
+          if (shown.has(record.attributeName) || record.attributeName.startsWith('aria-')) mark(record.target);
+        } else if (record.type === 'characterData') {
+          mark(record.target.parentNode);
+        } else {
+          for (const added of record.addedNodes) mark(added.nodeType === Node.ELEMENT_NODE ? added : record.target);
+          if (record.removedNodes.length) {
+            state.removed = true;
+            // What remains of a record that lost a part is worth showing; a bare container is not.
+            let depth = 0;
+            for (let current = record.target; current && depth++ < 64; current = current.parentNode) {
+              if (current.nodeType === Node.ELEMENT_NODE && state.recordKind(current) === 'record') { mark(current); break; }
+            }
+          }
+        }
+      }
+    };
+    state.observer = new MutationObserver(records => { state.revision++; try { state.track(records); } catch { state.dirtyLimit = true; } });
+    // A value or a checked state is a property: setting it alters no element. What depends on it,
+    // by a style rule or a script, usually sits beside the control, so its container is read again.
+    for (const kind of ['input','change']) addEventListener(kind, event => {
+      const control = event.composedPath()[0];
+      if (control && control.nodeType === Node.ELEMENT_NODE) mark(control.parentNode);
+    }, true);
     state.observer.observe(document, {subtree:true,childList:true,characterData:true,attributes:true});
   }
   if(state.expires&&performance.now()>=state.expires){state.clearNodes();state.scan=null;state.expires=0;clearTimeout(state.timer);state.timer=null;}
@@ -411,16 +447,37 @@ function(operation, args, other) {
   if (operation === 'clear_nodes') {if(args.realm!==state.realm||args.restoration!==state.restoration)return result(false);state.clearNodes();return result(true);}
   if (operation === 'open') {
     retain();
-    state.clearNodes();
-    state.scan = {pending:document.documentElement ? [document.documentElement] : [],query:args,revision:state.revision,sequence:0,scanned:0};
+    if (args.changed === true) {
+      // Widen each altered element to the record around it, drop regions inside other regions, and read in page order.
+      const regions = [];
+      for (const element of state.dirty) {
+        if (!element.isConnected) continue;
+        let region = element, depth = 0;
+        for (let current = element; current && depth++ < 64; current = parent(current)) {
+          if (state.recordKind(current) === 'record') { region = current; break; }
+        }
+        if (!regions.includes(region)) regions.push(region);
+      }
+      const outer = regions.filter(region => !regions.some(other => other !== region && other.contains(region)));
+      outer.sort((a,b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 1 : -1);
+      // References issued earlier stay usable, so their nodes are kept; refuse to grow without bound.
+      state.scan = {pending:outer,query:args,revision:state.revision,sequence:0,scanned:0,
+        limit:state.dirtyLimit || state.nodes.size > 2000,removed:state.removed};
+    } else {
+      state.clearNodes();
+      state.scan = {pending:document.documentElement ? [document.documentElement] : [],query:args,revision:state.revision,sequence:0,scanned:0};
+    }
+    state.dirty.clear(); state.dirtyLimit = false; state.removed = false;
     return result(stamp());
   }
   if (operation === 'next') {
     const scan = state.scan;
     if (!scan || args.realm !== state.realm || args.restoration !== state.restoration || args.sequence !== scan.sequence) return result(null);
     retain();
-    state.clearNodes();
+    if (scan.query.changed !== true) state.clearNodes();
     const rows = [], omitted = new Set(['closed_shadow_not_observable','canvas_pixels_outside_profile','browser_ui_outside_profile']);
+    if (scan.limit) omitted.add('changed_region_limit');
+    if (scan.removed) omitted.add('changed_content_removed');
     let count = 0, characters = 0, raw = 0;
     // A compact read budgets each row by its public cost: a record shared by several rows counts once.
     // The private batch still carries every row in full, so its encoded size is bounded separately.

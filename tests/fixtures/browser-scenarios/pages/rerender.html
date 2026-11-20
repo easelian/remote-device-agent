@@ -1,0 +1,10 @@
+<!doctype html><meta charset=utf-8><title>Whole-list rerender</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<h1>Items</h1>
+<!-- Every change rebuilds the whole list, as a framework without keys does. No row element survives. -->
+<ul id=items></ul>
+<script>
+let items=[1,2,3,4,5,6];const ul=document.getElementById('items');
+const draw=()=>{ul.innerHTML=items.map(i=>'<li>Item '+i+' <button type=button data-i='+i+'>Remove</button></li>').join('');};
+ul.onclick=e=>{const i=Number(e.target.dataset.i);if(!i)return;record('rerender',i);items=items.filter(x=>x!==i);draw();};
+draw();
+</script>

@@ -1,0 +1,11 @@
+<!doctype html><meta charset=utf-8><title>Route change inside one document</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<nav><button type=button id=home>Home</button> <button type=button id=orders>Orders</button></nav>
+<!-- A route change replaces the main content and the address, but the document stays. -->
+<main id=main><h1>Welcome</h1><p>Nothing to do here.</p><button type=button>Dismiss tip</button></main>
+<script>
+const main=document.getElementById('main');
+document.getElementById('home').onclick=()=>{history.pushState({},'','#/home');main.innerHTML='<h1>Welcome</h1><p>Back home.</p>';};
+document.getElementById('orders').onclick=()=>{history.pushState({},'','#/orders');
+  main.innerHTML='<h1>Orders</h1><table><tbody>'+[1,2,3,4,5].map(i=>'<tr><td>Order S0'+i+'</td><td><button type=button data-i=S0'+i+'>Approve</button></td></tr>').join('')+'</tbody></table>';};
+main.onclick=e=>{if(e.target.dataset.i){record('spa',e.target.dataset.i);e.target.closest('tr').children[0].textContent+=' approved';}};
+</script>

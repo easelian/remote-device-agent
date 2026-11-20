@@ -1,0 +1,16 @@
+<!doctype html><meta charset=utf-8><title>Recycled rows</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<h1>Orders</h1>
+<!-- A virtual list: eight row elements show a thousand orders. Scrolling gives a row element another order. -->
+<div id=list role=region aria-label="Order list" tabindex=0 style="height:320px;overflow:auto;border:1px solid #888">
+<div id=pad style="height:40000px;position:relative"></div></div>
+<script>
+const H=40,rows=[],pad=document.getElementById('pad'),list=document.getElementById('list');
+for(let i=0;i<8;i++){const r=document.createElement('div');r.setAttribute('role','listitem');
+  r.style.cssText='position:absolute;left:0;right:0;height:'+H+'px';
+  r.innerHTML='<span></span> <button type=button>Approve</button>';
+  r.lastChild.onclick=()=>record('recycle',r.dataset.order);pad.append(r);rows.push(r);}
+const draw=()=>{const first=Math.floor(list.scrollTop/H);
+  for(let k=0;k<8;k++){const order=first+k,r=rows[order%8];
+    if(r.dataset.order!=order){r.dataset.order=order;r.style.top=order*H+'px';r.firstChild.textContent='Order '+String(order).padStart(4,'0');}}};
+list.onscroll=draw;draw();
+</script>

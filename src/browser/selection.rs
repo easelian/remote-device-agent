@@ -83,6 +83,9 @@ pub(super) fn with_input_extensions(mut caps: Value, reason: Option<&str>) -> Va
     ] {
         caps["extensions"][name] = extension(reason);
     }
+    // Version 2 returns the changed regions in the compact layout and keeps
+    // the references of untouched parts; version 1 returned a bounded overview.
+    caps["extensions"]["after_action_view"]["version"] = 2.into();
     caps
 }
 

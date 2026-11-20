@@ -171,6 +171,10 @@ pub(crate) struct Query {
     /// Budget rows by their compact public cost. The page facts are unchanged.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub compact: bool,
+    /// Read only the parts of each document altered since they were last read,
+    /// and keep the references already issued.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub changed: bool,
 }
 impl Query {
     pub fn validate(&self) -> Result<()> {

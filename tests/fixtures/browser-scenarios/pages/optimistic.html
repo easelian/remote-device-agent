@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>Optimistic update that is rolled back</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<h1>Approvals</h1>
+<!-- The page shows success at once. The site refuses 400 ms later and the page takes the success back. -->
+<table><tbody><tr id=a><td>Order A17</td><td class=s>Pending</td><td><button type=button id=go>Approve</button></td><td class=e></td></tr>
+<tr><td>Order A18</td><td class=s>Pending</td><td><button type=button>Approve</button></td><td class=e></td></tr></tbody></table>
+<script>
+document.getElementById('go').onclick=()=>{const r=document.getElementById('a');r.querySelector('.s').textContent='Approved';
+  record('optimistic','A17');setTimeout(()=>{r.querySelector('.s').textContent='Pending';r.querySelector('.e').textContent='Rejected: limit exceeded';},400);};
+</script>
