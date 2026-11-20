@@ -404,7 +404,8 @@ impl Browsers {
         if matches!(
             operation,
             "browser_inspect" | "browser_evidence" | "browser_capture"
-        ) || operation == "browser_observe" && params.get("presentation").is_some()
+        ) || operation == "browser_observe"
+            && (params.get("presentation").is_some() || params.get("format").is_some())
             || ref_drag_request(operation, params)
         {
             // Only the explicitly selected v2 branch supports these extensions.
@@ -1907,6 +1908,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "within",
             "find",
             "presentation",
+            "format",
         ],
         "browser_act" => &[
             "session_id",
@@ -1935,6 +1937,10 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
         _ => return Err(Failure::new("browser_invalid_params")),
     };
     if map.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(Failure::new("browser_invalid_params"));
+    }
+    if map.get("format").is_some_and(|format| format != "compact" || map.contains_key("presentation"))
+    {
         return Err(Failure::new("browser_invalid_params"));
     }
     if let Some(presentation) = map.get("presentation") {

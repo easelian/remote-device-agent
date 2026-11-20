@@ -360,7 +360,7 @@ pub(super) async fn assert_observation<P: Harness>(port: P) -> Value {
             Query {
                 filter: Filter::Interactive,
                 find: Some("Invoice-B".into()),
-                within: None,
+                ..Default::default()
             },
             200,
             64000,

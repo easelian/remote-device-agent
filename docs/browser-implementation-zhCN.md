@@ -87,6 +87,24 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 | `revision` | 受控接收端应用观察增量 | 不赋予输入资格。重新连接、换代或基线失效后从完整观察重建，每次替换全部 ref 和 frame 绑定 |
 | `file_grant_id` | 给一个当前的文件输入控件选择经用户批准的文件 | 绑定原主体、会话、tab、站点与一次选择。结果不明也不会恢复次数 |
 
+### 用紧凑格式读取页面
+
+默认观察为每个节点重复输出所属记录和全部状态字段，一个节点约占 1 KB，行数多的页面要连续读取多页。v2 会话声明 `extensions.compact_observation` 版本 1 时，可向 `browser_observe` 传入 `"format":"compact"`，用更少的字符取得同一次观察。Core 在会话支持时把这个参数放进 `browser_open` 返回的 `first_observe`，客户端原样传回即可。
+
+紧凑结果用 `format: "compact_v1"` 标明，以 `frames` 和 `records` 取代 `nodes` 与 `frame_overview`，`page`、`coverage`、`next_cursor` 不变。
+
+| 字段 | 读法 |
+| --- | --- |
+| `frames[].nodes` | 按阅读顺序排列，归在所属 frame 下。同一 frame 被其他 frame 的内容隔开时会出现多次 |
+| 省略的节点字段 | 取通常值：没有 `role` 的节点是页面文本，`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。可编辑字段的空值仍会写出 |
+| `record` | `records` 的下标。同一行或列表项的记录只写一次，同名控件靠各自的记录区分 |
+| `records[i].entries` | 字符串是记录内的文本；`[tag]` 或 `[tag, {attributes, value, checked, text}]` 是元素。没有属性、值和状态的布局容器（如 `td`、`div`、`span`）不写出，记录自身的元素除外 |
+| `ref` | 形如 `r6aa6558` 的短引用，用法与失效规则同普通引用。一个会话内不重复签发，前缀随会话变化 |
+
+记录已经列出的文本不再单独成为节点：返回了该记录的控件时，文本只出现在 `entries` 中；记录只有文本时保留第一段文本，使记录留在页面中的原位置。记录不完整或文本被截断时，文本节点照常返回。
+
+紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按紧凑输出的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。动作后视图仍使用原有格式和长引用。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
+
 ### 用拖放移动看板卡片
 
 在 v2/CDP 会话上检查 `capabilities.extensions.ref_drag` 的 `available` 和 `version`（版本 1）。调用 `browser_observe`，设置 `filter: "drag_endpoints"`。同一页观察中的 `drag_source` 表示显式可拖动的具名元素，`drop_target` 表示有名称和接收标记的候选区域。网页决定是否接受拖放。两端执行时都须在当前主文档的视口内，中心能命中。客户端可先滚动，再重新观察；第一版覆盖的后端为 Chromium CDP。
@@ -241,7 +259,7 @@ coverage 保留同次 DOM 名称读取的计数，并增加 native_ax_nodes（0�
 | --- | --- | --- |
 | 会话、tab、frame | 每设备 v1/v2 合计 2 个会话。每会话 8 个 tab。v2 32 个 frame | [runtime](../src/browser/runtime.rs)、[v2](../src/browser/runtime/v2.rs)、[types](../src/browser/semantic/types.rs) |
 | v1/CDP 拓扑与连接证据 | 页面最多 32 个 frame。会话最多 40 个附着子 target。连接地址证据最多 1,024 项并淘汰最旧记录 | [CDP page](../src/browser/engine/cdp/page.rs)、[session](../src/browser/engine/cdp/session.rs)、[runtime](../src/browser/runtime.rs) |
-| 观察 | 默认 200 节点/20,000 字符，最大 1,000/64,000。每段遍历 5,000 节点，待遍历队列 50,000 项 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
+| 观察 | 默认 200 节点/20,000 字符，最大 1,000/64,000。紧凑格式默认 1,000 节点。每段遍历 5,000 节点，待遍历队列 50,000 项 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 扫描与引用 | 每 frame 一个扫描、每扫描最多 1,000 强节点。空闲期 300 秒 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 命名与记录 | 名称 512 Unicode 标量、32 关联、16 层、256 命名节点。记录 256 节点/4,096 标量 | [program](../src/browser/semantic/program.js)、[types](../src/browser/semantic/types.rs) |
 | 可操作性诊断 | 一个有效 ref、最多 8 项原因、Agent 正文最多 4 KiB、总期限最多 1 秒。稳定性采样间隔 50 ms | [actionability](../src/browser/semantic/actionability.rs)、[page](../src/browser/semantic/page.rs)、[v2](../src/browser/runtime/v2.rs) |

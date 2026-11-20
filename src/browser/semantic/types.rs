@@ -168,6 +168,9 @@ pub(crate) struct Query {
     pub filter: Filter,
     pub find: Option<String>,
     pub within: Option<Context>,
+    /// Budget rows by their compact public cost. The page facts are unchanged.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub compact: bool,
 }
 impl Query {
     pub fn validate(&self) -> Result<()> {

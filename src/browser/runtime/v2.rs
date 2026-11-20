@@ -7,6 +7,9 @@ use crate::browser::{
 use sem::surface::{Focus, Metadata};
 mod action_view;
 mod capture;
+mod compact;
+#[cfg(test)]
+mod compact_tests;
 mod evidence;
 mod file_approval;
 mod human;
@@ -37,6 +40,7 @@ struct Session {
     native: Option<native::Session>,
     active: String,
     references: HashMap<String, sem::Reference>,
+    short_references: (String, u64),
     reference_tab: Option<String>,
     frames: HashMap<String, sem::Context>,
     overview_baseline: Option<action_view::Baseline>,
@@ -392,6 +396,7 @@ impl Browsers {
                 native: None,
                 active: String::new(),
                 references: HashMap::new(),
+                short_references: (String::new(), 0),
                 reference_tab: None,
                 frames: HashMap::new(),
                 overview_baseline: None,
@@ -1057,9 +1062,15 @@ async fn observe_frames(
             },
             find: params["find"].as_str().map(str::to_owned),
             within,
+            compact: params["format"] == "compact",
         }
     };
+    // A continuation keeps the format of the read it continues.
+    let compact = query.compact;
     let max_chars = params["max_chars"].as_u64().unwrap_or(20000) as usize;
+    let max_nodes = params["max_nodes"]
+        .as_u64()
+        .unwrap_or(if compact { 1000 } else { 200 }) as usize;
     let before = window.tree;
     let meta = page
         .access(false)?
@@ -1069,7 +1080,7 @@ async fn observe_frames(
         .observe_frames(
             window,
             query.clone(),
-            params["max_nodes"].as_u64().unwrap_or(200) as usize,
+            max_nodes,
             max_chars,
             continuation.map(|v| v.0),
             deadline,
@@ -1098,7 +1109,11 @@ async fn observe_frames(
             node["value"] = value.into();
         }
         if let Some(reference) = row.reference.take() {
-            let id = token()?;
+            let id = if compact {
+                compact::reference(&mut session.short_references)?
+            } else {
+                token()?
+            };
             session.references.insert(id.clone(), reference);
             node["ref"] = id.into();
         }
@@ -1111,19 +1126,23 @@ async fn observe_frames(
     session.reference_tab = Some(port.tab_id()?);
     let mut value = json!({"observation_profile":"semantic_dom_v1","page":meta.public(),
         "coverage":{"complete":result.complete,"changed_during_read":result.changed_during_read,"omitted":result.omitted,"scanned":result.scanned},"content_trust":"untrusted_page"});
-    if params.get("cursor").is_none()
+    let unscoped = sem::Query {
+        compact,
+        ..Default::default()
+    };
+    let overview = (params.get("cursor").is_none()
         && params.get("presentation").is_none()
-        && query == sem::Query::default()
-    {
-        value["frame_overview"] = overview::build(
-            &result.rows,
-            &nodes,
-            &before,
-            !result.complete || result.changed_during_read || !result.omitted.is_empty(),
-            max_chars,
-        );
-    }
-    if let Some(overview) = value.get("frame_overview")
+        && query == unscoped)
+        .then(|| {
+            overview::build(
+                &result.rows,
+                &nodes,
+                before,
+                !result.complete || result.changed_during_read || !result.omitted.is_empty(),
+                max_chars,
+            )
+        });
+    if let Some(overview) = &overview
         && !result.changed_during_read
     {
         session.overview_baseline = Some(action_view::baseline(
@@ -1134,7 +1153,15 @@ async fn observe_frames(
             result.complete && result.cursor.is_none(),
         ));
     }
-    value["nodes"] = nodes.into();
+    if compact {
+        // The frames already group the nodes, so the separate overview is left out.
+        compact::write(&mut value, &result.rows, &nodes, before);
+    } else {
+        if let Some(overview) = overview {
+            value["frame_overview"] = overview;
+        }
+        value["nodes"] = nodes.into();
+    }
     value["page"]["tab_id"] = port.tab_id()?.into();
     if let Some(cursor) = result.cursor {
         let id = token()?;
@@ -1147,8 +1174,8 @@ async fn observe_frames(
             &query,
             &port.tab_id()?,
             epoch,
-            params["max_nodes"].as_u64().unwrap_or(200) as usize,
-            params["max_chars"].as_u64().unwrap_or(20000) as usize,
+            max_nodes,
+            max_chars,
         )?;
         Some(session.presentation.prepare(
             &mut value,

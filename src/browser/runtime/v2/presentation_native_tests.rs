@@ -55,6 +55,7 @@ impl Fixture {
             native: Some(native),
             active: port.tab_id().unwrap(),
             references: HashMap::new(),
+            short_references: (String::new(), 0),
             reference_tab: None,
             frames: HashMap::new(),
             overview_baseline: None,

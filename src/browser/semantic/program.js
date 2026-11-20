@@ -421,7 +421,34 @@ function(operation, args, other) {
     retain();
     state.clearNodes();
     const rows = [], omitted = new Set(['closed_shadow_not_observable','canvas_pixels_outside_profile','browser_ui_outside_profile']);
-    let count = 0, characters = 0;
+    let count = 0, characters = 0, raw = 0;
+    // A compact read budgets each row by its public cost: a record shared by several rows counts once.
+    // The private batch still carries every row in full, so its encoded size is bounded separately.
+    const counted = scan.query.compact===true ? new Set() : null;
+    const compactLayout = new Set(['td','div','span','p','b','i','em','strong','small','u','button','tbody']);
+    const cost = row => {
+      const encoded = JSON.stringify(row);
+      if (!counted) return {length:scalars(encoded).length,raw:0,root:0};
+      let length = 56 + scalars(row.name).length + scalars(row.value||'',4097).length;
+      const root = row.record.entries.length ? row.record.entries[0].identity : 0;
+      // Text of a record that is already counted is listed by that record and seldom repeated.
+      if (row.kind==='text' && root && counted.has(root)) return {length:8,raw:encoded.length,root};
+      // Text that is its own whole record is written as a bare node.
+      if (row.kind==='text' && row.record.complete && row.record.entries.every(entry => entry.tag==='#text' ? entry.text===row.name : !entry.attributes.length && !entry.value && !entry.checked))
+        return {length:16+scalars(row.name).length,raw:encoded.length,root:0};
+      if (!root || !counted.has(root)) {
+        length += 20;
+        row.record.entries.forEach((entry,index) => {
+          const attributes = entry.attributes.filter(pair => !(pair[0]==='type' && entry.tag==='button'));
+          if (entry.tag==='#text') { length += 4 + scalars(entry.text).length; return; }
+          // The compact projection leaves out a bare layout container that is not the record itself.
+          if (index && !attributes.length && !entry.value && !entry.checked && compactLayout.has(entry.tag)) return;
+          length += 6 + entry.tag.length + scalars(entry.value||'',4097).length + (entry.checked ? 16 : 0)
+            + (attributes.length ? 20 + attributes.reduce((sum,pair)=>sum+pair[0].length+scalars(pair[1]).length+6,0) : 0);
+        });
+      }
+      return {length,raw:encoded.length,root};
+    };
     while (scan.pending.length && rows.length < args.nodes && count < 5000) {
       const node = scan.pending.pop(); count++; scan.scanned++;
       if (node.nodeType === Node.TEXT_NODE) {
@@ -436,9 +463,9 @@ function(operation, args, other) {
         const row=facts(owner);
         row.node=identity(node);row.id='';row.role='text';row.kind='text';row.name=scalars(text).slice(0,512).join('');row.name_source='content';row.name_quality=[];row.value=null;
         if(node.nodeValue.length>1024 || scalars(text).length>512){row.name_quality.push('text_character_limit');omitted.add('text_character_limit');}
-        const length=scalars(JSON.stringify(row)).length;
-        if(characters+length>args.characters){scan.pending.push(node);if(!rows.length){scan.pending.pop();omitted.add('row_character_limit');}break;}
-        rows.push(row);characters+=length;continue;
+        const price=cost(row),length=price.length;
+        if(characters+length>args.characters||raw+price.raw>600000){scan.pending.push(node);if(!rows.length){scan.pending.pop();omitted.add('row_character_limit');}break;}
+        rows.push(row);characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);continue;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
       if (['script','style','template','noscript'].includes(node.localName)) continue;
@@ -452,9 +479,9 @@ function(operation, args, other) {
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
         const match = !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
         if (match) {
-          const length = scalars(JSON.stringify(row)).length;
-          if (characters+length > args.characters) { scan.pending.push(node); if (!rows.length) { scan.pending.pop(); omitted.add('row_character_limit'); } break; }
-          rows.push(row); state.nodes.set(row.node,node); characters += length;
+          const price = cost(row), length = price.length;
+          if (characters+length > args.characters || raw+price.raw > 600000) { scan.pending.push(node); if (!rows.length) { scan.pending.pop(); omitted.add('row_character_limit'); } break; }
+          rows.push(row); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root);
         }
       }
       if (node.shadowRoot) {
