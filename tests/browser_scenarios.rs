@@ -364,6 +364,20 @@ fn control(view: &Value, name: &str, within: &str) -> Value {
     assert_eq!(found.len(), 1, "{name} within {within:?}: {view}");
     found[0]["ref"].clone()
 }
+/// As [`control`], for a view that may not hold the control.
+fn find_control(view: &Value, name: &str, within: &str) -> Option<Value> {
+    let found: Vec<_> = listed(view)
+        .into_iter()
+        .filter(|node| node["name"] == name && node.get("ref").is_some())
+        .filter(|node| {
+            within.is_empty()
+                || node["record"].as_u64().is_some_and(|index| {
+                    view["records"][index as usize].to_string().contains(within)
+                })
+        })
+        .collect();
+    (found.len() == 1).then(|| found[0]["ref"].clone())
+}
 fn view_of(reply: &Value) -> &Value {
     &reply["result"]["after_action_view"]
 }
@@ -393,6 +407,12 @@ async fn scenario_pool() {
         json!({"enabled":true,"capability_v2":true,"executable":executable}),
     );
     let site = Site::start();
+    // RDH_SCENARIO_ONLY=sort,pager runs a part of the second batch while working on it.
+    let only = std::env::var("RDH_SCENARIO_ONLY").ok();
+    let wanted = |name: &str| {
+        only.as_deref()
+            .is_none_or(|list| list.split(',').any(|item| item == name))
+    };
     let mut report = serde_json::Map::new();
     let mut failures = Vec::new();
     let mut record = |name: &str,
@@ -676,6 +696,400 @@ async fn scenario_pool() {
                 ),
             ],
             json!({"country":outcome(&chosen),"city":outcome(&picked),"save":outcome(&saved)}),
+        );
+    }
+
+    // Sorting moves the row elements; no row changes what it says.
+    if wanted("sort") {
+        let mut run = Run::open(&mut peer, &site.url("sort")).await;
+        let seen = run.observe(json!({"filter":"interactive"})).await;
+        let third = control(&seen, "Approve", "Invoice Q3");
+        let sorted = run.click(&control(&seen, "Sort by amount", "")).await;
+        let acted = run.click(&third).await;
+        let cost = run.close().await;
+        let writes = site.writes("sort");
+        record(
+            "sort",
+            cost,
+            writes.clone(),
+            vec![(
+                "a reference to a row that only moved still acts on that row",
+                writes == ["Q3"],
+            )],
+            json!({"sort":outcome(&sorted),"old_ref":outcome(&acted),"sort_view_bytes":view_of(&sorted).to_string().len()}),
+        );
+    }
+    // The next page writes other orders into the same row elements.
+    if wanted("pager") {
+        let mut run = Run::open(&mut peer, &site.url("pager")).await;
+        let seen = run.observe(json!({"filter":"interactive"})).await;
+        let old = control(&seen, "Approve", "Order P02");
+        let paged = run.click(&control(&seen, "Next page", "")).await;
+        let fresh = find_control(view_of(&paged), "Approve", "Order P07");
+        let right = run.click(fresh.as_ref().unwrap_or(&Value::Null)).await;
+        let wrong = run.click(&old).await;
+        let cost = run.close().await;
+        let writes = site.writes("pager");
+        record(
+            "pager",
+            cost,
+            writes.clone(),
+            vec![
+                ("the view lists the rows of the new page", fresh.is_some()),
+                (
+                    "a reference to a row that now shows another order is refused",
+                    wrong["error_code"] == "browser_stale_reference",
+                ),
+                (
+                    "only the order chosen from the new page is written",
+                    writes == ["P07"],
+                ),
+            ],
+            json!({"page":outcome(&paged),"fresh":outcome(&right),"old_ref":outcome(&wrong)}),
+        );
+    }
+    // New entries keep pushing every row down.
+    if wanted("feed") {
+        let mut run = Run::open(&mut peer, &site.url("feed")).await;
+        let seen = run.observe(json!({"filter":"interactive"})).await;
+        let target = find_control(&seen, "Approve", "Order F1");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("feed");
+        record(
+            "feed",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "a row that keeps moving can be read with a reference",
+                    target.is_some(),
+                ),
+                ("the click lands on the requested row", writes == ["F1"]),
+            ],
+            json!({"act":outcome(&acted),"view_bytes":view_of(&acted).to_string().len()}),
+        );
+    }
+    // Controls inside open shadow trees.
+    if wanted("shadow") {
+        let mut run = Run::open(&mut peer, &site.url("shadow")).await;
+        let seen = run.observe(json!({})).await;
+        let (second, third) = (
+            find_control(&seen, "Approve", "Order K2"),
+            find_control(&seen, "Approve", "Order K3"),
+        );
+        let acted = run.click(second.as_ref().unwrap_or(&Value::Null)).await;
+        let other = run.click(third.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("shadow");
+        record(
+            "shadow",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "the view shows a change made inside a shadow tree",
+                    shows(view_of(&acted), "Approved") && shows(view_of(&acted), "Order K2"),
+                ),
+                ("both cards are written in order", writes == ["K2", "K3"]),
+            ],
+            json!({"first":outcome(&acted),"second":outcome(&other)}),
+        );
+    }
+    // The orders live in a frame from another site.
+    if wanted("xframe") {
+        let mut run = Run::open(&mut peer, &site.url("xframe")).await;
+        let mut seen = run.observe(json!({})).await;
+        for _ in 0..20 {
+            if shows(&seen, "Order X2") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            seen = run.observe(json!({})).await;
+        }
+        let target = find_control(&seen, "Approve", "Order X2");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("xframe");
+        record(
+            "xframe",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "the frame's rows are read with references",
+                    target.is_some(),
+                ),
+                (
+                    "the view shows the change inside the frame",
+                    shows(view_of(&acted), "Approved"),
+                ),
+                ("the requested order is written", writes == ["X2"]),
+            ],
+            json!({"act":outcome(&acted)}),
+        );
+    }
+    // A modal dialog makes the page behind it inert.
+    if wanted("toplayer") {
+        let mut run = Run::open(&mut peer, &site.url("toplayer")).await;
+        let seen = run.observe(json!({})).await;
+        let danger = control(&seen, "Delete account", "");
+        let opened = run.click(&control(&seen, "Open settings", "")).await;
+        let save = find_control(view_of(&opened), "Save settings", "");
+        let saved = run.click(save.as_ref().unwrap_or(&Value::Null)).await;
+        let behind = run.click(&danger).await;
+        let cost = run.close().await;
+        let writes = site.writes("toplayer");
+        record(
+            "toplayer",
+            cost,
+            writes.clone(),
+            vec![
+                ("the view lists the dialog's controls", save.is_some()),
+                (
+                    "a control behind the dialog is not clicked",
+                    behind.get("error").is_some() && !writes.contains(&"delete".to_owned()),
+                ),
+                (
+                    "the dialog's own control is written once",
+                    writes == ["save"],
+                ),
+            ],
+            json!({"open":outcome(&opened),"save":outcome(&saved),"behind":outcome(&behind)}),
+        );
+    }
+    // A row is edited in place: one observation, then views only.
+    if wanted("inline") {
+        let mut run = Run::open(&mut peer, &site.url("inline")).await;
+        let seen = run.observe(json!({"filter":"interactive"})).await;
+        let editing = run.click(&control(&seen, "Edit", "R2")).await;
+        let field = find_control(view_of(&editing), "Name for R2", "");
+        let typed = run
+            .act(json!({"kind":"fill","ref":field,"text":"Zed"}))
+            .await;
+        // Typing changed the row, so the reference to its Save control is taken from the newer view.
+        let save = find_control(view_of(&typed), "Save", "");
+        let saved = run.click(save.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("inline");
+        record(
+            "inline",
+            cost,
+            writes.clone(),
+            vec![
+                ("the view gives the field to type in", field.is_some()),
+                (
+                    "the view after typing gives a current reference to Save",
+                    save.is_some(),
+                ),
+                (
+                    "the row is saved once with the typed name",
+                    writes == ["R2=Zed"],
+                ),
+                (
+                    "the view shows the saved name",
+                    shows(view_of(&saved), "Zed"),
+                ),
+            ],
+            json!({"edit":outcome(&editing),"type":outcome(&typed),"save":outcome(&saved)}),
+        );
+    }
+    // A form in three steps, each replacing the one before.
+    if wanted("wizard") {
+        let mut run = Run::open(&mut peer, &site.url("wizard")).await;
+        let seen = run.observe(json!({})).await;
+        let typed = run
+            .act(json!({"kind":"fill","ref":control(&seen, "Email", ""),"text":"a@b.test"}))
+            .await;
+        let second = run.click(&control(&seen, "Next", "")).await;
+        let plan = find_control(view_of(&second), "Plan", "");
+        let next = find_control(view_of(&second), "Next", "");
+        let chosen = run
+            .act(json!({"kind":"select","ref":plan,"value":"pro"}))
+            .await;
+        let third = run.click(next.as_ref().unwrap_or(&Value::Null)).await;
+        let create = find_control(view_of(&third), "Create account", "");
+        let summary = shows(view_of(&third), "a@b.test on the pro plan");
+        let done = run.click(create.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("wizard");
+        record(
+            "wizard",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "each view gives the next step's controls",
+                    plan.is_some() && next.is_some() && create.is_some(),
+                ),
+                ("the last step's summary is in its view", summary),
+                (
+                    "the account is created once with what was entered",
+                    writes == ["a@b.test/pro"],
+                ),
+                (
+                    "the view shows the confirmation",
+                    shows(view_of(&done), "Account created"),
+                ),
+            ],
+            json!({"type":outcome(&typed),"step2":outcome(&second),"plan":outcome(&chosen),"step3":outcome(&third),"create":outcome(&done)}),
+        );
+    }
+    // Suggestions appear a moment after typing stops.
+    if wanted("autocomplete") {
+        let mut run = Run::open(&mut peer, &site.url("autocomplete")).await;
+        let seen = run.observe(json!({})).await;
+        let typed = run
+            .act(json!({"kind":"fill","ref":control(&seen, "City", ""),"text":"Pa"}))
+            .await;
+        let in_view = find_control(view_of(&typed), "Paris", "");
+        let mut after = Value::Null;
+        let mut option = in_view.clone();
+        for _ in 0..10 {
+            if option.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            after = run.observe(json!({})).await;
+            option = find_control(&after, "Paris", "");
+        }
+        let picked = run.click(option.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("autocomplete");
+        record(
+            "autocomplete",
+            cost,
+            writes.clone(),
+            vec![
+                ("a suggestion can be chosen by reference", option.is_some()),
+                ("the chosen city is written once", writes == ["Paris"]),
+                (
+                    "the view shows the result of choosing",
+                    shows(view_of(&picked), "Delivering to Paris"),
+                ),
+            ],
+            json!({"type":outcome(&typed),"suggestion_already_in_view":in_view.is_some(),"pick":outcome(&picked),"observed_again":!after.is_null()}),
+        );
+    }
+    // A card moves under another heading and says the same as before.
+    if wanted("kanban") {
+        let mut run = Run::open(&mut peer, &site.url("kanban")).await;
+        let seen = run.observe(json!({})).await;
+        let (second, third) = (
+            control(&seen, "Move to Done", "Card K2"),
+            control(&seen, "Move to Done", "Card K3"),
+        );
+        let moved = run.click(&second).await;
+        let other = run.click(&third).await;
+        let after = run.observe(json!({})).await;
+        let cost = run.close().await;
+        let writes = site.writes("kanban");
+        record(
+            "kanban",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "the view shows the moved card",
+                    shows(view_of(&moved), "Card K2"),
+                ),
+                (
+                    "the view says where the card went",
+                    shows(view_of(&moved), "Done"),
+                ),
+                (
+                    "a reference to another card still acts",
+                    writes == ["K2", "K3"],
+                ),
+                (
+                    "an observation shows both cards",
+                    shows(&after, "Card K2") && shows(&after, "Card K3"),
+                ),
+            ],
+            json!({"move":outcome(&moved),"other":outcome(&other),"view":view_of(&moved)["frames"]}),
+        );
+    }
+    // A header stays on top and covers what scrolls under it.
+    if wanted("sticky") {
+        let mut run = Run::open(&mut peer, &site.url("sticky")).await;
+        let seen = run.observe(json!({"filter":"interactive"})).await;
+        let far = run.click(&control(&seen, "Approve", "Order S45")).await;
+        let near = run.click(&control(&seen, "Approve", "Order S44")).await;
+        let back = run.click(&control(&seen, "Approve", "Order S02")).await;
+        let cost = run.close().await;
+        let writes = site.writes("sticky");
+        record(
+            "sticky",
+            cost,
+            writes.clone(),
+            vec![(
+                "rows far down, just above and back at the top are all clicked",
+                writes == ["S45", "S44", "S02"],
+            )],
+            json!({"far":outcome(&far),"near":outcome(&near),"back":outcome(&back)}),
+        );
+    }
+    // Reaching the end of the page loads more rows.
+    if wanted("lazy") {
+        let mut run = Run::open(&mut peer, &site.url("lazy")).await;
+        let seen = run.observe(json!({"filter":"interactive"})).await;
+        let before = shows(&seen, "Order L35");
+        let scrolled = run.act(json!({"kind":"scroll","delta_y":1500})).await;
+        let mut target = find_control(view_of(&scrolled), "Approve", "Order L35");
+        let from_view = target.is_some();
+        if target.is_none() {
+            let after = run.observe(json!({"find":"Order L35"})).await;
+            target = find_control(&after, "Approve", "Order L35");
+        }
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("lazy");
+        record(
+            "lazy",
+            cost,
+            writes.clone(),
+            vec![
+                ("the row is not there before scrolling", !before),
+                ("the view after scrolling lists the loaded rows", from_view),
+                ("the loaded row is written", writes == ["L35"]),
+            ],
+            json!({"scroll":outcome(&scrolled),"act":outcome(&acted),"scroll_view_bytes":view_of(&scrolled).to_string().len()}),
+        );
+    }
+    // One row among two thousand.
+    if wanted("big") {
+        let mut run = Run::open(&mut peer, &site.url("big")).await;
+        let started = std::time::Instant::now();
+        let mut found = run.observe(json!({"find":"Order G1500"})).await;
+        let mut reads = 1;
+        while find_control(&found, "Approve", "Order G1500").is_none() && reads < 12 {
+            let Some(cursor) = found["next_cursor"].as_str().map(str::to_owned) else {
+                break;
+            };
+            found = run.observe(json!({"cursor":cursor})).await;
+            reads += 1;
+        }
+        let find_ms = started.elapsed().as_millis();
+        let target = find_control(&found, "Approve", "Order G1500");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("big");
+        record(
+            "big",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "the row is found by one search call",
+                    reads == 1 && target.is_some(),
+                ),
+                (
+                    "the view shows only the changed row",
+                    shows(view_of(&acted), "Approved") && view_of(&acted).to_string().len() < 1000,
+                ),
+                ("the requested order is written", writes == ["G1500"]),
+            ],
+            json!({"search_calls":reads,"find_ms":find_ms,"act":outcome(&acted)}),
         );
     }
 

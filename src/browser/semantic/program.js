@@ -459,6 +459,17 @@ function(operation, args, other) {
         if (!regions.includes(region)) regions.push(region);
       }
       const outer = regions.filter(region => !regions.some(other => other !== region && other.contains(region)));
+      // Say where each region is: add the heading that most closely precedes it, as a card moved to another column needs.
+      for (const region of [...outer]) {
+        let heading = null, depth = 0;
+        for (let branch = region, holder = parent(region); holder && !heading && depth++ < 64; branch = holder, holder = parent(holder)) {
+          for (const child of holder.children || []) {
+            if (child === branch) break;
+            if (/^h[1-6]$/.test(child.localName) || child.getAttribute('role') === 'heading') heading = child;
+          }
+        }
+        if (heading && !outer.some(other => other === heading || other.contains(heading))) outer.push(heading);
+      }
       outer.sort((a,b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 1 : -1);
       // References issued earlier stay usable, so their nodes are kept; refuse to grow without bound.
       state.scan = {pending:outer,query:args,revision:state.revision,sequence:0,scanned:0,
@@ -474,7 +485,7 @@ function(operation, args, other) {
     const scan = state.scan;
     if (!scan || args.realm !== state.realm || args.restoration !== state.restoration || args.sequence !== scan.sequence) return result(null);
     retain();
-    if (scan.query.changed !== true) state.clearNodes();
+    if (scan.query.changed !== true && args.keep !== true) state.clearNodes();
     const rows = [], omitted = new Set(['closed_shadow_not_observable','canvas_pixels_outside_profile','browser_ui_outside_profile']);
     if (scan.limit) omitted.add('changed_region_limit');
     if (scan.removed) omitted.add('changed_content_removed');

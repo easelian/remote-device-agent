@@ -1,0 +1,10 @@
+<!doctype html><meta charset=utf-8><title>A feed that pushes rows down</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- A new entry arrives at the top four times a second, so every row keeps moving down. -->
+<h1>Incoming</h1><ul id=feed style="list-style:none;padding:0;margin:0"></ul>
+<script>
+const feed=document.getElementById('feed');let n=0;
+const add=(id,top)=>{const li=document.createElement('li');li.style.height='30px';li.innerHTML='Order '+id+' <button type=button>Approve</button>';
+  li.lastChild.onclick=()=>record('feed',id);top?feed.prepend(li):feed.append(li);};
+for(const id of['F1','F2','F3'])add(id,false);
+const timer=setInterval(()=>{add('N'+(++n),true);if(n>=60)clearInterval(timer);},250);
+</script>

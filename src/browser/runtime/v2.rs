@@ -1225,7 +1225,8 @@ async fn act(
     // Every action retires the references of the observation it used. An
     // action that also asks for a view may get the untouched ones back.
     let carried = (params["after_action_view"] == true
-        && reference.is_some()
+        // Scrolling the document needs no reference and often loads more of the page.
+        && (reference.is_some() || kind == "scroll")
         && session.reference_tab.as_deref() == Some(tab.as_str()))
     .then(|| {
         (

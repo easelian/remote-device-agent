@@ -1,0 +1,10 @@
+<!doctype html><meta charset=utf-8><title>A modal dialog over the page</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- A native modal dialog makes everything behind it inert, though it stays in the document. -->
+<h1>Account</h1><button type=button id=danger>Delete account</button> <button type=button id=open>Open settings</button>
+<dialog id=d aria-label="Settings"><p>Notification settings</p><button type=button id=save>Save settings</button> <button type=button id=close>Close</button></dialog>
+<script>
+document.getElementById('danger').onclick=()=>record('toplayer','delete');
+document.getElementById('open').onclick=()=>document.getElementById('d').showModal();
+document.getElementById('save').onclick=()=>record('toplayer','save');
+document.getElementById('close').onclick=()=>document.getElementById('d').close();
+</script>

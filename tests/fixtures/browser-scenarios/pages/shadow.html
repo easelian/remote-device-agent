@@ -1,0 +1,8 @@
+<!doctype html><meta charset=utf-8><title>Controls inside components</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Each card is a custom element whose content lives in an open shadow tree. -->
+<h1>Cards</h1><order-card data-id=K1></order-card><order-card data-id=K2></order-card><order-card data-id=K3></order-card>
+<script>
+customElements.define('order-card',class extends HTMLElement{connectedCallback(){const id=this.dataset.id,root=this.attachShadow({mode:'open'});
+  root.innerHTML='<article><h3>Order '+id+'</h3><span>Pending</span> <button type=button>Approve</button></article>';
+  root.querySelector('button').onclick=()=>{record('shadow',id);root.querySelector('span').textContent='Approved';};}});
+</script>

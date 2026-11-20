@@ -62,6 +62,8 @@ pub(crate) enum Program {
         sequence: u64,
         nodes: usize,
         characters: usize,
+        /// Keep the nodes of the batches already read by this call.
+        keep: bool,
     },
     Inspect {
         marker: Marker,
@@ -487,9 +489,10 @@ impl Program {
                 sequence,
                 nodes,
                 characters,
+                keep,
             } => (
                 "next",
-                json!({"realm":marker.realm,"restoration":marker.restoration,"sequence":sequence,"nodes":nodes,"characters":characters}),
+                json!({"realm":marker.realm,"restoration":marker.restoration,"sequence":sequence,"nodes":nodes,"characters":characters,"keep":keep}),
             ),
             Self::Inspect { marker, node } => ("inspect", target(marker, *node)),
             Self::ReusableSubmit { marker, radio } => ("reusable_submit", target(marker, *radio)),

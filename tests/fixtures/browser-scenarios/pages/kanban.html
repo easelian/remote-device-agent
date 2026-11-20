@@ -1,0 +1,8 @@
+<!doctype html><meta charset=utf-8><title>A card that moves to another column</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Moving a card puts the same element under another heading; the card itself says the same. -->
+<h1>Board</h1><section><h2>To do</h2><ul id=todo></ul></section><section><h2>Done</h2><ul id=done></ul></section>
+<script>
+const todo=document.getElementById('todo'),done=document.getElementById('done');
+for(const id of['K1','K2','K3']){const li=document.createElement('li');li.innerHTML='Card '+id+' <button type=button>Move to Done</button>';
+  li.lastChild.onclick=()=>{record('kanban',id);done.append(li);li.lastChild.remove();};todo.append(li);}
+</script>

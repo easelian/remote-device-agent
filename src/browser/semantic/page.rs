@@ -578,6 +578,9 @@ impl<P: Port> Page<P> {
             scanned: 0,
         };
         let mut remaining = characters;
+        // A compact read goes on through a long document while its budget
+        // lasts, so that a search need not be continued by the caller.
+        let mut continued = 0;
         let mut refs = HashMap::new();
         while scan.frame < scan.frames.len() && observation.rows.len() < nodes && remaining >= 1024
         {
@@ -611,6 +614,7 @@ impl<P: Port> Page<P> {
                         sequence: scan.sequence,
                         nodes: nodes - observation.rows.len(),
                         characters: remaining,
+                        keep: continued > 0,
                     },
                     deadline,
                 )
@@ -728,6 +732,9 @@ impl<P: Port> Page<P> {
                 scan.frame += 1;
                 scan.sequence = 0;
                 scan.opened = false;
+                continued = 0;
+            } else if query.compact && continued < 7 {
+                continued += 1;
             } else {
                 break;
             }

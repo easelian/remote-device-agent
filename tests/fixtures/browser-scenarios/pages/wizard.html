@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>A form in steps</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Each step replaces the one before it; only the last one writes. -->
+<h1>Sign up</h1><div id=step></div>
+<script>
+const step=document.getElementById('step'),data={email:'',plan:'free'};
+const show=n=>{if(n===1){step.innerHTML='<h2>Step 1 of 3</h2><label for=email>Email</label> <input id=email type=email> <button type=button id=next>Next</button>';
+    step.querySelector('#email').value=data.email;step.querySelector('#next').onclick=()=>{data.email=step.querySelector('#email').value;show(2);};}
+  else if(n===2){step.innerHTML='<h2>Step 2 of 3</h2><label for=plan>Plan</label> <select id=plan><option value=free>Free</option><option value=pro>Pro</option></select> <button type=button id=back>Back</button> <button type=button id=next>Next</button>';
+    step.querySelector('#plan').value=data.plan;step.querySelector('#back').onclick=()=>show(1);step.querySelector('#next').onclick=()=>{data.plan=step.querySelector('#plan').value;show(3);};}
+  else{step.innerHTML='<h2>Step 3 of 3</h2><p>'+data.email+' on the '+data.plan+' plan</p><button type=button id=back>Back</button> <button type=button id=go>Create account</button>';
+    step.querySelector('#back').onclick=()=>show(2);step.querySelector('#go').onclick=()=>{record('wizard',data.email+'/'+data.plan);step.innerHTML='<p>Account created</p>';};}};
+show(1);
+</script>

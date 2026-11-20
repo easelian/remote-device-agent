@@ -103,13 +103,13 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 
 记录已经列出的文本不再单独成为节点：返回了该记录的控件时，文本只出现在 `entries` 中；记录只有文本时保留第一段文本，使记录留在页面中的原位置。记录不完整或文本被截断时，文本节点照常返回。
 
-紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按紧凑输出的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
+紧凑读取的 `max_nodes` 默认为 1,000，`max_chars` 仍默认为 20,000，并按紧凑输出的估算字符数计费，同一记录只计一次。页面程序发回 Agent 的原始批次另以 600,000 个 UTF-16 码元为限。续页沿用起始读取的格式。普通读取每次调用在一个文档内最多遍历 5,000 个节点；紧凑读取在预算未用完时继续遍历，最多 8 段，所以在几千行的表格里按文字查找通常一次调用即可返回。`format` 不能与 `presentation` 同时使用，v1 会话收到它返回 `browser_feature_unsupported`。[动作后视图](#动作后只读取变更的部分)也使用这一格式。[紧凑投影](../src/browser/runtime/v2/compact.rs) · [页面内计费](../src/browser/semantic/program.js)
 
 ### 动作后只读取变更的部分
 
 会话声明 `extensions.after_action_view` 版本 2 时，带 `ref` 的 `browser_act` 可传 `"after_action_view": true`，在同一次回执里取得页面的变化，省去紧接着的一次观察。
 
-每个文档的页面程序用 `MutationObserver` 记录自上次读取以来被改动的元素：子节点增删、文本变化，以及影响可见性或可操作性的属性（`class`、`style`、`hidden`、`disabled`、`aria-*` 等）。输入值和勾选状态是元素属性，不产生这类记录；页面程序另外监听 `input` 和 `change` 事件，把该控件的父容器记为变更区域，以便读到紧邻它、由样式规则或脚本联动的内容。动作确认后，Agent 把这些元素扩大到包住它们的记录，只扫描这些区域，按[紧凑格式](#用紧凑格式读取页面)返回。
+每个文档的页面程序用 `MutationObserver` 记录自上次读取以来被改动的元素：子节点增删、文本变化，以及影响可见性或可操作性的属性（`class`、`style`、`hidden`、`disabled`、`aria-*` 等）。输入值和勾选状态是元素属性，不产生这类记录；页面程序另外监听 `input` 和 `change` 事件，把该控件的父容器记为变更区域，以便读到紧邻它、由样式规则或脚本联动的内容。动作确认后，Agent 把这些元素扩大到包住它们的记录，只扫描这些区域，按[紧凑格式](#用紧凑格式读取页面)返回。每个区域之前最近的标题也一并返回，用来说明区域所在的位置，例如卡片被移到了哪一列；这个标题本身未必发生过变化。
 
 | 回执中的 `after_action_view` | 含义与下一步 |
 | --- | --- |
@@ -118,13 +118,22 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 | `continue_observing` / `view_unavailable_or_changing` | 文档未就绪或带 `aria-busy`、单个文档的变更元素超过 64 个、有文档被替换或新增，或读取超出约 900 ms。所有引用失效，需重新观察。页面用 `pushState` 改地址而文档不变时视图照常返回 |
 | `continue_observing` / `control_changed` | 读取期间控制权变更，结果被丢弃 |
 
-普通动作会作废上次观察的全部引用。请求视图的动作在视图为 `sampled` 或 `no_visible_change` 时保留这些引用：未变更部分的引用可继续使用，落在已变更记录内的旧引用在派发前的指纹复核中返回 `browser_stale_reference`。动作本身失败时引用照常全部作废。
+普通动作会作废上次观察的全部引用。请求视图的带引用动作和不带引用的文档滚动，在视图为 `sampled` 或 `no_visible_change` 时保留这些引用：未变更部分的引用可继续使用，落在已变更记录内的旧引用在派发前的指纹复核中返回 `browser_stale_reference`。动作本身失败时引用照常全部作废。
 
 首次观察之前发生的变更没有记录。晚于采样的异步更新不在视图中：页面先显示成功、随后被服务端拒绝并回滚时，视图里看到的是已被撤回的成功，业务结果仍须稍后从目标记录核对。[视图读取](../src/browser/runtime/v2/action_view.rs) · [变更记录与区域扫描](../src/browser/semantic/program.js)
 
 ### 用场景池核对页面变化的各种方式
 
-`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己：行元素被复用、整表重绘、仅由样式规则或属性改变、弹层渲染在别处、乐观更新后回滚、同一文档内换路由、持续变化、联动字段。`server.py` 记录页面发出的每次写入，场景以站点实际收到的写入和页面终态判定，不采信工具自己的回执。
+`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 21 个场景：
+
+| 类别 | 场景 |
+| --- | --- |
+| 元素被复用或替换 | `recycle`（虚拟列表滚动）、`pager`（翻页复用行元素）、`rerender`（整表重绘）、`sort`（行只移动） |
+| 变化不经 DOM 或不在原地 | `css-state`（样式规则与属性）、`modal`（确认框渲染在别处）、`toplayer`（原生模态对话框）、`kanban`（卡片换列） |
+| 异步与噪声 | `optimistic`（乐观更新后回滚）、`autocomplete`（迟到的建议）、`ticker`（持续变化）、`feed`（不断下推的信息流）、`lazy`（滚动加载） |
+| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`sticky`（粘性表头遮挡）、`big`（两千行表格） |
+| 表单流程 | `dependent`（联动字段）、`inline`（行内编辑）、`wizard`（多步向导） |
+`server.py` 记录页面发出的每次写入，场景以站点实际收到的写入和页面终态判定，不采信工具自己的回执。
 
 ```sh
 RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked \
@@ -132,7 +141,7 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked \
 scripts/browser-scenarios-agent-browser.sh /opt/google/chrome/chrome
 ```
 
-第一条命令经 Agent RPC 驱动 v2/CDP 会话，逐项断言并打印每个场景的调用次数、返回字节数和写入；设置 `RDH_SCENARIO_REPORT` 可把结果存为 JSON。第二条用 `agent-browser` 驱动同一批页面，每个场景输出一行 JSON 供对照，需要 `python3` 和已安装的 `agent-browser`。新增场景时加一个页面、在 [场景测试](../tests/browser_scenarios.rs) 中加一段步骤和断言，并在对照脚本中加同样的步骤。
+第一条命令经 Agent RPC 驱动 v2/CDP 会话，逐项断言并打印每个场景的调用次数、返回字节数和写入；设置 `RDH_SCENARIO_REPORT` 可把结果存为 JSON，设置 `RDH_SCENARIO_ONLY=sort,pager` 只运行列出的第二批场景。第二条用 `agent-browser` 驱动同一批页面，每个场景输出一行 JSON 供对照，需要 `python3` 和已安装的 `agent-browser`。新增场景时加一个页面、在 [场景测试](../tests/browser_scenarios.rs) 中加一段步骤和断言，并在对照脚本中加同样的步骤。
 
 ### 用拖放移动看板卡片
 

@@ -88,5 +88,73 @@ ab select "@$(ref 'City')" Osaka
 ab click "@$(ref 'button "Save address"')"
 finish dependent
 
+begin sort; snap; third=$(ref 'button "Approve"' 'Q3')
+ab click "@$(ref 'button "Sort by amount"')"
+try "ref for Q3 after the rows moved" click "@$third"
+finish sort
+
+begin pager; snap; old=$(ref 'button "Approve"' 'P02')
+ab click "@$(ref 'button "Next page"')"
+try "ref taken for P02, used after its row shows another order" click "@$old"
+finish pager
+
+begin feed; snap
+try "row that keeps moving down" click "@$(ref 'button "Approve"' 'F1')"
+finish feed
+
+begin shadow; snap; third=$(ref 'button "Approve"' 'K3')
+ab click "@$(ref 'button "Approve"' 'K2')"
+try "ref for K3 from the first snapshot" click "@$third"
+finish shadow
+
+begin xframe; sleep 1; snap
+try "control inside the cross-site frame" click "@$(ref 'button "Approve"' 'X2')"
+finish xframe
+
+begin toplayer; snap; danger=$(ref 'button "Delete account"')
+ab click "@$(ref 'button "Open settings"')"; snap
+ab click "@$(ref 'button "Save settings"')"
+try "control behind the modal dialog" click "@$danger"
+finish toplayer
+
+begin inline; snap
+ab click "@$(ref 'button "Edit"' 'R2')"; snap
+ab fill "@$(ref 'Name for R2')" Zed
+ab click "@$(ref 'button "Save"')"
+finish inline
+
+begin wizard; snap
+ab fill "@$(ref 'Email')" a@b.test
+ab click "@$(ref 'button "Next"')"; snap
+ab select "@$(ref 'Plan')" pro
+ab click "@$(ref 'button "Next"')"; snap
+ab click "@$(ref 'button "Create account"')"
+finish wizard
+
+begin autocomplete; snap
+# The suggestions and the loaded rows below arrive a moment after the input.
+ab fill "@$(ref 'City')" Pa; ab wait 300; snap
+ab click "@$(ref 'option "Paris"')"
+finish autocomplete
+
+begin kanban; snap; third=$(ref 'button "Move to Done"' 'K3')
+ab click "@$(ref 'button "Move to Done"' 'K2')"
+try "ref for K3 from the first snapshot" click "@$third"
+finish kanban
+
+begin sticky; snap
+ab click "@$(ref 'button "Approve"' 'S45')"; ab click "@$(ref 'button "Approve"' 'S44')"; ab click "@$(ref 'button "Approve"' 'S02')"
+finish sticky
+
+begin lazy; snap
+ab scroll down 1500; ab wait 300; snap
+ab click "@$(ref 'button "Approve"' 'L35')"
+finish lazy
+
+begin big; snap
+note "snapshot of the table: $(wc -c <"$tmp/snap") bytes"
+ab click "@$(ref 'button "Approve"' 'G1500')"
+finish big
+
 ab close
 rm -rf "$tmp"

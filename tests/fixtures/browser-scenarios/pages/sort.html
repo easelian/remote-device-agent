@@ -1,0 +1,11 @@
+<!doctype html><meta charset=utf-8><title>Rows that only move</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Sorting moves the existing row elements. No row changes what it says. -->
+<h1>Invoices</h1><button type=button id=sort>Sort by amount</button>
+<table><tbody id=rows></tbody></table>
+<script>
+const rows=document.getElementById('rows');
+for(const [id,amount] of [['Q1',50],['Q2',10],['Q3',40],['Q4',30],['Q5',20],['Q6',60]])
+  rows.insertAdjacentHTML('beforeend','<tr data-a='+amount+'><td>Invoice '+id+'</td><td>'+amount+' EUR</td><td><button type=button data-id='+id+'>Approve</button></td></tr>');
+document.getElementById('sort').onclick=()=>rows.append(...[...rows.children].sort((a,b)=>a.dataset.a-b.dataset.a));
+rows.onclick=e=>{if(e.target.dataset.id)record('sort',e.target.dataset.id);};
+</script>

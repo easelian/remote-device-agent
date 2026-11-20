@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>Paging that reuses row elements</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- The next page writes other orders into the same five row elements, as data grids do. -->
+<h1>Orders</h1><table><tbody id=rows></tbody></table>
+<button type=button id=next>Next page</button> <span id=where>Page 1</span>
+<script>
+let pageNo=0;const rows=document.getElementById('rows');
+for(let i=0;i<5;i++)rows.insertAdjacentHTML('beforeend','<tr><td></td><td><button type=button>Approve</button></td></tr>');
+const draw=()=>{[...rows.children].forEach((r,i)=>{r.dataset.id='P'+String(pageNo*5+i+1).padStart(2,'0');r.children[0].textContent='Order '+r.dataset.id;});
+  document.getElementById('where').textContent='Page '+(pageNo+1);};
+document.getElementById('next').onclick=()=>{pageNo=(pageNo+1)%3;draw();};
+rows.onclick=e=>{if(e.target.tagName==='BUTTON')record('pager',e.target.closest('tr').dataset.id);};
+draw();
+</script>

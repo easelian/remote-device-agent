@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>Rows that load on scroll</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Reaching the end of the page adds twenty more rows, up to sixty. -->
+<h1>History</h1><table><tbody id=rows></tbody></table>
+<script>
+const rows=document.getElementById('rows');let n=0;
+const more=()=>{for(let i=0;i<20&&n<60;i++){n++;const id='L'+String(n).padStart(2,'0');rows.insertAdjacentHTML('beforeend','<tr style="height:40px"><td>Order '+id+'</td><td><button type=button data-id='+id+'>Approve</button></td></tr>');}};
+more();addEventListener('scroll',()=>{if(innerHeight+scrollY>document.documentElement.scrollHeight-60)more();});
+rows.onclick=e=>{if(e.target.dataset.id)record('lazy',e.target.dataset.id);};
+</script>

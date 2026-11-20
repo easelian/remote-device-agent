@@ -1,0 +1,10 @@
+<!doctype html><meta charset=utf-8><title>Editing a row in place</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Edit turns a cell into a field and the button into Save; saving turns them back. -->
+<h1>Contacts</h1><table><tbody id=rows></tbody></table>
+<script>
+const rows=document.getElementById('rows');
+for(const [id,name] of [['R1','Ann'],['R2','Bob'],['R3','Cy']])rows.insertAdjacentHTML('beforeend','<tr data-id='+id+'><td>'+id+'</td><td class=n>'+name+'</td><td><button type=button>Edit</button></td></tr>');
+rows.onclick=e=>{if(e.target.tagName!=='BUTTON')return;const r=e.target.closest('tr'),cell=r.querySelector('.n');
+  if(e.target.textContent==='Edit'){const v=cell.textContent;cell.innerHTML='<input aria-label="Name for '+r.dataset.id+'">';cell.firstChild.value=v;e.target.textContent='Save';}
+  else{const v=cell.firstChild.value;record('inline',r.dataset.id+'='+v);cell.textContent=v;e.target.textContent='Edit';}};
+</script>

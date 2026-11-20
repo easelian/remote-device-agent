@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>A header that stays on top</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- A header stays at the top of the window and covers whatever scrolls under it. -->
+<header style="position:sticky;top:0;height:90px;background:#246;color:#fff">Order desk</header>
+<table><tbody id=rows></tbody></table>
+<script>
+const rows=document.getElementById('rows');
+for(let i=1;i<=60;i++){const id='S'+String(i).padStart(2,'0');rows.insertAdjacentHTML('beforeend','<tr style="height:40px"><td>Order '+id+'</td><td><button type=button data-id='+id+'>Approve</button></td></tr>');}
+rows.onclick=e=>{if(e.target.dataset.id)record('sticky',e.target.dataset.id);};
+</script>

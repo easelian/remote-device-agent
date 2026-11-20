@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>Two thousand rows</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- A long table: the cost of finding one row among many. -->
+<h1>Ledger</h1><table><tbody id=rows></tbody></table>
+<script>
+const rows=document.getElementById('rows'),html=[];
+for(let i=1;i<=2000;i++){const id='G'+String(i).padStart(4,'0');html.push('<tr><td>Order '+id+'</td><td class=s>Pending</td><td><button type=button data-id='+id+'>Approve</button></td></tr>');}
+rows.innerHTML=html.join('');
+rows.onclick=e=>{const id=e.target.dataset.id;if(!id)return;record('big',id);e.target.closest('tr').querySelector('.s').textContent='Approved';};
+</script>

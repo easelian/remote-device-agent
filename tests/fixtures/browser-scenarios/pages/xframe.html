@@ -1,0 +1,4 @@
+<!doctype html><meta charset=utf-8><title>A frame from another site</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- The orders live in a frame served from another host name, so the browser keeps them in another process. -->
+<h1>Partner orders</h1><p id=sum>Summary: 2 open</p><iframe id=f title="Partner" style="width:500px;height:160px"></iframe>
+<script>document.getElementById('f').src='http://localhost:'+location.port+'/xframe-inner.html';</script>

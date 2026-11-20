@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>Suggestions that arrive late</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Suggestions appear 150 ms after typing stops, in a list that did not exist before. -->
+<h1>Delivery</h1><label for=city>City</label> <input id=city role=combobox aria-expanded=false autocomplete=off><div id=box></div><p id=chosen></p>
+<script>
+const all=['Paris','Parma','Prague','Porto','Pisa'],city=document.getElementById('city'),box=document.getElementById('box');let timer;
+city.oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{const hits=all.filter(c=>c.toLowerCase().startsWith(city.value.toLowerCase()));
+  box.innerHTML=city.value&&hits.length?'<ul role=listbox aria-label="City suggestions">'+hits.map(c=>'<li role=option tabindex=-1>'+c+'</li>').join('')+'</ul>':'';},150);};
+box.onclick=e=>{if(e.target.getAttribute('role')!=='option')return;city.value=e.target.textContent;box.innerHTML='';record('autocomplete',city.value);document.getElementById('chosen').textContent='Delivering to '+city.value;};
+</script>

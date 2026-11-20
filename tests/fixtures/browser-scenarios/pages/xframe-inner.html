@@ -1,0 +1,6 @@
+<!doctype html><meta charset=utf-8><title>Partner orders</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Inner document of the cross-site frame scenario. -->
+<table><tbody>
+<tr><td>Order X1</td><td class=s>Pending</td><td><button type=button data-id=X1>Approve</button></td></tr>
+<tr><td>Order X2</td><td class=s>Pending</td><td><button type=button data-id=X2>Approve</button></td></tr></tbody></table>
+<script>document.querySelector('tbody').onclick=e=>{const id=e.target.dataset.id;if(!id)return;record('xframe',id);e.target.closest('tr').querySelector('.s').textContent='Approved';};</script>
