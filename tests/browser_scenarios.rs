@@ -817,6 +817,33 @@ async fn scenario_pool() {
             json!({"act":outcome(&acted),"view_bytes":view_of(&acted).to_string().len()}),
         );
     }
+    // A page that starts a dedicated worker.
+    if wanted("worker") {
+        let mut run = Run::open(&mut peer, &site.url("worker")).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let seen = run.observe(json!({})).await;
+        let target = find_control(&seen, "Approve", "Order W1");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("worker");
+        record(
+            "worker",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "the session outlives the worker and shows what it computed",
+                    shows(&seen, "42"),
+                ),
+                (
+                    "the view shows the approved order",
+                    shows(view_of(&acted), "Order W1 approved"),
+                ),
+                ("the requested order is written", writes == ["W1"]),
+            ],
+            json!({"act":outcome(&acted)}),
+        );
+    }
     // Controls inside open shadow trees.
     if wanted("shadow") {
         let mut run = Run::open(&mut peer, &site.url("shadow")).await;

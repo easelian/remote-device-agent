@@ -176,7 +176,19 @@ impl Session {
                         Event::Attached{context,info}=>{
                             ledger.context_created();
                             if !matches!(info.kind,ContextKind::Page|ContextKind::Frame) {
-                                if monitor.discard_tab(&info.tab,Policy::deadline()).await.is_err(){monitor.stop();break;}
+                                if monitor.discard_tab(&info.tab,Policy::deadline()).await.is_err(){
+                                    // A dedicated worker cannot be closed apart from its page, and it
+                                    // waits for the debugger. Let it run, as the v1 profile does: it
+                                    // loads no document, so no navigation decision is skipped. One
+                                    // that is gone by now needs nothing.
+                                    if initializing.len()>=32 {monitor.stop();break;}
+                                    let port=monitor.clone();
+                                    initializing.spawn(async move {
+                                        let _retention = retention;
+                                        let _ = port.resume_context(&context,Instant::now()+std::time::Duration::from_secs(125)).await;
+                                        Ok(())
+                                    });
+                                }
                                 continue;
                             }
                             // Enabling domains on an initial popup can wait for

@@ -178,14 +178,14 @@ textbox [r78888] value=0 readonly: Price
 
 ### 用场景池核对页面变化的各种方式
 
-`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 23 个场景：
+`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 24 个场景：
 
 | 类别 | 场景 |
 | --- | --- |
 | 元素被复用或替换 | `recycle`（虚拟列表滚动）、`pager`（翻页复用行元素）、`rerender`（整表重绘）、`sort`（行只移动） |
 | 变化不经 DOM 或不在原地 | `css-state`（样式规则与属性）、`modal`（确认框渲染在别处）、`toplayer`（原生模态对话框）、`kanban`（卡片换列） |
 | 异步与噪声 | `optimistic`（乐观更新后回滚）、`autocomplete`（迟到的建议）、`ticker`（持续变化）、`feed`（不断下推的信息流）、`lazy`（滚动加载） |
-| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`sticky`（粘性表头遮挡）、`big`（两千行表格中按文字查找一行）、`big-read`（不查找，逐页读完两千行）、`big-whole`（加大上限，一次调用读完两千行） |
+| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`worker`（页面启动专用 Worker 后会话仍可用）、`sticky`（粘性表头遮挡）、`big`（两千行表格中按文字查找一行）、`big-read`（不查找，逐页读完两千行）、`big-whole`（加大上限，一次调用读完两千行） |
 | 表单流程 | `dependent`（联动字段）、`inline`（行内编辑）、`wizard`（多步向导） |
 `server.py` 记录页面发出的每次写入，场景以站点实际收到的写入和页面终态判定，不采信工具自己的回执。
 

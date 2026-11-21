@@ -1,0 +1,10 @@
+<!doctype html><meta charset=utf-8><title>A page that computes in a worker</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- The total comes from a dedicated worker started from a blob, as script-heavy sites and bot checks do. -->
+<h1>Orders</h1><p>Total: <b id=total>…</b></p>
+<table><tr><td>Order W1</td><td><button type=button onclick="record('worker','W1');this.closest('tr').cells[0].textContent='Order W1 approved'">Approve</button></td></tr></table>
+<script>
+const source='onmessage=e=>postMessage(e.data.reduce((a,b)=>a+b,0))';
+const worker=new Worker(URL.createObjectURL(new Blob([source],{type:'text/javascript'})));
+worker.onmessage=e=>{document.getElementById('total').textContent=e.data;};
+worker.postMessage([40,2]);
+</script>
