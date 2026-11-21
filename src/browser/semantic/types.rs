@@ -215,6 +215,11 @@ pub(crate) struct Material {
     pub entries: Vec<Entry>,
     pub complete: bool,
     pub limits: Vec<String>,
+    // The page program sends the material of a record with the first of its
+    // rows in a batch. A later row names that row by its position and is
+    // given the same material before anything reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same: Option<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -354,6 +359,22 @@ pub(crate) fn interactive(role: &str) -> bool {
     )
 }
 
+impl Batch {
+    /// Give every row that names an earlier row the material of that row.
+    pub fn share(&mut self) -> Result<()> {
+        for index in 0..self.rows.len() {
+            let Some(same) = self.rows[index].record.same.take() else {
+                continue;
+            };
+            let same = same as usize;
+            if same >= index || !self.rows[index].record.entries.is_empty() {
+                return Err(decode());
+            }
+            self.rows[index].record = self.rows[same].record.clone();
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Batch {
@@ -391,7 +412,8 @@ pub(crate) struct RegistryStats {
 impl RegistryStats {
     pub fn validate(&self) -> Result<()> {
         // The largest compact read, and what a view after an action may add to it.
-        if self.nodes > MAX_COMPACT_NODES + 2 * MAX_NODES || self.scans > 1 || self.pending > 50000 {
+        if self.nodes > MAX_COMPACT_NODES + 2 * MAX_NODES || self.scans > 1 || self.pending > 50000
+        {
             return Err(decode());
         }
         Ok(())

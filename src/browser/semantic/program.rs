@@ -657,7 +657,8 @@ impl Program {
                 if text == "null" {
                     return Err(types::stale());
                 }
-                let batch: Batch = parse(text)?;
+                let mut batch: Batch = parse(text)?;
+                batch.share()?;
                 batch.validate(*nodes, *characters)?;
                 Ok(Output::Batch(batch))
             }

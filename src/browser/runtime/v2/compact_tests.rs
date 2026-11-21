@@ -59,6 +59,7 @@ fn row(frame: &Frame, node: u64, role: &str, name: &str, entries: Vec<Entry>) ->
             in_view: true,
             record: Material {
                 owner_list: None,
+                same: None,
                 owner_context: Vec::new(),
                 entries,
                 complete: true,
@@ -159,8 +160,7 @@ fn a_node_keeps_every_fact_that_differs_from_the_ordinary_one() {
         [
             "textbox [r1] offscreen value=a@example.test type=email: Email",
             "checkbox disabled unchecked: Agree",
-            "<div aria-posinset=3>",
-            "  option kind=aria: Blue",
+            "option kind=aria aria-posinset=3: Blue",
             "textbox sensitive type=password: Secret"
         ]
     );
@@ -437,7 +437,7 @@ fn what_another_line_says_is_left_out_and_addresses_only_part_twins() {
 }
 
 #[test]
-fn a_node_outside_every_record_is_one_line_and_pieces_of_a_block_read_together() {
+fn a_node_outside_every_record_is_one_line_with_its_own_attributes() {
     let mut ids = Identities::new();
     let top = frame(&mut ids, "top", None);
     let with = |mut entry: Entry, attributes: &[(&str, &str)]| {
@@ -447,13 +447,16 @@ fn a_node_outside_every_record_is_one_line_and_pieces_of_a_block_read_together()
             .collect();
         entry
     };
-    // Text of a paragraph, as the page program sends it: the block, the
-    // parent where that is another element, and the text.
-    let piece = |node, parent: Option<u64>, words: &str| {
-        let mut entries = vec![element(100, "p")];
-        entries.extend(parent.map(|parent| element(parent, "code")));
-        entries.push(text(node, words));
-        row(&top, node, "text", words, entries)
+    // Text of a paragraph, as the page program sends it: its parent and the
+    // text, with the pieces of one block already joined.
+    let piece = |node, words: &str| {
+        row(
+            &top,
+            node,
+            "text",
+            words,
+            vec![element(100, "p"), text(node, "Type a")],
+        )
     };
     let link = |node, name: &str, attributes: &[(&str, &str)]| {
         row(
@@ -491,9 +494,7 @@ fn a_node_outside_every_record_is_one_line_and_pieces_of_a_block_read_together()
     );
     item.facts.kind = "aria".into();
     let rows = [
-        piece(1, None, "Type a"),
-        piece(3, Some(2), "URL"),
-        piece(4, None, "into the"),
+        piece(1, "Type a URL into the"),
         link(
             10,
             "address bar",
@@ -502,14 +503,14 @@ fn a_node_outside_every_record_is_one_line_and_pieces_of_a_block_read_together()
                 ("title", "Address bar"),
             ],
         ),
-        piece(5, None, "and press Enter."),
+        piece(5, "and press Enter."),
         link(20, "More", &[("href", "https://other.test/a?b=1")]),
         link(30, "More", &[("href", "#notes"), ("target", "_blank")]),
         card,
         item,
     ];
     let mut full = vec![json!({"frame_id":"f"}); rows.len()];
-    for (at, reference) in [(3, "r1"), (5, "r2"), (6, "r3"), (7, "r4")] {
+    for (at, reference) in [(1, "r1"), (3, "r2"), (4, "r3"), (5, "r4")] {
         full[at]["ref"] = reference.into();
     }
     // A link into the page's own site is written from its path on, a tooltip
@@ -524,6 +525,50 @@ fn a_node_outside_every_record_is_one_line_and_pieces_of_a_block_read_together()
             "link [r3] href=#notes target=_blank: More",
             "inferred [r4] tag=div aria-expanded=false: Open order",
             "<div role=listitem> Order 7"
+        ]
+    );
+}
+
+#[test]
+fn a_record_cut_short_is_not_written_as_a_record() {
+    let mut ids = Identities::new();
+    let top = frame(&mut ids, "top", None);
+    let mut post = element(1, "article");
+    post.attributes = vec![("aria-label".into(), "Post by Ada".into())];
+    let cut = |node, role: &str, name: &str, entries: Vec<Entry>| {
+        let mut row = row(&top, node, role, name, entries);
+        row.facts.record.complete = false;
+        row.facts.record.limits = vec!["record_node_limit".into()];
+        row
+    };
+    let whole = || vec![post.clone(), element(2, "h2"), text(3, "Title")];
+    let mut first = cut(10, "button", "Reply", whole());
+    first.facts.id = "a".into();
+    let mut second = cut(11, "button", "Reply", whole());
+    second.facts.id = "b".into();
+    let rows = [
+        cut(2, "heading", "Title", whole()),
+        // Text of such a record carries only the record's own element.
+        cut(4, "text", "function f() {}", vec![post.clone()]),
+        first,
+        row(&top, 20, "link", "Elsewhere", vec![element(20, "a")]),
+        second,
+    ];
+    let mut full = vec![json!({"frame_id":"f"}); rows.len()];
+    for (at, reference) in [(2, "r1"), (3, "r2"), (4, "r3")] {
+        full[at]["ref"] = reference.into();
+    }
+    // The element is written once, for what it says of itself, and its
+    // nodes are neither indented nor headed again after other content.
+    assert_eq!(
+        lines(&project(&rows, &full, &[top])),
+        [
+            "<article aria-label=\"Post by Ada\">",
+            "heading: Title",
+            "text: function f() {}",
+            "button [r1] id=a: Reply",
+            "link [r2]: Elsewhere",
+            "button [r3] id=b: Reply"
         ]
     );
 }

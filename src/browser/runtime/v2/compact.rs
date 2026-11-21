@@ -60,18 +60,24 @@ fn flat(facts: &sem::Facts) -> bool {
         return true;
     };
     if is_text(facts) {
-        // The block the text is set in, its own parent where that differs, and the text.
+        // Its own parent and the text. The page program joins the pieces of one block.
         return entries.len() == 1
-            || entries.len() <= 3
-                && entries
-                    .last()
-                    .is_some_and(|last| last.identity == facts.node)
-                && entries[..entries.len() - 1]
-                    .iter()
-                    .all(|entry| entry.tag != "#text")
+            || entries.len() == 2
+                && entries[1].identity == facts.node
+                && first.tag != "#text"
                 && !record_element(first);
     }
-    own(facts) && !record_element(first) && facts.tag != "select"
+    // A record that is the node's own element and was cut short at a limit
+    // lists nothing either.
+    let whole = facts.record.complete && facts.record.limits.is_empty();
+    own(facts) && facts.tag != "select" && (!record_element(first) || !whole)
+}
+
+/// A node inside a record that was cut short at a limit. Such a record is not
+/// written as one: its nodes are read by themselves.
+fn cut(facts: &sem::Facts) -> bool {
+    let whole = facts.record.complete && facts.record.limits.is_empty();
+    !whole && !flat(facts)
 }
 
 /// The scheme and host of a document, by which its own links are shortened.
@@ -163,17 +169,18 @@ fn silent(facts: &sem::Facts, full: &Value) -> bool {
     facts.role == "unsupported" && facts.name.is_empty() && full.get("ref").is_none()
 }
 
-/// A container with no name and no reference whose role only groups or lays out.
+/// A container with no name and no reference whose role only groups or lays
+/// out, and whose element says nothing else of itself.
 fn idle(facts: &sem::Facts, full: &Value) -> bool {
-    silent(facts, full)
-        && stated(facts).is_none_or(|role| {
-            matches!(
-                role,
-                "presentation" | "none" | "generic" | "list" | "group" | "rowgroup"
-            )
-        })
+    facts.name.is_empty()
+        && full.get("ref").is_none()
+        && matches!(
+            stated(facts).unwrap_or(facts.role.as_str()),
+            "presentation" | "none" | "generic" | "list" | "group" | "rowgroup"
+        )
         && (facts.record.entries.first()).is_none_or(|entry| {
-            attributes(entry, false).all(|(name, value)| restated(facts, name, value))
+            !own(facts)
+                || attributes(entry, false).all(|(name, value)| restated(facts, name, value))
         })
 }
 
@@ -394,6 +401,11 @@ impl Record {
         out
     }
 
+    /// The record's own element states an attribute, a value or a state.
+    fn says(&self) -> bool {
+        matches!(self.items.first(), Some(Item::Element(element)) if element.contains(' '))
+    }
+
     /// The line of a record that was written above and goes on after other content.
     fn resumed(&self) -> String {
         match self.items.first() {
@@ -406,6 +418,7 @@ impl Record {
 /// `address` writes the attributes the page's code finds the element by, and
 /// `site` is the origin of the node's document.
 fn node(facts: &sem::Facts, full: &Value, address: bool, site: Option<&str>) -> String {
+    let own_id = address && cut(facts) && !facts.id.is_empty();
     let mut out = String::from(if is_text(facts) {
         "text"
     } else if facts.role.is_empty() {
@@ -482,6 +495,9 @@ fn node(facts: &sem::Facts, full: &Value, address: bool, site: Option<&str>) -> 
     if facts.role.is_empty() || facts.kind == "inferred" {
         let _ = write!(out, " tag={}", word(&facts.tag));
     }
+    if own_id {
+        let _ = write!(out, " id={}", word(&facts.id));
+    }
     // An element read by itself states its own attributes here. A tooltip
     // beside a name is left to the full projection.
     if !is_text(facts)
@@ -550,7 +566,7 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
     let alike = |position: usize, records: &[Option<Record>]| {
         let row = &rows[position];
         // A node read by itself is told apart by its own line.
-        let line = if flat(&row.facts) {
+        let line = if flat(&row.facts) || cut(&row.facts) {
             Some(node(&row.facts, &Value::Null, false, site(position)))
         } else {
             records[position]
@@ -585,7 +601,9 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
             .unwrap_or(rows.len());
         let address = address[start..end].contains(&true);
         if address {
-            (start..end).for_each(|at| records[at] = record(at, true));
+            (start..end)
+                .filter(|&at| !cut(&rows[at].facts))
+                .for_each(|at| records[at] = record(at, true));
         }
         if (start..end).all(|at| {
             flat(&rows[at].facts)
@@ -614,9 +632,7 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
                 && full.get("ref").is_none()
                 && facts.record.complete
                 && facts.name_quality.is_empty()
-                && (facts.record.entries.iter())
-                    .take(if flat(facts) { 2 } else { 1 })
-                    .any(|entry| entry.tag == "label")
+                && (facts.record.entries.first()).is_some_and(|entry| entry.tag == "label")
                 && labelled.contains(&(row.context, facts.name.trim()))
         })
         .collect();
@@ -660,35 +676,10 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
             section = None;
         }
     };
-    // Pieces of text set in one block, with nothing listed between them, read as one line.
-    let piece = |position: usize| {
-        let facts = &rows[position].facts;
-        let entries = &facts.record.entries;
-        (is_text(facts)
-            && flat(facts)
-            && entries.len() > 1
-            && !label[position]
-            && facts.name_quality.is_empty()
-            && full[position].get("ref").is_none())
-        .then(|| (rows[position].context, entries[0].identity))
-    };
-    let mut joined: Option<(sem::Context, u64)> = None;
     // The records whose line is written already.
     let mut written: HashSet<(sem::Context, u64)> = HashSet::new();
     for position in 0..rows.len() {
         let facts = &rows[position].facts;
-        if !label[position] {
-            let block = piece(position);
-            if block.is_some()
-                && block == joined
-                && let Some(last) = lines.last_mut()
-            {
-                last.push(' ');
-                last.push_str(&inline(&facts.name, false));
-                continue;
-            }
-            joined = block;
-        }
         if let Some(record) = &records[position]
             && (position == 0 || !same(position - 1, position))
         {
@@ -699,25 +690,27 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
                 })
                 .map(|next| rows[next].facts.name.as_str())
                 .collect();
-            head(&mut lines, position);
             let first =
                 root(position).is_none_or(|root| written.insert((rows[position].context, root)));
-            lines.push(if first {
-                record.line(names)
-            } else {
-                record.resumed()
-            });
+            if !cut(facts) {
+                head(&mut lines, position);
+                lines.push(if first {
+                    record.line(names)
+                } else {
+                    record.resumed()
+                });
+            } else if first && record.says() {
+                // Only what the element says of itself marks where it starts.
+                head(&mut lines, position);
+                lines.push(record.line(Vec::new()));
+            }
         }
-        let quiet = if flat(facts) {
-            idle(facts, &full[position])
-        } else {
-            silent(facts, &full[position])
-        };
+        let quiet = idle(facts, &full[position]) || !flat(facts) && silent(facts, &full[position]);
         if label[position] || repeated(position) || quiet {
             continue;
         }
         head(&mut lines, position);
-        let indent = if records[position].is_some() {
+        let indent = if records[position].is_some() && !cut(facts) {
             "  "
         } else {
             ""

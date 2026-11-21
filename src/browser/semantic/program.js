@@ -499,6 +499,8 @@ function(operation, args, other) {
     let count = 0, characters = 0, raw = 0;
     // A compact read budgets each row by the line it is written as: a record shared by several rows counts once.
     // The private batch still carries every row in full, so its encoded size is bounded separately.
+    // The material of a record is sent with the first of its rows; a later row whose material
+    // reads the same names that row by its position.
     const counted = scan.query.compact===true ? new Set() : null;
     const compactLayout = new Set(['td','div','span','p','b','i','em','strong','small','u','button','tbody','ul','ol','sup','sub','svg','g','path','use','circle','rect','polygon']);
     // Rows the compact projection writes as one line with no record: text outside every record,
@@ -510,8 +512,13 @@ function(operation, args, other) {
       if (known === undefined) { const value = getComputedStyle(element).display; known = value.startsWith('inline') || value === 'contents'; display.set(element, known); }
       return known;
     };
-    // Text outside every record is read by itself. Its material is the block it is set in,
-    // its own parent where that differs, and the text: pieces of one block read as one line.
+    // The block an inline run of text is set in.
+    const blockOf = owner => {
+      let block = owner, depth = 0;
+      while (inlined(block) && parent(block) && depth++ < 16) block = parent(block);
+      return block;
+    };
+    // Text outside every record is read by itself. Its material is its parent and the text.
     const loose = (owner, node, text) => {
       let depth = 0, first = null;
       for (let current = owner; current && depth++ < 64; current = parent(current)) {
@@ -519,18 +526,31 @@ function(operation, args, other) {
         if (kind) { first = kind; break; }
       }
       if (first === 'record') return null;
-      let block = owner; depth = 0;
-      while (inlined(block) && parent(block) && depth++ < 16) block = parent(block);
-      const entry = element => ({identity:identity(element),tag:element.localName,attributes:[],text:'',value:null,checked:false});
-      const entries = block === owner ? [entry(owner)] : [entry(block), entry(owner)];
-      entries.push({identity:identity(node),tag:'#text',attributes:[],text,value:null,checked:false});
-      return {entries, complete:true, limits:[]};
+      return {entries:[{identity:identity(owner),tag:owner.localName,attributes:[],text:'',value:null,checked:false},
+        {identity:identity(node),tag:'#text',attributes:[],text,value:null,checked:false}], complete:true, limits:[]};
     };
     // The compact projection writes these only to tell apart controls that read alike.
     const compactAddress = new Set(['id','name','for','tabindex','aria-labelledby']);
+    // The material of a record, read once for all the text it holds in this call.
+    const materials = new Map();
+    const shared = owner => {
+      let root = owner, depth = 0;
+      while (root && depth++ < 64 && state.recordKind(root) !== 'record') root = parent(root);
+      if (!root) return material(owner,{role:'text',kind:'text'});
+      let known = materials.get(root);
+      if (!known) {
+        known = material(root,{role:'text',kind:'text'});
+        // A record cut short at a limit is written as its own element, so its text needs no more of it.
+        if (!known.complete) known = {entries:known.entries.slice(0,1),complete:false,limits:known.limits};
+        materials.set(root,known);
+      }
+      return known;
+    };
     // A page does not end inside a record: the rows of the record that the next row
     // belongs to go back to be read with it, unless they are all the page holds.
     const trail = [];
+    // The text row that the next piece of its block may join, and whether a line break came since.
+    let run = null, gap = false;
     const rewind = root => {
       if (!counted || !root) return;
       let start = rows.length;
@@ -547,24 +567,42 @@ function(operation, args, other) {
         if (!inner) scan.pending.push(item.node);
       }
       counted.delete(root);
+      for (const [key, known] of sent) if (known.index >= start) sent.delete(key);
     };
     const cost = row => {
-      const encoded = JSON.stringify(row);
-      if (!counted) return {length:scalars(encoded).length,raw:0,root:0};
+      if (!counted) return {length:scalars(JSON.stringify(row)).length,raw:0,root:0};
+      const price = priced(row), record = row.record;
+      let text = written.get(record);
+      if (text === undefined) { text = JSON.stringify(record); written.set(record,text); }
+      row.record = 0; const bare = JSON.stringify(row).length; row.record = record;
+      const key = record.entries.length > 1 ? record.entries[0].identity : 0, known = key ? sent.get(key) : undefined;
+      const same = known && known.text === text ? known.index : -1;
+      return {length:price.length,root:price.root,raw:bare+(same < 0 ? text.length : 64),key,text,same};
+    };
+    const written = new WeakMap(), sent = new Map();
+    // Called for a row that is kept, before it is added.
+    const share = (row, price) => {
+      if (!counted) return;
+      if (price.same >= 0) row.record = {entries:[],complete:true,limits:[],same:price.same};
+      else if (price.key && !sent.has(price.key)) sent.set(price.key,{index:rows.length,text:price.text});
+    };
+    const priced = row => {
       let length = 40 + scalars(row.name).length + scalars(row.value||'',4097).length;
       if (flat.has(row)) {
-        if (row.kind==='text') return {length:8+scalars(row.name).length,raw:encoded.length,root:0};
+        if (row.kind==='text') return {length:8+scalars(row.name).length,root:0};
         const own = row.record.entries[0];
-        return {length:length+own.attributes.reduce((sum,pair)=>compactAddress.has(pair[0])||pair[0]==='title'?sum:sum+pair[0].length+scalars(pair[1]).length+2,0),raw:encoded.length,root:0};
+        return {length:length+own.attributes.reduce((sum,pair)=>compactAddress.has(pair[0])||pair[0]==='title'?sum:sum+pair[0].length+scalars(pair[1]).length+2,0),root:0};
       }
       const root = row.record.entries.length ? row.record.entries[0].identity : 0;
       // Text of a record that is already counted is listed by that record and seldom repeated.
-      if (row.kind==='text' && root && counted.has(root)) return {length:2,raw:encoded.length,root};
+      // Text of a record cut short at a limit has a line of its own.
+      if (row.kind==='text' && root && !row.record.complete) return {length:(counted.has(root)?10:24)+scalars(row.name).length,root};
+      if (row.kind==='text' && root && counted.has(root)) return {length:2,root};
       // Text that opens a record is listed by the record line and has no line of its own.
       if (row.kind==='text' && root && row.record.complete && !row.name_quality.length) length = 2;
       // Text that is its own whole record is written as a bare node.
       if (row.kind==='text' && row.record.complete && row.record.entries.every(entry => entry.tag==='#text' ? entry.text===row.name : !entry.attributes.length && !entry.value && !entry.checked))
-        return {length:8+scalars(row.name).length,raw:encoded.length,root:0};
+        return {length:8+scalars(row.name).length,root:0};
       if (!root || !counted.has(root)) {
         length += 4;
         row.record.entries.forEach((entry,index) => {
@@ -578,11 +616,13 @@ function(operation, args, other) {
             + attributes.reduce((sum,pair)=>sum+pair[0].length+scalars(pair[1]).length+4,0);
         });
       }
-      return {length,raw:encoded.length,root};
+      return {length,root};
     };
     while (scan.pending.length && rows.length < args.nodes && count < 5000) {
       const node = scan.pending.pop(); count++; scan.scanned++;
       if (node.nodeType === Node.TEXT_NODE) {
+        // White space between two pieces parts them.
+        if (!norm(node.nodeValue)) { if (node.nodeValue) gap = true; continue; }
         if (scan.query.filter==='interactive' || scan.query.filter==='drag_endpoints' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
         let inside=false;
         for (let p=node.parentElement;p;p=parent(p)) {const mapped=role(p);if(controls.has(mapped.role)||contentNames.has(mapped.role)){inside=true;break;}}
@@ -591,15 +631,37 @@ function(operation, args, other) {
         if (scan.query.filter==='viewport' && !(box.bottom>0&&box.right>0&&box.top<innerHeight&&box.left<innerWidth)) continue;
         const text=norm(prefix(node.nodeValue,513));
         if (scan.query.find && !text.includes(scan.query.find)) continue;
-        const row=facts(owner);
-        if (counted) { const own=loose(owner,node,norm(prefix(node.nodeValue,4097))); if (own) { row.record=own; flat.add(row); } }
+        let row, next = null;
+        if (counted) {
+          // A compact read takes from the parent only what a line of text states, and reads
+          // the record around several texts once.
+          const own=loose(owner,node,norm(prefix(node.nodeValue,4097))), record=own||shared(owner);
+          const root=own||!record.entries.length?0:record.entries[0].identity, block=blockOf(owner);
+          const whole=node.nodeValue.length<=1024&&scalars(text).length<=512;
+          // Pieces of one block with nothing listed between them read as one line, parted
+          // as the page parts them. A record that lists its text keeps the pieces apart.
+          if (whole && !scan.query.find && (own||!record.complete) && run && run.row===rows[rows.length-1] && run.block===block && run.root===root && run.flat===!!own) {
+            const joined=run.row.name+(run.space||gap||/^\s/.test(node.nodeValue)?' ':'')+text, added=scalars(joined).length-scalars(run.row.name).length;
+            if (scalars(joined).length<=512 && characters+added<=args.characters) {
+              run.row.name=joined;characters+=added;raw+=added;trail[trail.length-1].length+=added;run.space=/\s$/.test(node.nodeValue);gap=false;continue;
+            }
+          }
+          if (whole) next={row:null,block,root,flat:!!own,space:/\s$/.test(node.nodeValue)};
+          row={node:0,id:'',role:'text',kind:'text',name:'',name_source:'content',name_quality:[],value:null,
+            enabled:!disabled(owner),readonly:!!owner.readOnly||owner.getAttribute('aria-readonly')==='true',editable:false,sensitive:false,
+            checked:!!owner.checked||owner.getAttribute('aria-checked')==='true',tag:owner.localName,input_type:owner.type||'',visible:true,hit:false,x:0,y:0,
+            in_view:box.left>=0&&box.top>=0&&box.right<=innerWidth&&box.bottom<=innerHeight,record};
+          if (own) flat.add(row);
+        } else row=facts(owner);
         row.node=identity(node);row.id='';row.role='text';row.kind='text';row.name=scalars(text).slice(0,512).join('');row.name_source='content';row.name_quality=[];row.value=null;
         if(node.nodeValue.length>1024 || scalars(text).length>512){row.name_quality.push('text_character_limit');omitted.add('text_character_limit');}
         const price=cost(row),length=price.length;
         if(characters+length>args.characters||raw+price.raw>600000){scan.pending.push(node);if(!rows.length){scan.pending.pop();omitted.add('row_character_limit');}else rewind(price.root);break;}
-        rows.push(row);trail.push({node,length,raw:price.raw,root:price.root,key:0});characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);continue;
+        share(row,price);rows.push(row);trail.push({node,length,raw:price.raw,root:price.root,key:0});characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);
+        if(next)next.row=row;run=next;gap=false;continue;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (node.localName === 'br') gap = true;
       if (scan.total) scan.elements++;
       if (['script','style','template','noscript'].includes(node.localName)) continue;
       const endpoints = scan.query.filter === 'drag_endpoints';
@@ -615,7 +677,7 @@ function(operation, args, other) {
           if (counted && !endpoints && row.record.entries.length && row.record.entries[0].identity===row.node && node.localName!=='select' && state.recordKind(node)!=='record') flat.add(row);
           const price = cost(row), length = price.length;
           if (characters+length > args.characters || raw+price.raw > 600000) { scan.pending.push(node); if (!rows.length) { scan.pending.pop(); omitted.add('row_character_limit'); } else rewind(price.root); break; }
-          rows.push(row); trail.push({node,length,raw:price.raw,root:price.root,key:row.node}); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root);
+          share(row,price); rows.push(row); trail.push({node,length,raw:price.raw,root:price.root,key:row.node}); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root);
         }
       }
       if (node.shadowRoot) {

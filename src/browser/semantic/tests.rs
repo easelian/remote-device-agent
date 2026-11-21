@@ -170,6 +170,7 @@ impl Fake {
                     in_view: true,
                     record: Material {
                         owner_list: None,
+                        same: None,
                         owner_context: Vec::new(),
                         entries: vec![Entry {
                             identity: node,

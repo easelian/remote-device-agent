@@ -55,6 +55,7 @@ fn row(frame: &Frame, id: u64, role: &str, name: &str, headings: &[u64]) -> Row 
             in_view: true,
             record: Material {
                 owner_list: None,
+                same: None,
                 owner_context: Vec::new(),
                 entries,
                 complete: true,

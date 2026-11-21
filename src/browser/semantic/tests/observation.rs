@@ -116,6 +116,7 @@ pub(super) fn fact(template: &Facts, id: &str, node: u64, role: &str, name: &str
     row.in_view = true;
     row.record = Material {
         owner_list: None,
+        same: None,
         owner_context: Vec::new(),
         entries: vec![Entry {
             identity: node,
