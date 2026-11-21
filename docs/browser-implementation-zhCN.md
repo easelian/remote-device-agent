@@ -98,11 +98,12 @@ Agent 将同一记录、表单和字段内的局部像素变化与新出现的�
 ```text
 heading: Settings
 checkbox [r78884] checked: Show advanced
-text: Advanced settings
-button [r78885]: Reset everything
+text: Advanced settings apply to every order.
+link [r78885] href=/help/advanced: Learn more
+button [r78886] aria-expanded=false: Reset everything
 <select> <option value=free> Free <option value=pro> Pro
-  combobox [r78886] value=free: Plan
-textbox [r78887] value=0 readonly: Price
+  combobox [r78887] value=free: Plan
+textbox [r78888] value=0 readonly: Price
 --- iframe becce19351371f63231e1adb4c1298a0
 <tr> Order X1 | Pending
   button [r0d4c1]: Approve
@@ -110,24 +111,32 @@ textbox [r78887] value=0 readonly: Price
 
 | 行 | 读法 |
 | --- | --- |
-| 节点行 | 依次是角色、可操作时的 `[ref]`、状态、冒号和名称。方括号内是引用，形如 `r6aa6558`，用法与失效规则同普通引用；一个会话内不重复签发，前缀随会话变化。角色 `text` 是页面文本；`element` 是没有角色的元素，并带 `tag=`。容器的角色不在本画像之内时，写页面自己声明的角色，例如 `dialog kind=aria: Confirm` |
-| 节点行的状态 | 没写出的取通常值：`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。`unchecked` 表示可勾选而未勾选。`type=` 是输入类型，角色已经确定类型时不写，例如提交按钮、`checkbox` 和原生下拉框。原生文本框都可编辑，不写 `editable`，只在不可改时写 `readonly`。复选框和单选框的值是默认的 `on` 时不写。`quality=` 列出名称受到的限制。可编辑字段的空值写作 `value=""`。名称来源不写出 |
-| 记录行 | 以 `<` 开头，是包住下方缩进节点的表格行、列表项等记录。先写记录自身的标签和属性，再按页面顺序写它包含的文本，以及带属性、值或状态的元素；相邻两段文本用 ` \| ` 分开。没有属性、值和状态的布局容器（如 `td`、`div`、`span`）不写出。行尾的 `(incomplete, …)` 表示记录在所列限制处被截断 |
+| 节点行 | 依次是角色、可操作时的 `[ref]`、状态、元素自身的属性、冒号和名称。方括号内是引用，形如 `r6aa6558`，用法与失效规则同普通引用；一个会话内不重复签发，前缀随会话变化。角色 `text` 是页面文本；`element` 是没有角色的元素，并带 `tag=`；`inferred` 是只凭 `tabindex`、`onclick` 或指针光标推断为可点击的元素，也带 `tag=`。容器的角色不在本画像之内时，写页面自己声明的角色，例如 `dialog kind=aria: Confirm` |
+| 节点行的状态 | 没写出的取通常值：`kind` 为 `native`，`value`、`checked`、`disabled`、`readonly`、`editable`、`sensitive`、`offscreen` 均未设置。`kind` 与角色同名时也不写。`unchecked` 表示可勾选而未勾选。`type=` 是输入类型，角色已经确定类型时不写，例如提交按钮、`checkbox` 和原生下拉框。原生文本框都可编辑，不写 `editable`，只在不可改时写 `readonly`。复选框和单选框的值是默认的 `on` 时不写。`quality=` 列出名称受到的限制。可编辑字段的空值写作 `value=""`。名称来源不写出 |
+| 节点行的属性 | 不在任何记录内的元素，把自身的属性写在状态之后，例如 `href=`、`target=` 和 `aria-expanded=`。节点行已经表达的属性不写，包括 `type`、`role`、与名称相同的 `aria-label`、`readonly`、`disabled`；元素有名称时也不写 `title` |
+| 记录行 | 以 `<` 开头，是包住下方缩进节点的记录。只有表格行、列表项、`article`，以及声明了 `row`、`listitem`、`article` 或 `option` 角色的元素才是记录。先写记录自身的标签和属性，再按页面顺序写它包含的文本，以及带属性、值或状态的元素；相邻两段文本用 ` \| ` 分开。没有属性、值和状态的布局容器和图形元素（如 `td`、`div`、`span`、`ul`、`svg`、`path`）不写出。原生下拉框不是记录，但它的选项写在它上方的记录行上 |
 | `--- iframe <frame_id>` | 此后的行属于这个子 frame，直到下一个 `---` 行。`--- page` 表示回到页面自身的文档。页面开头的内容不带这一行 |
 
 另一行已经表达的内容不再写出，规则如下：
 
 - 记录中的文本如果正是下方某个控件的名称，只写在该控件的行上。它前面的元素如果没有属性，也一并不写。
-- 记录行已经列出的文本不再单独成为节点行。记录不完整或文本被截断时，文本节点照常写出。
-- 记录从节点自己的元素开始时，节点行已经表达的属性不再写在这个元素上，包括 `type`、`role`、与名称相同的 `aria-label`、`readonly`、`disabled`、值和勾选状态。
-- 记录从节点自己的元素开始时，元素内的文本如果是节点自己的名称，或者是记录之外某个节点的名称，就不写在记录行上。原生下拉框例外，它的选项只出现在记录行上。
+- 记录行已经列出的文本不再单独成为节点行。文本被截断时，文本节点照常写出。
+- 记录超出读取上限时，记录行只写它自身的元素，内容由下方缩进的节点行逐个列出。
+- 同一记录的节点被其他内容隔开后再次出现时，记录行只写首个元素和 ` …`，例如 `<article> …`，表示接着上面那条记录。
+- 记录从节点自己的元素开始时，节点行已经表达的属性不再写在这个元素上；元素内的文本如果是节点自己的名称，或者是记录之外某个节点的名称，也不写在记录行上。
 - 经过以上省略，记录行只剩一个没有属性的元素时，不写记录行，节点行不缩进。
 - `label` 的文本如果正是它所标注控件的名称，不单独写出。
-- 角色不在本画像之内、没有名称也没有引用的容器（例如只带 `role="listitem"` 的 `div`）不单独成为节点行，它的角色仍写在记录行的首个元素上。
+- 没有名称也没有引用的容器，角色只表示分组或布局时（`presentation`、`none`、`generic`、`list`、`group`、`rowgroup`）不写出；其他角色写成一行，例如 `banner kind=aria` 和 `status kind=aria`，它的内容由随后的节点行列出。
 
-`id`、`name`、`for`、`tabindex` 和 `aria-labelledby` 是页面代码用来定位元素的属性，通常不写出。两个带引用的控件如果角色、名称和记录行都相同，它们的记录行才写出这些属性，例如 `<button id=first>` 和 `<button id=second>`。
+不在记录内的内容按以下规则书写：
 
-同名控件靠各自上方的记录行区分。同一记录的节点被其他内容隔开时，记录行会再写一次。
+- 文本各自成行。同一个块级元素里的几段文本被 `code`、`b` 这样的行内元素分开，中间又没有别的节点时，合并成一行，用空格连接。段落中的链接仍是单独的节点行，所以一段带链接的正文读作文本行和链接行交替出现。
+- `href`、`action` 和 `formaction` 指向文档所在站点时，从路径写起，例如 `href=/wiki/Images`；指向其他站点时写完整地址。
+- 指针光标会被子元素继承，所以 `inferred` 只列出光标开始出现的那个元素。带 `tabindex` 或 `onclick` 的元素不受此限。链接和按钮内部的图标与文字因此不再单独列出。
+
+`id`、`name`、`for`、`tabindex` 和 `aria-labelledby` 是页面代码用来定位元素的属性，通常不写出。两个带引用的控件如果角色、名称和其余内容都相同，才写出这些属性，例如 `button [r3] id=first: Remove` 和 `button [r4] id=second: Remove`。
+
+同名控件靠各自上方的记录行或自身的属性区分。分页不会拆开一条记录：预算在记录中间用完时，这条记录整体留到下一页。
 
 页面文本中的换行写作 `\n`，反斜杠写作 `\\`；记录行里的 `\<` 和 `\|` 表示这两个字符本身。`=` 后的值只含字母、数字和 `_-.:/@#%+,~` 时直接写出，否则写成 JSON 字符串。
 

@@ -142,7 +142,12 @@ function(operation, args, other) {
     }
     if (value) return {role:value,kind:'native'};
     if ((!explicit || explicit === 'region') && scrollable(node)) return {role:explicit || 'generic',kind:'scrollable'};
-    if (node.hasAttribute('tabindex') || node.hasAttribute('onclick') || getComputedStyle(node).cursor === 'pointer') return {role:'inferred',kind:'inferred'};
+    if (node.hasAttribute('tabindex') || node.hasAttribute('onclick')) return {role:'inferred',kind:'inferred'};
+    // The pointer cursor is inherited, so only the element it starts at is listed.
+    if (getComputedStyle(node).cursor === 'pointer') {
+      const outer = parent(node);
+      if (!outer || getComputedStyle(outer).cursor !== 'pointer') return {role:'inferred',kind:'inferred'};
+    }
     return {role:explicit ? 'unsupported' : '',kind:explicit ? 'aria' : 'text'};
   };
   function nameOf(node, mapped) {
@@ -495,13 +500,63 @@ function(operation, args, other) {
     // A compact read budgets each row by the line it is written as: a record shared by several rows counts once.
     // The private batch still carries every row in full, so its encoded size is bounded separately.
     const counted = scan.query.compact===true ? new Set() : null;
-    const compactLayout = new Set(['td','div','span','p','b','i','em','strong','small','u','button','tbody']);
+    const compactLayout = new Set(['td','div','span','p','b','i','em','strong','small','u','button','tbody','ul','ol','sup','sub','svg','g','path','use','circle','rect','polygon']);
+    // Rows the compact projection writes as one line with no record: text outside every record,
+    // and an element that is its own scope without being a record.
+    const flat = new WeakSet();
+    const display = new WeakMap();
+    const inlined = element => {
+      let known = display.get(element);
+      if (known === undefined) { const value = getComputedStyle(element).display; known = value.startsWith('inline') || value === 'contents'; display.set(element, known); }
+      return known;
+    };
+    // Text outside every record is read by itself. Its material is the block it is set in,
+    // its own parent where that differs, and the text: pieces of one block read as one line.
+    const loose = (owner, node, text) => {
+      let depth = 0, first = null;
+      for (let current = owner; current && depth++ < 64; current = parent(current)) {
+        const kind = state.recordKind(current);
+        if (kind) { first = kind; break; }
+      }
+      if (first === 'record') return null;
+      let block = owner; depth = 0;
+      while (inlined(block) && parent(block) && depth++ < 16) block = parent(block);
+      const entry = element => ({identity:identity(element),tag:element.localName,attributes:[],text:'',value:null,checked:false});
+      const entries = block === owner ? [entry(owner)] : [entry(block), entry(owner)];
+      entries.push({identity:identity(node),tag:'#text',attributes:[],text,value:null,checked:false});
+      return {entries, complete:true, limits:[]};
+    };
     // The compact projection writes these only to tell apart controls that read alike.
     const compactAddress = new Set(['id','name','for','tabindex','aria-labelledby']);
+    // A page does not end inside a record: the rows of the record that the next row
+    // belongs to go back to be read with it, unless they are all the page holds.
+    const trail = [];
+    const rewind = root => {
+      if (!counted || !root) return;
+      let start = rows.length;
+      while (start > 0 && trail[start-1].root === root) start--;
+      if (start === 0 || start === rows.length) return;
+      const back = trail.splice(start), held = new Set(back.map(item => item.node));
+      rows.length = start;
+      for (let index = back.length-1; index >= 0; index--) {
+        const item = back[index];
+        characters -= item.length; raw -= item.raw;
+        if (item.key) state.nodes.delete(item.key);
+        let inner = false, depth = 0;
+        for (let outer = parent(item.node); outer && depth++ < 64; outer = parent(outer)) if (held.has(outer)) { inner = true; break; }
+        if (!inner) scan.pending.push(item.node);
+      }
+      counted.delete(root);
+    };
     const cost = row => {
       const encoded = JSON.stringify(row);
       if (!counted) return {length:scalars(encoded).length,raw:0,root:0};
       let length = 40 + scalars(row.name).length + scalars(row.value||'',4097).length;
+      if (flat.has(row)) {
+        if (row.kind==='text') return {length:8+scalars(row.name).length,raw:encoded.length,root:0};
+        const own = row.record.entries[0];
+        return {length:length+own.attributes.reduce((sum,pair)=>compactAddress.has(pair[0])||pair[0]==='title'?sum:sum+pair[0].length+scalars(pair[1]).length+2,0),raw:encoded.length,root:0};
+      }
       const root = row.record.entries.length ? row.record.entries[0].identity : 0;
       // Text of a record that is already counted is listed by that record and seldom repeated.
       if (row.kind==='text' && root && counted.has(root)) return {length:2,raw:encoded.length,root};
@@ -514,6 +569,8 @@ function(operation, args, other) {
         length += 4;
         row.record.entries.forEach((entry,index) => {
           const attributes = entry.attributes.filter(pair => !(pair[0]==='type' && entry.tag==='button') && !compactAddress.has(pair[0]));
+          // A record cut short at a limit is written as its own element only.
+          if (index && !row.record.complete) return;
           if (entry.tag==='#text') { length += 3 + scalars(entry.text).length; return; }
           // The compact projection leaves out a bare layout container that is not the record itself.
           if (index && !attributes.length && !entry.value && !entry.checked && compactLayout.has(entry.tag)) return;
@@ -535,11 +592,12 @@ function(operation, args, other) {
         const text=norm(prefix(node.nodeValue,513));
         if (scan.query.find && !text.includes(scan.query.find)) continue;
         const row=facts(owner);
+        if (counted) { const own=loose(owner,node,norm(prefix(node.nodeValue,4097))); if (own) { row.record=own; flat.add(row); } }
         row.node=identity(node);row.id='';row.role='text';row.kind='text';row.name=scalars(text).slice(0,512).join('');row.name_source='content';row.name_quality=[];row.value=null;
         if(node.nodeValue.length>1024 || scalars(text).length>512){row.name_quality.push('text_character_limit');omitted.add('text_character_limit');}
         const price=cost(row),length=price.length;
-        if(characters+length>args.characters||raw+price.raw>600000){scan.pending.push(node);if(!rows.length){scan.pending.pop();omitted.add('row_character_limit');}break;}
-        rows.push(row);characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);continue;
+        if(characters+length>args.characters||raw+price.raw>600000){scan.pending.push(node);if(!rows.length){scan.pending.pop();omitted.add('row_character_limit');}else rewind(price.root);break;}
+        rows.push(row);trail.push({node,length,raw:price.raw,root:price.root,key:0});characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);continue;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
       if (scan.total) scan.elements++;
@@ -554,9 +612,10 @@ function(operation, args, other) {
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
         const match = !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
         if (match) {
+          if (counted && !endpoints && row.record.entries.length && row.record.entries[0].identity===row.node && node.localName!=='select' && state.recordKind(node)!=='record') flat.add(row);
           const price = cost(row), length = price.length;
-          if (characters+length > args.characters || raw+price.raw > 600000) { scan.pending.push(node); if (!rows.length) { scan.pending.pop(); omitted.add('row_character_limit'); } break; }
-          rows.push(row); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root);
+          if (characters+length > args.characters || raw+price.raw > 600000) { scan.pending.push(node); if (!rows.length) { scan.pending.pop(); omitted.add('row_character_limit'); } else rewind(price.root); break; }
+          rows.push(row); trail.push({node,length,raw:price.raw,root:price.root,key:row.node}); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root);
         }
       }
       if (node.shadowRoot) {

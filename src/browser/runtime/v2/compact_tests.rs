@@ -138,7 +138,10 @@ fn a_node_keeps_every_fact_that_differs_from_the_ordinary_one() {
     agree.facts.in_view = false;
     let mut option = row(&top, 3, "option", "Blue", vec![element(7, "div")]);
     option.facts.kind = "aria".into();
-    option.facts.record.entries[0].attributes = vec![("aria-posinset".into(), "3".into())];
+    option.facts.record.entries[0].attributes = vec![
+        ("role".into(), "option".into()),
+        ("aria-posinset".into(), "3".into()),
+    ];
     option.facts.record.complete = false;
     option.facts.record.limits = vec!["record_node_limit".into()];
     let mut secret = row(&top, 4, "textbox", "Secret", vec![element(8, "input")]);
@@ -156,7 +159,7 @@ fn a_node_keeps_every_fact_that_differs_from_the_ordinary_one() {
         [
             "textbox [r1] offscreen value=a@example.test type=email: Email",
             "checkbox disabled unchecked: Agree",
-            "<div aria-posinset=3> (incomplete, record_node_limit)",
+            "<div aria-posinset=3>",
             "  option kind=aria: Blue",
             "textbox sensitive type=password: Secret"
         ]
@@ -218,15 +221,15 @@ fn text_already_listed_by_a_record_is_not_repeated_beside_its_control() {
     ];
     let full = vec![json!({"frame_id":"f"}); rows.len()];
     let value = project(&rows, &full, &[top]);
-    // A record with no control stands for its text. One met again is written
-    // again, and names its button's text when the button is not under it.
+    // A record with no control stands for its text. One met again further
+    // down is written as its first element and an ellipsis.
     assert_eq!(
         lines(&value),
         [
             "<tr> Order B42",
             "  button: Approve",
             "<tr> Fruit | Pear",
-            "<tr> Order B42 | Approve",
+            "<tr> …",
             "  text quality=text_character_limit: Long",
             "  text: Elsewhere"
         ]
@@ -275,8 +278,7 @@ fn a_record_does_not_restate_its_node_and_page_text_stays_on_its_line() {
         lines(&value),
         [
             node,
-            "<input title=\"Shows more\">",
-            &format!("  {node}"),
+            node,
             "<li> x \\< y \\| z | tail",
             "  text quality=text_character_limit: a\\\\b\\nc: d"
         ]
@@ -414,23 +416,114 @@ fn what_another_line_says_is_left_out_and_addresses_only_part_twins() {
         json!({"frame_id":"f","ref":"r4"}),
         json!({"frame_id":"f","ref":"r5"}),
     ];
-    // A container that has no line keeps its role on the record. The label is
-    // the name of its control, a container's content is listed by the nodes
+    // A container outside every record is a line of its own. The label is the
+    // name of its control, a container's content is listed by the nodes
     // inside it, and an id is written only for controls that read alike.
     assert_eq!(
         lines(&project(&rows, &full, &[top])),
         [
-            "<p role=status> Deleted B42",
+            "status kind=aria",
+            "text: Deleted B42",
             "<select> <option value=free> Free <option value=pro> Pro",
             "  combobox [r1] value=free: Plan",
             "dialog kind=aria: Confirm",
             "text: Delete order B42?",
             "button [r2]: Cancel",
-            "<button id=first>",
-            "  button [r3]: Remove",
-            "<button id=second>",
-            "  button [r4]: Remove",
+            "button [r3] id=first: Remove",
+            "button [r4] id=second: Remove",
             "button [r5]: Next"
+        ]
+    );
+}
+
+#[test]
+fn a_node_outside_every_record_is_one_line_and_pieces_of_a_block_read_together() {
+    let mut ids = Identities::new();
+    let top = frame(&mut ids, "top", None);
+    let with = |mut entry: Entry, attributes: &[(&str, &str)]| {
+        entry.attributes = attributes
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        entry
+    };
+    // Text of a paragraph, as the page program sends it: the block, the
+    // parent where that is another element, and the text.
+    let piece = |node, parent: Option<u64>, words: &str| {
+        let mut entries = vec![element(100, "p")];
+        entries.extend(parent.map(|parent| element(parent, "code")));
+        entries.push(text(node, words));
+        row(&top, node, "text", words, entries)
+    };
+    let link = |node, name: &str, attributes: &[(&str, &str)]| {
+        row(
+            &top,
+            node,
+            "link",
+            name,
+            vec![
+                with(element(node, "a"), attributes),
+                element(node + 1, "span"),
+                text(node + 2, name),
+            ],
+        )
+    };
+    let mut card = row(
+        &top,
+        40,
+        "inferred",
+        "Open order",
+        vec![
+            with(element(40, "div"), &[("aria-expanded", "false")]),
+            text(41, "Open order"),
+        ],
+    );
+    card.facts.kind = "inferred".into();
+    let mut item = row(
+        &top,
+        50,
+        "unsupported",
+        "",
+        vec![
+            with(element(50, "div"), &[("role", "listitem")]),
+            text(51, "Order 7"),
+        ],
+    );
+    item.facts.kind = "aria".into();
+    let rows = [
+        piece(1, None, "Type a"),
+        piece(3, Some(2), "URL"),
+        piece(4, None, "into the"),
+        link(
+            10,
+            "address bar",
+            &[
+                ("href", "https://example.test/wiki/Address_bar"),
+                ("title", "Address bar"),
+            ],
+        ),
+        piece(5, None, "and press Enter."),
+        link(20, "More", &[("href", "https://other.test/a?b=1")]),
+        link(30, "More", &[("href", "#notes"), ("target", "_blank")]),
+        card,
+        item,
+    ];
+    let mut full = vec![json!({"frame_id":"f"}); rows.len()];
+    for (at, reference) in [(3, "r1"), (5, "r2"), (6, "r3"), (7, "r4")] {
+        full[at]["ref"] = reference.into();
+    }
+    // A link into the page's own site is written from its path on, a tooltip
+    // beside a name is left out, and only a record keeps a line of its own.
+    assert_eq!(
+        lines(&project(&rows, &full, &[top])),
+        [
+            "text: Type a URL into the",
+            "link [r1] href=/wiki/Address_bar: address bar",
+            "text: and press Enter.",
+            "link [r2] href=\"https://other.test/a?b=1\": More",
+            "link [r3] href=#notes target=_blank: More",
+            "inferred [r4] tag=div aria-expanded=false: Open order",
+            "<div role=listitem> Order 7"
         ]
     );
 }
