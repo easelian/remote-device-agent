@@ -1410,6 +1410,9 @@ fn guard(
         while work.checks.join_next().await.is_some() {}
     })
 }
+/// How long a failed setup waits for word that its context is gone: 20 × 50 ms.
+const GONE_POLLS: usize = 20;
+const GONE_POLL: Duration = Duration::from_millis(50);
 async fn handle_event(
     engine: &impl TransferPort,
     targets: &Arc<Mutex<HashMap<String, Target>>>,
@@ -1506,12 +1509,23 @@ async fn handle_event(
                         target.ready = true;
                     }
                 } else {
-                    let present = targets
-                        .lock()
-                        .unwrap()
-                        .get(&id)
-                        .is_some_and(|t| t.session == session);
-                    if present {
+                    // A frame or popup that goes away while it is being set up fails
+                    // here before its detachment has been handled. Closing it then
+                    // would close the tab around a frame, so wait for that notice.
+                    let present = || {
+                        targets
+                            .lock()
+                            .unwrap()
+                            .get(&id)
+                            .is_some_and(|t| t.session == session)
+                    };
+                    for _ in 0..GONE_POLLS {
+                        if !present() || !engine.connected() {
+                            break;
+                        }
+                        tokio::time::sleep(GONE_POLL).await;
+                    }
+                    if present() && engine.connected() {
                         if engine
                             .discard_tab(&info.tab, Instant::now() + Duration::from_secs(1))
                             .await
