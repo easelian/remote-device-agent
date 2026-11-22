@@ -201,33 +201,74 @@ fn capability(settings: &Settings, backend: Backend) -> Value {
 fn same_frames(a: &[sem::Frame], b: &[sem::Frame]) -> bool {
     a.len() == b.len() && a.iter().all(|f| b.contains(f))
 }
-const WAIT_RELOAD_BACKOFF: Duration = Duration::from_millis(25);
+const READ_BACKOFF: Duration = Duration::from_millis(25);
 
-fn can_retry_wait(error: &Failure, retries: u8, remaining: Duration) -> bool {
+fn can_retry_read(error: &Failure, retries: u8, remaining: Duration) -> bool {
     retries < 4
-        && remaining > WAIT_RELOAD_BACKOFF
+        && remaining > READ_BACKOFF
         && matches!(
             error.code,
             "browser_stale_reference" | "browser_command_failed"
         )
 }
 
+/// A read sends no effect command, so one the browser rejected has changed
+/// nothing. It is reported as not sent and the session stays with the AI.
+fn settle_read(operation: &str, mut error: Failure) -> Failure {
+    if error.code == "browser_command_failed"
+        && matches!(
+            operation,
+            "browser_observe"
+                | "browser_wait"
+                | "browser_inspect"
+                | "browser_evidence"
+                | "browser_screenshot"
+        )
+    {
+        error.state = "not_sent";
+    }
+    error
+}
+
 #[cfg(test)]
 #[test]
-fn wait_retries_only_transient_reads_with_time_left() {
+fn reads_retry_only_transient_failures_with_time_left() {
     let time = Duration::from_secs(1);
     for code in ["browser_stale_reference", "browser_command_failed"] {
         let error = Failure::new(code);
-        assert!(can_retry_wait(&error, 3, time));
-        assert!(!can_retry_wait(&error, 4, time));
-        assert!(!can_retry_wait(&error, 0, WAIT_RELOAD_BACKOFF));
+        assert!(can_retry_read(&error, 3, time));
+        assert!(!can_retry_read(&error, 4, time));
+        assert!(!can_retry_read(&error, 0, READ_BACKOFF));
     }
     for code in [
         "browser_lost",
         "browser_control_changed",
         "browser_deadline",
     ] {
-        assert!(!can_retry_wait(&Failure::new(code), 0, time));
+        assert!(!can_retry_read(&Failure::new(code), 0, time));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_rejected_read_is_not_sent_and_a_rejected_action_stays_unknown() {
+    for operation in [
+        "browser_observe",
+        "browser_wait",
+        "browser_inspect",
+        "browser_evidence",
+        "browser_screenshot",
+    ] {
+        let error = settle_read(operation, Failure::unknown("browser_command_failed"));
+        assert_eq!(error.state, "not_sent", "{operation}");
+        assert_eq!(
+            settle_read(operation, Failure::unknown("browser_lost")).state,
+            "unknown"
+        );
+    }
+    for operation in ["browser_act", "browser_capture"] {
+        let error = settle_read(operation, Failure::unknown("browser_command_failed"));
+        assert_eq!(error.state, "unknown", "{operation}");
     }
 }
 
@@ -603,8 +644,30 @@ impl Browsers {
                     }
                 }
                 "browser_observe" => {
-                    let (value, prepared) =
-                        observe(&mut session, &page, &port, params, epoch, deadline).await?;
+                    // A page that is still replacing its document can reject a read
+                    // midway. A continued read cannot start over: its cursor is spent.
+                    let fresh = params.get("cursor").is_none()
+                        && params["within"]
+                            .as_str()
+                            .is_none_or(|id| session.frames.contains_key(id));
+                    let mut retries = 0;
+                    let (value, prepared) = loop {
+                        match observe(&mut session, &page, &port, params, epoch, deadline).await {
+                            Err(error)
+                                if fresh
+                                    && can_retry_read(
+                                        &error,
+                                        retries,
+                                        deadline.saturating_duration_since(Instant::now()),
+                                    )
+                                    && page.access(false)?.connected() =>
+                            {
+                                retries += 1;
+                                tokio::time::sleep(READ_BACKOFF * u32::from(retries)).await;
+                            }
+                            other => break other?,
+                        }
+                    };
                     prepared_presentation = prepared;
                     Ok(value)
                 }
@@ -808,14 +871,14 @@ impl Browsers {
                                 Ok(None) => retries = 0,
                                 // Reload may replace the execution context during this read.
                                 Err(error)
-                                    if can_retry_wait(
+                                    if can_retry_read(
                                         &error,
                                         retries,
                                         deadline.saturating_duration_since(Instant::now()),
                                     ) && page.access(false)?.connected() =>
                                 {
                                     retries += 1;
-                                    tokio::time::sleep(WAIT_RELOAD_BACKOFF).await;
+                                    tokio::time::sleep(READ_BACKOFF).await;
                                     continue;
                                 }
                                 Err(error) => break Err(error),
@@ -854,6 +917,7 @@ impl Browsers {
             }
             other => other,
         };
+        let result = result.map_err(|error| settle_read(operation, error));
         session.carried = None;
         *slot.active.lock().unwrap() = session.active.clone();
         if result.as_ref().is_err_and(|e| e.state == "unknown") {

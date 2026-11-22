@@ -106,6 +106,10 @@ begin worker; sleep 0.3; snap
 ab click "@$(ref 'button "Approve"' 'W1')"
 finish worker
 
+begin reload; sleep 2.5; snap
+ab click "@$(ref 'button "Approve"' 'L1')"
+finish reload
+
 begin shadow; snap; third=$(ref 'button "Approve"' 'K3')
 ab click "@$(ref 'button "Approve"' 'K2')"
 try "ref for K3 from the first snapshot" click "@$third"

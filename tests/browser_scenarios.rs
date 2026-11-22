@@ -844,6 +844,45 @@ async fn scenario_pool() {
             json!({"act":outcome(&acted)}),
         );
     }
+    // A page that keeps replacing its document while it starts.
+    if wanted("reload") {
+        let mut run = Run::open(&mut peer, &site.url("reload")).await;
+        let mut refused = Vec::new();
+        let mut seen = Value::Null;
+        for _ in 0..80 {
+            let reply = run
+                .call("browser_observe", json!({"format":"compact"}))
+                .await;
+            if reply.get("error").is_some() {
+                refused.push(json!([reply["error_code"], reply["execution_state"]]));
+            } else if shows(&reply["result"], "Orders are ready") {
+                seen = reply["result"].clone();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        let target = find_control(&seen, "Approve", "Order L1");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("reload");
+        record(
+            "reload",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "a read the page interrupted is refused as not sent",
+                    refused.iter().all(|r| r[1] == "not_sent"),
+                ),
+                (
+                    "the session stays with the caller until the page settles",
+                    refused.iter().all(|r| r[0] != "browser_paused") && target.is_some(),
+                ),
+                ("the requested order is written", writes == ["L1"]),
+            ],
+            json!({"refused":refused,"act":outcome(&acted)}),
+        );
+    }
     // Controls inside open shadow trees.
     if wanted("shadow") {
         let mut run = Run::open(&mut peer, &site.url("shadow")).await;

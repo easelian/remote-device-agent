@@ -1,0 +1,12 @@
+<!doctype html><meta charset=utf-8><title>A page that reloads itself while it starts</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- The document is replaced again and again before it settles, as sites that redirect or hydrate on load do. -->
+<h1>Orders</h1><p id=state>Loading…</p><table id=orders></table>
+<script>
+const turn=+sessionStorage.getItem('turn')||0;
+if(turn<30){sessionStorage.setItem('turn',turn+1);setTimeout(()=>location.reload(),40);}
+else{
+  document.getElementById('state').textContent='Orders are ready';
+  document.getElementById('orders').innerHTML='<tr><td>Order L1</td><td><button type=button>Approve</button></td></tr>';
+  document.querySelector('button').onclick=e=>{record('reload','L1');e.target.closest('tr').cells[0].textContent='Order L1 approved';};
+}
+</script>

@@ -178,14 +178,14 @@ textbox [r78888] value=0 readonly: Price
 
 ### 用场景池核对页面变化的各种方式
 
-`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 24 个场景：
+`tests/fixtures/browser-scenarios/pages` 下每个页面以一种方式改变自己，共 25 个场景：
 
 | 类别 | 场景 |
 | --- | --- |
 | 元素被复用或替换 | `recycle`（虚拟列表滚动）、`pager`（翻页复用行元素）、`rerender`（整表重绘）、`sort`（行只移动） |
 | 变化不经 DOM 或不在原地 | `css-state`（样式规则与属性）、`modal`（确认框渲染在别处）、`toplayer`（原生模态对话框）、`kanban`（卡片换列） |
 | 异步与噪声 | `optimistic`（乐观更新后回滚）、`autocomplete`（迟到的建议）、`ticker`（持续变化）、`feed`（不断下推的信息流）、`lazy`（滚动加载） |
-| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`worker`（页面启动专用 Worker 后会话仍可用）、`sticky`（粘性表头遮挡）、`big`（两千行表格中按文字查找一行）、`big-read`（不查找，逐页读完两千行）、`big-whole`（加大上限，一次调用读完两千行） |
+| 结构与规模 | `spa`（同一文档内换路由）、`shadow`（open shadow 组件）、`xframe`（跨站 iframe）、`worker`（页面启动专用 Worker 后会话仍可用）、`reload`（页面启动时反复重载自身）、`sticky`（粘性表头遮挡）、`big`（两千行表格中按文字查找一行）、`big-read`（不查找，逐页读完两千行）、`big-whole`（加大上限，一次调用读完两千行） |
 | 表单流程 | `dependent`（联动字段）、`inline`（行内编辑）、`wizard`（多步向导） |
 `server.py` 记录页面发出的每次写入，场景以站点实际收到的写入和页面终态判定，不采信工具自己的回执。
 
@@ -337,7 +337,9 @@ coverage 保留同次 DOM 名称读取的计数，并增加 native_ax_nodes（0�
 
 需要在响应丢失后找回同一次写入时，客户端可在动作前用 `prepare_operation` 为目标工具预留并保存操作 ID。若省略，支持回执的实例由 Core 自动准备。
 
-`Submission::enqueue` 在同一把控制锁内校验代次、将命令同步入队并标记可能的副作用。`not_sent` 表示该操作尚未提交副作用，可以在修正原因并重新观察后决定下一步。`unknown` 表示可能已经生效。先查询原 `operation_id` 的 `get_operation_status`，再取会话和标签状态。尚有相关输入或清理待决时等待结算，允许恢复后用当前代次 `resume` 再观察。仍无法确认的写入向调用者报告未验证，避免第二次提交。[控制门](../src/browser/control.rs)
+`Submission::enqueue` 在同一把控制锁内校验代次、将命令同步入队并标记可能的副作用。`not_sent` 表示该操作尚未提交副作用，可以在修正原因并重新观察后决定下一步。`unknown` 表示可能已经生效。
+
+v2 会话收到 `unknown` 结果后暂停，由调用方确认页面状态再恢复。只读操作（`browser_observe`、`browser_wait`、`browser_inspect`、`browser_evidence`、`browser_screenshot`）不发出有副作用的命令，浏览器拒绝其中一条命令时页面没有因此改变，这类失败记为 `not_sent`，会话不暂停。页面正在替换文档时读取容易被拒绝，所以不带 `cursor` 的 `browser_observe` 会先在内部重试，最多 4 次，间隔从 25 毫秒递增到 100 毫秒。先查询原 `operation_id` 的 `get_operation_status`，再取会话和标签状态。尚有相关输入或清理待决时等待结算，允许恢复后用当前代次 `resume` 再观察。仍无法确认的写入向调用者报告未验证，避免第二次提交。[控制门](../src/browser/control.rs)
 
 遇到密码、一次性验证码或需要本人完成的验证时，AI 暂停任务，提供 Core 返回的 `human_url`。v2 的暂停和人工接管会先拦住旧代次的新输入。遇到只读等待时，在本次调用期限内等待它退出。若原生拖动等输入仍在执行，调用会返回 `browser_input_pending`。保留原操作回执，等输入结算后再请求接管，避免重复提交。人工已接管时再次请求暂停会收到 `browser_paused`，原人工租约仍可用。用户登录并明确接管后，AI 的页面读取、截图和输入受阻。用户核对可分享的页面和文件元数据后明确交回并同意披露。原对话继续时，AI 重新查询会话、tab 和新代次，从新观察取得 ref。普通网络或页面故障走诊断与回执恢复。人工输入受 view、租约、代次、序号和截图帧约束。系统级生物识别、硬件安全密钥界面不在远程网页视口内。[人工输入与交还](../src/browser/runtime/human.rs)
 
