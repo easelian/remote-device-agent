@@ -32,10 +32,13 @@ pub(super) async fn assert_controls<P: Harness>(port: P) -> Value {
             .act(target, Action::ReplaceText("disallowed".into()), deadline())
             .await
             .unwrap_err();
-        assert_eq!(
-            (error.code, error.state),
-            ("browser_not_actionable", "not_sent")
-        );
+        // A secret is for a person to type, and the caller is told so.
+        let code = if id == "secret" {
+            "browser_sensitive_input"
+        } else {
+            "browser_not_actionable"
+        };
+        assert_eq!((error.code, error.state), (code, "not_sent"));
     }
     let outer = observation::reference(&observed, "outer");
     let error = page

@@ -1772,6 +1772,11 @@ async fn perform<P: Port>(
             if value.chars().count() > 4096 {
                 return Err(Failure::new("browser_invalid_params"));
             }
+            // A secret is typed by a person. Saying so, instead of calling the
+            // field unusable, lets the caller hand the browser over.
+            if facts.sensitive {
+                return Err(Failure::new("browser_sensitive_input"));
+            }
             if !actionability::requirements(&facts, kind, top_level).is_empty() {
                 return Err(Failure::new("browser_not_actionable"));
             }

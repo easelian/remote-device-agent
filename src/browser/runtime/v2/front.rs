@@ -129,6 +129,9 @@ fn advice(code: &str) -> &'static str {
         "browser_paused" => {
             "the browser is with a person or was paused; {\"resume\":true} takes it back once they are done"
         }
+        "browser_sensitive_input" => {
+            "this field takes a secret that only a person may type; {\"pause\":true} hands the browser to them"
+        }
         "browser_dialog_unavailable" => "no dialog is open",
         "browser_input_pending" => {
             "an earlier input has not finished; a dialog may be waiting for an answer"

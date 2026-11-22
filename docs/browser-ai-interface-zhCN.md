@@ -114,6 +114,8 @@ not run: 3–4
 
 结果不确定的步骤会注明“可能已生效，也可能没有”，这时应先读页面再决定下一步。会话不会因此停住。
 
+密码等敏感输入框不能由 `fill` 填写，这一步以 `browser_sensitive_input` 失败，文本不会发到页面。这时用 `{"pause": true}` 把浏览器交给用户输入，Server 会在回复末尾给出用户接手的链接。
+
 除 `text` 外，结果还有三个供程序使用的字段：`session_id`、`steps_done`，以及失败时的 `failed`（步骤序号、错误码、是否已发出）。步骤失败时调用本身仍然成功返回，失败写在 `text` 和 `failed` 里；只有参数不合法或指定的会话不存在时，调用才按失败返回。
 
 ### 浏览器对话框
@@ -156,12 +158,15 @@ not run: 3–3
 | 尚未完成 | 现状 |
 |---|---|
 | 引用的有效期 | 引用在下一个动作之后失效，同一次调用里靠后的步骤要用描述定位。设计目标是元素存在期间引用不变 |
-| 控制台、网络、样式诊断 | 仍通过旧的 `browser_capture` 和 `browser_evidence`，MCP 客户端的工具列表里已经没有它们 |
-| 按截图坐标点击 | 仍通过旧的 `browser_act`，同上 |
-| 命名资料 | 仍通过旧的 `browser_profiles`，同上。`open` 步骤不能指定资料 |
+| 控制台、网络、样式诊断 | Server 已删除旧的 `browser_capture` 和 `browser_evidence`，MCP 客户端不能再使用这些诊断 |
+| 按截图坐标点击 | Server 已删除旧的 `browser_act`，MCP 客户端不能再按坐标点击 |
+| 命名资料 | Server 已删除旧的 `browser_profiles`，`open` 步骤也不能指定资料，所以每个会话都用临时资料 |
 | 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |
 | Firefox | `open` 目前总是启动 Chromium |
-| 旧操作和 v1 运行时 | 仍然保留，尚未删除 |
+| 可用的平台 | 三个操作只在带 `experimental-browser-bidi` 构建、且策略中 `capability_v2` 为 `true` 的 Agent 上可用，目前即 Linux x86_64。其他 Agent 不通告这三个操作，Server 以 `browser_unavailable` 拒绝 |
+| 删除文件和取消下载 | 没有对应的步骤，只能由用户在文件页面上操作 |
+| 下载进行中的读取 | 点击触发下载后，默认的 `read: "changes"` 会等到下载结束。下载较慢时给这次调用加上 `read: "none"` |
+| 旧操作和 v1 运行时 | Server 不再转发旧操作。它们在 Agent 中仍然存在：三个新操作是在 v2 会话操作之上实现的，v1 运行时也还在，但已没有调用方 |
 
 实现位于 [front.rs](../src/browser/runtime/v2/front.rs)。每个步骤转换为现有会话操作执行，所以站点策略、人工接管和文件批准的行为与旧操作一致。`browser_do` 需要回执，`browser_read` 和 `browser_see` 不需要。
 
