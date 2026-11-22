@@ -489,7 +489,12 @@ impl Runtime {
             operations.extend(BROWSER_OPERATIONS.iter().copied().filter(|operation| {
                 !matches!(
                     *operation,
-                    "browser_inspect" | "browser_evidence" | "browser_capture"
+                    "browser_inspect"
+                        | "browser_evidence"
+                        | "browser_capture"
+                        | "browser_do"
+                        | "browser_read"
+                        | "browser_see"
                 ) || browser["v2"]["available"] == true
             }));
         }

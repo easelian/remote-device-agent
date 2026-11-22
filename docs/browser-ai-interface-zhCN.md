@@ -151,15 +151,15 @@ not run: 3–3
 
 ## 已实现的范围
 
-这三个操作目前在 Agent 中实现，通过 Agent RPC 可用，并已加入设备策略可以允许的操作列表。以下部分还没有完成：
+这三个操作在 Agent 中实现，并已加入设备策略可以允许的操作列表。Server 的 `tools/list` 向 MCP 客户端提供这三个工具和 `browser_files`，被取代的旧工具不再列出，但按名称调用仍然有效；Server 一侧的行为见 Server 仓库的 `contracts/browser/front-zhCN.md`。只有 v2 可用的 Agent 才通告这三个操作。以下部分还没有完成：
 
 | 尚未完成 | 现状 |
 |---|---|
-| Server 的工具目录 | 还没有切换，MCP 客户端看到的仍是旧操作 |
 | 引用的有效期 | 引用在下一个动作之后失效，同一次调用里靠后的步骤要用描述定位。设计目标是元素存在期间引用不变 |
-| 控制台、网络、样式诊断 | 仍通过旧的 `browser_capture` 和 `browser_evidence` |
-| 按截图坐标点击 | 仍通过旧的 `browser_act` |
-| 文件列表、命名资料 | 仍通过旧的 `browser_files` 和 `browser_profiles` |
+| 控制台、网络、样式诊断 | 仍通过旧的 `browser_capture` 和 `browser_evidence`，MCP 客户端的工具列表里已经没有它们 |
+| 按截图坐标点击 | 仍通过旧的 `browser_act`，同上 |
+| 命名资料 | 仍通过旧的 `browser_profiles`，同上。`open` 步骤不能指定资料 |
+| 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |
 | Firefox | `open` 目前总是启动 Chromium |
 | 旧操作和 v1 运行时 | 仍然保留，尚未删除 |
 
