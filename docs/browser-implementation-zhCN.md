@@ -373,7 +373,7 @@ v2 会话收到 `unknown` 结果后暂停，由调用方确认页面状态再恢
 | 协议租约 | CDP 对象 256、流 16，分类不可借用。包括 pending 预留。BiDi root handle 0 | [CDP leases](../src/browser/engine/cdp/wire/leases.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 事件 | CDP 256 条/合计 8 MiB 已编码字节/最多两个关键消费者，单消息受 2 MiB 限制。BiDi 256 条/合计 1 MiB/单事件 64 KiB | [CDP events](../src/browser/engine/cdp/wire/events.rs)、[BiDi wire](../src/browser/engine/bidi/wire.rs) |
 | 导航决定 | 32 个并发、4,096 个去重项、2 秒期限 | [policy](../src/browser/semantic/policy.rs) |
-| BiDi 启动上下文与写入 | 128 活动项、128 销毁标记、深度 32。写入 3 秒。启动日志 64 KiB | [BiDi](../src/browser/engine/bidi)、[Firefox process](../src/browser/process/firefox.rs) |
+| BiDi 启动上下文与写入 | 128 活动项、深度 32；销毁标记只保留最近 128 个，更早的按销毁顺序淘汰。写入 3 秒。启动日志 64 KiB | [BiDi](../src/browser/engine/bidi)、[Firefox process](../src/browser/process/firefox.rs) |
 | 截图 | viewport JPEG，宽高各不超过 1920 CSS px，base64 最多 512 KiB。完整响应另外受限 | [image](../src/browser/image.rs)、[v2 native](../src/browser/runtime/v2/native.rs) |
 | 命名资料与文件 | 每命名空间 16 个资料。文件/暂存合计 16 项/128 MiB，单文件 32 MiB。读取块 64 KiB。完成文件保留 24 小时 | [profiles](../src/browser/profiles.rs)、[files](../src/browser/files.rs) |
 

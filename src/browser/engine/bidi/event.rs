@@ -1,5 +1,5 @@
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub(super) const CORE_EVENTS: [&str; 2] = [
     "browsingContext.contextCreated",
@@ -396,14 +396,20 @@ fn diagnostic_events_are_bounded_and_do_not_capture_console_payloads() {
 /// Startup-only ownership of the initial context snapshot. Replaying the
 /// bounded subscription history in arrival order prevents a stale getTree
 /// result from resurrecting a context destroyed while that query was pending.
+///
+/// Destroyed ids are remembered so that a late creation event cannot bring one
+/// back. Only the latest `MAX_CONTEXTS` are kept: a page may destroy any number
+/// of frames over its life, and the events this guards against arrive right
+/// after the destruction, not hundreds of destructions later.
 pub(super) struct Contexts(
     BTreeMap<ContextId, Option<ContextId>>,
     BTreeSet<ContextId>,
     u64,
+    VecDeque<ContextId>,
 );
 impl Contexts {
     pub fn snapshot(scope: u64, value: &Value) -> Option<Self> {
-        let mut result = Self(BTreeMap::new(), BTreeSet::new(), scope);
+        let mut result = Self(BTreeMap::new(), BTreeSet::new(), scope, VecDeque::new());
         result.append(value["contexts"].as_array()?, 0)?;
         Some(result)
     }
@@ -454,7 +460,7 @@ impl Contexts {
                     return false;
                 }
                 self.0.remove(context);
-                self.1.insert(context.clone());
+                self.retire(context.clone());
                 // A parent's destruction invalidates its descendants even if
                 // separate child notifications have not arrived yet.
                 let mut removed = vec![context.clone()];
@@ -467,14 +473,25 @@ impl Contexts {
                         .collect();
                     for child in children {
                         self.0.remove(&child);
-                        self.1.insert(child.clone());
+                        self.retire(child.clone());
                         removed.push(child);
                     }
                 }
             }
             _ => return true,
         }
-        self.0.len() <= MAX_CONTEXTS && self.1.len() <= MAX_CONTEXTS
+        self.0.len() <= MAX_CONTEXTS
+    }
+    fn retire(&mut self, context: ContextId) {
+        if !self.1.insert(context.clone()) {
+            return;
+        }
+        self.3.push_back(context);
+        while self.3.len() > MAX_CONTEXTS {
+            if let Some(oldest) = self.3.pop_front() {
+                self.1.remove(&oldest);
+            }
+        }
     }
     pub fn ids(&self) -> Vec<ContextId> {
         self.0.keys().cloned().collect()
@@ -508,5 +525,42 @@ mod tests {
             CORE_EVENTS[0],
             json!({"context":"new","parent":null})
         )));
+    }
+    #[test]
+    fn a_page_may_destroy_any_number_of_contexts_and_the_latest_stay_dead() {
+        let mut contexts =
+            Contexts::snapshot(1, &json!({"contexts":[{"context":"top","children":[]}]})).unwrap();
+        let event = |method, params| Event::parse(1, method, &params).unwrap();
+        let total = MAX_CONTEXTS * 3;
+        for index in 0..total {
+            let id = format!("frame-{index}");
+            assert!(contexts.apply(&event(CORE_EVENTS[0], json!({"context":id,"parent":"top"}))));
+            assert!(contexts.apply(&event(CORE_EVENTS[1], json!({"context":id}))));
+            // A repeated notification must not take a second place in the record.
+            assert!(contexts.apply(&event(CORE_EVENTS[1], json!({"context":id}))));
+        }
+        assert_eq!(
+            contexts.ids(),
+            vec![ContextId::parse(1, &json!("top")).unwrap()]
+        );
+        assert_eq!(contexts.1.len(), MAX_CONTEXTS);
+        assert_eq!(contexts.3.len(), MAX_CONTEXTS);
+        for index in total - MAX_CONTEXTS..total {
+            assert!(!contexts.apply(&event(
+                CORE_EVENTS[0],
+                json!({"context":format!("frame-{index}"),"parent":"top"})
+            )));
+        }
+        // More live contexts than the limit still end the session.
+        let mut crowded =
+            Contexts::snapshot(1, &json!({"contexts":[{"context":"top","children":[]}]})).unwrap();
+        let mut accepted = true;
+        for index in 0..MAX_CONTEXTS {
+            accepted = crowded.apply(&event(
+                CORE_EVENTS[0],
+                json!({"context":format!("live-{index}"),"parent":"top"}),
+            ));
+        }
+        assert!(!accepted);
     }
 }
