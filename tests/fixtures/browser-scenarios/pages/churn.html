@@ -1,0 +1,16 @@
+<!doctype html><meta charset=utf-8><title>A page whose frames come and go</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Frames are removed while their documents are still on the way, as ad slots and embeds are. -->
+<h1>Orders</h1><p id=state>Loading…</p>
+<table><tr><td>Order C1</td><td><button type=button onclick="record('churn','C1');this.closest('tr').cells[0].textContent='Order C1 approved'">Approve</button></td></tr></table>
+<div id=slots></div>
+<script>
+let made=0;
+const slots=document.getElementById('slots');
+const timer=setInterval(()=>{
+  if(made++>=150){clearInterval(timer);document.getElementById('state').textContent='Orders are ready';return;}
+  const frame=document.createElement('iframe');
+  frame.src='xframe-inner.html?slot='+made;
+  slots.append(frame);
+  setTimeout(()=>frame.remove(),made%7);
+},8);
+</script>

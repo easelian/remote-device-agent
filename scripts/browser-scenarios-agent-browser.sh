@@ -110,6 +110,10 @@ begin reload; sleep 2.5; snap
 ab click "@$(ref 'button "Approve"' 'L1')"
 finish reload
 
+begin churn; sleep 2; snap
+ab click "@$(ref 'button "Approve"' 'C1')"
+finish churn
+
 begin shadow; snap; third=$(ref 'button "Approve"' 'K3')
 ab click "@$(ref 'button "Approve"' 'K2')"
 try "ref for K3 from the first snapshot" click "@$third"

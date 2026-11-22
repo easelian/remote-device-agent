@@ -883,6 +883,44 @@ async fn scenario_pool() {
             json!({"refused":refused,"act":outcome(&acted)}),
         );
     }
+    // Frames are removed while their documents are still being fetched.
+    if wanted("churn") {
+        let mut run = Run::open(&mut peer, &site.url("churn")).await;
+        let mut refused = Vec::new();
+        let mut seen = Value::Null;
+        for _ in 0..80 {
+            let reply = run
+                .call("browser_observe", json!({"format":"compact"}))
+                .await;
+            if reply.get("error").is_some() {
+                refused.push(json!([reply["error_code"], reply["execution_state"]]));
+            } else if shows(&reply["result"], "Orders are ready") {
+                seen = reply["result"].clone();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        let target = find_control(&seen, "Approve", "Order C1");
+        let acted = run.click(target.as_ref().unwrap_or(&Value::Null)).await;
+        let cost = run.close().await;
+        let writes = site.writes("churn");
+        record(
+            "churn",
+            cost,
+            writes.clone(),
+            vec![
+                (
+                    "the session outlives frames removed before they load",
+                    refused
+                        .iter()
+                        .all(|r| r[0] != "browser_lost" && r[0] != "browser_paused")
+                        && target.is_some(),
+                ),
+                ("the requested order is written", writes == ["C1"]),
+            ],
+            json!({"refused":refused,"act":outcome(&acted)}),
+        );
+    }
     // Controls inside open shadow trees.
     if wanted("shadow") {
         let mut run = Run::open(&mut peer, &site.url("shadow")).await;

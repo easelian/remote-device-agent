@@ -51,6 +51,17 @@ impl Drop for Session {
         self.task.abort();
     }
 }
+/// Whether the browser took the answer to a paused request. A page can drop a
+/// request while it waits, by removing its frame or leaving the document; the
+/// browser then rejects the answer, and nothing is left to decide. A request
+/// that is still held stays paused until it is answered, so none slips through.
+fn answered(result: Result<()>) -> Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.code == "browser_command_failed" => Ok(false),
+        Err(error) => Err(error),
+    }
+}
 impl Session {
     pub async fn launch(
         browser: &std::path::Path,
@@ -225,8 +236,8 @@ impl Session {
                                             let owner=transfer.owner(tab,&request.url)?;
                                             if transfer.files.intercept(port.clone(),&request,owner).is_ok() {return Ok(());}
                                         }
-                                        port.respond(&request.handle,RequestDecision::Abort,Policy::deadline()).await
-                                    } else {port.respond(&request.handle,RequestDecision::Continue,Policy::deadline()).await}
+                                        answered(port.respond(&request.handle,RequestDecision::Abort,Policy::deadline()).await).map(drop)
+                                    } else {answered(port.respond(&request.handle,RequestDecision::Continue,Policy::deadline()).await).map(drop)}
                                 });
                                 continue;
                             }
@@ -238,7 +249,8 @@ impl Session {
                             let port=monitor.clone();let rules=rules.clone();
                             decisions.spawn(async move {
                                 let allowed=token.allows(&rules).await;
-                                port.respond(&request.handle,if allowed{RequestDecision::Continue}else{RequestDecision::Deny},token.deadline()).await?;token.settled(allowed);Ok(())
+                                if answered(port.respond(&request.handle,if allowed{RequestDecision::Continue}else{RequestDecision::Deny},token.deadline()).await)? {token.settled(allowed);}
+                                Ok(())
                             });
                         },
                         Event::Detached(context)=>{observed.lock().unwrap().retain(|_,tab|tab.context!=context);},
