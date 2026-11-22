@@ -15,6 +15,7 @@ const TRACKED: &[&str] = &[
     "browser_act",
     "browser_capture",
     "browser_control",
+    "browser_do",
     "write_file",
     "edit_file",
     "make_directory",

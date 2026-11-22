@@ -12,6 +12,7 @@ mod compact;
 mod compact_tests;
 mod evidence;
 mod file_approval;
+pub(super) mod front;
 mod human;
 mod native;
 mod overview;
@@ -31,6 +32,9 @@ pub(super) struct Slot {
     control: Arc<Control>,
     closing: AtomicBool,
     human_held: AtomicBool,
+    /// Set while a pause that followed an input of unknown outcome is still to
+    /// be lifted for the AI. A pause a person or the AI asked for never sets it.
+    unsettled: AtomicBool,
     active: Mutex<String>,
     port: Mutex<Option<native::Port>>,
     session: AsyncMutex<Session>,
@@ -442,6 +446,7 @@ impl Browsers {
             coordination: coordination.clone(),
             closing: AtomicBool::new(false),
             human_held: AtomicBool::new(false),
+            unsettled: AtomicBool::new(false),
             active: Mutex::new(String::new()),
             port: Mutex::new(None),
             session: AsyncMutex::new(Session {

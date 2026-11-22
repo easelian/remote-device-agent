@@ -301,6 +301,21 @@ impl Browsers {
         } else {
             deadline
         };
+        #[cfg(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            feature = "experimental-browser-bidi"
+        ))]
+        if v2::front::OPERATIONS.contains(&operation) {
+            // These calls check their own parameters, step by step.
+            return tokio::runtime::Handle::current().block_on(self.front(
+                operation,
+                params,
+                principal,
+                deadline,
+                operation_id,
+            ));
+        }
         validate(operation, params)?;
         tokio::runtime::Handle::current().block_on(self.execute(
             operation,

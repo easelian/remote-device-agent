@@ -52,6 +52,9 @@ pub const OPERATIONS: &[&str] = &[
     "browser_control",
     "browser_human",
     "browser_capture",
+    "browser_do",
+    "browser_read",
+    "browser_see",
 ];
 
 /// Internal process entry, recognized before public CLI arguments are parsed.
@@ -86,6 +89,7 @@ pub const MUTATIONS: &[&str] = &[
     "browser_act",
     "browser_control",
     "browser_capture",
+    "browser_do",
 ];
 
 #[derive(Clone, Default, Deserialize, Serialize)]

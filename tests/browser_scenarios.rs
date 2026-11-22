@@ -1332,3 +1332,341 @@ async fn scenario_pool() {
     println!("SCENARIOS {report}");
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// A page, the steps after opening it, what the site must have been sent and
+/// what the reply must say.
+type Task<'a> = (&'a str, Vec<Value>, Vec<&'a str>, Vec<&'a str>);
+
+/// The same pages through the interface an AI works with: each task is a list
+/// of steps in one call, aimed at what the controls are called.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_pool() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    let only = std::env::var("RDH_SCENARIO_ONLY").ok();
+    let approve = |order: &str| json!({"click":{"name":"Approve","in":order}});
+    let click = |name: &str| json!({"click":{"name":name}});
+    let ready = json!({"wait":{"text":"Orders are ready"}});
+    let tasks: Vec<Task> = vec![
+        (
+            "recycle",
+            vec![
+                json!({"scroll":400,"in":{"name":"Order list"}}),
+                approve("Order 0012"),
+            ],
+            vec!["12"],
+            vec![],
+        ),
+        (
+            "rerender",
+            vec![
+                json!({"click":{"name":"Remove","in":"Item 2"}}),
+                json!({"click":{"name":"Remove","in":"Item 4"}}),
+            ],
+            vec!["2", "4"],
+            vec![],
+        ),
+        (
+            "css-state",
+            vec![
+                json!({"check":{"name":"Show advanced"}}),
+                json!({"select":{"name":"Plan"},"value":"pro"}),
+            ],
+            vec![],
+            vec!["Reset everything", "20"],
+        ),
+        (
+            "modal",
+            vec![
+                json!({"click":{"name":"Delete","in":"Order B42"}}),
+                click("Confirm"),
+            ],
+            vec!["B42"],
+            vec!["Deleted B42"],
+        ),
+        (
+            "optimistic",
+            vec![approve("Order A17"), json!({"wait":{"text":"Rejected"}})],
+            vec!["A17"],
+            vec!["Rejected: limit exceeded"],
+        ),
+        (
+            "spa",
+            vec![click("Orders"), approve("Order S03")],
+            vec!["S03"],
+            vec![],
+        ),
+        (
+            "ticker",
+            vec![approve("Order T02")],
+            vec!["Order T02"],
+            vec![],
+        ),
+        (
+            "dependent",
+            vec![
+                json!({"select":{"name":"Country"},"value":"jp"}),
+                json!({"select":{"name":"City"},"value":"Osaka"}),
+                click("Save address"),
+            ],
+            vec!["jp/Osaka"],
+            vec![],
+        ),
+        (
+            "sort",
+            vec![click("Sort by amount"), approve("Invoice Q3")],
+            vec!["Q3"],
+            vec![],
+        ),
+        (
+            "pager",
+            vec![click("Next page"), approve("Order P07")],
+            vec!["P07"],
+            vec![],
+        ),
+        ("feed", vec![approve("Order F1")], vec!["F1"], vec![]),
+        (
+            "worker",
+            vec![approve("Order W1")],
+            vec!["W1"],
+            vec!["Order W1 approved"],
+        ),
+        (
+            "reload",
+            vec![ready.clone(), approve("Order L1")],
+            vec!["L1"],
+            vec![],
+        ),
+        (
+            "churn",
+            vec![ready.clone(), approve("Order C1")],
+            vec!["C1"],
+            vec![],
+        ),
+        (
+            "shadow",
+            vec![approve("Order K2"), approve("Order K3")],
+            vec!["K2", "K3"],
+            vec![],
+        ),
+        (
+            "xframe",
+            vec![json!({"wait":{"text":"Order X2"}}), approve("Order X2")],
+            vec!["X2"],
+            vec![],
+        ),
+        (
+            "toplayer",
+            vec![click("Open settings"), click("Save settings")],
+            vec!["save"],
+            vec![],
+        ),
+        (
+            "inline",
+            vec![
+                json!({"click":{"name":"Edit","in":"R2"}}),
+                json!({"fill":{"name":"Name for R2"},"text":"Zed"}),
+                click("Save"),
+            ],
+            vec!["R2=Zed"],
+            vec!["Zed"],
+        ),
+        (
+            "wizard",
+            vec![
+                json!({"fill":{"name":"Email"},"text":"a@b.test"}),
+                click("Next"),
+                json!({"select":{"name":"Plan"},"value":"pro"}),
+                click("Next"),
+                click("Create account"),
+            ],
+            vec!["a@b.test/pro"],
+            vec!["Account created"],
+        ),
+        (
+            "autocomplete",
+            vec![
+                json!({"fill":{"name":"City"},"text":"Pa"}),
+                json!({"wait":{"text":"Paris"}}),
+                click("Paris"),
+            ],
+            vec!["Paris"],
+            vec!["Delivering to Paris"],
+        ),
+        (
+            "kanban",
+            vec![
+                json!({"click":{"name":"Move to Done","in":"Card K2"}}),
+                json!({"click":{"name":"Move to Done","in":"Card K3"}}),
+            ],
+            vec!["K2", "K3"],
+            vec![],
+        ),
+        (
+            "sticky",
+            vec![
+                approve("Order S45"),
+                approve("Order S44"),
+                approve("Order S02"),
+            ],
+            vec!["S45", "S44", "S02"],
+            vec![],
+        ),
+        (
+            "lazy",
+            vec![
+                json!({"scroll":1500}),
+                json!({"wait":{"text":"Order L35"}}),
+                approve("Order L35"),
+            ],
+            vec!["L35"],
+            vec![],
+        ),
+        ("big", vec![approve("Order G1500")], vec!["G1500"], vec![]),
+    ];
+    let mut report = serde_json::Map::new();
+    let mut failures = Vec::new();
+    for (name, after, writes, says) in tasks {
+        if only
+            .as_deref()
+            .is_some_and(|list| !list.split(',').any(|item| item == name))
+        {
+            continue;
+        }
+        let mut steps = vec![json!({"open":site.url(name)})];
+        steps.extend(after);
+        let started = std::time::Instant::now();
+        let reply = peer.call("browser_do", json!({"steps":steps})).await;
+        let elapsed = started.elapsed().as_millis() as u64;
+        let text = reply["result"]["text"].as_str().unwrap_or("").to_owned();
+        let closed = peer
+            .call(
+                "browser_do",
+                json!({"steps":[{"close":true}],"read":"none"}),
+            )
+            .await;
+        if let Some(path) = std::env::var_os("RDH_SCENARIO_DUMP") {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(
+                file,
+                "=== {name} [{elapsed} ms]\n{text}\n{}",
+                if text.is_empty() {
+                    reply.to_string()
+                } else {
+                    String::new()
+                }
+            )
+            .unwrap();
+        }
+        let written = site.writes(name);
+        let mut checks = vec![
+            (
+                "every step ran",
+                reply["result"]["failed"].is_null() && reply.get("error").is_none(),
+            ),
+            (
+                "the site was sent what the task asked for",
+                written == writes,
+            ),
+            ("the session closes", closed.get("error").is_none()),
+        ];
+        for expected in &says {
+            checks.push(("the reply says what happened", text.contains(expected)));
+        }
+        for (check, held) in &checks {
+            if !held {
+                let lines: Vec<&str> = text
+                    .lines()
+                    .filter(|line| !line.starts_with(['<', ' ']))
+                    .take(12)
+                    .collect();
+                failures.push(format!(
+                    "{name}: {check} (writes {written:?}, {})\n{}",
+                    reply["error_code"],
+                    lines.join("\n")
+                ));
+            }
+        }
+        report.insert(
+            name.into(),
+            json!({"calls":2,"bytes":text.len(),"ms":elapsed,"writes":written,
+                "ok":checks.iter().all(|(_, held)| *held)}),
+        );
+    }
+    // A question the browser asks ends the call that raised it; the answer is
+    // the caller's, and the steps after the answer run as usual.
+    if only
+        .as_deref()
+        .is_none_or(|list| list.split(',').any(|item| item == "confirm"))
+    {
+        let delete = |order: &str| json!({"click":{"name":"Delete","in":order}});
+        let mut said = Vec::new();
+        for steps in [
+            json!([{"open":site.url("confirm")}, delete("Order D1"), delete("Order D2")]),
+            json!([delete("Order D2")]),
+            json!([{"dialog":"accept"}, delete("Order D2")]),
+            json!([{"dialog":"dismiss"}, {"fill":{"name":"Search"},"text":"abc"},
+                {"press":"Enter","on":{"name":"Search"}}]),
+            json!([{"close":true}]),
+        ] {
+            let reply = peer.call("browser_do", json!({"steps":steps})).await;
+            said.push(reply["result"]["text"].as_str().unwrap_or("").to_owned());
+        }
+        let written = site.writes("confirm");
+        let checks = [
+            (
+                "the step that raised the dialog ends there and says what it asks",
+                said[0].contains("a confirm dialog opened: \"Delete order D1?\"")
+                    && said[0].contains("not run: 3–3"),
+            ),
+            (
+                "another step is refused at once while the dialog is open",
+                said[1].contains("browser_dialog_open"),
+            ),
+            (
+                "after the answer the next step runs and raises the next dialog",
+                said[2].contains("dialog accept") && said[2].contains("Delete order D2?"),
+            ),
+            (
+                "a dismissed dialog leaves the session usable",
+                said[3].contains("Searched for abc"),
+            ),
+            ("only the confirmed order is deleted", written == ["D1"]),
+        ];
+        for (check, held) in &checks {
+            if !held {
+                failures.push(format!(
+                    "confirm: {check} (writes {written:?})\n{}",
+                    said.join("\n--\n")
+                ));
+            }
+        }
+        report.insert(
+            "confirm".into(),
+            json!({"calls":said.len(),"bytes":said.iter().map(String::len).sum::<usize>(),
+                "writes":written,"ok":checks.iter().all(|(_, held)| *held)}),
+        );
+    }
+    if let Ok(path) = std::env::var("RDH_SCENARIO_REPORT") {
+        fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    }
+    for (name, entry) in &report {
+        println!("{name}: {entry}");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+}

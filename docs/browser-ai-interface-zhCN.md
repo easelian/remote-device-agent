@@ -1,0 +1,187 @@
+# 面向 AI 的浏览器接口
+
+这份文档说明 AI 操作浏览器时使用的三个操作：`browser_do`、`browser_read` 和 `browser_see`。它们取代原来的十四个 `browser_*` 操作，目标是让 AI 用更少的调用、读更少的字节完成同样的任务，并且不会操作到错误的元素。
+
+文档先给出接口，再说明目前已实现的范围和测量结果。
+
+## 设计取舍
+
+- **一次调用完成一件事。** 打开页面、填三个字段、提交，是一次 `browser_do`，不是五次往返。
+- **按名字定位。** 步骤可以直接写“`Order C1` 那一行的 `Approve`”，不需要先读页面取引用。
+- **不替调用方猜。** 描述对应多个元素时返回候选，一个都不点。
+- **每一步都说明后果。** 回复里写出这一步改变了页面的哪一部分，不需要再读一次来确认。
+- **回复是文本。** 一行一个元素，没有 JSON 外壳，也不重复请求里已有的内容。
+- **调用里没有会话状态。** 只有一个会话时不用写会话，任何调用都不带 `control_epoch`。
+
+站点策略、沙箱、人工接管和文件批准仍在下层生效，这三个操作只是它们之上的入口。
+
+## `browser_do`：执行一串步骤
+
+```json
+{"steps": [
+  {"open": "https://shop.example/orders"},
+  {"click": {"name": "Next page"}},
+  {"click": {"name": "Approve", "in": "Order P07"}}
+]}
+```
+
+步骤按顺序执行，某一步失败后，其后的步骤不再执行。一次调用最多 16 步。
+
+| 参数 | 含义 |
+|---|---|
+| `steps` | 必填，步骤列表 |
+| `session` | 会话 ID 的开头几位。只有一个会话时省略 |
+| `read` | `changes`（默认）、`page` 或 `none`，见[回复](#回复) |
+
+### 步骤
+
+每个步骤是一个对象，恰好包含下表中的一个动词。
+
+| 步骤 | 作用 |
+|---|---|
+| `{"open": 地址}` | 没有会话时打开一个会话，否则在当前标签页打开该地址 |
+| `{"click": 目标}` | 点击 |
+| `{"hover": 目标}` | 悬停 |
+| `{"fill": 目标, "text": 文本}` | 把输入框的内容替换为文本 |
+| `{"select": 目标, "value": 值}` | 选择下拉项，值是选项的 `value` |
+| `{"check": 目标, "on": true}` | 勾选或取消勾选，`on` 省略时为勾选 |
+| `{"press": 键名, "on": 目标}` | 在目标上按键，例如 `Enter` |
+| `{"scroll": 像素, "in": 目标}` | 纵向滚动。省略 `in` 时滚动整个页面 |
+| `{"drag": 目标, "to": 目标}` | 拖到另一个元素上 |
+| `{"upload": 目标, "grant": 授权}` | 把用户批准的文件交给文件输入框 |
+| `{"wait": {"text": 文本}}` | 等到页面出现这段文字。也可写 `{"url": 片段}` |
+| `{"dialog": "accept"}` | 回答浏览器对话框，或写 `"dismiss"` |
+| `{"tab": "new"}` | 新开标签页。`"close"` 关闭当前标签页，其他值是要切换到的标签页 ID |
+| `{"pause": true}`、`{"resume": true}` | 把浏览器交给人，或从人手里收回 |
+| `{"close": true}` | 关闭会话 |
+
+### 目标
+
+目标有两种写法。
+
+**引用**是字符串，取自上一次回复中方括号里的内容，例如 `"r41886"`。
+
+**描述**是对象：
+
+| 字段 | 含义 |
+|---|---|
+| `name` | 必填，控件的名称，即回复中冒号后面的文字 |
+| `in` | 控件所在记录中的文字，例如表格行里的订单号 |
+| `role` | 角色，例如 `button`、`link`、`textbox` |
+| `nth` | 仍有多个匹配时取第几个，从 1 开始 |
+
+名称的匹配分三级：完全相同、仅大小写不同、包含。只要上一级有匹配，就不看下一级。同一级中有多个匹配而没有 `nth` 时，这一步失败，回复列出候选：
+
+```
+✗ 1 click: browser_target_ambiguous — narrow it with "in", "role" or "nth"
+5 match
+  button "Approve" in "Order P06"
+  button "Approve" in "Order P07"
+```
+
+用描述定位的步骤会等待：目标还没出现，或页面正在重绘时，最多重试 4 秒。因此大多数情况下不需要显式的 `wait` 步骤。
+
+### 回复
+
+回复的 `text` 字段是给 AI 读的全部内容：
+
+```
+1 open http://shop.example/orders (session c92c99)
+2 click button "Next page"
+  changed:
+  heading: Orders
+  <tr> Order P06
+    button [r9bf91]: Approve
+  <tr> Order P07
+    button [r9bf92]: Approve
+  text: Page 2
+3 click button "Approve" in "Order P07"
+  (no visible change)
+```
+
+- 每个步骤占一行，行首是步骤序号。
+- `changed:` 下面是这一步改变的页面部分，带有可用于下一次调用的引用。
+- `(no visible change)` 表示动作已送达，但页面上看不出变化。
+- 最后一步改变了页面、却无法单独列出变化时，回复末尾在 `--- page` 之后附上整页内容。`open`、切换标签页、回答对话框、`wait`，以及跳转到另一个文档的点击都属于这种情况。
+- `read` 为 `page` 时总是附上整页，为 `none` 时不附页面内容。
+
+失败的步骤以 `✗` 开头，后面是错误码和处理建议，再后面一行写明没有执行的步骤：
+
+```
+✗ 2 click: browser_not_actionable — the element is hidden, disabled or covered right now
+not run: 3–4
+```
+
+结果不确定的步骤会注明“可能已生效，也可能没有”，这时应先读页面再决定下一步。会话不会因此停住。
+
+除 `text` 外，结果还有三个供程序使用的字段：`session_id`、`steps_done`，以及失败时的 `failed`（步骤序号、错误码、是否已发出）。步骤失败时调用本身仍然成功返回，失败写在 `text` 和 `failed` 里；只有参数不合法或指定的会话不存在时，调用才按失败返回。
+
+### 浏览器对话框
+
+页面弹出 `alert`、`confirm` 或 `prompt` 时，引起它的那一步立即结束，回复写出对话框的类型和文字，其后的步骤不执行：
+
+```
+2 click button "Delete" in "Order D1"
+  a confirm dialog opened: "Delete order D1?" — answer it with {"dialog":"accept"} or {"dialog":"dismiss"}
+not run: 3–3
+```
+
+对话框打开期间，除 `dialog` 和 `close` 之外的步骤都立即以 `browser_dialog_open` 失败。下一次调用以 `dialog` 步骤开头，其后的步骤照常执行。
+
+## `browser_read`：读页面
+
+```json
+{"find": "Order G1500"}
+```
+
+| 参数 | 含义 |
+|---|---|
+| `what` | `page`（默认）、`tabs` 或 `sessions` |
+| `find` | 只读包含这段文字的部分 |
+| `filter` | `interactive` 只列可操作的控件，`viewport` 只列视口内的内容 |
+| `more` | 上一次回复末尾 `more:` 后面的值，接着读下一页 |
+| `max_chars` | 这一页的字符上限，默认 20000 |
+| `session` | 同 `browser_do` |
+
+回复的第一行是标题和地址，之后是页面内容。内容没有读完时，最后一行是 `more: <值> (42% read)`。
+
+## `browser_see`：截图
+
+只有 `session` 一个可选参数。返回当前标签页的截图，用于画布和只能靠视觉判断的内容。
+
+## 已实现的范围
+
+这三个操作目前在 Agent 中实现，通过 Agent RPC 可用，并已加入设备策略可以允许的操作列表。以下部分还没有完成：
+
+| 尚未完成 | 现状 |
+|---|---|
+| Server 的工具目录 | 还没有切换，MCP 客户端看到的仍是旧操作 |
+| 引用的有效期 | 引用在下一个动作之后失效，同一次调用里靠后的步骤要用描述定位。设计目标是元素存在期间引用不变 |
+| 控制台、网络、样式诊断 | 仍通过旧的 `browser_capture` 和 `browser_evidence` |
+| 按截图坐标点击 | 仍通过旧的 `browser_act` |
+| 文件列表、命名资料 | 仍通过旧的 `browser_files` 和 `browser_profiles` |
+| Firefox | `open` 目前总是启动 Chromium |
+| 旧操作和 v1 运行时 | 仍然保留，尚未删除 |
+
+实现位于 [front.rs](../src/browser/runtime/v2/front.rs)。每个步骤转换为现有会话操作执行，所以站点策略、人工接管和文件批准的行为与旧操作一致。`browser_do` 需要回执，`browser_read` 和 `browser_see` 不需要。
+
+`drag` 和 `upload` 两种步骤只做了参数检查，还没有在真实浏览器上验证。
+
+## 测量
+
+[场景测试](../tests/browser_scenarios.rs)中的 `front_pool` 在 24 个场景页面上各执行一个任务，每个任务是一次 `browser_do` 调用，再加一次关闭会话的调用。断言有三项：所有步骤都执行了，站点收到的写入与任务要求一致，回复中包含结果文字。第 25 个任务 `confirm` 用五次调用检查浏览器对话框的处理。
+
+```bash
+RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --features experimental-browser-bidi --test browser_scenarios front_pool -- --ignored --nocapture
+```
+
+设置 `RDH_SCENARIO_ONLY=pager,wizard` 只运行列出的场景，设置 `RDH_SCENARIO_DUMP` 把每个任务的回复写入文件。
+
+2026-11-22 在调试构建下的结果：
+
+| | 调用次数 | 回复字节 |
+|---|---|---|
+| 旧操作（`scenario_pool`，同样 24 个场景） | 124 | 57,172 |
+| 新接口（`front_pool`） | 48 | 10,304 |
+
+两组测试的步骤不完全相同：`scenario_pool` 还包含对过期引用的检查，所以它的调用次数高于完成任务所需的最少次数。与 agent-browser 的对比也有同样的问题，按任务对齐的对比还没有做。

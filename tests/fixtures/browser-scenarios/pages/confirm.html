@@ -1,0 +1,6 @@
+<!doctype html><meta charset=utf-8><title>A question the browser asks</title><script>const record=(name,body)=>fetch("/w/"+name,{method:"POST",body:String(body)});</script>
+<!-- Deleting asks through the browser's own dialog, which stops the page until it is answered. -->
+<h1>Orders</h1>
+<table><tr><td>Order D1</td><td><button type=button onclick="if(confirm('Delete order D1?')){record('confirm','D1');this.closest('tr').cells[0].textContent='Order D1 deleted'}">Delete</button></td></tr>
+<tr><td>Order D2</td><td><button type=button onclick="if(confirm('Delete order D2?')){record('confirm','D2');this.closest('tr').cells[0].textContent='Order D2 deleted'}">Delete</button></td></tr></table>
+<label>Search <input id=q onkeydown="if(event.key==='Enter')document.getElementById('said').textContent='Searched for '+this.value"></label><p id=said></p>
