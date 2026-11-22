@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+pub(crate) mod journal;
 mod locations;
 mod requests;
 use locations::Locations;
@@ -77,6 +78,7 @@ struct Window {
     requests: Option<Ledger>,
     locations: Option<Locations>,
     request_context: Option<Box<str>>,
+    journal: Option<journal::Log>,
 }
 struct Inner {
     control: Arc<Control>,
@@ -86,6 +88,8 @@ struct Inner {
     network: bool,
     progress: bool,
     track_submit: bool,
+    /// A journal has no time limit and outlives the document it began on.
+    endless: bool,
     location_start_ms: Option<u64>,
     window: Mutex<Window>,
 }
@@ -153,6 +157,7 @@ impl Sink {
             network,
             progress,
             track_submit,
+            endless: false,
             location_start_ms: exception_locations
                 .then(|| {
                     SystemTime::now()
@@ -175,8 +180,65 @@ impl Sink {
                 }),
                 locations: exception_locations.then(Locations::default),
                 request_context: None,
+                journal: None,
             }),
         }))
+    }
+
+    /// A sink that keeps what the page at `page` and its successors in the
+    /// same tab report, as text, for as long as this grant of control lasts.
+    pub(crate) fn journal(control: Arc<Control>, epoch: u64, page: &str) -> Self {
+        Self(Arc::new(Inner {
+            control,
+            epoch,
+            started: Instant::now(),
+            console: true,
+            network: true,
+            progress: false,
+            track_submit: false,
+            endless: true,
+            location_start_ms: None,
+            window: Mutex::new(Window {
+                entries: VecDeque::new(),
+                last: 0,
+                stopped: None,
+                invalid: false,
+                requests: None,
+                locations: None,
+                request_context: None,
+                journal: Some(journal::Log::on(page)),
+            }),
+        }))
+    }
+
+    pub(crate) fn journaling(&self) -> bool {
+        self.0.endless
+    }
+
+    pub(crate) fn said(&self, said: journal::Said) {
+        self.record(|w, _| {
+            if let Some(log) = &mut w.journal {
+                log.said(said);
+            }
+        });
+    }
+
+    pub(crate) fn net(&self, event: journal::Net) {
+        self.record(|w, _| {
+            if let Some(log) = &mut w.journal {
+                log.net(event);
+            }
+        });
+    }
+
+    /// Reads the journal, unless control has changed hands since it began.
+    pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&mut journal::Log) -> T) -> Option<T> {
+        let authority = self.0.control.state.lock().unwrap();
+        if *authority != (self.0.epoch, false) {
+            return None;
+        }
+        let mut w = self.0.window.lock().unwrap();
+        w.journal.as_mut().map(read)
     }
 
     pub(crate) fn tracks_submit(&self) -> bool {
@@ -225,7 +287,7 @@ impl Sink {
         *authority == (self.0.epoch, false)
             && !w.invalid
             && w.stopped.is_none()
-            && now.duration_since(self.0.started) < WINDOW
+            && (self.0.endless || now.duration_since(self.0.started) < WINDOW)
     }
 
     pub(crate) fn invalidate(&self) {
@@ -234,12 +296,14 @@ impl Sink {
         w.entries.clear();
         w.requests = None;
         w.locations = None;
+        w.journal = None;
     }
 
     pub(crate) fn invalidate_active(&self) {
         let mut window = self.0.window.lock().unwrap();
-        if window.stopped.is_none() && self.0.started.elapsed() < WINDOW {
+        if window.stopped.is_none() && (self.0.endless || self.0.started.elapsed() < WINDOW) {
             window.invalid = true;
+            window.journal = None;
             window.entries.clear();
             window.requests = None;
             window.locations = None;
@@ -372,7 +436,10 @@ impl Sink {
         }
         let now = Instant::now();
         let mut w = self.0.window.lock().unwrap();
-        if w.invalid || w.stopped.is_some() || now.duration_since(self.0.started) >= WINDOW {
+        if w.invalid
+            || w.stopped.is_some()
+            || (!self.0.endless && now.duration_since(self.0.started) >= WINDOW)
+        {
             return;
         }
         update(&mut w, now);

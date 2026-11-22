@@ -34,7 +34,12 @@ pub(super) fn timestamp_ms(params: &Value) -> Option<f64> {
 }
 
 /// Find bounded native object leases carried by the selected Runtime events.
-pub(super) fn objects<'a>(method: &str, params: &'a Value) -> Result<Vec<&'a str>, ()> {
+///
+/// A capture of one action ends when a page logs more objects than it should
+/// in so short a time. A journal runs for the whole session, where pages that
+/// log freely are the ones worth reading, so `wide` allows many more.
+pub(super) fn objects<'a>(method: &str, params: &'a Value, wide: bool) -> Result<Vec<&'a str>, ()> {
+    let (most_objects, most_parts) = if wide { (64, 64) } else { (8, 16) };
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     let mut add = |value: &'a Value| -> Result<(), ()> {
@@ -47,7 +52,7 @@ pub(super) fn objects<'a>(method: &str, params: &'a Value) -> Result<Vec<&'a str
             return Err(());
         }
         if seen.insert(id) {
-            if result.len() >= 8 {
+            if result.len() >= most_objects {
                 return Err(());
             }
             result.push(id);
@@ -60,7 +65,7 @@ pub(super) fn objects<'a>(method: &str, params: &'a Value) -> Result<Vec<&'a str
                 return Ok(result);
             };
             let args = args.as_array().ok_or(())?;
-            if args.len() > 16 {
+            if args.len() > most_parts {
                 return Err(());
             }
             for value in args {
@@ -90,6 +95,25 @@ pub(super) fn objects<'a>(method: &str, params: &'a Value) -> Result<Vec<&'a str
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn objects<'a>(method: &str, params: &'a Value) -> Result<Vec<&'a str>, ()> {
+        super::objects(method, params, false)
+    }
+
+    #[test]
+    fn a_journal_accepts_what_a_page_that_logs_freely_sends() {
+        let many =
+            json!({"args":(0..40).map(|i| json!({"objectId":i.to_string()})).collect::<Vec<_>>()});
+        assert_eq!(
+            super::objects("Runtime.consoleAPICalled", &many, true)
+                .unwrap()
+                .len(),
+            40
+        );
+        let more =
+            json!({"args":(0..65).map(|i| json!({"objectId":i.to_string()})).collect::<Vec<_>>()});
+        assert!(super::objects("Runtime.consoleAPICalled", &more, true).is_err());
+    }
 
     #[test]
     fn projects_fixed_facts_without_payload() {

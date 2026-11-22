@@ -100,6 +100,7 @@ pub(super) struct Captured {
     pub(super) sink: Sink,
     pub(super) fact: Option<Fact>,
     pub(super) progress: Vec<(String, RequestUpdate)>,
+    pub(super) journal: Option<crate::browser::semantic::task_events::journal::Net>,
 }
 
 impl Inner {
@@ -127,6 +128,18 @@ impl Inner {
             return None;
         }
         let method = value["method"].as_str()?;
+        if sink.journaling() {
+            let journal = crate::browser::semantic::task_events::journal::Net::parse(
+                method,
+                &value["params"],
+            )?;
+            return Some(Captured {
+                sink: sink.clone(),
+                fact: None,
+                progress: Vec::new(),
+                journal: Some(journal),
+            });
+        }
         if method == "Page.frameNavigated" {
             sink.invalidate();
             return None;
@@ -159,6 +172,7 @@ impl Inner {
             sink: sink.clone(),
             fact,
             progress,
+            journal: None,
         })
     }
 

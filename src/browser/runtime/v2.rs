@@ -37,6 +37,9 @@ pub(super) struct Slot {
     unsettled: AtomicBool,
     active: Mutex<String>,
     port: Mutex<Option<native::Port>>,
+    /// What the tab named here has reported since the AI was last given
+    /// control: its console and its requests.
+    journal: Mutex<Option<(String, sem::task_events::Sink)>>,
     session: AsyncMutex<Session>,
     _storage_lock: Arc<crate::profile_lock::ProfileLocks>,
 }
@@ -449,6 +452,7 @@ impl Browsers {
             unsettled: AtomicBool::new(false),
             active: Mutex::new(String::new()),
             port: Mutex::new(None),
+            journal: Mutex::new(None),
             session: AsyncMutex::new(Session {
                 native: None,
                 active: String::new(),

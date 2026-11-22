@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Diagnostics</title>
+<h1>Orders</h1>
+<button id="save">Save order</button>
+<button id="quiet">Refresh</button>
+<p id="state">Ready</p>
+<script src="/missing.js"></script>
+<script>
+  // A page with the faults a person would open the developer tools for.
+  console.error("config missing", {retry: 3});
+  console.log("orders loaded");
+  save.onclick = async () => {
+    const reply = await fetch("/fail", {
+      method: "POST",
+      headers: {"Authorization": "Bearer scenario-secret"},
+      body: "{}",
+    });
+    state.textContent = "Save failed";
+    if (!reply.ok) throw new TypeError("order is not saved");
+  };
+  quiet.onclick = () => { state.textContent = "Refreshed"; };
+</script>

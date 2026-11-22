@@ -395,6 +395,9 @@ impl Cdp {
                                 for (native_id, update) in captured.progress {
                                     captured.sink.progress(&native_id, update);
                                 }
+                                if let Some(event) = captured.journal {
+                                    captured.sink.net(event);
+                                }
                             }
                         }
                     } else {

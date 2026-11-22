@@ -30,7 +30,7 @@
 | 参数 | 含义 |
 |---|---|
 | `steps` | 必填，步骤列表 |
-| `session` | 会话 ID 的开头几位。只有一个会话时省略 |
+| `session` | 会话 ID 的开头几位。只有一个会话时省略。`"new"` 让 `open` 步骤在已有会话之外再开一个，见[多个会话](#多个会话) |
 | `read` | `changes`（默认）、`page` 或 `none`，见[回复](#回复) |
 
 ### 步骤
@@ -130,6 +130,26 @@ not run: 3–3
 
 对话框打开期间，除 `dialog` 和 `close` 之外的步骤都立即以 `browser_dialog_open` 失败。下一次调用以 `dialog` 步骤开头，其后的步骤照常执行。
 
+### 页面出的问题
+
+步骤执行期间页面出现的问题，直接写在这一步下面，不需要另外查询：
+
+```
+2 click button "Save order"
+  problems:
+    n6 500 POST /fail fetch
+    c7 error Uncaught (in promise) TypeError: order is not saved (http://shop.example/app.js:17:26)
+```
+
+- 列出的问题有三种：没有被捕获的脚本错误、`console.error` 的输出、失败或状态码不低于 400 的请求。被页面自己取消的请求和缺少的 `favicon.ico` 不列出。
+- 每个问题只报告一次。读页面期间才出现的问题写在 `--- page` 之前，行首不缩进。两次调用之间出现的问题，记在下一次调用的第一步下面。
+- 一步最多列 5 个，其余只给数量。
+- 行首的 `n6`、`c7` 是条目编号，用 `browser_read` 可以查到这一条的全部内容，见[控制台和网络](#控制台和网络)。
+
+### 多个会话
+
+`open` 步骤在没有会话时打开一个会话，已有会话时在当前标签页打开地址。任务需要两套互不相干的登录状态时，给调用加上 `"session": "new"`，`open` 会另开一个会话。此后有多个会话，每次调用都要用 `session` 指明其中一个，否则以 `browser_session_ambiguous` 失败。`browser_read` 的 `what: "sessions"` 列出所有会话，不需要指明会话。
+
 ## `browser_read`：读页面
 
 ```json
@@ -138,14 +158,40 @@ not run: 3–3
 
 | 参数 | 含义 |
 |---|---|
-| `what` | `page`（默认）、`tabs` 或 `sessions` |
+| `what` | `page`（默认）、`tabs`、`sessions`、`console` 或 `network` |
 | `find` | 只读包含这段文字的部分 |
-| `filter` | `interactive` 只列可操作的控件，`viewport` 只列视口内的内容 |
+| `filter` | 读页面时：`interactive` 只列可操作的控件，`viewport` 只列视口内的内容。读控制台时：`errors`。读网络时：`failed` |
 | `more` | 上一次回复末尾 `more:` 后面的值，接着读下一页 |
 | `max_chars` | 这一页的字符上限，默认 20000 |
 | `session` | 同 `browser_do` |
 
 回复的第一行是标题和地址，之后是页面内容。内容没有读完时，最后一行是 `more: <值> (42% read)`。
+
+### 控制台和网络
+
+`what` 为 `console` 或 `network` 时，读的是当前标签页的诊断日志：页面写到控制台的内容，以及页面发出的请求。
+
+```
+network: 3 of 4 requests since http://shop.example/orders loaded (3 failed, 1 pending)
+n2 404 GET /missing.js script net::ERR_ABORTED
+n5 404 GET /favicon.ico other 2ms 177B
+n6 500 POST /fail fetch
+```
+
+- 第一行是总数。列表只包含当前文档加载以来的条目，从请求该文档的那一条开始，包括它之前的重定向。
+- 网络的一行依次是编号、状态码、方法、地址、资源类型、耗时和大小。与页面同源的地址只写路径。没有收到响应的请求，状态码的位置是 `✗`（失败）或 `…`（进行中）。
+- 控制台的一行依次是编号、级别、文字的第一行、来源位置，连续重复的输出合并为一行并注明次数。
+- `find` 是条目编号时，返回这一条的全部内容：控制台条目是完整文字，包括调用栈；网络条目是完整地址、状态、耗时、大小、发起请求的脚本位置，以及请求头和响应头。
+- `find` 是其他文字时，只列包含它的条目。`filter` 为 `errors`（控制台）或 `failed`（网络）时只列出问题。
+- `max_chars` 默认 4000。放不下时保留最新的条目，并注明省略了多少条。这两种读取不支持 `more`。
+
+日志的范围和限制：
+
+- 从 `open` 步骤开始记录，所以第一个页面加载时的问题也在内。每个标签页最多保留 200 行控制台输出和 300 个请求，超出后丢弃最早的。
+- 名称中含有 `cookie`、`auth`、`token`、`key`、`session`、`csrf` 等字样的请求头和响应头，只保留名称，不保留值。请求体和响应体都不保留。
+- 控制权每次交回 AI 时日志重新开始，所以用户接手期间以及之前的内容都读不到。切换标签页后，日志也从新标签页重新开始。
+- 只记录顶层文档的控制台输出，以及标签页主进程发出的请求。跨站点 iframe 里的输出和请求不在其中。
+- 页面在短时间内向控制台输出大量对象时，日志会中断，并在下一次调用时重新开始，中断期间的内容丢失。
 
 ## `browser_see`：截图
 
@@ -158,7 +204,7 @@ not run: 3–3
 | 尚未完成 | 现状 |
 |---|---|
 | 引用的有效期 | 引用在下一个动作之后失效，同一次调用里靠后的步骤要用描述定位。设计目标是元素存在期间引用不变 |
-| 控制台、网络、样式诊断 | Server 已删除旧的 `browser_capture` 和 `browser_evidence`，MCP 客户端不能再使用这些诊断 |
+| 样式和性能诊断 | 控制台和网络已按新设计实现，见[页面出的问题](#页面出的问题)和[控制台和网络](#控制台和网络)。样式和性能还没有 |
 | 按截图坐标点击 | Server 已删除旧的 `browser_act`，MCP 客户端不能再按坐标点击 |
 | 命名资料 | Server 已删除旧的 `browser_profiles`，`open` 步骤也不能指定资料，所以每个会话都用临时资料 |
 | 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |
@@ -174,7 +220,7 @@ not run: 3–3
 
 ## 测量
 
-[场景测试](../tests/browser_scenarios.rs)中的 `front_pool` 在 24 个场景页面上各执行一个任务，每个任务是一次 `browser_do` 调用，再加一次关闭会话的调用。断言有三项：所有步骤都执行了，站点收到的写入与任务要求一致，回复中包含结果文字。第 25 个任务 `confirm` 用五次调用检查浏览器对话框的处理。
+[场景测试](../tests/browser_scenarios.rs)中的 `front_pool` 在 24 个场景页面上各执行一个任务，每个任务是一次 `browser_do` 调用，再加一次关闭会话的调用。断言有三项：所有步骤都执行了，站点收到的写入与任务要求一致，回复中包含结果文字。第 25 个任务 `confirm` 用五次调用检查浏览器对话框的处理。同一文件中的 `front_diagnostics` 在一个会出错的页面上检查诊断日志和第二个会话。
 
 ```bash
 RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --features experimental-browser-bidi --test browser_scenarios front_pool -- --ignored --nocapture

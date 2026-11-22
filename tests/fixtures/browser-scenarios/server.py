@@ -7,6 +7,7 @@ GET  /<page>.html      a scenario page from the pages directory
 POST /w/<scenario>     record one site write; the body is kept as text
 GET  /audit            every recorded write, by scenario, as JSON
 POST /reset            forget all writes
+POST /fail             always answers 500
 
 The counter is the oracle of a scenario: what the site received does not depend
 on what a browser tool reported.
@@ -48,6 +49,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/reset":
             with lock:
                 writes.clear()
+        elif self.path == "/fail":
+            return self.reply(500, b'{"error":"limit exceeded"}')
         elif self.path.startswith("/w/"):
             with lock:
                 writes.setdefault(self.path[3:], []).append(body)

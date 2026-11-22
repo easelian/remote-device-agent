@@ -5,6 +5,7 @@ use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const RELEASE_QUEUE: usize = 16;
+const JOURNAL_RELEASE_QUEUE: usize = 256;
 const SETTLE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
 
@@ -24,7 +25,11 @@ impl Cdp {
         )
         .await
         .map_err(|_| Failure::new("browser_busy"))?;
-        let (release, objects) = mpsc::channel(RELEASE_QUEUE);
+        let (release, objects) = mpsc::channel(if sink.journaling() {
+            JOURNAL_RELEASE_QUEUE
+        } else {
+            RELEASE_QUEUE
+        });
         let route = Arc::new(Route::new(target.to_owned(), sink.clone(), release));
         *self.inner.console.lock().unwrap() = Some(route.clone());
         let (ready, started) = oneshot::channel();

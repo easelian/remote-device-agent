@@ -86,6 +86,15 @@ impl Route {
                     "scriptId",
                 );
             }
+            Delivery::Fact(_) if self.sink.journaling() => {
+                let said = crate::browser::semantic::task_events::journal::Said::parse(
+                    event["method"].as_str().unwrap_or(""),
+                    &event["params"],
+                );
+                if let Some(said) = said {
+                    self.sink.said(said);
+                }
+            }
             Delivery::Fact(fact) => self.sink.push(fact),
             Delivery::Fault => self.fail(),
         }
@@ -150,7 +159,10 @@ impl Route {
                     && context["auxData"]["frameId"] == self.target =>
             {
                 let id = context["id"].as_i64().filter(|&id| id > 0);
-                if id.is_none() || (state.context.is_some() && state.context != id) {
+                // A journal follows the tab from one document to the next.
+                if id.is_none()
+                    || (state.context.is_some() && state.context != id && !self.sink.journaling())
+                {
                     return Fault;
                 }
                 state.context = id;
@@ -158,7 +170,7 @@ impl Route {
             }
             "Runtime.executionContextsCleared" => {
                 state.context = None;
-                return if state.armed.is_some() {
+                return if state.armed.is_some() && !self.sink.journaling() {
                     Fault
                 } else {
                     Private
@@ -169,7 +181,7 @@ impl Route {
                     && params["executionContextId"].as_i64() == state.context =>
             {
                 state.context = None;
-                return if state.armed.is_some() {
+                return if state.armed.is_some() && !self.sink.journaling() {
                     Fault
                 } else {
                     Private
@@ -179,7 +191,7 @@ impl Route {
         }
         // Reap replayed, non-root and unprojected events too. The channel bounds
         // outstanding native IDs. On overflow the owner detaches the whole subtree.
-        let Ok(objects) = console_event::objects(method, params) else {
+        let Ok(objects) = console_event::objects(method, params, self.sink.journaling()) else {
             return Fault;
         };
         for id in objects {

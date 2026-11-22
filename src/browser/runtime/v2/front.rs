@@ -16,6 +16,8 @@ const MAX_CANDIDATES: usize = 8;
 /// replacing itself, as a person would before giving up.
 const PATIENCE: Duration = Duration::from_secs(4);
 const RETRY: Duration = Duration::from_millis(100);
+/// Problems one step reports in full; the rest are counted.
+const PROBLEMS: usize = 5;
 /// Pages of a search that are read to find a target.
 const SEARCH_PAGES: usize = 8;
 
@@ -420,6 +422,8 @@ impl Call<'_> {
     fn session(&self, wanted: Option<&Value>) -> Result<Option<String>> {
         let wanted = match wanted {
             None => None,
+            // Asks an open step for a session beside the ones there are.
+            Some(value) if value == "new" => return Ok(None),
             Some(value) => Some(
                 value
                     .as_str()
@@ -508,6 +512,67 @@ impl Call<'_> {
         // An input the browser has not answered yet keeps the session paused;
         // the next call tries again.
         slot.unsettled.store(resumed.is_err(), Ordering::Release);
+    }
+    /// The journal of the tab the session is on, begun now if there is none,
+    /// and whether it began with this call. A journal ends when control
+    /// changes hands, so that nothing a person did is in the next one.
+    async fn journal(&self, id: &str) -> Option<(sem::task_events::Sink, bool)> {
+        let slot = self.slot(id).ok()?;
+        let tab = slot.active.lock().unwrap().clone();
+        if let Some((of, sink)) = &*slot.journal.lock().unwrap()
+            && *of == tab
+            && sink.active()
+        {
+            return Some((sink.clone(), false));
+        }
+        let (epoch, paused) = slot.control.snapshot();
+        if paused || slot.closing.load(Ordering::Acquire) {
+            return None;
+        }
+        let port = slot.port().ok()?.for_tab(&tab).ok()?;
+        let page = port
+            .tabs()
+            .into_iter()
+            .find(|listed| listed.tab_id == tab)
+            .map(|listed| listed.url)
+            .unwrap_or_default();
+        let sink = sem::task_events::Sink::journal(slot.control.clone(), epoch, &page);
+        let until = self.deadline.min(Instant::now() + Duration::from_secs(3));
+        port.enable_task_events(sink.clone(), until).await.ok()?;
+        *slot.journal.lock().unwrap() = Some((tab, sink.clone()));
+        Some((sink, true))
+    }
+    /// The errors and failed requests the page has had since they were last
+    /// reported, as lines under a step.
+    fn problems(&self, id: &str, indent: &str) -> String {
+        let Ok(slot) = self.slot(id) else {
+            return String::new();
+        };
+        let sink = slot
+            .journal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, sink)| sink.clone());
+        let Some((lines, more)) =
+            sink.and_then(|sink| sink.journal_read(|log| log.problems(PROBLEMS)))
+        else {
+            return String::new();
+        };
+        if lines.is_empty() {
+            return String::new();
+        }
+        let mut text = format!("{indent}problems:\n");
+        for line in lines {
+            let _ = writeln!(text, "{indent}  {line}");
+        }
+        if more > 0 {
+            let _ = writeln!(
+                text,
+                "{indent}  +{more} more; browser_read with what \"console\" or \"network\" lists them"
+            );
+        }
+        text
     }
     /// Until when a step keeps trying while the page is busy.
     fn patience(&self) -> Instant {
@@ -642,7 +707,13 @@ impl Browsers {
         if map.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err(invalid());
         }
-        let session = call.session(map.get("session"))?;
+        // Listing the sessions is how a caller with several learns their names.
+        let session = if operation == "browser_read" && map.get("what") == Some(&json!("sessions"))
+        {
+            None
+        } else {
+            call.session(map.get("session"))?
+        };
         match operation {
             "browser_do" => call.run(map, session).await,
             "browser_read" => call.read(map, session).await,
@@ -703,6 +774,66 @@ impl Call<'_> {
                 }
                 text.trim_end().to_owned()
             }
+            Some(what @ ("console" | "network")) => {
+                if map.contains_key("more") {
+                    return Err(invalid());
+                }
+                let find = map
+                    .get("find")
+                    .map(|find| {
+                        find.as_str()
+                            .filter(|find| (1..=200).contains(&find.len()))
+                            .ok_or_else(invalid)
+                    })
+                    .transpose()?;
+                let narrow = if what == "console" {
+                    "errors"
+                } else {
+                    "failed"
+                };
+                let narrowed = match map.get("filter") {
+                    None => false,
+                    Some(filter) if filter == narrow => true,
+                    Some(_) => return Err(invalid()),
+                };
+                let budget = map
+                    .get("max_chars")
+                    .map(|most| {
+                        most.as_u64()
+                            .filter(|most| (200..=64_000).contains(most))
+                            .ok_or_else(invalid)
+                    })
+                    .transpose()?
+                    .unwrap_or(4000) as usize;
+                let paused = || Failure::new("browser_paused");
+                let (sink, fresh) = self.journal(&id).await.ok_or_else(|| {
+                    if self.slot(&id).is_ok_and(|slot| !slot.control.snapshot().1) {
+                        Failure::new("browser_busy")
+                    } else {
+                        paused()
+                    }
+                })?;
+                let entry = find.filter(|find| {
+                    find.len() > 1
+                        && find.starts_with(['c', 'n'])
+                        && find[1..].bytes().all(|byte| byte.is_ascii_digit())
+                });
+                let mut text = sink
+                    .journal_read(|log| match entry {
+                        Some(entry) => log.detail(entry).unwrap_or_else(|| {
+                            format!("{entry} is not kept any more; list the entries again")
+                        }),
+                        None if what == "console" => log.console(find, narrowed, budget),
+                        None => log.network(find, narrowed, budget),
+                    })
+                    .ok_or_else(paused)?;
+                if fresh {
+                    text.push_str(
+                        "\n(recording began with this call; what the page reported before it was not kept)",
+                    );
+                }
+                text
+            }
             Some("page") => {
                 let mut query = json!({});
                 for (from, to) in [
@@ -750,7 +881,14 @@ impl Call<'_> {
         let last = steps.len() - 1;
         for (index, step) in steps.iter().enumerate() {
             let number = index + 1;
+            if let Some(id) = &session {
+                self.journal(id).await;
+            }
             let outcome = self.step(step, &mut session, read == "changes").await;
+            let problems = session
+                .as_ref()
+                .map(|id| self.problems(id, "  "))
+                .unwrap_or_default();
             match outcome {
                 Ok((line, view, halt)) => {
                     let _ = writeln!(text, "{number} {line}");
@@ -774,6 +912,7 @@ impl Call<'_> {
                     } else if step.changes() {
                         unseen = true;
                     }
+                    text.push_str(&problems);
                     done = number;
                     if halt {
                         if number <= last {
@@ -797,6 +936,7 @@ impl Call<'_> {
                         let _ = write!(text, "\n{}", stop.detail);
                     }
                     text.push('\n');
+                    text.push_str(&problems);
                     if number <= last {
                         let _ = writeln!(text, "not run: {}–{}", number + 1, steps.len());
                     }
@@ -812,6 +952,7 @@ impl Call<'_> {
                 text.insert_str(*at, body);
             }
         }
+        let before_page = text.len();
         if (read == "page" || read == "changes" && unseen)
             && done > 0
             && let Some(id) = session.as_ref().filter(|id| self.slot(id).is_ok())
@@ -827,6 +968,10 @@ impl Call<'_> {
                     let _ = write!(text, "--- the page cannot be read now: {}", error.code);
                 }
             }
+        }
+        // What came in while the page was read is not left for the next call.
+        if let Some(id) = &session {
+            text.insert_str(before_page, &self.problems(id, ""));
         }
         let mut value = json!({"text":text.trim_end(),"steps_done":done});
         if let Some(id) = session {
@@ -860,7 +1005,10 @@ impl Call<'_> {
                     id
                 }
                 None => {
-                    let params = json!({"url":url,"selection":{"version":2,
+                    // The browser starts on an empty page, so that the journal
+                    // is running when the address begins to load.
+                    self.browsers.admit(&step.map["open"])?;
+                    let params = json!({"selection":{"version":2,
                         "observation_profile":"semantic_dom_v1","backend":"cdp"}});
                     validate("browser_open", &params)?;
                     let selection =
@@ -871,6 +1019,22 @@ impl Call<'_> {
                         .await?;
                     let id = opened["session_id"].as_str().unwrap_or("").to_owned();
                     *session = Some(id.clone());
+                    self.journal(&id).await;
+                    let shown = self
+                        .inner(
+                            &id,
+                            "browser_act",
+                            json!({"action":{"kind":"navigate","url":url}}),
+                        )
+                        .await;
+                    if let Err(error) = shown {
+                        // A session that never showed its first page is not kept.
+                        let _ = self
+                            .inner(&id, "browser_control", json!({"action":"close"}))
+                            .await;
+                        *session = None;
+                        return Err(error.into());
+                    }
                     id
                 }
             };

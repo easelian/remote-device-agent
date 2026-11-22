@@ -1670,3 +1670,185 @@ async fn front_pool() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
 }
+
+/// What a person opens the developer tools for comes with the reply of the
+/// step that caused it, and the rest can be asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_diagnostics() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    async fn said(peer: &mut Peer, operation: &str, params: Value) -> String {
+        let reply = peer.call(operation, params).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+    let opened = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("diagnostics")}]}),
+    )
+    .await;
+    assert!(opened.contains("\n  problems:\n"), "{opened}");
+    assert!(opened.contains(" 404 GET /missing.js script"), "{opened}");
+    assert!(
+        opened.contains(" error config missing Object ("),
+        "{opened}"
+    );
+    assert!(
+        !opened.contains("favicon") && !opened.contains("orders loaded"),
+        "{opened}"
+    );
+    assert!(opened.contains("--- page\nDiagnostics"), "{opened}");
+
+    let saved = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":{"name":"Save order"}},{"wait":{"text":"Save failed"}}]}),
+    )
+    .await;
+    assert!(saved.contains(" 500 POST /fail fetch"), "{saved}");
+    assert!(
+        saved.contains(" error Uncaught (in promise) TypeError: order is not saved"),
+        "{saved}"
+    );
+    // A problem is told once.
+    assert!(
+        !saved.contains("missing.js") && !saved.contains("config missing"),
+        "{saved}"
+    );
+
+    let quiet = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":{"name":"Refresh"}}]}),
+    )
+    .await;
+    assert!(
+        quiet.contains("Refreshed") && !quiet.contains("problems"),
+        "{quiet}"
+    );
+
+    let failed = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"network","filter":"failed"}),
+    )
+    .await;
+    assert!(failed.starts_with("network: "), "{failed}");
+    assert!(
+        failed.contains("/missing.js") && !failed.contains(" document"),
+        "{failed}"
+    );
+    let entry = failed
+        .lines()
+        .find(|line| line.contains("POST /fail"))
+        .and_then(|line| line.split(' ').next())
+        .unwrap_or_else(|| panic!("{failed}"))
+        .to_owned();
+    let detail = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"network","find":entry}),
+    )
+    .await;
+    assert!(detail.contains("/fail → 500"), "{detail}");
+    assert!(
+        detail.contains("\nstarted by http://127.0.0.1:"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("authorization: (not kept)") && !detail.contains("scenario-secret"),
+        "{detail}"
+    );
+    let every = said(&mut peer, "browser_read", json!({"what":"network"})).await;
+    assert!(
+        every.contains(" 200 GET /diagnostics.html document"),
+        "{every}"
+    );
+
+    let console = said(&mut peer, "browser_read", json!({"what":"console"})).await;
+    assert!(
+        console.contains(" log orders loaded") && console.contains(" error config missing"),
+        "{console}"
+    );
+    let errors = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"console","filter":"errors","find":"saved"}),
+    )
+    .await;
+    assert!(
+        errors.contains("order is not saved")
+            && !errors.contains("orders loaded")
+            && !errors.contains("config missing"),
+        "{errors}"
+    );
+    let entry = errors
+        .lines()
+        .nth(1)
+        .and_then(|line| line.split(' ').next())
+        .unwrap()
+        .to_owned();
+    let thrown = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"console","find":entry}),
+    )
+    .await;
+    assert!(thrown.contains("\n    at "), "{thrown}");
+
+    // The journal follows the tab to another document, and starts over there.
+    let moved = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("modal")}],"read":"none"}),
+    )
+    .await;
+    assert!(!moved.contains("problems"), "{moved}");
+    let console = said(&mut peer, "browser_read", json!({"what":"console"})).await;
+    assert!(
+        console.starts_with("console: 0 of 0 lines since http://127.0.0.1:"),
+        "{console}"
+    );
+    assert!(console.contains("/modal.html loaded"), "{console}");
+
+    // A second session is asked for by name, and then each is named.
+    let second = said(
+        &mut peer,
+        "browser_do",
+        json!({"session":"new","steps":[{"open":site.url("diagnostics")}],"read":"none"}),
+    )
+    .await;
+    assert!(second.contains("/missing.js"), "{second}");
+    let sessions = said(&mut peer, "browser_read", json!({"what":"sessions"})).await;
+    assert_eq!(sessions.lines().count(), 2, "{sessions}");
+    let unnamed = peer
+        .call("browser_do", json!({"steps":[{"close":true}]}))
+        .await;
+    assert_eq!(
+        unnamed["error_code"], "browser_session_ambiguous",
+        "{unnamed}"
+    );
+    for line in sessions.lines() {
+        let short = line.split(' ').next().unwrap();
+        let closed = said(
+            &mut peer,
+            "browser_do",
+            json!({"session":short,"steps":[{"close":true}]}),
+        )
+        .await;
+        assert_eq!(closed, "1 close");
+    }
+}
