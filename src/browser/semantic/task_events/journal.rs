@@ -179,6 +179,7 @@ pub(crate) enum Net {
     },
     Response {
         id: Box<str>,
+        at: f64,
         status: u16,
         reason: String,
         mime: String,
@@ -200,6 +201,9 @@ pub(crate) enum Net {
         loader: Box<str>,
         url: String,
     },
+    /// The document was parsed, or it and what it needs finished loading.
+    Parsed(f64),
+    Loaded(f64),
 }
 
 impl Net {
@@ -249,6 +253,7 @@ impl Net {
                 let response = &params["response"];
                 Self::Response {
                     id: id()?,
+                    at,
                     status: u16::try_from(response["status"].as_u64()?).ok()?,
                     reason: cut(response["statusText"].as_str().unwrap_or(""), 64),
                     mime: cut(response["mimeType"].as_str().unwrap_or(""), 64),
@@ -283,6 +288,8 @@ impl Net {
                 loader: params["frame"]["loaderId"].as_str().unwrap_or("").into(),
                 url: cut(params["frame"]["url"].as_str().unwrap_or(""), ADDRESS),
             },
+            "Page.domContentEventFired" => Self::Parsed(at),
+            "Page.loadEventFired" => Self::Loaded(at),
             _ => return None,
         })
     }
@@ -334,6 +341,7 @@ struct Request {
     started: f64,
     ended: Option<f64>,
     status: Option<u16>,
+    answered_at: Option<f64>,
     reason: String,
     mime: String,
     error: Option<String>,
@@ -365,6 +373,14 @@ fn size(bytes: u64) -> String {
         0..1000 => format!("{bytes}B"),
         1000..1_000_000 => format!("{:.1}kB", bytes as f64 / 1e3),
         _ => format!("{:.1}MB", bytes as f64 / 1e6),
+    }
+}
+
+fn span(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1e3)
     }
 }
 
@@ -403,6 +419,9 @@ pub(crate) struct Log {
     /// The address of the document on show, and the first entry that is its.
     page: String,
     since: u64,
+    /// When that document was parsed and when it finished loading.
+    parsed: Option<f64>,
+    loaded: Option<f64>,
 }
 
 impl Log {
@@ -470,6 +489,7 @@ impl Log {
                     started: at,
                     ended: None,
                     status: None,
+                    answered_at: None,
                     reason: String::new(),
                     mime: String::new(),
                     error: None,
@@ -484,6 +504,7 @@ impl Log {
             }
             Net::Response {
                 id,
+                at,
                 status,
                 reason,
                 mime,
@@ -493,6 +514,7 @@ impl Log {
                 if let Some(index) = open(&self.requests, &id) {
                     let request = &mut self.requests[index];
                     request.status = Some(status);
+                    request.answered_at = Some(at);
                     request.reason = reason;
                     request.mime = mime;
                     request.answered = headers;
@@ -530,7 +552,11 @@ impl Log {
                     .min()
                     .unwrap_or(self.next + 1);
                 self.page = url;
+                self.parsed = None;
+                self.loaded = None;
             }
+            Net::Parsed(at) => self.parsed = Some(at),
+            Net::Loaded(at) => self.loaded = Some(at),
         }
     }
 
@@ -557,10 +583,6 @@ impl Log {
             self.address(&request.url),
             request.kind
         );
-        if let Some(error) = &request.error {
-            let _ = write!(text, " {error}");
-            return text;
-        }
         if let Some(took) = request.took() {
             let _ = write!(text, " {took}ms");
         }
@@ -568,6 +590,9 @@ impl Log {
             text.push_str(" cache");
         } else if let Some(bytes) = request.bytes {
             let _ = write!(text, " {}", size(bytes));
+        }
+        if let Some(error) = &request.error {
+            let _ = write!(text, " {error}");
         }
         text
     }
@@ -659,6 +684,74 @@ impl Log {
         newest(head, lines, budget)
     }
 
+    /// How long the document on show took to load, and which of its
+    /// requests took the longest and brought the most.
+    pub(crate) fn performance(&self) -> String {
+        let mine = || {
+            self.requests
+                .iter()
+                .filter(|request| request.seq >= self.since)
+        };
+        let mut text = format!("performance: {}", cut(&self.page, 200));
+        let since = |start: f64, at: Option<f64>| {
+            at.filter(|at| *at >= start)
+                .map(|at| span(((at - start) * 1000.0).round() as u64))
+        };
+        // The first request of the page is the one for its document.
+        match mine().next().filter(|first| first.kind == "document") {
+            Some(first) => {
+                let last = mine()
+                    .take_while(|request| request.id == first.id)
+                    .last()
+                    .unwrap_or(first);
+                let mut marks = Vec::new();
+                for (name, at) in [
+                    ("first byte", last.answered_at),
+                    ("parsed", self.parsed),
+                    ("loaded", self.loaded),
+                ] {
+                    if let Some(after) = since(first.started, at) {
+                        marks.push(format!("{name} after {after}"));
+                    }
+                }
+                if marks.is_empty() {
+                    text.push_str("\ndocument: no response yet");
+                } else {
+                    let _ = write!(text, "\ndocument: {}", marks.join(", "));
+                }
+                if self.loaded.is_none() {
+                    text.push_str(" (still loading)");
+                }
+            }
+            None => text.push_str(
+                "\ndocument: its load was not recorded; recording begins with an open step",
+            ),
+        }
+        let _ = write!(
+            text,
+            "\nrequests: {}, {} failed, {} pending, {} received",
+            mine().count(),
+            mine().filter(|request| request.failed()).count(),
+            mine().filter(|request| request.ended.is_none()).count(),
+            size(mine().filter_map(|request| request.bytes).sum())
+        );
+        let mut slow: Vec<&Request> = mine().filter(|request| request.took().is_some()).collect();
+        slow.sort_by_key(|request| std::cmp::Reverse(request.took()));
+        let mut large: Vec<&Request> = mine()
+            .filter(|request| request.bytes.is_some_and(|bytes| bytes > 0))
+            .collect();
+        large.sort_by_key(|request| std::cmp::Reverse(request.bytes));
+        for (title, list) in [("slowest", slow), ("largest", large)] {
+            if !list.is_empty() {
+                let _ = write!(text, "\n{title}:");
+                for request in list.into_iter().take(5) {
+                    let _ = write!(text, "\n  {}", self.brief(request));
+                }
+            }
+        }
+        text
+    }
+
     /// Everything kept about the entry an ID such as `c12` or `n7` names.
     pub(crate) fn detail(&self, id: &str) -> Option<String> {
         let seq: u64 = id.get(1..)?.parse().ok()?;
@@ -738,7 +831,7 @@ mod tests {
     fn response(id: &str, status: u64) -> Net {
         Net::parse(
             "Network.responseReceived",
-            &json!({"requestId":id,"response":{"status":status,"statusText":"Nope","mimeType":"application/json",
+            &json!({"requestId":id,"timestamp":10.05,"response":{"status":status,"statusText":"Nope","mimeType":"application/json",
                 "headers":{"Content-Type":"application/json","Set-Cookie":"sid=SECRET"}}}),
         )
         .unwrap()
@@ -791,7 +884,7 @@ mod tests {
             problems,
             [
                 "n1 500 GET /api/save?x=1 fetch 132ms 1.2kB",
-                "n3 ✗ GET https://cdn.test/a.js script net::ERR_NAME_NOT_RESOLVED",
+                "n3 ✗ GET https://cdn.test/a.js script 1000ms net::ERR_NAME_NOT_RESOLVED",
                 "c5 error boom ×2",
             ]
         );
@@ -866,6 +959,45 @@ mod tests {
         assert_eq!(
             log.problems(1),
             (vec!["c1 error from the page before".to_owned()], 1)
+        );
+    }
+
+    #[test]
+    fn a_page_load_is_summed_up_from_its_document_request_on() {
+        let mut log = Log::on("about:blank");
+        assert!(log.performance().contains("its load was not recorded"));
+        log.net(start("L", "https://shop.test/", "Document"));
+        log.net(response("L", 200));
+        log.net(
+            Net::parse(
+                "Page.frameNavigated",
+                &json!({"frame":{"id":"F","loaderId":"L","url":"https://shop.test/"}}),
+            )
+            .unwrap(),
+        );
+        log.net(finished("L"));
+        log.net(start("1", "https://shop.test/app.js", "Script"));
+        log.net(response("1", 200));
+        log.net(
+            Net::parse(
+                "Network.loadingFinished",
+                &json!({"requestId":"1","timestamp":12.5,"encodedDataLength":2_500_000}),
+            )
+            .unwrap(),
+        );
+        log.net(Net::parse("Page.domContentEventFired", &json!({"timestamp":10.48})).unwrap());
+        assert!(
+            log.performance()
+                .contains("parsed after 480ms (still loading)")
+        );
+        log.net(Net::parse("Page.loadEventFired", &json!({"timestamp":12.6})).unwrap());
+        assert_eq!(
+            log.performance(),
+            "performance: https://shop.test/\n\
+             document: first byte after 50ms, parsed after 480ms, loaded after 2.6s\n\
+             requests: 2, 0 failed, 0 pending, 2.5MB received\n\
+             slowest:\n  n2 200 GET /app.js script 2500ms 2.5MB\n  n1 200 GET / document 132ms 1.2kB\n\
+             largest:\n  n2 200 GET /app.js script 2500ms 2.5MB\n  n1 200 GET / document 132ms 1.2kB"
         );
     }
 

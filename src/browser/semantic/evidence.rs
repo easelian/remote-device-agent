@@ -47,6 +47,15 @@ pub(crate) const STYLES: &[&str] = &[
     "line-height",
     "color",
     "background-color",
+    "font-family",
+    "font-weight",
+    "text-align",
+    "cursor",
+    "margin",
+    "padding",
+    "border",
+    "border-radius",
+    "box-shadow",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]

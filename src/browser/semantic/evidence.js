@@ -1249,7 +1249,7 @@ function(operation, args) {
       output={kind:operation,validation:nativeValidation(node),coverage:coverage()};
     } else if (operation==='read_layout') {
       const rect=node.getBoundingClientRect(),style=getComputedStyle(node),computed={};
-      for (const key of ['display','visibility','opacity','pointer-events','position','z-index','overflow-x','overflow-y','width','height','transform','font-size','line-height','color','background-color']) {
+      for (const key of ['display','visibility','opacity','pointer-events','position','z-index','overflow-x','overflow-y','width','height','transform','font-size','line-height','color','background-color','font-family','font-weight','text-align','cursor','margin','padding','border','border-radius','box-shadow']) {
         computed[key]=prefix(style.getPropertyValue(key),128,'style_limit');
       }
       const x=rect.x+rect.width/2,y=rect.y+rect.height/2;

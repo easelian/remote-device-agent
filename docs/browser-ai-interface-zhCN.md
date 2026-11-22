@@ -158,7 +158,7 @@ not run: 3–3
 
 | 参数 | 含义 |
 |---|---|
-| `what` | `page`（默认）、`tabs`、`sessions`、`console` 或 `network` |
+| `what` | `page`（默认）、`tabs`、`sessions`、`console`、`network`、`styles` 或 `performance` |
 | `find` | 只读包含这段文字的部分 |
 | `filter` | 读页面时：`interactive` 只列可操作的控件，`viewport` 只列视口内的内容。读控制台时：`errors`。读网络时：`failed` |
 | `more` | 上一次回复末尾 `more:` 后面的值，接着读下一页 |
@@ -193,6 +193,39 @@ n6 500 POST /fail fetch
 - 只记录顶层文档的控制台输出，以及标签页主进程发出的请求。跨站点 iframe 里的输出和请求不在其中。
 - 页面在短时间内向控制台输出大量对象时，日志会中断，并在下一次调用时重新开始，中断期间的内容丢失。
 
+### 样式
+
+`what` 为 `styles` 时，`find` 必填，是元素上的文字。回复说明带有这段文字的元素画在哪里、是什么样子、点击能不能落到它上面：
+
+```
+styles: 1 element with the text "Hidden offer"
+button "Hidden offer" — 200×40 at 8,151 in a 1280×633 viewport; covered at its centre by div "Notice"
+  background-color: rgb(239, 239, 239); border: 2px outset rgb(0, 0, 0); color: rgb(0, 0, 0); cursor: default; display: inline-block; font-family: Arial; font-size: 13.3333px; opacity: 0.5; padding: 1px 6px; text-align: center
+```
+
+- 每个元素的第一行是标签、名称、大小、在视口中的位置，以及元素中心点的情况：在最上层、被哪个元素盖住、在视口之外，或者不占空间。步骤以 `browser_not_actionable` 失败时，这一行说明原因。
+- 第二行是计算后的样式，共 22 个属性：显示与定位（`display`、`visibility`、`opacity`、`pointer-events`、`position`、`z-index`、`overflow`、`transform`）、文字（`font-family`、`font-size`、`font-weight`、`line-height`、`text-align`、`color`）、盒子（`margin`、`padding`、`border`、`border-radius`、`box-shadow`、`background-color`）和 `cursor`。取值是 CSS 初始值的属性不列出，宽和高已在第一行。
+- 文字按包含关系匹配，区分大小写。最多说明前 3 个匹配的元素。
+- 不说明某个值来自哪条 CSS 规则。
+
+### 页面加载
+
+`what` 为 `performance` 时，回复是当前文档加载过程的摘要，数据来自诊断日志，不接受其他参数：
+
+```
+performance: http://shop.example/orders
+document: first byte after 120ms, parsed after 480ms, loaded after 1.3s
+requests: 43, 2 failed, 1 pending, 1.2MB received
+slowest:
+  n12 200 GET /api/items fetch 890ms 12.0kB
+largest:
+  n7 200 GET /hero.jpg image 610ms 640.0kB
+```
+
+- `document` 一行的时间从请求文档算起，包括之前的重定向。
+- `slowest` 和 `largest` 各列 5 个请求，编号可以用 `what: "network"` 查看详情。
+- 不包含 LCP、CLS 和长任务。这些指标要在页面里运行脚本才能取得，还没有实现。
+
 ## `browser_see`：截图
 
 只有 `session` 一个可选参数。返回当前标签页的截图，用于画布和只能靠视觉判断的内容。
@@ -204,7 +237,7 @@ n6 500 POST /fail fetch
 | 尚未完成 | 现状 |
 |---|---|
 | 引用的有效期 | 引用在下一个动作之后失效，同一次调用里靠后的步骤要用描述定位。设计目标是元素存在期间引用不变 |
-| 样式和性能诊断 | 控制台和网络已按新设计实现，见[页面出的问题](#页面出的问题)和[控制台和网络](#控制台和网络)。样式和性能还没有 |
+| 诊断的缺口 | 样式不说明值来自哪条 CSS 规则；页面加载摘要不含 LCP、CLS 和长任务；诊断日志不保留请求体和响应体。Firefox 会话没有诊断日志 |
 | 按截图坐标点击 | Server 已删除旧的 `browser_act`，MCP 客户端不能再按坐标点击 |
 | 命名资料 | Server 已删除旧的 `browser_profiles`，`open` 步骤也不能指定资料，所以每个会话都用临时资料 |
 | 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |

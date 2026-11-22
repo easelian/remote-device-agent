@@ -1701,7 +1701,7 @@ async fn front_diagnostics() {
     )
     .await;
     assert!(opened.contains("\n  problems:\n"), "{opened}");
-    assert!(opened.contains(" 404 GET /missing.js script"), "{opened}");
+    assert!(opened.contains(" 404 GET /missing.js script "), "{opened}");
     assert!(
         opened.contains(" error config missing Object ("),
         "{opened}"
@@ -1809,6 +1809,57 @@ async fn front_diagnostics() {
     .await;
     assert!(thrown.contains("\n    at "), "{thrown}");
 
+    let performance = said(&mut peer, "browser_read", json!({"what":"performance"})).await;
+    assert!(
+        performance.starts_with("performance: http://127.0.0.1:")
+            && performance.contains("\ndocument: first byte after ")
+            && performance.contains(", loaded after ")
+            && performance.contains("\nslowest:\n  n")
+            && performance.contains(" GET /diagnostics.html document "),
+        "{performance}"
+    );
+    // How an element is drawn, and what is in the way of a click on it.
+    let styles = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"styles","find":"Save order"}),
+    )
+    .await;
+    assert!(
+        styles.starts_with(
+            "styles: 1 element with the text \"Save order\"\nbutton \"Save order\" — "
+        ),
+        "{styles}"
+    );
+    assert!(
+        styles.contains("viewport; on top at its centre\n  ")
+            && styles.contains("display: inline-block")
+            && styles.contains("background-color: rgb(")
+            && !styles.contains("opacity")
+            && !styles.contains("width:"),
+        "{styles}"
+    );
+    let covered = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"styles","find":"Hidden offer"}),
+    )
+    .await;
+    assert!(
+        covered.contains("covered at its centre by div \"Notice\"")
+            && covered.contains("opacity: 0.5"),
+        "{covered}"
+    );
+    let none = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"styles","find":"No such text"}),
+    )
+    .await;
+    assert!(
+        none.starts_with("styles: no element has the text"),
+        "{none}"
+    );
     // The journal follows the tab to another document, and starts over there.
     let moved = said(
         &mut peer,

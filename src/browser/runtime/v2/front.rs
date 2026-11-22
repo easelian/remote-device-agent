@@ -18,6 +18,25 @@ const PATIENCE: Duration = Duration::from_secs(4);
 const RETRY: Duration = Duration::from_millis(100);
 /// Problems one step reports in full; the rest are counted.
 const PROBLEMS: usize = 5;
+/// Elements one reading of styles describes.
+const STYLED: usize = 3;
+/// Computed values an element has unless something sets them.
+const USUAL: [(&str, &str); 14] = [
+    ("visibility", "visible"),
+    ("opacity", "1"),
+    ("pointer-events", "auto"),
+    ("position", "static"),
+    ("z-index", "auto"),
+    ("transform", "none"),
+    ("line-height", "normal"),
+    ("font-weight", "400"),
+    ("text-align", "start"),
+    ("cursor", "auto"),
+    ("margin", "0px"),
+    ("padding", "0px"),
+    ("border-radius", "0px"),
+    ("box-shadow", "none"),
+];
 /// Pages of a search that are read to find a target.
 const SEARCH_PAGES: usize = 8;
 
@@ -574,6 +593,112 @@ impl Call<'_> {
         }
         text
     }
+    /// How the elements with a text are laid out and drawn, and whether a
+    /// click at their centre would reach them.
+    async fn styles(&self, id: &str, find: &str) -> Result<String> {
+        let tab = self.slot(id)?.active.lock().unwrap().clone();
+        let evidence = |query: Value| {
+            let params = json!({"version":1,"tab_id":tab,"query":query});
+            async move { self.inner(id, "browser_evidence", params).await }
+        };
+        let found = evidence(json!({"kind":"find_nodes","text":find,"limit":STYLED + 1})).await?;
+        let nodes = found["nodes"].as_array().map_or(&[][..], Vec::as_slice);
+        if nodes.is_empty() {
+            return Ok(format!(
+                "styles: no element has the text {find:?}; the text is matched with its case"
+            ));
+        }
+        let mut text = format!(
+            "styles: {} with the text {find:?}",
+            match nodes.len() {
+                1 => "1 element".to_owned(),
+                count if count > STYLED => format!("the first {STYLED} elements"),
+                count => format!("{count} elements"),
+            }
+        );
+        let named = |node: &Value| {
+            format!(
+                "{} {:?}",
+                node["tag"].as_str().unwrap_or("?"),
+                node["name"].as_str().unwrap_or("")
+            )
+        };
+        for node in nodes.iter().take(STYLED) {
+            let _ = write!(text, "\n{}", named(node));
+            let read = match evidence(json!({"kind":"read_layout","node_id":node["node_id"]})).await
+            {
+                Ok(read) => read,
+                // The page replaced the element between the two reads.
+                Err(error) if error.code == "browser_stale_reference" => {
+                    text.push_str(" — no longer on the page");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let layout = &read["layout"];
+            let number = |value: &Value| value.as_f64().unwrap_or(0.0).round();
+            let (width, height) = (
+                number(&layout["box"]["width"]),
+                number(&layout["box"]["height"]),
+            );
+            let _ = write!(
+                text,
+                " — {width}×{height} at {},{} in a {}×{} viewport; ",
+                number(&layout["box"]["x"]),
+                number(&layout["box"]["y"]),
+                number(&layout["viewport"]["width"]),
+                number(&layout["viewport"]["height"])
+            );
+            match layout["hit"]["kind"].as_str() {
+                Some("target" | "descendant") => text.push_str("on top at its centre"),
+                Some("outside_viewport") => text.push_str("its centre is outside the viewport"),
+                Some("other") => {
+                    let cover =
+                        evidence(json!({"kind":"read_node","node_id":layout["hit"]["node_id"]}))
+                            .await;
+                    match cover {
+                        Ok(cover) => {
+                            let _ =
+                                write!(text, "covered at its centre by {}", named(&cover["node"]));
+                        }
+                        Err(_) => text.push_str("covered at its centre by another element"),
+                    }
+                }
+                _ if width == 0.0 || height == 0.0 => text.push_str("it takes up no space"),
+                _ => text.push_str("what is on top of it could not be told"),
+            }
+            let computed = &layout["computed"];
+            let mut said = Vec::new();
+            for (name, value) in computed.as_object().into_iter().flatten() {
+                let value = value.as_str().unwrap_or("");
+                // The size is given above, and a value every element starts
+                // with says nothing about this one.
+                if value.is_empty()
+                    || matches!(name.as_str(), "width" | "height" | "overflow-y")
+                    || USUAL.contains(&(name.as_str(), value))
+                    || name == "border" && value.starts_with("0px")
+                {
+                    continue;
+                }
+                if name == "overflow-x" {
+                    let other = computed["overflow-y"].as_str().unwrap_or(value);
+                    if (value, other) != ("visible", "visible") {
+                        said.push(if value == other {
+                            format!("overflow: {value}")
+                        } else {
+                            format!("overflow: {value} {other}")
+                        });
+                    }
+                    continue;
+                }
+                said.push(format!("{name}: {value}"));
+            }
+            if !said.is_empty() {
+                let _ = write!(text, "\n  {}", said.join("; "));
+            }
+        }
+        Ok(text)
+    }
     /// Until when a step keeps trying while the page is busy.
     fn patience(&self) -> Instant {
         (Instant::now() + PATIENCE).min(
@@ -833,6 +958,35 @@ impl Call<'_> {
                     );
                 }
                 text
+            }
+            Some("performance") => {
+                if ["find", "filter", "more", "max_chars"]
+                    .iter()
+                    .any(|key| map.contains_key(*key))
+                {
+                    return Err(invalid());
+                }
+                let (sink, _) = self.journal(&id).await.ok_or_else(|| {
+                    Failure::new(
+                        if self.slot(&id).is_ok_and(|slot| !slot.control.snapshot().1) {
+                            "browser_busy"
+                        } else {
+                            "browser_paused"
+                        },
+                    )
+                })?;
+                sink.journal_read(|log| log.performance())
+                    .ok_or_else(|| Failure::new("browser_paused"))?
+            }
+            Some("styles") => {
+                let find = map
+                    .get("find")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?;
+                if map.contains_key("more") || map.contains_key("filter") {
+                    return Err(invalid());
+                }
+                self.styles(&id, find).await?
             }
             Some("page") => {
                 let mut query = json!({});
