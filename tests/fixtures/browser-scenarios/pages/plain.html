@@ -15,6 +15,7 @@
 <ul id="nav"><li><a href="#first">First section</a></li><li><a href="#second">Second section</a></li><li><a href="#top">Top 10 books</a> 10</li></ul>
 <p><button type="button" id="late">Late</button> <button type="button" class="cross" id="cross" aria-label="Close panel"></button></p>
 <p><span id="cell" tabindex="0">Editable cell</span> <span id="box" tabindex="0">Menu box</span></p>
+<p><button type="button" id="slide">Slide</button> <button type="button" id="mover" style="position:relative;left:0;transition:left .4s linear">Moving</button></p>
 <p id="out">Nothing yet</p>
 <div style="height:6000px"></div><p id="far">Far below</p>
 <script>
@@ -32,5 +33,7 @@ document.getElementById('late').onclick=()=>{setTimeout(()=>fetch('/fail?late=1'
 document.getElementById('cell').ondblclick=()=>{document.getElementById('out').textContent='Editing cell';};
 document.getElementById('cell').onclick=event=>{if(event.detail===1)document.getElementById('out').textContent='Cell chosen';};
 document.getElementById('box').oncontextmenu=event=>{event.preventDefault();document.getElementById('out').textContent='Menu shown';};
+document.getElementById('slide').onclick=()=>{document.getElementById('mover').style.left='300px';};
+document.getElementById('mover').onclick=()=>{document.getElementById('out').textContent='Clicked at '+getComputedStyle(document.getElementById('mover')).left;};
 addEventListener('scroll',()=>{if(scrollY>2500)document.getElementById('out').textContent='Scrolled far';});
 </script>

@@ -6,6 +6,9 @@
 //! references for them. References to the rest of the page stay as they were.
 use super::*;
 
+/// How long the page is left alone after an input before it is looked at.
+const PAUSE: Duration = Duration::from_millis(20);
+
 async fn revisions(
     port: &native::Port,
     frames: &[sem::Frame],
@@ -55,7 +58,13 @@ async fn read(
     // stops changing; that is reported, and the references of the view are
     // checked again before any input is sent.
     let initial = revisions(&reader, &frames, deadline).await?;
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    // What a handler does at once is done before this point. A page that goes
+    // on changing after it is given as long again, so that a redraw under way
+    // is read whole, or is seen not to have ended.
+    tokio::time::sleep(PAUSE).await;
+    if revisions(&reader, &frames, deadline).await? != initial {
+        tokio::time::sleep(PAUSE).await;
+    }
     let (mut view, _) = observe_frames(
         session,
         page,

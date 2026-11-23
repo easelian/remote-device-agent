@@ -1452,6 +1452,16 @@ async fn front_plain() {
             "{step}: {done}"
         );
     }
+    // A button that is still sliding to its place is clicked once it is there.
+    let slid = did(
+        &mut peer,
+        json!([{"click":{"name":"Slide"}},{"click":{"name":"Moving"}}]),
+    )
+    .await;
+    assert!(
+        !slid.contains('✗') && slid.contains("Clicked at 300px"),
+        "{slid}"
+    );
     // Requests that fail alike are one line.
     let burst = did(
         &mut peer,

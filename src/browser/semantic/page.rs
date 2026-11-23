@@ -1644,50 +1644,66 @@ async fn prepare_input_target<P: Port>(
     let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
     let marker = &element.frame.marker;
     let node = facts.node;
-    let mut geometry = port.target(&element.frame, node, deadline).await?;
-    if !geometry.visible || geometry.in_view && !geometry.hit {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    if !facts.in_view || !geometry.in_view {
-        if !matches!(
-            port.program(
-                &element.frame,
-                Program::Scroll {
-                    marker: marker.clone(),
-                    node
-                },
-                deadline
-            )
-            .await?,
-            Output::Applied(Some(true))
-        ) {
+    // How long an element may go on moving before it is given up.
+    let rest = deadline.min(Instant::now() + Duration::from_secs(1));
+    loop {
+        let mut geometry = port.target(&element.frame, node, deadline).await?;
+        if !geometry.visible || geometry.in_view && !geometry.hit {
             return Err(Failure::new("browser_not_actionable"));
         }
-        facts = inspect(port, element, deadline).await?;
-        geometry = port.target(&element.frame, node, deadline).await?;
+        if !facts.in_view || !geometry.in_view {
+            if !matches!(
+                port.program(
+                    &element.frame,
+                    Program::Scroll {
+                        marker: marker.clone(),
+                        node
+                    },
+                    deadline
+                )
+                .await?,
+                Output::Applied(Some(true))
+            ) {
+                return Err(Failure::new("browser_not_actionable"));
+            }
+            facts = inspect(port, element, deadline).await?;
+            geometry = port.target(&element.frame, node, deadline).await?;
+        }
+        if !geometry.hit || !geometry.in_view || !facts.hit || !facts.visible || !facts.enabled {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        // A little more than one frame: an element that slides or grows has
+        // moved by then. Where the input lands is checked again at its point just
+        // before it is sent.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let steady = inspect(port, element, deadline).await?;
+        if !steady.hit {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        if steady.x != facts.x || steady.y != facts.y {
+            // It is on its way somewhere: a panel sliding in, a row making
+            // room. It is looked at again from where it now is, until it rests.
+            if Instant::now() >= rest {
+                return Err(Failure::new("browser_not_actionable"));
+            }
+            facts = steady;
+            continue;
+        }
+        let final_geometry = port.target(&element.frame, node, deadline).await?;
+        if actionability::assess(
+            &facts,
+            kind,
+            top_level,
+            Some(&geometry),
+            Some((&steady, &final_geometry)),
+        )
+        .status
+            != actionability::Status::ReadyNow
+        {
+            return Err(Failure::new("browser_not_actionable"));
+        }
+        return Ok(steady);
     }
-    if !geometry.hit || !geometry.in_view || !facts.hit || !facts.visible || !facts.enabled {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let steady = inspect(port, element, deadline).await?;
-    if !steady.hit || steady.x != facts.x || steady.y != facts.y {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    let final_geometry = port.target(&element.frame, node, deadline).await?;
-    if actionability::assess(
-        &facts,
-        kind,
-        top_level,
-        Some(&geometry),
-        Some((&steady, &final_geometry)),
-    )
-    .status
-        != actionability::Status::ReadyNow
-    {
-        return Err(Failure::new("browser_not_actionable"));
-    }
-    Ok(steady)
 }
 
 async fn submit_probe_arm<P: Port>(
