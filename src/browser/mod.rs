@@ -64,9 +64,11 @@ pub fn run_internal_supervisor() -> Option<crate::error::Result<()>> {
 }
 pub const MUTATIONS: &[&str] = &["browser_do"];
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// Whether the session runtime may be used. On unless the policy says
+    /// `false`; `enabled` still decides whether there is a browser at all.
     pub capability_v2: bool,
     pub firefox_executable: Option<PathBuf>,
     pub enabled: bool,
@@ -76,6 +78,22 @@ pub struct Settings {
     pub executable: Option<PathBuf>,
     pub sites: sites::Sites,
     pub shell_coexistence: Coexistence,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            capability_v2: true,
+            firefox_executable: None,
+            enabled: false,
+            persistent_profiles: false,
+            downloads: false,
+            uploads: false,
+            executable: None,
+            sites: sites::Sites::default(),
+            shell_coexistence: Coexistence::default(),
+        }
+    }
 }
 
 /// Whether browser sessions are offered on a device that also gives the AI a
@@ -626,6 +644,12 @@ mod tests {
     #[test]
     fn settings_are_explicit_and_principals_are_not_free_form() {
         assert!(!Settings::parse(None).unwrap().enabled);
+        // The session runtime is on wherever the browser is, unless it is turned off.
+        assert!(Settings::parse(None).unwrap().capability_v2);
+        let enabled = Settings::parse(Some(&json!({"enabled":true}))).unwrap();
+        assert!(enabled.enabled && enabled.capability_v2);
+        let off = Settings::parse(Some(&json!({"enabled":true,"capability_v2":false}))).unwrap();
+        assert!(off.enabled && !off.capability_v2);
         assert!(Settings::parse(Some(&json!({"executable":"relative"}))).is_err());
         assert!(
             Settings::parse(Some(&json!({"enabled":true,"arguments":["--no-sandbox"]}))).is_err()

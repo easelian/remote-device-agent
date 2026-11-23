@@ -10,7 +10,7 @@ application-access contract with the `device-browser` purpose. The Server exampl
 configurations contain these settings. The Agent release does not deploy the
 matching services.
 
-Browser sessions currently run only on Linux x86_64, in an Agent built with the `experimental-browser-bidi` feature, and the local policy must set `capability_v2` to `true` besides `enabled`. An Agent on another platform or build reports `available: false` and `reason: "platform_or_build_unsupported"` in `device_info.capabilities.browser` and offers no browser operations. What this guide says about installation, encryption and the sandbox on macOS and Windows describes the browser storage and process supervision code that exists for those platforms; it applies once the session runtime has been ported to them. See the [implementation guide](browser-implementation-zhCN.md).
+Browser sessions currently run only on Linux x86_64, in an Agent built with the `experimental-browser-bidi` feature. Setting `enabled` in the local policy is enough; a policy that sets `capability_v2` to `false` turns the session runtime off, and the device then has no browser operations. An Agent on another platform or build reports `available: false` and `reason: "platform_or_build_unsupported"` in `device_info.capabilities.browser` and offers no browser operations. What this guide says about installation, encryption and the sandbox on macOS and Windows describes the browser storage and process supervision code that exists for those platforms; it applies once the session runtime has been ported to them. See the [implementation guide](browser-implementation-zhCN.md).
 
 ## Enable browser sessions
 
@@ -28,7 +28,6 @@ This is a complete policy only when no other local settings are needed. The thre
   "version": 1,
   "browser": {
     "enabled": true,
-    "capability_v2": true,
     "persistent_profiles": false,
     "downloads": false,
     "uploads": false

@@ -8,7 +8,7 @@ Agent 从连接上接受五个浏览器操作：AI 使用的 `browser_do`、`bro
 
 | 后端 | 条件 | 页面能力 |
 | --- | --- | --- |
-| Chromium CDP | Linux x86_64，构建启用 `experimental-browser-bidi`，本地策略启用 `browser.enabled` 和 `browser.capability_v2`，设备上装有 Chromium | `semantic_dom_v1` 共同页面模型及会话声明的扩展 |
+| Chromium CDP | Linux x86_64，构建启用 `experimental-browser-bidi`，本地策略启用 `browser.enabled`，且没有把 `browser.capability_v2` 设为 `false`（默认开启），设备上装有 Chromium | `semantic_dom_v1` 共同页面模型及会话声明的扩展 |
 | Firefox BiDi | 同一构建和策略，配置 `browser.firefox_executable` 的绝对路径，具备所需 Linux namespace 和 pidfd 能力 | 同一页面模型，后端差异由能力声明和覆盖范围表示 |
 
 `open` 步骤目前总是启动 Chromium，Firefox 后端只有 Agent 内部的测试能选到。浏览器功能默认关闭。Agent 使用设备上已安装的浏览器，Chromium 的本地路径由 `browser.executable` 指定或按平台规则查找。`device_info.capabilities.browser` 的 `available` 和 `reason` 说明会话是否可用及原因，`v2.backends[]` 逐个后端给出同样的信息。其他平台和构建不编译会话运行时，报告 `reason: "platform_or_build_unsupported"`。策略中 `sites.private_networks` 为 `deny` 时报告 `browser_policy_unsupported`，同样不提供会话。

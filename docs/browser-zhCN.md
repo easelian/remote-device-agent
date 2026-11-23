@@ -6,7 +6,7 @@
 
 服务端需将 Core 的 `http.browser_user_url` 设为用户网站的 origin，在 Gate 的网页登录动作列表允许 `browser:control`，并应用包含 `device-browser` 用途的配套 Auth application-access 契约。Server 示例配置已包含这些设置；发布 Agent 不会部署配套服务。
 
-浏览器会话目前只在 Linux x86_64 上、以 `experimental-browser-bidi` 特性构建的 Agent 中运行，本地策略除 `enabled` 外还需要把 `capability_v2` 设为 `true`。其他平台和构建的 Agent 在 `device_info.capabilities.browser` 中报告 `available: false` 和 `reason: "platform_or_build_unsupported"`，不提供浏览器操作。本指南中 macOS 和 Windows 的安装、加密与沙箱说明，对应这些平台上已有的浏览器存储和进程监督代码；会话运行时移植到这些平台之后，它们才适用。实现细节见[浏览器实现现状](browser-implementation-zhCN.md)。
+浏览器会话目前只在 Linux x86_64 上、以 `experimental-browser-bidi` 特性构建的 Agent 中运行，本地策略启用 `enabled` 即可；策略中把 `capability_v2` 设为 `false` 会关闭会话运行时，这时设备没有浏览器操作。其他平台和构建的 Agent 在 `device_info.capabilities.browser` 中报告 `available: false` 和 `reason: "platform_or_build_unsupported"`，不提供浏览器操作。本指南中 macOS 和 Windows 的安装、加密与沙箱说明，对应这些平台上已有的浏览器存储和进程监督代码；会话运行时移植到这些平台之后，它们才适用。实现细节见[浏览器实现现状](browser-implementation-zhCN.md)。
 
 ## 启用浏览器
 
@@ -24,7 +24,6 @@
   "version": 1,
   "browser": {
     "enabled": true,
-    "capability_v2": true,
     "persistent_profiles": false,
     "downloads": false,
     "uploads": false

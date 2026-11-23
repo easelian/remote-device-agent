@@ -140,9 +140,26 @@ mod tests {
     use super::*;
     #[test]
     fn capability_gates_policy_platform_and_each_browser_independently() {
-        let mut settings = Settings::default();
-        assert_eq!(capability(&settings, None, true)["available"], false);
-        settings.capability_v2 = true;
+        // The policy can turn the session runtime off.
+        let mut settings = Settings {
+            capability_v2: false,
+            ..Default::default()
+        };
+        let off = capability(&settings, None, true);
+        assert_eq!(off["available"], false);
+        assert_eq!(
+            off["reason"],
+            if cfg!(all(
+                target_os = "linux",
+                target_arch = "x86_64",
+                feature = "experimental-browser-bidi"
+            )) {
+                "disabled_by_local_policy"
+            } else {
+                "platform_or_build_unsupported"
+            }
+        );
+        settings = Settings::default();
         let compiled = cfg!(all(
             target_os = "linux",
             target_arch = "x86_64",

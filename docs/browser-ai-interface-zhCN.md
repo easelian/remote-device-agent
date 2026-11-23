@@ -286,7 +286,7 @@ long tasks: 2 totalling 380ms, the longest 210ms after 1.2s
 | 命名资料 | `open` 步骤不能指定资料，所以每个会话都用临时资料。资料目录的代码（`src/browser/profiles.rs`）保留，等待能指定资料的步骤；此前用旧操作创建的命名资料留在设备上，Agent 不再列出或删除，解绑设备时一并删除 |
 | 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |
 | Firefox | `open` 目前总是启动 Chromium |
-| 可用的平台 | 会话运行时只在带 `experimental-browser-bidi` 构建的 Linux x86_64 Agent 中编译，并且策略中 `capability_v2` 须为 `true`。其他平台和构建的 Agent 报告 `reason: "platform_or_build_unsupported"`，不通告任何浏览器操作，Server 以 `browser_unavailable` 拒绝。这些平台的进程监督和私有存储代码仍然编译，但没有调用方 |
+| 可用的平台 | 会话运行时只在带 `experimental-browser-bidi` 构建的 Linux x86_64 Agent 中编译。策略启用 `browser.enabled` 后三个操作即可用；`capability_v2` 默认开启，只有策略把它设为 `false` 时才关闭。其他平台和构建的 Agent 报告 `reason: "platform_or_build_unsupported"`，不通告任何浏览器操作，Server 以 `browser_unavailable` 拒绝。这些平台的进程监督和私有存储代码仍然编译，但没有调用方 |
 | 删除文件和取消下载 | 没有对应的步骤，只能由用户在文件页面上操作 |
 | 下载进行中的读取 | 点击触发下载后，默认的 `read: "changes"` 会等到下载结束。下载较慢时给这次调用加上 `read: "none"` |
 | 拒绝内网的站点策略 | 策略中 `private_networks` 为 `deny` 时，Agent 不提供浏览器会话（`reason: "browser_policy_unsupported"`）。这种策略要求核对浏览器实际连上的地址，这项核对原先只有已删除的 v1 运行时实现 |
