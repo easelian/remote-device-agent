@@ -1,4 +1,4 @@
-//! Explicit public negotiation; absence alone selects the frozen v1 path.
+//! Which backend a session runs on, and what the device says it can offer.
 use super::{Failure, Result, Settings};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(capability(&settings, None, true)["available"], false);
     }
     #[test]
-    fn only_absence_selects_v1_and_complete_known_choices_select_v2() {
+    fn only_a_complete_known_choice_selects_a_backend() {
         assert!(parse(&json!({})).unwrap().is_none());
         for backend in ["cdp", "bidi"] {
             assert_eq!(parse(&json!({"selection":{"version":2,"observation_profile":"semantic_dom_v1","backend":backend}})).unwrap().unwrap().backend.id(), backend);
