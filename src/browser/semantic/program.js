@@ -751,6 +751,37 @@ function(operation, args, other) {
     if(!Number.isFinite(args.delta)||Math.abs(args.delta)>2000)return result(false);
     scrollBy({top:args.delta,left:0,behavior:'instant'});return result(true);
   }
+  if(operation==='vitals') {
+    // The browser keeps these entries from the start of the document, so an
+    // observer made now is handed them at once.
+    const take=type=>{try{const o=new PerformanceObserver(()=>{});o.observe({type,buffered:true});const r=o.takeRecords();o.disconnect();return r;}catch(e){return null;}};
+    // A name tells elements apart only while it is short: the text of a
+    // whole section names nothing.
+    const named=node=>{
+      if(!node||node.nodeType!==1)return null;
+      const label=node.getAttribute('aria-label')||node.getAttribute('alt');
+      const text=(label||(node.textContent.length<=200?node.textContent:'')).trim().replace(/\s+/g,' ');
+      return {tag:prefix(node.localName+(node.id?'#'+node.id:''),48),name:text.length<=80?prefix(text,80):''};
+    };
+    const first=performance.getEntriesByType('paint').find(entry=>entry.name==='first-contentful-paint');
+    const largest=(take('largest-contentful-paint')||[]).pop();
+    // The score is that of the worst burst of shifts: shifts less than a
+    // second apart, for five seconds at most.
+    let score=0,burst=0,began=0,previous=0,worst=null,count=0;
+    for(const shift of take('layout-shift')||[]) {
+      if(shift.hadRecentInput)continue;
+      count++;
+      if(burst&&shift.startTime-previous<1000&&shift.startTime-began<5000)burst+=shift.value;else{burst=shift.value;began=shift.startTime;}
+      previous=shift.startTime; if(burst>score)score=burst;
+      if(!worst||shift.value>worst.value)worst=shift;
+    }
+    const tasks=take('longtask'); let total=0,longest=null;
+    for(const task of tasks||[]){total+=task.duration;if(!longest||task.duration>longest.duration)longest=task;}
+    return result({fcp:first?first.startTime:null,
+      lcp:largest?{at:largest.startTime,element:named(largest.element)}:null,
+      shifts:{count,score,largest:worst?{value:worst.value,at:worst.startTime,element:named(worst.sources&&worst.sources[0]&&worst.sources[0].node)}:null},
+      tasks:tasks?{count:tasks.length,total,longest:longest?longest.duration:0,at:longest?longest.startTime:0}:null});
+  }
   if(operation==='surface') {
     let node=activeElement(),focus=null;
     // Headless Firefox can keep hasFocus() false after native pointer input.

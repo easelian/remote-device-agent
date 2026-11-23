@@ -414,6 +414,19 @@ impl Semantic {
         }
         Ok(())
     }
+    /// What the top document has measured of its own loading.
+    pub async fn vitals(&self, deadline: Instant) -> Result<Value> {
+        let frame = self
+            .frames(deadline)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(stale)?;
+        match self.program(&frame, Program::Vitals, deadline).await? {
+            Output::Vitals(value) => Ok(value),
+            _ => Err(sem::types::decode()),
+        }
+    }
     pub async fn metadata(&self, deadline: Instant) -> Result<(sem::Frame, Metadata)> {
         if self.dialog().is_some() {
             return Err(Failure::new("browser_dialog_open"));

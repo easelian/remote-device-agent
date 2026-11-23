@@ -53,6 +53,8 @@ pub(crate) enum Program {
     },
     Ready,
     Stats,
+    /// What the page has measured of its own painting, shifting and blocking.
+    Vitals,
     ClearNodes {
         marker: Marker,
     },
@@ -418,6 +420,7 @@ pub(crate) enum Output {
     Checks(Vec<Option<Facts>>),
     Geometry(Option<Geometry>),
     Stats(RegistryStats),
+    Vitals(Value),
     Applied(Option<bool>),
     ReusableSubmit(Option<u64>),
     Probe(Option<SubmitValidation>),
@@ -479,6 +482,7 @@ impl Program {
             Self::ScrollViewport { delta } => ("scroll_viewport", json!({"delta":delta})),
             Self::Ready => ("ready", json!({})),
             Self::Stats => ("stats", json!({})),
+            Self::Vitals => ("vitals", json!({})),
             Self::ClearNodes { marker } => (
                 "clear_nodes",
                 json!({"realm":marker.realm,"restoration":marker.restoration}),
@@ -646,6 +650,12 @@ impl Program {
             }
             Self::VisualRevision => Ok(Output::Revision(parse(text)?)),
             Self::ViewRevision(_) => Ok(Output::ViewRevision(parse(text)?)),
+            Self::Vitals => {
+                if text.len() > 4096 {
+                    return Err(types::decode());
+                }
+                Ok(Output::Vitals(parse(text)?))
+            }
             Self::Stats => {
                 let stats: RegistryStats = parse(text)?;
                 stats.validate()?;

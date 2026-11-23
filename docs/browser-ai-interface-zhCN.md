@@ -31,6 +31,7 @@
 |---|---|
 | `steps` | 必填，步骤列表 |
 | `session` | 会话 ID 的开头几位。只有一个会话时省略。`"new"` 让 `open` 步骤在已有会话之外再开一个，见[多个会话](#多个会话) |
+| `tab` | 标签页 ID。步骤在这个标签页里执行，它不是当前标签页时先切换过去，见[多个标签页](#多个标签页) |
 | `read` | `changes`（默认）、`page` 或 `none`，见[回复](#回复) |
 
 ### 步骤
@@ -147,9 +148,32 @@ not run: 3–3
 - 一步最多列 5 个，其余只给数量。
 - 行首的 `n6`、`c7` 是条目编号，用 `browser_read` 可以查到这一条的全部内容，见[控制台和网络](#控制台和网络)。
 
+### 多个标签页
+
+一个会话里有若干标签页，其中一个是当前标签页，步骤在它上面执行。
+
+- **步骤打开了新标签页**：点击 `target="_blank"` 的链接或页面调用 `window.open` 之后，当前标签页自动变为新打开的那个，这一步下面注明怎样回去，回复末尾附上新标签页的内容：
+
+  ```
+  1 click link "Open report"
+    (no visible change)
+    a new tab opened and is worked on now; go back with {"tab":"7419bbb3ea79c581fd742bb33400d173"}
+  --- page
+  Report — http://shop.example/report
+  ```
+
+- **切换**：`{"tab": ID}` 步骤，或者给整次调用加 `tab` 参数。`{"tab": "new"}` 打开空白标签页，`{"tab": "close"}` 关闭当前标签页。
+- **不切换而读取**：`browser_read` 和 `browser_see` 的 `tab` 参数读另一个标签页的页面或截图，当前标签页不变。
+- **页面自己关闭了当前标签页**：下一步之前自动改到剩下的第一个标签页，并在回复里注明。
+- **列出**：`browser_read` 的 `what: "tabs"`，当前标签页以 `*` 标记。有多个会话而没有指明会话时，按会话分组列出全部标签页。
+
+诊断日志只跟随当前标签页，切换标签页后重新开始。新标签页是在打开之后才成为当前标签页的，所以它加载期间的问题不在日志里。
+
+一个会话最多 8 个标签页。
+
 ### 多个会话
 
-`open` 步骤在没有会话时打开一个会话，已有会话时在当前标签页打开地址。任务需要两套互不相干的登录状态时，给调用加上 `"session": "new"`，`open` 会另开一个会话。此后有多个会话，每次调用都要用 `session` 指明其中一个，否则以 `browser_session_ambiguous` 失败。`browser_read` 的 `what: "sessions"` 列出所有会话，不需要指明会话。
+`open` 步骤在没有会话时打开一个会话，已有会话时在当前标签页打开地址。任务需要两套互不相干的登录状态时，给调用加上 `"session": "new"`，`open` 会另开一个会话。此后有多个会话，每次调用都要用 `session` 指明其中一个，否则以 `browser_session_ambiguous` 失败。`browser_read` 的 `what: "sessions"` 列出所有会话，`what: "tabs"` 不带 `session` 时列出所有会话的标签页，这两种读取都不需要指明会话。每个会话是一个独立的浏览器进程，有自己的窗口。
 
 ## `browser_read`：读页面
 
@@ -164,7 +188,8 @@ not run: 3–3
 | `filter` | 读页面时：`interactive` 只列可操作的控件，`viewport` 只列视口内的内容。读控制台时：`errors`。读网络时：`failed` |
 | `more` | 上一次回复末尾 `more:` 后面的值，接着读下一页 |
 | `max_chars` | 这一页的字符上限，默认 20000 |
-| `session` | 同 `browser_do` |
+| `session` | 同 `browser_do`，但不接受 `"new"` |
+| `tab` | 读这个标签页而不切换过去。只对读页面有效：控制台、网络、样式和页面加载只有当前标签页的 |
 
 回复的第一行是标题和地址，之后是页面内容。内容没有读完时，最后一行是 `more: <值> (42% read)`。
 
@@ -223,15 +248,21 @@ slowest:
   n12 200 GET /api/items fetch 890ms 12.0kB
 largest:
   n7 200 GET /hero.jpg image 610ms 640.0kB
+paint: first content after 310ms, largest content after 1.1s (img "Autumn sale")
+layout shift: 0.12 in 3, the largest 0.08 after 2.3s (div#banner)
+long tasks: 2 totalling 380ms, the longest 210ms after 1.2s
 ```
 
 - `document` 一行的时间从请求文档算起，包括之前的重定向。
 - `slowest` 和 `largest` 各列 5 个请求，编号可以用 `what: "network"` 查看详情。
-- 不包含 LCP、CLS 和长任务。这些指标要在页面里运行脚本才能取得，还没有实现。
+- `paint` 一行是首次内容绘制（FCP）和最大内容绘制（LCP）的时间，括号里是最大内容所在的元素。
+- `layout shift` 一行是累积布局偏移（CLS）的分数、偏移次数，以及最大的一次偏移发生的时间和移动的元素。用户输入后 500 毫秒内的偏移不计入。
+- `long tasks` 一行是阻塞主线程超过 50 毫秒的任务：个数、总时长、最长一个的时长和开始时间。
+- 后三行由页面里一段固定的只读脚本取得，时间从文档开始加载算起。脚本读的是浏览器已经记下的数据，所以不需要在加载前做准备。页面正被对话框挡住时取不到，回复里会说明。
 
 ## `browser_see`：截图
 
-只有 `session` 一个可选参数。返回当前标签页的截图，用于画布和只能靠视觉判断的内容。
+可选参数有 `session` 和 `tab`。返回当前标签页或 `tab` 指定的标签页的截图，用于画布和只能靠视觉判断的内容。
 
 ## 已实现的范围
 
@@ -240,7 +271,7 @@ largest:
 | 尚未完成 | 现状 |
 |---|---|
 | 引用的有效期 | 引用在下一个动作之后失效，同一次调用里靠后的步骤要用描述定位。设计目标是元素存在期间引用不变 |
-| 诊断的缺口 | 样式不说明值来自哪条 CSS 规则；页面加载摘要不含 LCP、CLS 和长任务；诊断日志不保留请求体，也不保留成功请求的响应体。Firefox 会话没有诊断日志 |
+| 诊断的缺口 | 样式不说明值来自哪条 CSS 规则；没有交互延迟（INP）；诊断日志只跟随当前标签页，不保留请求体，也不保留成功请求的响应体。Firefox 会话没有诊断日志 |
 | 按截图坐标点击 | Server 已删除旧的 `browser_act`，MCP 客户端不能再按坐标点击 |
 | 命名资料 | Server 已删除旧的 `browser_profiles`，`open` 步骤也不能指定资料，所以每个会话都用临时资料 |
 | 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |

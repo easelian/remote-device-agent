@@ -18,6 +18,8 @@ const PATIENCE: Duration = Duration::from_secs(4);
 const RETRY: Duration = Duration::from_millis(100);
 /// Problems one step reports in full; the rest are counted.
 const PROBLEMS: usize = 5;
+/// How long a tab that a step opened is waited for before it can be worked in.
+const NEW_TAB: Duration = Duration::from_secs(2);
 /// Elements one reading of styles describes.
 const STYLED: usize = 3;
 /// Computed values an element has unless something sets them.
@@ -424,6 +426,66 @@ struct Call<'a> {
     principal: &'a Principal,
     deadline: Instant,
     operation_id: Option<&'a str>,
+    /// The tab a reading is of, when it is not the one being worked on.
+    tab: Option<String>,
+}
+
+/// The paints, layout shifts and long tasks a page measured, as lines.
+fn vitals(read: &Value) -> String {
+    use sem::task_events::journal::span;
+    let after = |at: &Value| at.as_f64().map(|ms| span(ms.max(0.0).round() as u64));
+    let named = |element: &Value| match (element["tag"].as_str(), element["name"].as_str()) {
+        (Some(tag), Some(name)) if !name.is_empty() => format!(" ({tag} {name:?})"),
+        (Some(tag), _) => format!(" ({tag})"),
+        _ => String::new(),
+    };
+    let mut paint = Vec::new();
+    if let Some(at) = after(&read["fcp"]) {
+        paint.push(format!("first content after {at}"));
+    }
+    if let Some(at) = after(&read["lcp"]["at"]) {
+        paint.push(format!(
+            "largest content after {at}{}",
+            named(&read["lcp"]["element"])
+        ));
+    }
+    let mut text = if paint.is_empty() {
+        "\npaint: nothing has been painted yet".to_owned()
+    } else {
+        format!("\npaint: {}", paint.join(", "))
+    };
+    let shifts = &read["shifts"];
+    match (
+        shifts["count"].as_u64().unwrap_or(0),
+        after(&shifts["largest"]["at"]),
+    ) {
+        (count @ 1.., Some(at)) => {
+            let _ = write!(
+                text,
+                "\nlayout shift: {:.2} in {count}, the largest {:.2} after {at}{}",
+                shifts["score"].as_f64().unwrap_or(0.0),
+                shifts["largest"]["value"].as_f64().unwrap_or(0.0),
+                named(&shifts["largest"]["element"])
+            );
+        }
+        _ => text.push_str("\nlayout shift: none"),
+    }
+    let tasks = &read["tasks"];
+    match tasks["count"].as_u64() {
+        None => text.push_str("\nlong tasks: not measured by this browser"),
+        Some(0) => text.push_str("\nlong tasks: none"),
+        Some(count) => {
+            let whole = |value: &Value| span(value.as_f64().unwrap_or(0.0).max(0.0).round() as u64);
+            let _ = write!(
+                text,
+                "\nlong tasks: {count} totalling {}, the longest {} after {}",
+                whole(&tasks["total"]),
+                whole(&tasks["longest"]),
+                whole(&tasks["at"])
+            );
+        }
+    }
+    text
 }
 impl Call<'_> {
     fn slot(&self, id: &str) -> Result<Arc<Slot>> {
@@ -475,6 +537,12 @@ impl Call<'_> {
             self.take_back(id).await;
         }
         params["session_id"] = id.into();
+        if let Some(tab) = &self.tab
+            && !matches!(operation, "browser_tabs" | "browser_control")
+            && params.get("tab_id").is_none()
+        {
+            params["tab_id"] = tab.clone().into();
+        }
         if operation != "browser_tabs" {
             params["control_epoch"] = self.slot(id)?.control.snapshot().0.into();
         }
@@ -804,6 +872,45 @@ impl Call<'_> {
     async fn tabs(&self, id: &str) -> Result<Value> {
         self.inner(id, "browser_tabs", json!({})).await
     }
+    /// The tabs of a session, one to a line, the one worked on marked.
+    async fn listed(&self, id: &str) -> Result<String> {
+        let tabs = self.tabs(id).await?;
+        let mut text = String::new();
+        for tab in tabs["tabs"].as_array().into_iter().flatten() {
+            let _ = writeln!(
+                text,
+                "{} {} {}",
+                if tab["tab_id"] == tabs["active_tab"] {
+                    "*"
+                } else {
+                    " "
+                },
+                tab["tab_id"].as_str().unwrap_or(""),
+                Self::heading(tab)
+            );
+        }
+        Ok(text)
+    }
+    fn active(&self, id: &str) -> String {
+        self.slot(id)
+            .map(|slot| slot.active.lock().unwrap().clone())
+            .unwrap_or_default()
+    }
+    fn tab_ids(&self, id: &str) -> Vec<String> {
+        self.slot(id)
+            .and_then(|slot| slot.port())
+            .map(|port| port.tabs().into_iter().map(|tab| tab.tab_id).collect())
+            .unwrap_or_default()
+    }
+    /// Makes a tab the one that is worked on.
+    async fn move_to(&self, id: &str, tab: &str) -> Result<Value> {
+        self.inner(
+            id,
+            "browser_act",
+            json!({"action":{"kind":"select_tab"},"tab_id":tab}),
+        )
+        .await
+    }
     fn heading(tab: &Value) -> String {
         format!(
             "{} — {}",
@@ -843,29 +950,64 @@ impl Browsers {
         operation_id: Option<&str>,
     ) -> Result<Value> {
         let map = params.as_object().ok_or_else(invalid)?;
+        let tab = map
+            .get("tab")
+            .map(|tab| {
+                tab.as_str()
+                    .filter(|tab| {
+                        (1..=128).contains(&tab.len())
+                            && tab
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    })
+                    .map(str::to_owned)
+                    .ok_or_else(invalid)
+            })
+            .transpose()?;
         let call = Call {
             browsers: self,
             principal,
             deadline,
             operation_id,
+            // Steps are carried out in the tab that is worked on, so a call
+            // that names another one moves there first.
+            tab: tab.clone().filter(|_| operation != "browser_do"),
         };
         let allowed: &[&str] = match operation {
-            "browser_do" => &["session", "steps", "read"],
-            "browser_read" => &["session", "what", "find", "filter", "more", "max_chars"],
-            _ => &["session"],
+            "browser_do" => &["session", "tab", "steps", "read"],
+            "browser_read" => &[
+                "session",
+                "tab",
+                "what",
+                "find",
+                "filter",
+                "more",
+                "max_chars",
+            ],
+            _ => &["session", "tab"],
         };
         if map.keys().any(|key| !allowed.contains(&key.as_str())) {
             return Err(invalid());
         }
-        // Listing the sessions is how a caller with several learns their names.
-        let session = if operation == "browser_read" && map.get("what") == Some(&json!("sessions"))
-        {
+        // Listing the sessions, or the tabs of all of them, is how a caller
+        // with several learns their names.
+        let all = operation == "browser_read"
+            && (map.get("what") == Some(&json!("sessions"))
+                || map.get("what") == Some(&json!("tabs")) && !map.contains_key("session"));
+        let session = if all {
             None
         } else {
             call.session(map.get("session"))?
         };
         match operation {
-            "browser_do" => call.run(map, session).await,
+            "browser_do" => {
+                if let (Some(id), Some(tab)) = (&session, &tab)
+                    && call.active(id) != *tab
+                {
+                    call.move_to(id, tab).await?;
+                }
+                call.run(map, session).await
+            }
             "browser_read" => call.read(map, session).await,
             "browser_see" => {
                 let id = session.ok_or_else(|| Failure::new("browser_no_session"))?;
@@ -904,26 +1046,48 @@ impl Call<'_> {
             }
             return Ok(json!({"text":text.trim_end()}));
         }
-        let id = session.ok_or_else(|| Failure::new("browser_no_session"))?;
-        let text = match what {
-            Some("tabs") => {
-                let tabs = self.tabs(&id).await?;
-                let mut text = String::new();
-                for tab in tabs["tabs"].as_array().into_iter().flatten() {
-                    let _ = writeln!(
-                        text,
-                        "{} {} {}",
-                        if tab["tab_id"] == tabs["active_tab"] {
-                            "*"
-                        } else {
-                            " "
-                        },
-                        tab["tab_id"].as_str().unwrap_or(""),
-                        Self::heading(tab)
-                    );
+        if what == Some("tabs") && session.is_none() {
+            let owned: Vec<String> = self
+                .browsers
+                .v2_listing(self.principal, false)
+                .iter()
+                .filter_map(|listed| listed["session_id"].as_str().map(str::to_owned))
+                .collect();
+            let mut text = String::new();
+            match owned.as_slice() {
+                [] => return Err(Failure::new("browser_no_session")),
+                [only] => {
+                    text = self.listed(only).await?;
+                    return Ok(json!({"text":text.trim_end(),"session_id":only}));
                 }
-                text.trim_end().to_owned()
+                several => {
+                    for id in several {
+                        let _ = writeln!(text, "session {}", &id[..id.len().min(6)]);
+                        match self.listed(id).await {
+                            Ok(tabs) => text.push_str(&tabs),
+                            Err(error) => {
+                                let _ = writeln!(text, "  ({})", error.code);
+                            }
+                        }
+                    }
+                }
             }
+            return Ok(json!({"text":text.trim_end()}));
+        }
+        let id = session.ok_or_else(|| Failure::new("browser_no_session"))?;
+        if matches!(what, Some("console" | "network" | "performance" | "styles"))
+            && self
+                .tab
+                .as_ref()
+                .is_some_and(|tab| *tab != self.active(&id))
+        {
+            return Ok(json!({"text":format!(
+                "{}: only the tab that is worked on is recorded and measured; move to this one first with a {{\"tab\":…}} step",
+                what.unwrap_or("")
+            ),"session_id":id}));
+        }
+        let text = match what {
+            Some("tabs") => self.listed(&id).await?.trim_end().to_owned(),
             Some(what @ ("console" | "network")) => {
                 if map.contains_key("more") {
                     return Err(invalid());
@@ -1001,8 +1165,26 @@ impl Call<'_> {
                         },
                     )
                 })?;
-                sink.journal_read(|log| log.performance())
-                    .ok_or_else(|| Failure::new("browser_paused"))?
+                let mut text = sink
+                    .journal_read(|log| log.performance())
+                    .ok_or_else(|| Failure::new("browser_paused"))?;
+                let measured = match self
+                    .slot(&id)
+                    .and_then(|slot| slot.port()?.for_tab(&self.active(&id)))
+                {
+                    Ok(port) => {
+                        port.vitals(self.deadline.min(Instant::now() + Duration::from_secs(2)))
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                match measured {
+                    Ok(measured) => text.push_str(&vitals(&measured)),
+                    Err(_) => text.push_str(
+                        "\npaint, layout shift and long tasks: the page could not be asked now",
+                    ),
+                }
+                text
             }
             Some("styles") => {
                 let find = map
@@ -1061,10 +1243,58 @@ impl Call<'_> {
         let last = steps.len() - 1;
         for (index, step) in steps.iter().enumerate() {
             let number = index + 1;
+            let before = session
+                .as_ref()
+                .map(|id| self.tab_ids(id))
+                .unwrap_or_default();
+            // A page can close its own tab. The work goes on in one that is left.
+            if let Some(id) = &session
+                && let Some(left) = before.first()
+                && !before.contains(&self.active(id))
+                && !matches!(step.verb, "tab" | "close")
+                && self.move_to(id, left).await.is_ok()
+            {
+                let _ = writeln!(
+                    text,
+                    "(the tab that was worked on has closed; now on {left})"
+                );
+            }
             if let Some(id) = &session {
                 self.journal(id).await;
             }
             let outcome = self.step(step, &mut session, read == "changes").await;
+            // A step that opens a tab is followed there, as the browser's own
+            // window is: what the step led to is in the new tab.
+            let mut moved = String::new();
+            if outcome.is_ok()
+                && !before.is_empty()
+                && !matches!(step.verb, "tab" | "close")
+                && let Some(id) = &session
+                && let Some(new) = self
+                    .tab_ids(id)
+                    .into_iter()
+                    .rfind(|tab| !before.contains(tab))
+            {
+                let old = self.active(id);
+                let until = (Instant::now() + NEW_TAB).min(self.patience());
+                let arrived = loop {
+                    match self.move_to(id, &new).await {
+                        Ok(_) => break true,
+                        // The tab is listed before it can be worked in.
+                        Err(error) if error.state == "not_sent" && Instant::now() < until => {
+                            tokio::time::sleep(RETRY).await;
+                        }
+                        Err(_) => break false,
+                    }
+                };
+                moved = if arrived {
+                    format!(
+                        "  a new tab opened and is worked on now; go back with {{\"tab\":\"{old}\"}}\n"
+                    )
+                } else {
+                    format!("  a new tab opened: {new}; move to it with {{\"tab\":\"{new}\"}}\n")
+                };
+            }
             let problems = match &session {
                 Some(id) => {
                     self.bodies(id).await;
@@ -1093,6 +1323,10 @@ impl Call<'_> {
                         text.push_str("  (no visible change)\n");
                         unseen = false;
                     } else if step.changes() {
+                        unseen = true;
+                    }
+                    if !moved.is_empty() {
+                        text.push_str(&moved);
                         unseen = true;
                     }
                     text.push_str(&problems);

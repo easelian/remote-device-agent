@@ -386,7 +386,7 @@ fn size(bytes: u64) -> String {
     }
 }
 
-fn span(ms: u64) -> String {
+pub(crate) fn span(ms: u64) -> String {
     if ms < 1000 {
         format!("{ms}ms")
     } else {

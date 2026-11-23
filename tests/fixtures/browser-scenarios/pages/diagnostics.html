@@ -9,9 +9,19 @@
   <button style="width:200px;height:40px;opacity:.5">Hidden offer</button>
   <div aria-label="Notice" style="position:absolute;inset:0;background:#fffbe6"></div>
 </div>
+<a href="/modal.html" target="_blank">Open report</a>
 <script src="/missing.js"></script>
 <script>
-  // A page with the faults a person would open the developer tools for.
+  // A page with the faults a person would open the developer tools for:
+  // work that keeps it from answering, and content that moves late.
+  const until = performance.now() + 120;
+  while (performance.now() < until) {}
+  setTimeout(() => {
+    const late = document.createElement("div");
+    late.textContent = "Late notice";
+    late.style.height = "60px";
+    document.body.prepend(late);
+  }, 200);
   console.error("config missing", {retry: 3});
   console.log("orders loaded");
   save.onclick = async () => {

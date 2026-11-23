@@ -1697,7 +1697,7 @@ async fn front_diagnostics() {
     let opened = said(
         &mut peer,
         "browser_do",
-        json!({"steps":[{"open":site.url("diagnostics")}]}),
+        json!({"steps":[{"open":site.url("diagnostics")},{"wait":{"text":"Late notice"}}]}),
     )
     .await;
     assert!(opened.contains("\n  problems:\n"), "{opened}");
@@ -1823,6 +1823,17 @@ async fn front_diagnostics() {
             && performance.contains(" GET /diagnostics.html document "),
         "{performance}"
     );
+    // What the page measured of itself: painting, shifting and blocking.
+    assert!(
+        performance.contains("\npaint: first content after ")
+            && performance.contains(", largest content after ")
+            && performance.contains("\nlayout shift: 0.")
+            && performance.contains(" in 1, the largest 0.")
+            && performance.contains(" (body)\n")
+            && performance.contains("\nlong tasks: ")
+            && performance.contains(", the longest 1"),
+        "{performance}"
+    );
     // How an element is drawn, and what is in the way of a click on it.
     let styles = said(
         &mut peer,
@@ -1865,6 +1876,66 @@ async fn front_diagnostics() {
         none.starts_with("styles: no element has the text"),
         "{none}"
     );
+    // A step that opens a tab is followed there, and the other tabs stay
+    // within reach without moving to them.
+    async fn current(peer: &mut Peer) -> (String, usize) {
+        let tabs = said(peer, "browser_read", json!({"what":"tabs"})).await;
+        let on = tabs
+            .lines()
+            .find(|line| line.starts_with('*'))
+            .and_then(|line| line.split(' ').nth(1))
+            .unwrap_or_else(|| panic!("{tabs}"))
+            .to_owned();
+        (on, tabs.lines().count())
+    }
+    let (old, _) = current(&mut peer).await;
+    let followed = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":{"name":"Open report"}}]}),
+    )
+    .await;
+    assert!(
+        followed.contains(&format!(
+            "\n  a new tab opened and is worked on now; go back with {{\"tab\":\"{old}\"}}\n"
+        )) && followed.contains("--- page\n")
+            && followed.contains("/modal.html"),
+        "{followed}"
+    );
+    let (new, count) = current(&mut peer).await;
+    assert!(new != old && count == 2);
+    let other = said(&mut peer, "browser_read", json!({"tab":old})).await;
+    assert!(other.starts_with("Diagnostics — "), "{other}");
+    let seen = peer.call("browser_see", json!({"tab":old})).await;
+    assert!(seen.get("error").is_none(), "{seen}");
+    assert_eq!(current(&mut peer).await.0, new);
+    let unrecorded = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"console","tab":old}),
+    )
+    .await;
+    assert!(
+        unrecorded.starts_with("console: only the tab that is worked on"),
+        "{unrecorded}"
+    );
+    // Steps for a named tab are carried out there.
+    let back = said(
+        &mut peer,
+        "browser_do",
+        json!({"tab":old,"steps":[{"click":{"name":"Refresh"}}]}),
+    )
+    .await;
+    assert!(back.contains("1 click button \"Refresh\""), "{back}");
+    assert_eq!(current(&mut peer).await.0, old);
+    let closed = said(
+        &mut peer,
+        "browser_do",
+        json!({"tab":new,"steps":[{"tab":"close"}],"read":"none"}),
+    )
+    .await;
+    assert!(closed.starts_with("1 tab close (now on "), "{closed}");
+    assert_eq!(current(&mut peer).await, (old.clone(), 1));
     // The journal follows the tab to another document, and starts over there.
     let moved = said(
         &mut peer,
@@ -1890,6 +1961,24 @@ async fn front_diagnostics() {
     assert!(second.contains("/missing.js"), "{second}");
     let sessions = said(&mut peer, "browser_read", json!({"what":"sessions"})).await;
     assert_eq!(sessions.lines().count(), 2, "{sessions}");
+    // The tabs of every session are listed when none is named.
+    let everywhere = said(&mut peer, "browser_read", json!({"what":"tabs"})).await;
+    assert_eq!(
+        everywhere
+            .lines()
+            .filter(|line| line.starts_with("session "))
+            .count(),
+        2,
+        "{everywhere}"
+    );
+    assert_eq!(
+        everywhere
+            .lines()
+            .filter(|line| line.starts_with('*'))
+            .count(),
+        2,
+        "{everywhere}"
+    );
     let unnamed = peer
         .call("browser_do", json!({"steps":[{"close":true}]}))
         .await;
