@@ -774,6 +774,8 @@ async fn front_diagnostics() {
             .and_then(|line| line.split(' ').nth(1))
             .unwrap_or_else(|| panic!("{tabs}"))
             .to_owned();
+        // A tab is written by the start of its ID, and taken by it.
+        assert!(on.len() == 6, "{tabs}");
         (on, tabs.lines().count())
     }
     let (old, _) = current(&mut peer).await;
@@ -993,6 +995,49 @@ async fn front_references() {
     assert_eq!(closed, "1 close");
 }
 
+/// Carries out the calls of a file against a real browser and prints every
+/// reply with its size and time: the way to try the interface on a site by
+/// hand. RDH_EXPLORE names the file, a JSON array of [operation, params];
+/// ["sleep", {"ms": 500}] lets time pass between two calls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, RDH_EXPLORE and a sandbox-capable native host"]
+async fn front_explore() {
+    // Without a file there is nothing to try; the other tests of this name run.
+    let Ok(file) = std::env::var("RDH_EXPLORE") else {
+        return;
+    };
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let calls: Vec<(String, Value)> =
+        serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    for (operation, params) in calls {
+        if operation == "sleep" {
+            let pause = params["ms"].as_u64().unwrap_or(0);
+            tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
+            continue;
+        }
+        let started = std::time::Instant::now();
+        let reply = peer.call(&operation, params.clone()).await;
+        let text = match reply["result"]["text"].as_str() {
+            Some(text) => text.to_owned(),
+            None => reply.to_string(),
+        };
+        println!(
+            "=== {operation} {params}\n--- {} bytes, {} ms\n{text}",
+            text.len(),
+            started.elapsed().as_millis()
+        );
+    }
+}
+
 /// A long page is read in parts that follow one another, a search reads only
 /// what holds the words, and a frame from another site is read with the page
 /// around it.
@@ -1126,6 +1171,122 @@ async fn front_reading() {
     assert!(clicked.contains("Opened quiet row 14"), "{clicked}");
 }
 
+/// Pages as older sites write them: boxes named only by the words beside
+/// them, a list with no label, a caption a style rule shows on hover, boxes
+/// that are dragged onto one another, and a page that fails to load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_plain() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    async fn did(peer: &mut Peer, steps: Value) -> String {
+        let reply = peer.call("browser_do", json!({"steps":steps})).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+    let opened = did(&mut peer, json!([{"open":site.url("plain")}])).await;
+    assert!(opened.contains(" unchecked: first box\n"), "{opened}");
+    // A label is its field's name, not a second thing to click; a menu item
+    // that only wraps a link is that link; a container is not called by
+    // what the controls in it say.
+    assert!(
+        opened.contains(": Username\n") && !opened.contains("tag=label"),
+        "{opened}"
+    );
+    assert!(
+        opened.contains(": Reports\n") && !opened.contains("menuitem ["),
+        "{opened}"
+    );
+    assert!(!opened.contains("Reports Yearly"), "{opened}");
+    for (step, said) in [
+        (
+            json!({"check":{"name":"second box"},"on":false}),
+            vec!["1 check checkbox \"second box\"", " unchecked: second box"],
+        ),
+        // The only list on the page needs no name.
+        (
+            json!({"select":{"role":"combobox"},"value":"2"}),
+            vec!["1 select combobox\n", " value=2"],
+        ),
+        // A picture is hovered by what it is called, and what a style rule
+        // shows beside it then is part of the change.
+        (
+            json!({"hover":{"name":"Portrait"}}),
+            vec!["1 hover ", "name: user1", ": View profile"],
+        ),
+        // Boxes that are sorted by dragging are dropped on one another.
+        (
+            json!({"drag":{"name":"Alpha"},"to":{"name":"Beta"}}),
+            vec!["1 drag ", "Swapped"],
+        ),
+        (json!({"click":{"name":"Add row"}}), vec![": Delete row"]),
+        (
+            json!({"click":{"name":"Delete row"}}),
+            vec!["(something was removed from the page; nothing else changed)"],
+        ),
+        (
+            json!({"click":{"name":"Reports"}}),
+            vec!["1 click link \"Reports\""],
+        ),
+    ] {
+        let done = did(&mut peer, json!([step])).await;
+        assert!(
+            !done.contains('✗') && said.iter().all(|part| done.contains(part)),
+            "{step}: {done}"
+        );
+    }
+    // Requests that fail alike are one line.
+    let burst = did(
+        &mut peer,
+        json!([{"click":{"name":"Burst"}},{"wait":{"url":"plain"}}]),
+    )
+    .await;
+    let burst = if burst.contains("more like it") {
+        burst
+    } else {
+        did(&mut peer, json!([{"wait":{"url":"plain"}}])).await
+    };
+    assert!(
+        burst.matches(" GET /fail?n=").count() == 1 && burst.contains(" more like it: n"),
+        "{burst}"
+    );
+    // A page is scrolled as far as is asked.
+    let far = did(
+        &mut peer,
+        json!([{"scroll":3000},{"wait":{"text":"Scrolled far"}}]),
+    )
+    .await;
+    assert!(!far.contains('✗'), "{far}");
+    // A page that does not load says why, in an open session and in none.
+    for _ in 0..2 {
+        let unsafe_port = did(&mut peer, json!([{"open":"http://127.0.0.1:1/"}])).await;
+        assert!(
+            unsafe_port.starts_with("✗ 1 open: browser_navigation_failed")
+                && unsafe_port.contains("\n  net::ERR_"),
+            "{unsafe_port}"
+        );
+        let nowhere = did(&mut peer, json!([{"open":"http://no-such-host.invalid/"}])).await;
+        assert!(
+            nowhere.starts_with(
+                "✗ 1 open: browser_navigation_failed\n  the host name leads to no address"
+            ),
+            "{nowhere}"
+        );
+        did(&mut peer, json!([{"close":true}])).await;
+    }
+}
+
 /// Fields that take no typing, elements that take clicks without being
 /// controls, and the names a label gives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1182,7 +1343,8 @@ async fn front_controls() {
     // A card that takes clicks is clicked where it is the card's own, also
     // when a button of its own lies at its middle.
     let cards = did(&mut peer, json!([{"open":site.url("cards")}])).await;
-    assert!(cards.contains(": Order 13 Remove 13\n"), "{cards}");
+    // The card is called by its own words, not by those of the button in it.
+    assert!(cards.contains(" tag=div: Order 13\n"), "{cards}");
     for (step, heard) in [
         (json!({"click":{"name":"Order 12"}}), "Opened order 12"),
         (json!({"click":{"name":"Remove 13"}}), "Removed order 13"),

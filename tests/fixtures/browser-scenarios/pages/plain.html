@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>Plain</title>
+<!-- Markup as older sites write it: nothing labelled, nothing declared, the behaviour all in script and style. -->
+<style>.fig .cap{display:none}.fig:hover .cap{display:block}.col{width:80px;height:60px;border:1px solid #888;display:inline-block}label{cursor:pointer}</style>
+<h1>Plain markup</h1>
+<form onsubmit="return false"><input type="checkbox"> first box<br><input type="checkbox" checked> second box</form>
+<p><select id="pick"><option value="">Choose</option><option value="1">One</option><option value="2">Two</option></select></p>
+<div class="fig"><img alt="Portrait" width="40" height="40" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><div class="cap">name: user1 <a href="#u1">View profile</a></div></div>
+<div id="cols"><div class="col" draggable="true"><header>Alpha</header></div><div class="col" draggable="true"><header>Beta</header></div></div>
+<p><label for="user">Username</label> <input id="user"></p>
+<ul role="menu" tabindex="0"><li role="menuitem"><a href="#m1">Reports</a><ul role="menu"><li role="menuitem"><a href="#m2">Yearly</a></li></ul></li></ul>
+<p><button type="button" id="add">Add row</button> <button type="button" id="burst">Burst</button></p><div id="rows"></div>
+<p id="out">Nothing yet</p>
+<div style="height:6000px"></div><p id="far">Far below</p>
+<script>
+let dragged=null;
+for(const col of document.querySelectorAll('.col')){
+  col.addEventListener('dragstart',event=>{dragged=col;event.dataTransfer.setData('text/plain','x');});
+  col.addEventListener('dragover',event=>event.preventDefault());
+  col.addEventListener('drop',event=>{event.preventDefault();if(dragged&&dragged!==col){const kept=dragged.innerHTML;dragged.innerHTML=col.innerHTML;col.innerHTML=kept;document.getElementById('out').textContent='Swapped';}});
+}
+document.getElementById('add').onclick=()=>{const made=document.createElement('button');made.type='button';made.textContent='Delete row';made.onclick=()=>made.remove();document.getElementById('rows').append(made);};
+document.getElementById('burst').onclick=()=>{for(const n of [1,2,3])fetch('/fail?n='+n).catch(()=>{});};
+addEventListener('scroll',()=>{if(scrollY>2500)document.getElementById('out').textContent='Scrolled far';});
+</script>

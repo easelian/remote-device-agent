@@ -92,6 +92,12 @@ pub(crate) enum Program {
         marker: Marker,
         node: u64,
     },
+    /// Notes that the pointer came to rest on an element: what a style rule
+    /// shows around it then alters no element, so it is read again.
+    Hovered {
+        marker: Marker,
+        node: u64,
+    },
     Form {
         marker: Marker,
         node: u64,
@@ -520,6 +526,7 @@ impl Program {
                 ("scroll_target", args)
             }
             Self::Focus { marker, node } => ("focus", target(marker, *node)),
+            Self::Hovered { marker, node } => ("hovered", target(marker, *node)),
             Self::Form {
                 marker,
                 node,

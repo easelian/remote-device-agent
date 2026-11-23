@@ -122,6 +122,14 @@ pub(crate) struct Capabilities {
     pub resolved_destination_check: bool,
     pub observed_connection_address: bool,
 }
+/// What the rules say of an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    Allowed,
+    Refused,
+    /// No rule refuses the name, but it resolved to no address in time.
+    Unresolved,
+}
 #[derive(Clone)]
 pub(crate) struct Policy {
     sites: Sites,
@@ -145,30 +153,39 @@ impl Policy {
         Ok(())
     }
     pub async fn allows(&self, text: &str, deadline: Instant) -> bool {
+        self.admission(text, deadline).await == Admission::Allowed
+    }
+    /// Whether an address may be opened, and when not, whether the rules
+    /// refuse it or its name simply leads nowhere. Neither is opened.
+    pub async fn admission(&self, text: &str, deadline: Instant) -> Admission {
         if text.len() > 8192 {
-            return false;
+            return Admission::Refused;
         }
         let Ok(url) = url::Url::parse(text) else {
-            return false;
+            return Admission::Refused;
         };
         if !matches!(url.scheme(), "http" | "https")
             || !url.username().is_empty()
             || url.password().is_some()
         {
-            return false;
+            return Admission::Refused;
         }
         match self.sites.judge(&url) {
-            Verdict::Allow => true,
-            Verdict::Deny => false,
+            Verdict::Allow => Admission::Allowed,
+            Verdict::Deny => Admission::Refused,
             Verdict::Resolve => {
                 let Some(host) = url.host_str() else {
-                    return false;
+                    return Admission::Refused;
                 };
                 match tokio::time::timeout_at(deadline.into(), self.lookup.addresses(host)).await {
-                    Ok(Some(addresses)) => {
-                        !addresses.is_empty() && self.sites.judge_addresses(&addresses)
+                    Ok(Some(addresses)) if !addresses.is_empty() => {
+                        if self.sites.judge_addresses(&addresses) {
+                            Admission::Allowed
+                        } else {
+                            Admission::Refused
+                        }
                     }
-                    _ => false,
+                    _ => Admission::Unresolved,
                 }
             }
         }

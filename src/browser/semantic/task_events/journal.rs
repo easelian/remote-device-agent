@@ -631,14 +631,39 @@ impl Log {
                 waiting.push(request.seq);
             }
         }
+        // Requests that failed alike, as a blocked tracker's do on every
+        // page, are told as one line that names the others.
+        let mut alike: Vec<(String, usize, Vec<u64>)> = Vec::new();
         for request in &self.requests {
             if !request.told && request.problem() && !waiting.contains(&request.seq) {
+                let key = format!(
+                    "{} {} {:?} {:?}",
+                    request.method,
+                    request.url.split(['?', '#']).next().unwrap_or(""),
+                    request.status,
+                    request.error
+                );
+                if let Some((_, _, others)) = alike.iter_mut().find(|(known, _, _)| *known == key)
+                {
+                    others.push(request.seq);
+                    continue;
+                }
                 let mut line = self.brief(request);
                 if let Some(body) = request.body.as_ref().filter(|body| !body.is_empty()) {
                     let said: Vec<&str> = body.split_whitespace().collect();
                     let _ = write!(line, " — {}", cut(&said.join(" "), 160));
                 }
+                alike.push((key, found.len(), Vec::new()));
                 found.push((request.seq, line));
+            }
+        }
+        for (_, at, others) in alike {
+            if !others.is_empty() {
+                let _ = write!(found[at].1, " (and {} more like it:", others.len());
+                for seq in others.iter().take(4) {
+                    let _ = write!(found[at].1, " n{seq}");
+                }
+                found[at].1.push_str(if others.len() > 4 { " …)" } else { ")" });
             }
         }
         for line in &mut self.lines {

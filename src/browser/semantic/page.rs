@@ -97,6 +97,8 @@ pub(crate) struct Coordination {
     operation: AsyncMutex<()>,
     input: AsyncMutex<()>,
     inputs: AtomicUsize,
+    /// Why the last address asked for did not load, in the browser's words.
+    navigation: Mutex<Option<String>>,
     #[cfg(test)]
     click_dispatch: Mutex<
         Option<(
@@ -151,9 +153,18 @@ impl Coordination {
             operation: AsyncMutex::new(()),
             input: AsyncMutex::new(()),
             inputs: AtomicUsize::new(0),
+            navigation: Mutex::new(None),
             #[cfg(test)]
             click_dispatch: Mutex::new(None),
         }
+    }
+    /// Keeps, or forgets, the reason an address did not load.
+    pub fn navigation_failed(&self, why: Option<&str>) {
+        *self.navigation.lock().unwrap() = why.map(|why| why.chars().take(200).collect());
+    }
+    /// The reason the last address did not load, told once.
+    pub fn why_navigation_failed(&self) -> Option<String> {
+        self.navigation.lock().unwrap().take()
     }
     #[cfg(test)]
     pub fn hold_click_dispatch(
@@ -1882,6 +1893,17 @@ async fn perform<P: Port>(
                 deadline,
             )
             .await?;
+            // The pointer is there; a page that cannot be told so is read as it is.
+            let _ = port
+                .program(
+                    &element.frame,
+                    Program::Hovered {
+                        marker: marker.clone(),
+                        node,
+                    },
+                    deadline,
+                )
+                .await;
             "native_hover"
         }
         Action::Click | Action::Check(_) => {
@@ -2113,7 +2135,7 @@ pub(crate) async fn check_drag_endpoints<P: Port>(
         || target_now.x != target.x
         || target_now.y != target.y
         || source_now.kind != "drag_source"
-        || target_now.kind != "drop_target"
+        || !matches!(target_now.kind.as_str(), "drop_target" | "drag_source")
         || !source_now.endpoint_eligible()
         || !target_now.endpoint_eligible()
         || !source_now.visible
@@ -2137,7 +2159,9 @@ async fn perform_drag<P: Port>(
         || source.frame.document != target.frame.document
         || source.frame.realm != target.frame.realm
         || source.facts.kind != "drag_source"
-        || target.facts.kind != "drop_target"
+        // What can be dragged in a list that is sorted by dragging is also
+        // where another of them is dropped; only a script says so.
+        || !matches!(target.facts.kind.as_str(), "drop_target" | "drag_source")
         || !source.facts.endpoint_eligible()
         || !target.facts.endpoint_eligible()
     {

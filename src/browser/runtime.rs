@@ -762,7 +762,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
                 && action.get("delta_y").is_some_and(|value| {
                     value
                         .as_f64()
-                        .is_none_or(|n| !n.is_finite() || n.abs() > 2000.)
+                        .is_none_or(|n| !n.is_finite() || n.abs() > 100_000.)
                 })
         {
             return Err(Failure::new("browser_invalid_params"));

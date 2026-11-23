@@ -665,8 +665,15 @@ impl Semantic {
         }
     }
     pub async fn navigate(&self, url: &str, deadline: Instant) -> Result<()> {
-        if !self.policy.allows(url, deadline).await {
-            return Err(Failure::new("browser_site_denied"));
+        self.coordination.navigation_failed(None);
+        match self.policy.admission(url, deadline).await {
+            sem::policy::Admission::Allowed => {}
+            sem::policy::Admission::Refused => return Err(Failure::new("browser_site_denied")),
+            sem::policy::Admission::Unresolved => {
+                self.coordination
+                    .navigation_failed(Some("the host name leads to no address"));
+                return Err(Failure::new("browser_navigation_failed"));
+            }
         }
         // The browser answers when the new document commits or the load fails. A
         // host that never answers would keep the command, and with it the whole
@@ -692,6 +699,8 @@ impl Semantic {
                 while self.adapter.pending() != 0 && Instant::now() < deadline {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
+                self.coordination
+                    .navigation_failed(Some("the site did not answer in time"));
                 return Err(Failure::unknown("browser_navigation_failed"));
             }
             reply => reply?,
@@ -699,6 +708,9 @@ impl Semantic {
         if let Some(error) = reply["errorText"].as_str() {
             // Only the site policy blocks a request on the client's behalf
             // here: the address itself passed, and one it led to did not.
+            if !error.contains("ERR_BLOCKED_BY_CLIENT") {
+                self.coordination.navigation_failed(Some(error));
+            }
             return Err(Failure::unknown(
                 if error.contains("ERR_BLOCKED_BY_CLIENT") {
                     "browser_site_denied"

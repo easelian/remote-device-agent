@@ -103,7 +103,12 @@ impl Target {
             ),
         };
         Ok(Self::Described {
-            name: text("name")?.ok_or_else(invalid)?,
+            // A role alone says enough where the page has one element of it.
+            name: match (text("name")?, map.contains_key("role")) {
+                (Some(name), _) => name,
+                (None, true) if !map.contains_key("name") => String::new(),
+                _ => return Err(invalid()),
+            },
             role: text("role")?,
             within: text("in")?,
             nth,
@@ -316,7 +321,27 @@ fn candidates(observation: &Value) -> Vec<Candidate> {
 }
 /// The one element a description stands for. Several equally good matches are
 /// listed for the caller to choose from; none is picked on its behalf.
-fn choose(target: &Target, all: &[Candidate]) -> std::result::Result<usize, Stop> {
+/// The roles a verb acts on. Among elements that match a description equally
+/// well, those are meant: a box to tick, not the form around it.
+fn taking(verb: &str) -> &'static [&'static str] {
+    match verb {
+        "check" => &[
+            "checkbox",
+            "radio",
+            "switch",
+            "menuitemcheckbox",
+            "menuitemradio",
+        ],
+        "select" => &["combobox", "listbox"],
+        "fill" => &["textbox", "searchbox", "spinbutton", "combobox", "slider"],
+        _ => &[],
+    }
+}
+fn choose(
+    target: &Target,
+    all: &[Candidate],
+    taking: &[&str],
+) -> std::result::Result<usize, Stop> {
     let Target::Described {
         name,
         role,
@@ -351,6 +376,17 @@ fn choose(target: &Target, all: &[Candidate]) -> std::result::Result<usize, Stop
             .filter(|(_, candidate)| fits(candidate) && grade(candidate))
             .map(|(index, _)| index)
             .collect();
+        let found = if found
+            .iter()
+            .any(|index| taking.contains(&all[*index].role.as_str()))
+        {
+            found
+                .into_iter()
+                .filter(|index| taking.contains(&all[*index].role.as_str()))
+                .collect()
+        } else {
+            found
+        };
         // An element that only looks as if it took clicks gives way to a
         // control of the same name: it is that control's wrapping or inside.
         let found = if found.iter().any(|index| all[*index].role != "inferred") {
@@ -667,6 +703,10 @@ impl Call<'_> {
         {
             params["tab_id"] = tab.clone().into();
         }
+        // A tab is named by the start of its ID, as it is written in replies.
+        if let Some(tab) = params["tab_id"].as_str() {
+            params["tab_id"] = self.whole(id, tab).into();
+        }
         if operation != "browser_tabs" {
             params["control_epoch"] = self.slot(id)?.control.snapshot().0.into();
         }
@@ -932,7 +972,9 @@ impl Call<'_> {
         id: &str,
         targets: &[Target],
         again: bool,
+        verb: &str,
     ) -> std::result::Result<(Vec<String>, Vec<String>), Stop> {
+        let taking = taking(verb);
         let tab = self.active(id);
         let meant = |target: &Target| match target {
             Target::Reference(reference) if again => self
@@ -952,10 +994,17 @@ impl Call<'_> {
             // The search is narrowed by the words that say most: those of the
             // record around the target, or else its name.
             let mut query = json!({"max_nodes":1000,"max_chars":64000});
-            if let ([Target::Described { name, within, .. }], []) =
+            if verb == "drag" {
+                // What can be dragged, and where it can be dropped, is listed
+                // apart from the controls, and only such an element is taken.
+                query["filter"] = "drag_endpoints".into();
+            } else if let ([Target::Described { name, within, .. }], []) =
                 (described.as_slice(), recalled.as_slice())
             {
-                query["find"] = within.as_ref().unwrap_or(name).clone().into();
+                let words = within.as_ref().unwrap_or(name);
+                if !words.is_empty() {
+                    query["find"] = words.clone().into();
+                }
             } else if let ([], [meaning]) = (described.as_slice(), recalled.as_slice())
                 && !meaning.name.is_empty()
                 && meaning.name.chars().count() <= 128
@@ -973,7 +1022,7 @@ impl Call<'_> {
                 };
                 if targets.iter().all(|target| match (target, meant(target)) {
                     (_, Some(meaning)) => recall(&meaning, &found).is_ok(),
-                    (Target::Described { .. }, _) => choose(target, &found).is_ok(),
+                    (Target::Described { .. }, _) => choose(target, &found, taking).is_ok(),
                     _ => true,
                 }) {
                     break;
@@ -1006,11 +1055,12 @@ impl Call<'_> {
                     // clicks. The search for them replaces the references found so
                     // far, so it is made only for a step with a single target.
                     let worded;
-                    let chosen = match choose(target, &found) {
+                    let chosen = match choose(target, &found, taking) {
                         Err(stop)
                             if stop.code == "browser_target_not_found"
                                 && targets.len() == 1
-                                && role.is_none() =>
+                                && role.is_none()
+                                && !name.is_empty() =>
                         {
                             let read = self
                                 .inner(
@@ -1021,12 +1071,16 @@ impl Call<'_> {
                                 )
                                 .await?;
                             worded = candidates(&read);
-                            &worded[choose(target, &worded)?]
+                            &worded[choose(target, &worded, taking)?]
                         }
                         other => &found[other?],
                     };
                     references.push(chosen.reference.clone());
-                    let mut text = format!("{} {:?}", chosen.role, chosen.name);
+                    let mut text = if chosen.name.is_empty() {
+                        chosen.role.clone()
+                    } else {
+                        format!("{} {:?}", chosen.role, chosen.name)
+                    };
                     if let Target::Described {
                         within: Some(within),
                         ..
@@ -1062,7 +1116,7 @@ impl Call<'_> {
                 } else {
                     " "
                 },
-                tab["tab_id"].as_str().unwrap_or(""),
+                self.brief(id, tab["tab_id"].as_str().unwrap_or("")),
                 Self::heading(tab)
             );
         }
@@ -1073,11 +1127,46 @@ impl Call<'_> {
             .map(|slot| slot.active.lock().unwrap().clone())
             .unwrap_or_default()
     }
+    /// The tab an ID or the start of one stands for. What fits no single tab
+    /// is passed on as it is, to be refused where tabs are known.
+    fn whole(&self, id: &str, tab: &str) -> String {
+        let ids = self.tab_ids(id);
+        let mut fitting = ids.iter().filter(|known| known.starts_with(tab));
+        match (fitting.next(), fitting.next()) {
+            (Some(only), None) => only.clone(),
+            _ => tab.to_owned(),
+        }
+    }
+    /// A tab's ID cut to what tells it from the session's other tabs.
+    fn brief(&self, id: &str, tab: &str) -> String {
+        let ids = self.tab_ids(id);
+        let mut length = 6.min(tab.len());
+        while length < tab.len()
+            && ids
+                .iter()
+                .any(|other| other != tab && other.starts_with(&tab[..length]))
+        {
+            length += 1;
+        }
+        tab.get(..length).unwrap_or(tab).to_owned()
+    }
     fn tab_ids(&self, id: &str) -> Vec<String> {
         self.slot(id)
             .and_then(|slot| slot.port())
             .map(|port| port.tabs().into_iter().map(|tab| tab.tab_id).collect())
             .unwrap_or_default()
+    }
+    /// A failed navigation with the reason the browser gave for it.
+    fn why(&self, id: &str, error: Failure) -> Stop {
+        let mut stop = Stop::from(error);
+        if stop.code == "browser_navigation_failed"
+            && let Ok(slot) = self.slot(id)
+            && let Ok(port) = slot.port()
+            && let Some(why) = sem::Port::coordination(&port).why_navigation_failed()
+        {
+            stop.detail = format!("  {why}");
+        }
+        stop
     }
     /// Makes a tab the one that is worked on.
     async fn move_to(&self, id: &str, tab: &str) -> Result<Value> {
@@ -1256,7 +1345,7 @@ impl Call<'_> {
             && self
                 .tab
                 .as_ref()
-                .is_some_and(|tab| *tab != self.active(&id))
+                .is_some_and(|tab| self.whole(&id, tab) != self.active(&id))
         {
             return Ok(json!({"text":format!(
                 "{}: only the tab that is worked on is recorded and measured; move to this one first with a {{\"tab\":…}} step",
@@ -1438,7 +1527,8 @@ impl Call<'_> {
             {
                 let _ = writeln!(
                     text,
-                    "(the tab that was worked on has closed; now on {left})"
+                    "(the tab that was worked on has closed; now on {})",
+                    self.brief(id, left)
                 );
             }
             if let Some(id) = &session {
@@ -1457,7 +1547,7 @@ impl Call<'_> {
                     .into_iter()
                     .rfind(|tab| !before.contains(tab))
             {
-                let old = self.active(id);
+                let old = self.brief(id, &self.active(id));
                 let until = (Instant::now() + NEW_TAB).min(self.patience());
                 let arrived = loop {
                     match self.move_to(id, &new).await {
@@ -1474,6 +1564,7 @@ impl Call<'_> {
                         "  a new tab opened and is worked on now; go back with {{\"tab\":\"{old}\"}}\n"
                     )
                 } else {
+                    let new = self.brief(id, &new);
                     format!("  a new tab opened: {new}; move to it with {{\"tab\":\"{new}\"}}\n")
                 };
             }
@@ -1495,8 +1586,13 @@ impl Call<'_> {
                         if view["truncated"] == true {
                             notes.push_str(" (more changed than is shown)");
                         }
-                        let mut body = format!("  changed{notes}:\n");
-                        for line in view["text"].as_str().unwrap_or("").lines() {
+                        let shown = view["text"].as_str().unwrap_or("");
+                        let mut body = if shown.trim().is_empty() {
+                            "  (something was removed from the page; nothing else changed)\n".to_owned()
+                        } else {
+                            format!("  changed{notes}:\n")
+                        };
+                        for line in shown.lines() {
                             let _ = writeln!(body, "  {line}");
                         }
                         views.push((text.len(), body));
@@ -1608,7 +1704,8 @@ impl Call<'_> {
                         "browser_act",
                         json!({"action":{"kind":"navigate","url":url}}),
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| self.why(&id, error))?;
                     id
                 }
                 None => {
@@ -1636,11 +1733,13 @@ impl Call<'_> {
                         .await;
                     if let Err(error) = shown {
                         // A session that never showed its first page is not kept.
+                        // Why is asked before the session goes.
+                        let stop = self.why(&id, error);
                         let _ = self
                             .inner(&id, "browser_control", json!({"action":"close"}))
                             .await;
                         *session = None;
-                        return Err(error.into());
+                        return Err(stop);
                     }
                     id
                 }
@@ -1747,7 +1846,7 @@ impl Call<'_> {
                 Ok((
                     format!(
                         "tab {which} (now on {})",
-                        done["tab_id"].as_str().unwrap_or("")
+                        self.brief(&id, done["tab_id"].as_str().unwrap_or(""))
                     ),
                     Value::Null,
                     false,
@@ -1765,7 +1864,7 @@ impl Call<'_> {
                 let until = self.patience();
                 let (mut done, written) = loop {
                     let attempt: std::result::Result<_, Stop> = async {
-                        let (references, written) = self.resolve(&id, &targets, again).await?;
+                        let (references, written) = self.resolve(&id, &targets, again, step.verb).await?;
                         let mut params = json!({"action":if as_value {
                             json!({"kind":"select","ref":references[0],"value":step.map["text"]})
                         } else {
@@ -1842,6 +1941,15 @@ impl Call<'_> {
                         }
                         // A target given by description is looked up afresh, so a
                         // page that was still loading or redrawing gets another go.
+                        // A drag checks where both ends lie once more after the
+                        // pointer has gone to the first, and gives up before
+                        // anything is dropped when that moved them: leaving what
+                        // it hovered over can shift the page. It is begun anew.
+                        Err(stop)
+                            if described
+                                && verb == "drag"
+                                && stop.code == "browser_stale_reference"
+                                && Instant::now() < until => {}
                         Err(stop) if described && passing(&stop) && Instant::now() < until => {
                             tokio::time::sleep(RETRY).await;
                         }
@@ -1955,7 +2063,7 @@ mod tests {
     fn a_description_stands_for_one_element_or_for_none() {
         let all = all();
         let pick =
-            |value| choose(&described(value), &all).map(|index| all[index].reference.clone());
+            |value| choose(&described(value), &all, &[]).map(|index| all[index].reference.clone());
         assert_eq!(
             pick(json!({"name":"Approve","in":"Order A2"}))
                 .ok()
@@ -2008,6 +2116,7 @@ mod tests {
             json!({"dialog":"accept"}),
             json!({"tab":"new"}),
             json!({"close":true}),
+            json!({"click":{"role":"button"}}),
         ] {
             assert!(Step::parse(&valid).is_ok(), "{valid}");
         }
@@ -2015,7 +2124,8 @@ mod tests {
             json!({}),
             json!({"click":"r1","fill":"r2","text":"x"}),
             json!({"click":"r1","text":"x"}),
-            json!({"click":{"role":"button"}}),
+            json!({"click":{"in":"Draft"}}),
+            json!({"click":{"name":"","role":"button"}}),
             json!({"click":{"name":"Save","near":"x"}}),
             json!({"fill":"r1"}),
             json!({"press":"Enter"}),

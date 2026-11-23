@@ -74,6 +74,7 @@ function(operation, args, other) {
       if (state.dirty.size >= 64 && !state.dirty.has(node)) { state.dirtyLimit = true; return; }
       state.dirty.add(node);
     };
+    state.mark = mark;
     state.track = records => {
       for (const record of records) {
         if (record.type === 'attributes') {
@@ -138,7 +139,7 @@ function(operation, args, other) {
     else if (tag === 'a' && node.hasAttribute('href')) value = 'link';
     else if (tag === 'textarea' || editingHost(node)) value = 'textbox';
     else if (tag === 'select') value = 'combobox';
-    else if (tag === 'img') value = 'img';
+    else if (tag === 'img') { if (!explicit && state.plain.has(node)) return {role:'inferred',kind:'inferred'}; value = 'img'; }
     else if (/^h[1-6]$/.test(tag)) value = 'heading';
     else if (tag === 'input') {
       const type = node.type;
@@ -151,7 +152,8 @@ function(operation, args, other) {
     if ((!explicit || explicit === 'region') && scrollable(node)) return {role:explicit || 'generic',kind:'scrollable'};
     if (node.hasAttribute('tabindex') || node.hasAttribute('onclick')) return {role:'inferred',kind:'inferred'};
     // The pointer cursor is inherited, so only the element it starts at is listed.
-    if (getComputedStyle(node).cursor === 'pointer') {
+    // A label that names a field is read as that field's name; the field is what takes the click.
+    if (getComputedStyle(node).cursor === 'pointer' && !(node.localName === 'label' && node.control)) {
       const outer = parent(node);
       if (!outer || getComputedStyle(outer).cursor !== 'pointer') return {role:'inferred',kind:'inferred'};
     }
@@ -175,6 +177,11 @@ function(operation, args, other) {
           // What a field inside a label holds is its value, not part of the
           // label: a list's options and the text typed into a text area.
           if (item !== root && ['select','textarea','datalist'].includes(item.localName)) continue;
+          // Something that merely takes clicks is called by its own words: what the controls
+          // inside it say is theirs, and would make every one of them match its name.
+          if (item !== root && mapped.role === 'inferred' && item.matches('a[href],button,select,textarea,[role=button],[role=link],[role=menuitem],[role=tab]')) continue;
+          // An item that opens a menu is called by its own words, not by all the menu holds.
+          if (item !== root && ['menuitem','treeitem'].includes(mapped.role) && ['menu','tree','group'].includes(explicitRole(item))) continue;
           if (item.localName === 'img' && item.hasAttribute('alt')) result += bounded(item.getAttribute('alt'));
           else if (item.localName === 'br') result += ' ';
           else for (let child = item.lastChild; child; child = child.previousSibling) {if(pending.length+budget.nodes>=256){quality.add('name_node_limit');break;}pending.push(child);}
@@ -220,6 +227,12 @@ function(operation, args, other) {
       name = norm(labels.join(' ')); if (name) source = 'label';
     }
     if (!name && (node.localName === 'img' || (node.localName === 'input' && node.type === 'image'))) { name = bounded(node.getAttribute('alt')); if (name) source = 'alt'; }
+    // A box with no label is read by the words written right after it, as a person reads it.
+    if (!name && node.localName === 'input' && ['checkbox','radio'].includes(node.type)) {
+      let next = node.nextSibling;
+      while (next && next.nodeType === Node.TEXT_NODE && !norm(next.nodeValue)) next = next.nextSibling;
+      if (next && next.nodeType === Node.TEXT_NODE) { name = scalars(bounded(next.nodeValue)).slice(0,200).join(''); if (name) source = 'adjacent'; }
+    }
     if (!name && node.localName === 'input' && ['button','submit','reset'].includes(node.type) && node.hasAttribute('value')) { name = bounded(node.value); if (name) source = 'value'; }
     if (!name && contentNames.has(mapped.role)) { name = text(node); if (name) source = 'content'; }
     if (!name) { name = bounded(node.getAttribute('title')); if (name) source = 'title'; }
@@ -347,6 +360,8 @@ function(operation, args, other) {
     if (dropRoles.has(explicit)) mapped.role = explicit;
     if (!mapped.role) mapped.role = 'group';
     const row = facts(node, mapped, kind);
+    // Something to drag is mostly a plain box; what is written in it tells it from the others.
+    if (row && !row.name) { row.name = scalars(norm(prefix(node.textContent,4097))).slice(0,200).join(''); if (row.name) row.name_source = 'content'; }
     return row.name && !row.name_quality.length ? row : null;
   }
   function facts(node, mapped, endpoint) {
@@ -734,16 +749,22 @@ function(operation, args, other) {
       // Asked for by text, the smallest element that holds the words is listed although
       // nothing marks it as a control: a listener added by script cannot be seen from here.
       let worded = false;
-      if (scan.query.filter==='text' && scan.query.find && (state.plain.has(node) || role(node).kind==='text')
+      if (scan.query.filter==='text' && scan.query.find && (state.plain.has(node) || role(node).kind==='text' || role(node).role==='img')
           && !node.closest('a[href],button,label,select,textarea,[role=button],[role=link]') && node.textContent.length<=4096 && visible(node)) {
-        const wanted = scan.query.find.toLowerCase(), holds = other => norm(other.textContent).toLowerCase().includes(wanted);
+        // A picture holds its words in what it is called.
+        const wanted = scan.query.find.toLowerCase(), holds = other => norm(other.textContent+' '+(other.getAttribute('alt')||'')+' '+(other.getAttribute('aria-label')||'')).toLowerCase().includes(wanted);
         if (holds(node) && !Array.from(node.children).some(holds)) { state.plain.add(node); worded = true; }
       }
       const mapped = endpoints ? null : role(node);
       const inViewport = () => { const box=node.getBoundingClientRect(); return box.bottom>0 && box.right>0 && box.top<innerHeight && box.left<innerWidth; };
       const ordinary = mapped && mapped.role && ((scan.query.filter!=='interactive'&&scan.query.filter!=='text')||controls.has(mapped.role)||mapped.role==='heading'||mapped.role==='inferred'||mapped.kind==='scrollable');
-      const row = endpoints ? endpointFacts(node) :
+      let row = endpoints ? endpointFacts(node) :
         ordinary && visible(node) && (scan.query.filter !== 'viewport' || inViewport()) ? facts(node, mapped) : null;
+      // A menu item that is only the wrapping of one link or button of the same words is that control.
+      if (row && !endpoints && mapped.kind === 'aria' && mapped.role === 'menuitem') {
+        const inner = node.querySelector('a[href],button');
+        if (inner && norm(inner.textContent) === row.name) row = null;
+      }
       if (row) {
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
         const match = worded || !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
@@ -822,7 +843,7 @@ function(operation, args, other) {
   }
   if(operation==='native_focused_frame')return result(!!other&&other.isConnected&&other.ownerDocument===document&&activeElement()===other);
   if(operation==='scroll_viewport'){
-    if(!Number.isFinite(args.delta)||Math.abs(args.delta)>2000)return result(false);
+    if(!Number.isFinite(args.delta)||Math.abs(args.delta)>100000)return result(false);
     scrollBy({top:args.delta,left:0,behavior:'instant'});return result(true);
   }
   if(operation==='vitals') {
@@ -904,7 +925,7 @@ function(operation, args, other) {
   }
   if (operation === 'scroll_target') {
     const node = target();
-    if (!scrollable(node) || disabled(node) || !Number.isFinite(args.delta) || Math.abs(args.delta) > 2000) return result(null);
+    if (!scrollable(node) || disabled(node) || !Number.isFinite(args.delta) || Math.abs(args.delta) > 100000) return result(null);
     const before = node.scrollTop;
     node.scrollBy({top:args.delta,behavior:'instant'});
     return result(node.scrollTop !== before);
@@ -912,6 +933,10 @@ function(operation, args, other) {
   if (operation === 'scroll') {
     const node=target(); if (!node || !node.isConnected) return result(false);
     node.scrollIntoView({block:'center',inline:'center',behavior:'instant'}); return result(true);
+  }
+  if (operation === 'hovered') {
+    const node=target(); if (!node || !node.isConnected) return result(false);
+    state.mark(node.parentNode); return result(true);
   }
   if (operation === 'focus') {
     const node=target(); if (!node || !node.isConnected || disabled(node)) return result(false);

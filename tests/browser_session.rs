@@ -1067,6 +1067,16 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
         2,
         "{tabs_picture}"
     );
+    // The person's page names a tab by the whole ID its own picture lists;
+    // the short form is what the AI is told.
+    let human_tab = tabs_picture["result"]["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tab| tab["tab_id"].as_str())
+        .find(|tab| tab.starts_with(&human_tab))
+        .unwrap_or_else(|| panic!("{tabs_picture}"))
+        .to_owned();
     let switched=peer.human(json!({"action":"input","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch,"sequence":1,"frame_id":tabs_picture["result"]["frame_id"],"input":{"kind":"tab","tab_id":human_tab}})).await;
     assert!(switched.get("error").is_none(), "{switched}");
     let old_picture=peer.human(json!({"action":"screenshot","session_id":id,"view_id":"test-view","lease_id":lease["lease_id"],"control_epoch":epoch})).await;
