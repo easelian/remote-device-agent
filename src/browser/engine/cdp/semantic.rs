@@ -668,16 +668,34 @@ impl Semantic {
         if !self.policy.allows(url, deadline).await {
             return Err(Failure::new("browser_site_denied"));
         }
-        let reply = self
+        // The browser answers when the new document commits or the load fails. A
+        // host that never answers would keep the command, and with it the whole
+        // session, pending until the browser gives up minutes later. Stop waiting
+        // early, cancel the load and let the command settle, so that the session
+        // can be used again at once.
+        let session = Some(self.adapter.session(&self.root)?);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let give_up = deadline - (remaining / 4).min(std::time::Duration::from_secs(3));
+        let reply = match self
             .adapter
             .wire
-            .call(
-                Some(self.adapter.session(&self.root)?),
-                Command::PageNavigate,
-                json!({"url":url}),
-                deadline,
-            )
-            .await?;
+            .call(session, Command::PageNavigate, json!({"url":url}), give_up)
+            .await
+        {
+            Err(error) if error.code == "browser_timeout_unknown" => {
+                let _ = self
+                    .adapter
+                    .wire
+                    .cleanup()
+                    .call(session, Command::PageStopLoading, json!({}), deadline)
+                    .await;
+                while self.adapter.pending() != 0 && Instant::now() < deadline {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                return Err(Failure::unknown("browser_navigation_failed"));
+            }
+            reply => reply?,
+        };
         if reply.get("errorText").is_some() {
             return Err(Failure::unknown("browser_navigation_failed"));
         }

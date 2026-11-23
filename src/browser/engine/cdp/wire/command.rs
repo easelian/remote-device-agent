@@ -65,6 +65,7 @@ pub enum Command {
     PageGetLayoutMetrics,
     PageHandleJavaScriptDialog,
     PageNavigate,
+    PageStopLoading,
     PageSetInterceptFileChooserDialog,
     RuntimeCallFunction(Effect),
     // Sent only by the wire's own tests since the v1 reader went.
@@ -174,6 +175,7 @@ impl Command {
             Self::PageGetLayoutMetrics => ("Page.getLayoutMetrics", None, Block),
             Self::PageHandleJavaScriptDialog => ("Page.handleJavaScriptDialog", Page, Continue),
             Self::PageNavigate => ("Page.navigate", Page, Block),
+            Self::PageStopLoading => ("Page.stopLoading", None, Block),
             Self::PageSetInterceptFileChooserDialog => {
                 ("Page.setInterceptFileChooserDialog", None, Block)
             }

@@ -1622,7 +1622,7 @@ async fn rejections_without_input_keep_the_session_running() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails: the call runs into the response deadline, and the session then stays paused because resume times out as well; requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn a_navigation_that_gets_no_answer_leaves_the_session_usable() {
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
     let temp = Temp(std::env::temp_dir().join(format!(
