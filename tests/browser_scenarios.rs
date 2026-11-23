@@ -1997,3 +1997,110 @@ async fn front_diagnostics() {
         assert_eq!(closed, "1 close");
     }
 }
+
+/// A reference from an earlier reply still names its element after the page
+/// has redrawn it, and names nothing once that element is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_references() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    async fn said(peer: &mut Peer, operation: &str, params: Value) -> String {
+        let reply = peer.call(operation, params).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+    /// The reference of the control called `name` under the line with `row`.
+    fn reference(page: &str, row: &str, name: &str) -> String {
+        let mut lines = page.lines().skip_while(|line| !line.contains(row));
+        lines
+            .find_map(|line| {
+                let (head, tail) = line.split_once("]: ")?;
+                (tail.trim() == name).then(|| head.rsplit_once('[').unwrap().1.to_owned())
+            })
+            .unwrap_or_else(|| panic!("no {name} under {row} in\n{page}"))
+    }
+
+    // Removing an item redraws the whole list: every reference of the first
+    // reading is dead to the browser, and each still finds its button.
+    let page = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("rerender")}]}),
+    )
+    .await;
+    let (two, four) = (
+        reference(&page, "Item 2", "Remove"),
+        reference(&page, "Item 4", "Remove"),
+    );
+    let removed = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":two},{"click":four}]}),
+    )
+    .await;
+    assert!(!removed.contains('✗'), "{removed}");
+    assert!(
+        removed.contains(&format!("(was [{four}], now [")),
+        "{removed}"
+    );
+    assert_eq!(site.writes("rerender"), ["2", "4"]);
+    // The item is gone, and so is what its reference meant.
+    let gone = said(&mut peer, "browser_do", json!({"steps":[{"click":two}]})).await;
+    assert!(
+        gone.starts_with("✗ 1 click: browser_stale_reference")
+            && gone.contains("is no longer on the page"),
+        "{gone}"
+    );
+    assert_eq!(site.writes("rerender").len(), 2);
+
+    // The next page shows other orders in the same rows. A reference to an
+    // order of the first page does not pass to the order that took its row.
+    let page = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("pager")}]}),
+    )
+    .await;
+    let (next, second) = (
+        reference(&page, "", "Next page"),
+        reference(&page, "Order P02", "Approve"),
+    );
+    let turned = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":next},{"click":second}]}),
+    )
+    .await;
+    assert!(
+        turned.contains("\n✗ 2 click: browser_stale_reference") && turned.contains("Order P02"),
+        "{turned}"
+    );
+    assert!(site.writes("pager").is_empty());
+    // Back on its page the order is there again, and the reference with it.
+    let back = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":{"name":"Previous page"}},{"click":second}]}),
+    )
+    .await;
+    if back.contains("browser_target_not_found") {
+        // The page has no way back; nothing more to check here.
+    } else {
+        assert!(!back.contains('✗'), "{back}");
+        assert_eq!(site.writes("pager"), ["P02"]);
+    }
+    let closed = said(&mut peer, "browser_do", json!({"steps":[{"close":true}]})).await;
+    assert_eq!(closed, "1 close");
+}

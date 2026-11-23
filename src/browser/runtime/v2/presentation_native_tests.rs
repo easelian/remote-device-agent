@@ -57,6 +57,7 @@ impl Fixture {
             references: HashMap::new(),
             short_references: (String::new(), 0),
             reference_tab: None,
+            issued: Vec::new(),
             frames: HashMap::new(),
             observed_frames: Vec::new(),
             carried: None,

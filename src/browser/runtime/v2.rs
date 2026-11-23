@@ -40,6 +40,9 @@ pub(super) struct Slot {
     /// What the tab named here has reported since the AI was last given
     /// control: its console and its requests.
     journal: Mutex<Option<(String, sem::task_events::Sink)>>,
+    /// What each reference given to the AI stood for, so that one the page
+    /// has outlived can be found again by its meaning.
+    meanings: Mutex<front::Meanings>,
     session: AsyncMutex<Session>,
     _storage_lock: Arc<crate::profile_lock::ProfileLocks>,
 }
@@ -54,6 +57,8 @@ struct Session {
     references: HashMap<String, sem::Reference>,
     short_references: (String, u64),
     reference_tab: Option<String>,
+    /// References issued by the operation in progress, with what they name.
+    issued: Vec<(String, front::Meaning)>,
     frames: HashMap<String, sem::Context>,
     /// The frame tree at the latest observation, for the view after an action.
     observed_frames: Vec<sem::Frame>,
@@ -453,12 +458,14 @@ impl Browsers {
             active: Mutex::new(String::new()),
             port: Mutex::new(None),
             journal: Mutex::new(None),
+            meanings: Mutex::new(front::Meanings::default()),
             session: AsyncMutex::new(Session {
                 native: None,
                 active: String::new(),
                 references: HashMap::new(),
                 short_references: (String::new(), 0),
                 reference_tab: None,
+                issued: Vec::new(),
                 frames: HashMap::new(),
                 observed_frames: Vec::new(),
                 carried: None,
@@ -928,6 +935,10 @@ impl Browsers {
         };
         let result = result.map_err(|error| settle_read(operation, error));
         session.carried = None;
+        slot.meanings
+            .lock()
+            .unwrap()
+            .keep(&tab, std::mem::take(&mut session.issued));
         *slot.active.lock().unwrap() = session.active.clone();
         if result.as_ref().is_err_and(|e| e.state == "unknown") {
             slot.pause();
@@ -1210,6 +1221,7 @@ async fn observe_frames(
                 token()?
             };
             session.references.insert(id.clone(), reference);
+            session.issued.push((id.clone(), front::Meaning::of(&node)));
             node["ref"] = id.into();
         }
         nodes.push(node);

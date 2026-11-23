@@ -143,7 +143,7 @@ impl From<Failure> for Stop {
 fn advice(code: &str) -> &'static str {
     match code {
         "browser_stale_reference" => {
-            "that reference no longer stands for an element; describe the target by name or read the page again"
+            "what that reference stood for cannot be found; describe the target by name or read the page again"
         }
         "browser_not_actionable" => "the element is hidden, disabled or covered right now",
         "browser_dialog_open" => {
@@ -176,12 +176,81 @@ fn advice(code: &str) -> &'static str {
     }
 }
 
+/// What a reference stood for when it was given out: the kind of element,
+/// its name, and the text of the row or card it was in. A reference the page
+/// has outlived is looked for again by these, and only an element that
+/// matches all three takes its place.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Meaning {
+    role: String,
+    name: String,
+    context: String,
+}
+impl Meaning {
+    /// Reads one node of a structured observation.
+    pub(super) fn of(node: &Value) -> Self {
+        Self {
+            role: node["role"]
+                .as_str()
+                .filter(|role| !role.is_empty())
+                .or(node["tag"].as_str())
+                .unwrap_or("")
+                .to_owned(),
+            name: node["name"].as_str().unwrap_or("").trim().to_owned(),
+            // Values are left out: what a field holds changes while it stays
+            // the same field.
+            context: node["record"]["entries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry["text"].as_str())
+                .flat_map(str::split_whitespace)
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+}
+
+/// The meanings of the references a session has given out, the oldest
+/// forgotten first.
+#[derive(Default)]
+pub(super) struct Meanings {
+    known: HashMap<String, (String, Meaning)>,
+    order: std::collections::VecDeque<String>,
+}
+impl Meanings {
+    const MOST: usize = 4000;
+    pub(super) fn keep(&mut self, tab: &str, issued: Vec<(String, Meaning)>) {
+        for (reference, meaning) in issued {
+            if self
+                .known
+                .insert(reference.clone(), (tab.to_owned(), meaning))
+                .is_none()
+            {
+                self.order.push_back(reference);
+            }
+            if self.order.len() > Self::MOST
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.known.remove(&oldest);
+            }
+        }
+    }
+    fn of(&self, reference: &str, tab: &str) -> Option<Meaning> {
+        self.known
+            .get(reference)
+            .filter(|(of, _)| of == tab)
+            .map(|(_, meaning)| meaning.clone())
+    }
+}
+
 /// One element of a structured observation, as far as matching needs it.
 struct Candidate {
     reference: String,
     role: String,
     name: String,
     record: String,
+    meaning: Meaning,
 }
 impl Candidate {
     fn line(&self) -> String {
@@ -221,6 +290,7 @@ fn candidates(observation: &Value) -> Vec<Candidate> {
                 .collect::<Vec<_>>()
                 .join(" ");
             Some(Candidate {
+                meaning: Meaning::of(node),
                 reference: node["ref"].as_str()?.to_owned(),
                 role: node["role"]
                     .as_str()
@@ -296,6 +366,40 @@ fn choose(target: &Target, all: &[Candidate]) -> std::result::Result<usize, Stop
         state: "not_sent",
         detail: String::new(),
     })
+}
+
+/// The element that now is what a reference stood for. One that is not there,
+/// or that cannot be told from another, is not replaced by a guess.
+fn recall(meaning: &Meaning, all: &[Candidate]) -> std::result::Result<usize, Stop> {
+    let mut same = all
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.meaning == *meaning);
+    match (same.next(), same.next()) {
+        (Some((index, _)), None) => Ok(index),
+        (found, _) => Err(Stop {
+            code: "browser_stale_reference",
+            state: "not_sent",
+            detail: format!(
+                "it stood for {} {:?}{}, which {}",
+                meaning.role,
+                meaning.name,
+                if meaning.context.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " in {:?}",
+                        meaning.context.chars().take(80).collect::<String>()
+                    )
+                },
+                if found.is_some() {
+                    "several elements now are"
+                } else {
+                    "is no longer on the page"
+                }
+            ),
+        }),
+    }
 }
 
 /// The verb of a step and the action it becomes once its targets are known.
@@ -801,23 +905,42 @@ impl Call<'_> {
         )
     }
     /// The references of a step's targets, all taken from one observation.
+    /// With `again`, a reference is not used as it is but looked for by what
+    /// it stood for: the page has redrawn since it was given out.
     async fn resolve(
         &self,
         id: &str,
         targets: &[Target],
+        again: bool,
     ) -> std::result::Result<(Vec<String>, Vec<String>), Stop> {
+        let tab = self.active(id);
+        let meant = |target: &Target| match target {
+            Target::Reference(reference) if again => self
+                .slot(id)
+                .ok()
+                .and_then(|slot| slot.meanings.lock().unwrap().of(reference, &tab)),
+            _ => None,
+        };
         let described: Vec<&Target> = targets
             .iter()
             .filter(|target| matches!(target, Target::Described { .. }))
             .collect();
-        let found = if described.is_empty() {
+        let recalled: Vec<Meaning> = targets.iter().filter_map(meant).collect();
+        let found = if described.is_empty() && recalled.is_empty() {
             Vec::new()
         } else {
             // The search is narrowed by the words that say most: those of the
             // record around the target, or else its name.
             let mut query = json!({"max_nodes":1000,"max_chars":64000});
-            if let [Target::Described { name, within, .. }] = described.as_slice() {
+            if let ([Target::Described { name, within, .. }], []) =
+                (described.as_slice(), recalled.as_slice())
+            {
                 query["find"] = within.as_ref().unwrap_or(name).clone().into();
+            } else if let ([], [meaning]) = (described.as_slice(), recalled.as_slice())
+                && !meaning.name.is_empty()
+                && meaning.name.chars().count() <= 128
+            {
+                query["find"] = meaning.name.clone().into();
             }
             let mut found = Vec::new();
             for _ in 0..SEARCH_PAGES {
@@ -828,8 +951,10 @@ impl Call<'_> {
                 let Some(cursor) = read["next_cursor"].as_str() else {
                     break;
                 };
-                if targets.iter().all(|target| {
-                    !matches!(target, Target::Described { .. }) || choose(target, &found).is_ok()
+                if targets.iter().all(|target| match (target, meant(target)) {
+                    (_, Some(meaning)) => recall(&meaning, &found).is_ok(),
+                    (Target::Described { .. }, _) => choose(target, &found).is_ok(),
+                    _ => true,
                 }) {
                     break;
                 }
@@ -842,10 +967,20 @@ impl Call<'_> {
         let mut written = Vec::new();
         for target in targets {
             match target {
-                Target::Reference(reference) => {
-                    references.push(reference.clone());
-                    written.push(target.written());
-                }
+                Target::Reference(reference) => match meant(target) {
+                    Some(meaning) => {
+                        let chosen = &found[recall(&meaning, &found)?];
+                        references.push(chosen.reference.clone());
+                        written.push(format!(
+                            "{} {:?} (was [{reference}], now [{}])",
+                            chosen.role, chosen.name, chosen.reference
+                        ));
+                    }
+                    None => {
+                        references.push(reference.clone());
+                        written.push(target.written());
+                    }
+                },
                 Target::Described { .. } => {
                     let chosen = &found[choose(target, &found)?];
                     references.push(chosen.reference.clone());
@@ -1566,13 +1701,14 @@ impl Call<'_> {
             }
             _ => {
                 let targets = step.targets()?;
-                let described = targets
+                let mut described = targets
                     .iter()
                     .any(|target| matches!(target, Target::Described { .. }));
+                let mut again = false;
                 let until = self.patience();
                 let (mut done, written) = loop {
                     let attempt: std::result::Result<_, Stop> = async {
-                        let (references, written) = self.resolve(&id, &targets).await?;
+                        let (references, written) = self.resolve(&id, &targets, again).await?;
                         let mut params = json!({"action":step.action(&references)});
                         if wants_view && step.acts() {
                             params["after_action_view"] = true.into();
@@ -1613,6 +1749,19 @@ impl Call<'_> {
                     }
                     .await;
                     match attempt {
+                        // A reference that the page has outlived is looked for
+                        // once more, by what it stood for.
+                        Err(stop)
+                            if !again
+                                && stop.code == "browser_stale_reference"
+                                && stop.state == "not_sent"
+                                && targets
+                                    .iter()
+                                    .any(|target| matches!(target, Target::Reference(_))) =>
+                        {
+                            again = true;
+                            described = true;
+                        }
                         // A target given by description is looked up afresh, so a
                         // page that was still loading or redrawing gets another go.
                         Err(stop) if described && passing(&stop) && Instant::now() < until => {
@@ -1661,8 +1810,59 @@ mod tests {
             role: role.into(),
             name: name.into(),
             record: record.into(),
+            meaning: Meaning {
+                role: role.into(),
+                name: name.into(),
+                context: record.into(),
+            },
         })
         .collect()
+    }
+
+    #[test]
+    fn a_reference_is_found_again_only_by_all_it_stood_for() {
+        let node = |name: &str, row: &str, value: &str| {
+            json!({"role":"button","tag":"button","name":name,
+                "record":{"entries":[{"text":row,"value":value},{"text":name,"value":null}]}})
+        };
+        let meaning = Meaning::of(&node(" Approve ", "Order A2", "typed"));
+        // What a field of the row holds is not part of what the row is.
+        assert_eq!(meaning, Meaning::of(&node("Approve", "Order A2", "other")));
+        assert_eq!(meaning.context, "Order A2 Approve");
+        let mut meanings = Meanings::default();
+        meanings.keep("tab1", vec![("r1".into(), meaning.clone())]);
+        assert_eq!(meanings.of("r1", "tab1"), Some(meaning.clone()));
+        assert!(meanings.of("r1", "tab2").is_none() && meanings.of("r2", "tab1").is_none());
+
+        assert_eq!(recall(&meaning, &all()).ok(), Some(1));
+        // The row now shows another order: nothing takes the reference's place.
+        let moved = Meaning {
+            context: "Order A7 Approve".into(),
+            ..meaning.clone()
+        };
+        let gone = recall(&moved, &all()).err().unwrap();
+        assert_eq!(gone.code, "browser_stale_reference");
+        assert!(
+            gone.detail.ends_with("is no longer on the page"),
+            "{}",
+            gone.detail
+        );
+        // Two rows that read the same cannot be told apart.
+        let mut twice = all();
+        twice[0].meaning = meaning.clone();
+        let unclear = recall(&meaning, &twice).err().unwrap();
+        assert!(
+            unclear.detail.ends_with("several elements now are"),
+            "{}",
+            unclear.detail
+        );
+
+        let mut many = Meanings::default();
+        for index in 0..Meanings::MOST + 5 {
+            many.keep("t", vec![(format!("r{index}"), meaning.clone())]);
+        }
+        assert!(many.of("r4", "t").is_none() && many.of("r5", "t").is_some());
+        assert_eq!(many.known.len(), Meanings::MOST);
     }
     fn described(value: Value) -> Target {
         Target::parse(&value).unwrap()
