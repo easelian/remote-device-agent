@@ -1171,6 +1171,142 @@ async fn front_reading() {
     assert!(clicked.contains("Opened quiet row 14"), "{clicked}");
 }
 
+/// A forwarding proxy that passes names under `.test` to this machine and
+/// keeps a list of every host it was asked for.
+struct Proxy {
+    child: std::process::Child,
+    port: u16,
+    log: PathBuf,
+}
+impl Proxy {
+    fn start(log: PathBuf) -> Self {
+        use std::io::BufRead;
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/browser-scenarios/proxy.py");
+        let mut child = std::process::Command::new("python3")
+            .arg(script)
+            .arg(port.to_string())
+            .arg(&log)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("python3 runs the scenario proxy");
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(line.starts_with("ready"), "{line}");
+        Self { child, port, log }
+    }
+    /// The hosts the proxy was asked for on behalf of pages, in order. A
+    /// branded Chrome asks once at start which accounts are signed in, and no
+    /// switch found so far keeps it from that; nothing else of its own is let by.
+    fn asked(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|host| *host != "accounts.google.com")
+            .map(str::to_owned)
+            .collect()
+    }
+}
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A device that reaches other sites only through a proxy: the browser asks
+/// the proxy, the site rules are applied before it does, and what the owner
+/// lists is reached directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_proxy() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let site = Site::start();
+    let proxy = Proxy::start(temp.0.join("proxy.log"));
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable,
+            "proxy":{"server":format!("http://127.0.0.1:{}", proxy.port),"bypass":[".direct.test"]},
+            "sites":{"deny":["blocked.test"]}}),
+    );
+    async fn did(peer: &mut Peer, steps: Value) -> String {
+        let reply = peer.call("browser_do", json!({"steps":steps})).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+    // A name that resolves nowhere on this device is the proxy's to find.
+    let through = format!("http://shop.test:{}/cards.html", site.port);
+    let opened = did(&mut peer, json!([{"open":through}])).await;
+    assert!(
+        opened.starts_with("1 open http://shop.test:") && opened.contains("heading: Orders"),
+        "{opened}"
+    );
+    let clicked = did(&mut peer, json!([{"click":{"name":"Order 12"}}])).await;
+    assert!(clicked.contains("Opened order 12"), "{clicked}");
+    assert!(
+        proxy.asked().iter().all(|host| host == "shop.test"),
+        "{:?}",
+        proxy.asked()
+    );
+    assert!(!proxy.asked().is_empty());
+    // What the owner refuses, and the addresses no session may reach, are
+    // refused before the proxy hears of them.
+    for refused in [
+        format!("http://blocked.test:{}/cards.html", site.port),
+        "http://169.254.169.254/latest/meta-data/".to_owned(),
+    ] {
+        let denied = did(&mut peer, json!([{"open":refused}])).await;
+        assert!(
+            denied.starts_with("✗ 1 open: browser_site_denied"),
+            "{refused}: {denied}"
+        );
+    }
+    // A host the owner lists is asked for directly, where its name leads
+    // nowhere; this device itself is always reached directly.
+    let direct = did(
+        &mut peer,
+        json!([{"open":format!("http://app.direct.test:{}/cards.html", site.port)}]),
+    )
+    .await;
+    assert!(
+        direct.starts_with(
+            "✗ 1 open: browser_navigation_failed\n  the host name leads to no address"
+        ),
+        "{direct}"
+    );
+    let local = did(&mut peer, json!([{"open":site.url("cards")}])).await;
+    assert!(local.contains("heading: Orders"), "{local}");
+    assert!(
+        proxy.asked().iter().all(|host| host == "shop.test"),
+        "{:?}",
+        proxy.asked()
+    );
+    did(&mut peer, json!([{"close":true}])).await;
+
+    // A proxy that is not there is the reason the page did not load.
+    drop(proxy);
+    let unreachable = did(&mut peer, json!([{"open":through}])).await;
+    assert!(
+        unreachable.starts_with("✗ 1 open: browser_navigation_failed")
+            && unreachable.contains("\n  net::ERR_PROXY_CONNECTION_FAILED"),
+        "{unreachable}"
+    );
+}
+
 /// Pages as older sites write them: boxes named only by the words beside
 /// them, a list with no label, a caption a style rule shows on hover, boxes
 /// that are dragged onto one another, and a page that fails to load.

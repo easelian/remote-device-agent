@@ -27,7 +27,11 @@ pub(in crate::browser::engine) fn arguments(data: &Path) -> Vec<OsString> {
         // Managed headless sessions do not use background component extensions
         // or the browser's omnibox UI. Both otherwise start extra renderers.
         "--disable-component-extensions-with-background-pages",
-        "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup,WebUIOmniboxFullPopup",
+        // The last five keep the browser from asking its maker anything on
+        // its own account at start: the time, a key for checking addresses,
+        // a connection to the search engine, and whether a search feature is
+        // offered. What a session loads is what its pages ask for.
+        "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup,WebUIOmniboxFullPopup,NetworkTimeServiceQuerying,SafeBrowsingHashPrefixRealTimeLookups,PreconnectToSearch,AiModeOmniboxEntryPoint,AimEnabled",
         "--disable-breakpad",
         "--disable-crash-reporter",
         "--site-per-process",

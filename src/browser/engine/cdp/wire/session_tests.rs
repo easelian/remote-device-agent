@@ -527,10 +527,16 @@ async fn native_closed_target_never_admits_old_session_input() {
     crate::storage::create_private_dir(&root).unwrap();
     let browser = std::path::PathBuf::from(std::env::var_os("RDH_BROWSER_EXECUTABLE").unwrap());
     let deadline = || Instant::now() + Duration::from_secs(5);
-    let mut process =
-        crate::browser::process::BrowserProcess::launch(&browser, &root, "owner", None, deadline())
-            .await
-            .unwrap();
+    let mut process = crate::browser::process::BrowserProcess::launch(
+        &browser,
+        &root,
+        "owner",
+        None,
+        None,
+        deadline(),
+    )
+    .await
+    .unwrap();
     let wire = process.engine.backend.wire.clone();
     let mut events = wire.events();
     wire.call(

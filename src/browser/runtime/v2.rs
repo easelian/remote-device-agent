@@ -487,9 +487,9 @@ impl Browsers {
         }
         let mut session = slot.session.lock().await;
         let result=async {
-            let policy=sem::policy::Policy::with_lookup(self.settings.sites.clone(),self.lookup.clone());
+            let policy=sem::policy::Policy::with_lookup(self.settings.sites.clone(),self.lookup.clone()).through(self.settings.proxy.clone());
             let named=profile_name.map(|name|self.profiles.open_scoped(&root,principal,name,selection.backend.profile_scope())).transpose()?;
-            let data=process::SessionData {named,downloads:self.settings.downloads.then(||files::Downloads{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})};
+            let data=process::SessionData {named,proxy:self.settings.proxy.clone(),downloads:self.settings.downloads.then(||files::Downloads{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})};
             let native=match selection.backend {
                 Backend::Cdp=>native::Session::Cdp(crate::browser::engine::semantic_cdp::Session::launch_named(self.executable.as_deref().unwrap(),&root,&id,policy,coordination.clone(),data,deadline).await?),
                 Backend::Bidi=>native::Session::Bidi(crate::browser::engine::bidi::page::Session::open_named(&std::env::current_exe().map_err(crate::browser::io_error)?,self.settings.firefox_executable.as_deref().unwrap(),&root,policy,coordination,data).await?),

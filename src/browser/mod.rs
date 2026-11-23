@@ -77,7 +77,78 @@ pub struct Settings {
     pub uploads: bool,
     pub executable: Option<PathBuf>,
     pub sites: sites::Sites,
+    /// Where the browser sends what it asks for. Only this file says so:
+    /// a proxy sees everything the browser loads.
+    pub proxy: Option<Proxy>,
     pub shell_coexistence: Coexistence,
+}
+
+/// `browser.proxy` in the local policy.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Proxy {
+    /// `http://host:port` or `socks5://host:port`, without a user or password.
+    pub server: String,
+    /// Hosts that are reached directly: a name, `.suffix`, an address or a
+    /// range. This device itself is always reached directly.
+    #[serde(default)]
+    pub bypass: Vec<String>,
+}
+
+impl Proxy {
+    fn check(&self) -> std::result::Result<(), &'static str> {
+        const SERVER: &str =
+            "browser.proxy.server must be http://host:port or socks5://host:port, without a user";
+        let url = url::Url::parse(&self.server).map_err(|_| SERVER)?;
+        if !matches!(url.scheme(), "http" | "socks5")
+            || url.host_str().is_none_or(str::is_empty)
+            || url.port_or_known_default().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || !matches!(url.path(), "" | "/")
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || self.server.len() > 512
+        {
+            return Err(SERVER);
+        }
+        if self.bypass.len() > 64
+            || self.bypass.iter().any(|entry| {
+                entry.is_empty()
+                    || entry.len() > 255
+                    || !entry
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b".:/*-_[]".contains(&b))
+            })
+        {
+            return Err(
+                "browser.proxy.bypass takes up to 64 host names, .suffixes, addresses or ranges",
+            );
+        }
+        Ok(())
+    }
+    /// What the browser is started with to use the proxy.
+    pub fn arguments(&self) -> Vec<String> {
+        let mut arguments = vec![format!(
+            "--proxy-server={}",
+            self.server.trim_end_matches('/')
+        )];
+        if !self.bypass.is_empty() {
+            arguments.push(format!("--proxy-bypass-list={}", self.bypass.join(";")));
+        }
+        arguments
+    }
+    /// Whether a host name is on the list of those reached directly.
+    pub fn bypasses(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.bypass.iter().any(|entry| {
+            let entry = entry.to_ascii_lowercase();
+            match entry.strip_prefix("*.").or_else(|| entry.strip_prefix('.')) {
+                Some(under) => host == under || host.ends_with(&format!(".{under}")),
+                None => host == entry,
+            }
+        })
+    }
 }
 
 impl Default for Settings {
@@ -91,6 +162,7 @@ impl Default for Settings {
             uploads: false,
             executable: None,
             sites: sites::Sites::default(),
+            proxy: None,
             shell_coexistence: Coexistence::default(),
         }
     }
@@ -158,6 +230,9 @@ impl Settings {
             return Err(crate::error::Error::message(
                 "browser executable paths must be absolute",
             ));
+        }
+        if let Some(proxy) = &settings.proxy {
+            proxy.check().map_err(crate::error::Error::message)?;
         }
         Ok(settings)
     }
@@ -672,5 +747,61 @@ mod tests {
             }
             .valid()
         );
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parsed(proxy: Value) -> crate::error::Result<Settings> {
+        Settings::parse(Some(&json!({"proxy":proxy})))
+    }
+
+    #[test]
+    fn a_proxy_is_an_address_without_a_user_and_a_list_of_hosts_reached_directly() {
+        assert!(Settings::parse(None).unwrap().proxy.is_none());
+        for server in ["http://10.0.0.1:3128", "http://proxy.corp.example:8080/", "socks5://127.0.0.1:1080"] {
+            assert!(parsed(json!({"server":server})).is_ok(), "{server}");
+        }
+        for server in [
+            "",
+            "proxy:3128",
+            "https://proxy:3128",
+            "socks5://proxy",
+            "http://user:secret@proxy:3128",
+            "http://user@proxy:3128",
+            "http://proxy:3128/path",
+            "http://proxy:3128/?x=1",
+        ] {
+            assert!(parsed(json!({"server":server})).is_err(), "{server}");
+        }
+        assert!(parsed(json!({"bypass":[".corp.example"]})).is_err());
+        assert!(parsed(json!({"server":"http://p:1","user":"u"})).is_err());
+        for bypass in [json!([""]), json!(["a b"]), json!(["x;y"]), json!(vec!["a"; 65])] {
+            assert!(
+                parsed(json!({"server":"http://p:1","bypass":bypass})).is_err(),
+                "{bypass}"
+            );
+        }
+        let proxy = parsed(json!({"server":"http://10.0.0.1:3128/",
+            "bypass":[".corp.example","*.lab.example","intranet","10.0.0.0/8"]}))
+        .unwrap()
+        .proxy
+        .unwrap();
+        assert_eq!(
+            proxy.arguments(),
+            [
+                "--proxy-server=http://10.0.0.1:3128",
+                "--proxy-bypass-list=.corp.example;*.lab.example;intranet;10.0.0.0/8"
+            ]
+        );
+        for host in ["corp.example", "wiki.Corp.Example.", "a.lab.example", "intranet"] {
+            assert!(proxy.bypasses(host), "{host}");
+        }
+        for host in ["example", "notcorp.example", "intranet.example", "shop.example"] {
+            assert!(!proxy.bypasses(host), "{host}");
+        }
     }
 }

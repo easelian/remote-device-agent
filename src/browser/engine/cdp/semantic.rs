@@ -113,7 +113,12 @@ impl Session {
             observed_connection_address: false,
         })?;
         let mut owner = crate::browser::process::BrowserProcess::launch(
-            browser, root, id, data.named, deadline,
+            browser,
+            root,
+            id,
+            data.named,
+            data.proxy.as_ref(),
+            deadline,
         )
         .await?;
         match Self::attach(

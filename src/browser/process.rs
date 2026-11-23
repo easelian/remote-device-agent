@@ -38,6 +38,7 @@ pub(super) use windows::supervisor::run as run_supervisor;
 pub(crate) struct SessionData {
     pub named: Option<NamedProfile>,
     pub downloads: Option<crate::browser::files::Downloads>,
+    pub proxy: Option<crate::browser::Proxy>,
 }
 
 pub struct BrowserProcess {
@@ -55,6 +56,7 @@ impl BrowserProcess {
         root: &Path,
         id: &str,
         named: Option<NamedProfile>,
+        proxy: Option<&crate::browser::Proxy>,
         deadline: Instant,
     ) -> Result<Self> {
         #[cfg(target_os = "linux")]
@@ -75,11 +77,18 @@ impl BrowserProcess {
         let root = owned_root.as_path();
         let profile = root.join(id);
         crate::storage::create_private_dir(&profile).map_err(io_error)?;
-        let launch = Launch::native(
+        let mut launch = Launch::native(
             named
                 .as_ref()
                 .map_or(profile.as_path(), |p| p.data.as_path()),
         );
+        if let Some(proxy) = proxy {
+            // The page to start on stays the last argument.
+            let at = launch.arguments.len().saturating_sub(1);
+            launch
+                .arguments
+                .splice(at..at, proxy.arguments().into_iter().map(Into::into));
+        }
         #[cfg(target_os = "linux")]
         fonts::give(&profile);
         let (child, read, write) = match platform::Child::spawn(executable, &profile, &launch) {

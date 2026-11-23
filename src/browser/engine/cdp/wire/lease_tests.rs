@@ -606,7 +606,7 @@ async fn native_object_lease_boundary_and_unsubscribed_runtime_events() {
     crate::storage::create_private_dir(&root).unwrap();
     let deadline = || Instant::now() + Duration::from_secs(20);
     let executable = PathBuf::from(std::env::var_os("RDH_BROWSER_EXECUTABLE").unwrap());
-    let mut owner = BrowserProcess::launch(&executable, &root, "profile", None, deadline())
+    let mut owner = BrowserProcess::launch(&executable, &root, "profile", None, None, deadline())
         .await
         .unwrap();
     let engine = owner.engine.clone();

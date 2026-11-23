@@ -134,6 +134,7 @@ pub(crate) enum Admission {
 pub(crate) struct Policy {
     sites: Sites,
     lookup: Arc<Lookup>,
+    proxy: Option<Arc<crate::browser::Proxy>>,
 }
 impl Policy {
     pub fn new(sites: Sites) -> Self {
@@ -141,7 +142,18 @@ impl Policy {
     }
     /// A policy that asks where host names lead through a lookup it shares.
     pub fn with_lookup(sites: Sites, lookup: Arc<Lookup>) -> Self {
-        Self { sites, lookup }
+        Self {
+            sites,
+            lookup,
+            proxy: None,
+        }
+    }
+    /// The same policy for a browser that asks through a proxy. A name this
+    /// device cannot resolve is then the proxy's to resolve; the rules on
+    /// names and on addresses that are written out stay as they are.
+    pub fn through(mut self, proxy: Option<crate::browser::Proxy>) -> Self {
+        self.proxy = proxy.map(Arc::new);
+        self
     }
     pub fn admit(&self, capabilities: Capabilities) -> Result<()> {
         if !capabilities.navigation_intercept
@@ -184,6 +196,13 @@ impl Policy {
                         } else {
                             Admission::Refused
                         }
+                    }
+                    _ if self
+                        .proxy
+                        .as_ref()
+                        .is_some_and(|proxy| !proxy.bypasses(host)) =>
+                    {
+                        Admission::Allowed
                     }
                     _ => Admission::Unresolved,
                 }
