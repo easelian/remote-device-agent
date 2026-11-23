@@ -20,8 +20,9 @@
       headers: {"Authorization": "Bearer scenario-secret"},
       body: "{}",
     });
+    const said = await reply.json();
     state.textContent = "Save failed";
-    if (!reply.ok) throw new TypeError("order is not saved");
+    if (!reply.ok) throw new TypeError("order is not saved: " + said.error);
   };
   quiet.onclick = () => { state.textContent = "Refreshed"; };
 </script>

@@ -51,6 +51,8 @@ pub enum Command {
     IoClose,
     IoRead,
     NetworkEnable,
+    #[cfg(feature = "experimental-browser-bidi")]
+    NetworkGetResponseBody,
     NetworkSetBlockedURLs,
     NetworkSetCacheDisabled,
     PageBringToFront,
@@ -155,6 +157,8 @@ impl Command {
             Self::IoClose => ("IO.close", None, Continue),
             Self::IoRead => ("IO.read", None, Continue),
             Self::NetworkEnable => ("Network.enable", None, Continue),
+            #[cfg(feature = "experimental-browser-bidi")]
+            Self::NetworkGetResponseBody => ("Network.getResponseBody", None, Continue),
             Self::NetworkSetBlockedURLs => ("Network.setBlockedURLs", None, Continue),
             Self::NetworkSetCacheDisabled => ("Network.setCacheDisabled", None, Continue),
             Self::PageBringToFront => ("Page.bringToFront", Page, Block),

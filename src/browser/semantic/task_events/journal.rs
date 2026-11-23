@@ -1,7 +1,8 @@
 //! What a page reported while the AI worked on it, as text an AI reads:
 //! console lines and requests. A journal lasts for one grant of control over
 //! one tab and is bounded. Header values that carry credentials are not kept,
-//! and neither is any request or response body.
+//! and no request body is. Of response bodies only the start of what a failed
+//! request was answered with is kept: that is where a server says why.
 use super::Level;
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -13,6 +14,10 @@ const TEXT: usize = 2000;
 const ADDRESS: usize = 1000;
 const HEADERS: usize = 24;
 const HEADER: usize = 200;
+/// How much of a failed request's answer is kept, and the largest answer
+/// that is asked for at all: a reply has to fit in one message of the wire.
+const BODY: usize = 2000;
+const BODY_ASKED: u64 = 16_000;
 /// Header names whose values identify the user to a site.
 const SECRET: [&str; 10] = [
     "cookie",
@@ -352,6 +357,11 @@ struct Request {
     asked: Vec<(String, String)>,
     answered: Vec<(String, String)>,
     told: bool,
+    /// Set when the failure was kept back once to be told with its answer.
+    held: bool,
+    /// How often the body of the answer was asked for, and its start.
+    tries: u8,
+    body: Option<String>,
 }
 
 impl Request {
@@ -500,6 +510,9 @@ impl Log {
                     asked: headers,
                     answered: Vec::new(),
                     told: false,
+                    held: false,
+                    tries: 0,
+                    body: None,
                 });
             }
             Net::Response {
@@ -604,16 +617,35 @@ impl Log {
         for line in self.lines.iter().filter(|line| !line.told && line.error()) {
             found.push((line.seq, line.brief()));
         }
+        let mut waiting = Vec::new();
+        // A refused request whose answer is still arriving waits for the next
+        // report, once, so that it is told together with what the server said.
+        for request in &mut self.requests {
+            if !request.told
+                && !request.held
+                && request.problem()
+                && request.error.is_none()
+                && request.ended.is_none()
+            {
+                request.held = true;
+                waiting.push(request.seq);
+            }
+        }
         for request in &self.requests {
-            if !request.told && request.problem() {
-                found.push((request.seq, self.brief(request)));
+            if !request.told && request.problem() && !waiting.contains(&request.seq) {
+                let mut line = self.brief(request);
+                if let Some(body) = request.body.as_ref().filter(|body| !body.is_empty()) {
+                    let said: Vec<&str> = body.split_whitespace().collect();
+                    let _ = write!(line, " — {}", cut(&said.join(" "), 160));
+                }
+                found.push((request.seq, line));
             }
         }
         for line in &mut self.lines {
             line.told |= line.error();
         }
         for request in &mut self.requests {
-            request.told |= request.problem();
+            request.told |= request.problem() && !waiting.contains(&request.seq);
         }
         found.sort_by_key(|(seq, _)| *seq);
         let more = found.len().saturating_sub(limit);
@@ -625,6 +657,40 @@ impl Log {
                 .collect(),
             more,
         )
+    }
+
+    /// The failed requests whose answer is small, complete and not fetched:
+    /// their entry numbers and the browser's names for them. Each is given
+    /// out twice at most, as a body can be asked for too early.
+    pub(crate) fn wanting(&mut self, limit: usize) -> Vec<(u64, Box<str>)> {
+        self.requests
+            .iter_mut()
+            .filter(|request| {
+                request.body.is_none()
+                    && request.tries < 2
+                    && request.kind != "document"
+                    && request.status.is_some_and(|status| status >= 400)
+                    // The browser gives a body only once it has all of it.
+                    && request.ended.is_some()
+                    && request.bytes.is_some_and(|size| size <= BODY_ASKED)
+            })
+            .take(limit)
+            .map(|request| {
+                request.tries += 1;
+                (request.seq, request.id.clone())
+            })
+            .collect()
+    }
+
+    /// Keeps the start of a body from the reply to `Network.getResponseBody`.
+    pub(crate) fn body(&mut self, seq: u64, reply: &Value) {
+        if let Some(request) = self.requests.iter_mut().find(|request| request.seq == seq) {
+            request.body = Some(match reply["body"].as_str() {
+                Some(_) if reply["base64Encoded"] == true => "(not text)".to_owned(),
+                Some(body) => cut(body.trim(), BODY),
+                None => return,
+            });
+        }
     }
 
     fn loaded(&self) -> String {
@@ -809,6 +875,9 @@ impl Log {
                 }
             }
         }
+        if let Some(body) = &request.body {
+            let _ = write!(text, "\nresponse body:\n{body}");
+        }
         Some(text)
     }
 }
@@ -832,7 +901,7 @@ mod tests {
         Net::parse(
             "Network.responseReceived",
             &json!({"requestId":id,"timestamp":10.05,"response":{"status":status,"statusText":"Nope","mimeType":"application/json",
-                "headers":{"Content-Type":"application/json","Set-Cookie":"sid=SECRET"}}}),
+                "headers":{"Content-Type":"application/json","Set-Cookie":"sid=SECRET",}}}),
         )
         .unwrap()
     }
@@ -861,6 +930,7 @@ mod tests {
         log.net(finished("1"));
         log.net(start("2", "https://shop.test/favicon.ico", "Other"));
         log.net(response("2", 404));
+        log.net(finished("2"));
         log.net(start("3", "https://cdn.test/a.js", "Script"));
         log.net(
             Net::parse(
@@ -879,11 +949,19 @@ mod tests {
         );
         log.said(error("boom"));
         log.said(error("boom"));
+        // Only the answers of failed requests are asked for, and not for ever.
+        assert_eq!(log.wanting(8), [(1, "1".into()), (2, "2".into())]);
+        log.body(
+            1,
+            &json!({"body":"{\"error\":\n  \"limit exceeded\"}","base64Encoded":false}),
+        );
+        log.body(2, &json!({"body":"AAAA","base64Encoded":true}));
+        assert_eq!(log.wanting(8), []);
         let (problems, more) = log.problems(8);
         assert_eq!(
             problems,
             [
-                "n1 500 GET /api/save?x=1 fetch 132ms 1.2kB",
+                "n1 500 GET /api/save?x=1 fetch 132ms 1.2kB — {\"error\": \"limit exceeded\"}",
                 "n3 ✗ GET https://cdn.test/a.js script 1000ms net::ERR_NAME_NOT_RESOLVED",
                 "c5 error boom ×2",
             ]
@@ -900,10 +978,19 @@ mod tests {
                 && detail.contains("x-api-key: (not kept)")
         );
         assert!(detail.contains("set-cookie: (not kept)") && !detail.contains("SECRET"));
+        assert!(
+            detail.ends_with("\nresponse body:\n{\"error\":\n  \"limit exceeded\"}"),
+            "{detail}"
+        );
+        assert!(
+            log.detail("n2")
+                .unwrap()
+                .ends_with("\nresponse body:\n(not text)")
+        );
         let all = log.network(None, false, 4000);
         assert!(
             all.starts_with(
-                "network: 4 of 4 requests since https://shop.test/cart loaded (3 failed, 1 pending)"
+                "network: 4 of 4 requests since https://shop.test/cart loaded (3 failed, 0 pending)"
             ),
             "{all}"
         );
@@ -912,6 +999,18 @@ mod tests {
         assert_eq!(failed.lines().count(), 2, "{failed}");
         assert_eq!(log.detail("c5").unwrap(), "c5 error ×2\nboom");
         assert!(log.detail("c99").is_none() && log.detail("x").is_none());
+    }
+
+    #[test]
+    fn a_refused_request_still_arriving_is_told_at_the_next_report() {
+        let mut log = Log::on("https://shop.test/");
+        log.net(start("9", "https://shop.test/api/slow", "Fetch"));
+        log.net(response("9", 503));
+        // Its body cannot be had yet, and it is waited for once.
+        assert_eq!(log.wanting(8), []);
+        assert_eq!(log.problems(8), (vec![], 0));
+        assert_eq!(log.problems(8).0, ["n1 503 GET /api/slow fetch"]);
+        assert_eq!(log.problems(8), (vec![], 0));
     }
 
     #[test]

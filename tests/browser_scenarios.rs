@@ -1769,6 +1769,11 @@ async fn front_diagnostics() {
         "{detail}"
     );
     assert!(
+        // What the server answered a failed request with says why it failed.
+        detail.ends_with("\nresponse body:\n{\"error\":\"limit exceeded\"}"),
+        "{detail}"
+    );
+    assert!(
         detail.contains("authorization: (not kept)") && !detail.contains("scenario-secret"),
         "{detail}"
     );

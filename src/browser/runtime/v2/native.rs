@@ -155,6 +155,12 @@ impl Port {
             Self::Bidi(p) => p.enable_task_events(sink, d).await,
         }
     }
+    pub async fn response_body(&self, request: &str, d: Instant) -> Result<Value> {
+        match self {
+            Self::Cdp(p) => p.response_body(request, d).await,
+            Self::Bidi(_) => Err(crate::browser::Failure::new("browser_feature_unsupported")),
+        }
+    }
     pub fn tab_id(&self) -> Result<String> {
         forward!(self, tab_id())
     }

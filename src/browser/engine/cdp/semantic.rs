@@ -325,6 +325,15 @@ impl Semantic {
             .wire
             .hold_next_reply_for(Command::RuntimeEnable)
     }
+    pub async fn response_body(
+        &self,
+        request: &str,
+        deadline: std::time::Instant,
+    ) -> crate::browser::Result<Value> {
+        self.adapter
+            .response_body(&self.root, request, deadline)
+            .await
+    }
     pub async fn enable_task_events(
         &self,
         sink: crate::browser::semantic::task_events::Sink,

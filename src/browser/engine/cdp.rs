@@ -89,6 +89,24 @@ impl Adapter {
             effect,
         )
     }
+    /// The body the browser still holds for a response it received.
+    #[cfg(feature = "experimental-browser-bidi")]
+    pub(super) async fn response_body(
+        &self,
+        context: &Context,
+        request: &str,
+        deadline: Instant,
+    ) -> Result<Value> {
+        let session = self.session(context)?;
+        self.wire
+            .call(
+                Some(session),
+                Command::NetworkGetResponseBody,
+                json!({"requestId":request}),
+                deadline,
+            )
+            .await
+    }
     #[cfg(feature = "experimental-browser-bidi")]
     pub(super) async fn enable_task_events(
         &self,

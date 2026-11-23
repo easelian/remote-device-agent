@@ -561,6 +561,31 @@ impl Call<'_> {
         *slot.journal.lock().unwrap() = Some((tab, sink.clone()));
         Some((sink, true))
     }
+    /// Fetches what the failed requests were answered with, while the browser
+    /// still has it.
+    async fn bodies(&self, id: &str) {
+        let Ok(slot) = self.slot(id) else { return };
+        let Some((tab, sink)) = slot.journal.lock().unwrap().clone() else {
+            return;
+        };
+        let wanted = sink
+            .journal_read(|log| log.wanting(PROBLEMS))
+            .unwrap_or_default();
+        if wanted.is_empty() {
+            return;
+        }
+        let Some(port) = slot.port().ok().and_then(|port| port.for_tab(&tab).ok()) else {
+            return;
+        };
+        for (entry, request) in wanted {
+            let until = self
+                .deadline
+                .min(Instant::now() + Duration::from_millis(500));
+            if let Ok(reply) = port.response_body(&request, until).await {
+                sink.journal_read(|log| log.body(entry, &reply));
+            }
+        }
+    }
     /// The errors and failed requests the page has had since they were last
     /// reported, as lines under a step.
     fn problems(&self, id: &str, indent: &str) -> String {
@@ -938,6 +963,7 @@ impl Call<'_> {
                         paused()
                     }
                 })?;
+                self.bodies(&id).await;
                 let entry = find.filter(|find| {
                     find.len() > 1
                         && find.starts_with(['c', 'n'])
@@ -1039,10 +1065,13 @@ impl Call<'_> {
                 self.journal(id).await;
             }
             let outcome = self.step(step, &mut session, read == "changes").await;
-            let problems = session
-                .as_ref()
-                .map(|id| self.problems(id, "  "))
-                .unwrap_or_default();
+            let problems = match &session {
+                Some(id) => {
+                    self.bodies(id).await;
+                    self.problems(id, "  ")
+                }
+                None => String::new(),
+            };
             match outcome {
                 Ok((line, view, halt)) => {
                     let _ = writeln!(text, "{number} {line}");
@@ -1125,6 +1154,7 @@ impl Call<'_> {
         }
         // What came in while the page was read is not left for the next call.
         if let Some(id) = &session {
+            self.bodies(id).await;
             text.insert_str(before_page, &self.problems(id, ""));
         }
         let mut value = json!({"text":text.trim_end(),"steps_done":done});
