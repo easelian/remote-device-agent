@@ -80,6 +80,8 @@ impl BrowserProcess {
                 .as_ref()
                 .map_or(profile.as_path(), |p| p.data.as_path()),
         );
+        #[cfg(target_os = "linux")]
+        fonts::give(&profile);
         let (child, read, write) = match platform::Child::spawn(executable, &profile, &launch) {
             Ok(value) => value,
             Err(error) => {
@@ -119,6 +121,9 @@ impl BrowserProcess {
             let _ = process.close().await;
         }
         ready?;
+        // The browser has shown nothing but its empty first page so far.
+        #[cfg(target_os = "linux")]
+        fonts::keep(&process.profile);
         Ok(process)
     }
 
@@ -188,6 +193,115 @@ impl Drop for BrowserProcess {
 
 fn cleanup_pending(_: impl std::fmt::Display) -> Failure {
     Failure::new("browser_cleanup_pending")
+}
+
+/// Chromium lists every font of the system when its home has no font cache,
+/// which takes most of a second, and every session starts in a new home. The
+/// cache that the first browser of this process wrote, while it had shown
+/// nothing but an empty page, is put into the home of each one started later.
+/// It is held in memory, so nothing a later session does can change it, and
+/// it is rebuilt whenever the Agent starts.
+#[cfg(target_os = "linux")]
+mod fonts {
+    use std::{
+        ffi::OsString,
+        fs,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
+
+    const FILES: usize = 256;
+    const BYTES: u64 = 16 * 1024 * 1024;
+    type Cache = Arc<Vec<(OsString, Vec<u8>)>>;
+    static KEPT: Mutex<Option<Cache>> = Mutex::new(None);
+
+    fn directory(home: &Path) -> std::path::PathBuf {
+        home.join(".cache").join("fontconfig")
+    }
+
+    /// Without the cache the browser only starts slower, so a failure here
+    /// is not one of the launch.
+    pub(super) fn give(home: &Path) {
+        if let Some(kept) = KEPT.lock().unwrap().clone() {
+            write(home, &kept);
+        }
+    }
+
+    pub(super) fn keep(home: &Path) {
+        let mut kept = KEPT.lock().unwrap();
+        if kept.is_none() {
+            *kept = read(home);
+        }
+    }
+
+    fn write(home: &Path, kept: &Cache) {
+        let target = directory(home);
+        if crate::storage::create_private_dir(&home.join(".cache")).is_err()
+            || crate::storage::create_private_dir(&target).is_err()
+        {
+            return;
+        }
+        for (name, bytes) in kept.iter() {
+            if crate::storage::write_private_new(&target.join(name), bytes).is_err() {
+                let _ = fs::remove_dir_all(&target);
+                return;
+            }
+        }
+    }
+
+    fn read(home: &Path) -> Option<Cache> {
+        let entries = fs::read_dir(directory(home)).ok()?;
+        let mut files = Vec::new();
+        let mut total = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Only what fontconfig writes: plain files, of a plausible size.
+            let metadata = fs::symlink_metadata(&path).ok()?;
+            if !metadata.is_file() {
+                continue;
+            }
+            total += metadata.len();
+            if files.len() == FILES || total > BYTES {
+                return None;
+            }
+            files.push((entry.file_name(), fs::read(&path).ok()?));
+        }
+        (!files.is_empty()).then(|| Arc::new(files))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_cache_of_one_home_is_written_into_another() {
+            let root = std::env::temp_dir().join(format!(
+                "rdh-font-cache-test-{}",
+                crate::random::hex_token::<8>().unwrap()
+            ));
+            let (first, second) = (root.join("first"), root.join("second"));
+            for home in [&first, &second] {
+                fs::create_dir_all(home).unwrap();
+            }
+            assert!(read(&first).is_none());
+            fs::create_dir_all(directory(&first)).unwrap();
+            fs::write(directory(&first).join("a-le64.cache-9"), b"fonts").unwrap();
+            fs::create_dir(directory(&first).join("not-a-file")).unwrap();
+            std::os::unix::fs::symlink("/etc/passwd", directory(&first).join("link")).unwrap();
+            let kept = read(&first).unwrap();
+            assert_eq!(kept.len(), 1);
+            write(&second, &kept);
+            assert_eq!(
+                fs::read(directory(&second).join("a-le64.cache-9")).unwrap(),
+                b"fonts"
+            );
+            assert_eq!(fs::read_dir(directory(&second)).unwrap().count(), 1);
+            // A home that already has a cache is left as it is.
+            write(&second, &Arc::new(vec![("b".into(), b"other".to_vec())]));
+            assert!(!directory(&second).join("b").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
 }
 
 /// The root exclusion lock protects this transition. The renamed directory is
