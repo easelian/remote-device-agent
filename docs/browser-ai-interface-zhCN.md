@@ -277,21 +277,21 @@ long tasks: 2 totalling 380ms, the longest 210ms after 1.2s
 
 ## 已实现的范围
 
-这三个操作在 Agent 中实现，并已加入设备策略可以允许的操作列表。Server 的 `tools/list` 向 MCP 客户端提供这三个工具和 `browser_files`，被取代的旧工具不再列出，但按名称调用仍然有效；Server 一侧的行为见 Server 仓库的 `contracts/browser/front-zhCN.md`。只有 v2 可用的 Agent 才通告这三个操作。以下部分还没有完成：
+这三个操作在 Agent 中实现，并已加入设备策略可以允许的操作列表。Server 的 `tools/list` 向 MCP 客户端提供这三个工具和 `browser_files`；Server 一侧的行为见 Server 仓库的 `contracts/browser/front-zhCN.md`。Agent 从连接上只接受这三个操作、`browser_files`，以及登录用户页面使用的 `browser_human`（人工接管、文件读取和文件批准）。被取代的旧操作已经从 Agent 删除：按旧名称调用得到“未知操作”，本地策略的 `allowed_operations` 列出旧名称时策略文件无法加载。以下部分还没有完成：
 
 | 尚未完成 | 现状 |
 |---|---|
 | 诊断的缺口 | 样式不说明值来自哪条 CSS 规则；没有交互延迟（INP）；诊断日志只跟随当前标签页，不保留请求体，也不保留成功请求的响应体。Firefox 会话没有诊断日志 |
-| 按截图坐标点击 | Server 已删除旧的 `browser_act`，MCP 客户端不能再按坐标点击 |
-| 命名资料 | Server 已删除旧的 `browser_profiles`，`open` 步骤也不能指定资料，所以每个会话都用临时资料 |
+| 按截图坐标点击 | 没有对应的步骤。`browser_see` 只返回截图，Canvas 等不能按名称指定的控件目前无法由 AI 点击 |
+| 命名资料 | `open` 步骤不能指定资料，所以每个会话都用临时资料。资料目录的代码（`src/browser/profiles.rs`）保留，等待能指定资料的步骤；此前用旧操作创建的命名资料留在设备上，Agent 不再列出或删除，解绑设备时一并删除 |
 | 文件列表 | 仍通过 `browser_files`，它保留在工具列表中 |
 | Firefox | `open` 目前总是启动 Chromium |
-| 可用的平台 | 三个操作只在带 `experimental-browser-bidi` 构建、且策略中 `capability_v2` 为 `true` 的 Agent 上可用，目前即 Linux x86_64。其他 Agent 不通告这三个操作，Server 以 `browser_unavailable` 拒绝 |
+| 可用的平台 | 会话运行时只在带 `experimental-browser-bidi` 构建的 Linux x86_64 Agent 中编译，并且策略中 `capability_v2` 须为 `true`。其他平台和构建的 Agent 报告 `reason: "platform_or_build_unsupported"`，不通告任何浏览器操作，Server 以 `browser_unavailable` 拒绝。这些平台的进程监督和私有存储代码仍然编译，但没有调用方 |
 | 删除文件和取消下载 | 没有对应的步骤，只能由用户在文件页面上操作 |
 | 下载进行中的读取 | 点击触发下载后，默认的 `read: "changes"` 会等到下载结束。下载较慢时给这次调用加上 `read: "none"` |
-| 旧操作和 v1 运行时 | Server 不再转发旧操作。它们在 Agent 中仍然存在：三个新操作是在 v2 会话操作之上实现的，v1 运行时也还在，但已没有调用方 |
+| 拒绝内网的站点策略 | 策略中 `private_networks` 为 `deny` 时，Agent 不提供浏览器会话（`reason: "browser_policy_unsupported"`）。这种策略要求核对浏览器实际连上的地址，这项核对原先只有已删除的 v1 运行时实现 |
 
-实现位于 [front.rs](../src/browser/runtime/v2/front.rs)。每个步骤转换为现有会话操作执行，所以站点策略、人工接管和文件批准的行为与旧操作一致。`browser_do` 需要回执，`browser_read` 和 `browser_see` 不需要。
+实现位于 [front.rs](../src/browser/runtime/v2/front.rs)。每个步骤转换为 [v2.rs](../src/browser/runtime/v2.rs) 中的会话操作执行。这些会话操作沿用旧操作的名称（`browser_observe`、`browser_act`、`browser_wait` 等），但只在 Agent 内部按名称调用，不能从连接上到达。站点策略、人工接管和文件批准在会话操作及其下层生效。`browser_do` 需要回执，`browser_read` 和 `browser_see` 不需要。
 
 `drag` 和 `upload` 两种步骤只做了参数检查，还没有在真实浏览器上验证。
 
@@ -305,14 +305,12 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --features experimen
 
 设置 `RDH_SCENARIO_ONLY=pager,wizard` 只运行列出的场景，设置 `RDH_SCENARIO_DUMP` 把每个任务的回复写入文件。
 
-2026-11-22 在调试构建下的结果：
+2026-11-22 在调试构建下的结果如下。旧操作一行来自当时的 `scenario_pool` 测试，它用旧操作走同样 24 个场景，并额外检查过期引用，所以调用次数高于完成任务所需的最少次数。旧操作删除后，这个测试已一并删除，这一行不能再复现。
 
 | | 调用次数 | 回复字节 |
 |---|---|---|
-| 旧操作（`scenario_pool`，同样 24 个场景） | 124 | 57,172 |
+| 旧操作（已删除的 `scenario_pool`） | 124 | 57,172 |
 | 新接口（`front_pool`） | 48 | 10,304 |
-
-两组测试的步骤不完全相同：`scenario_pool` 还包含对过期引用的检查，所以它的调用次数高于完成任务所需的最少次数。
 
 ### 与 agent-browser 的对比
 

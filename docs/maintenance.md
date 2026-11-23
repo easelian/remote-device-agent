@@ -47,11 +47,13 @@ Name a browser that can start with its sandbox under your account:
 
 ```sh
 RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome \
-  cargo +1.93.0 test --locked --test browser_session -- --ignored --test-threads=1
+  cargo +1.93.0 test --locked --features experimental-browser-bidi \
+  --test browser_session -- --ignored --test-threads=1
 ```
 
-Results depend on the browser build; `browser_open` reports the product and
-version in use. A browser confined by its packaging, such as a snap, may not
+Browser sessions exist only in a build with the `experimental-browser-bidi`
+feature on Linux x86_64, so these tests need that feature. Results depend on
+the browser build. A browser confined by its packaging, such as a snap, may not
 reach the test's private profile and upload directories.
 
 The Windows updater tests include a copied test executable that replaces its own

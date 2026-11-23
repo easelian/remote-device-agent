@@ -1,36 +1,21 @@
 # 浏览器实现与维护
 
-远程浏览器运行在设备上。AI 通过 MCP 读取页面、提交输入、核对网站结果。用户在同一个浏览器会话中输入敏感信息或完成本人验证。安装与本地策略见[使用手册](browser-zhCN.md)。新增能力的顺序和验收条件见[架构与路线](browser-design-zhCN.md)。正在取代下文各操作的三个新操作见[面向 AI 的浏览器接口](browser-ai-interface-zhCN.md)。
+远程浏览器运行在设备上。AI 通过 MCP 读取页面、提交输入、核对网站结果。用户在同一个浏览器会话中输入敏感信息或完成本人验证。安装与本地策略见[使用手册](browser-zhCN.md)。新增能力的顺序和验收条件见[架构与路线](browser-design-zhCN.md)。AI 使用的三个操作见[面向 AI 的浏览器接口](browser-ai-interface-zhCN.md)。
 
-## 选择运行路径
+## 运行路径与操作名称
 
-| 路径 | 谁可以使用 | 页面能力 |
+Agent 从连接上接受五个浏览器操作：AI 使用的 `browser_do`、`browser_read`、`browser_see`，文件列表 `browser_files`，以及登录用户页面使用的 `browser_human`。其他浏览器名称按未知操作拒绝。v1 运行时已经删除，会话只有下表两种后端。
+
+| 后端 | 条件 | 页面能力 |
 | --- | --- | --- |
-| v1 / Chromium CDP | 在支持的平台安装 Chromium，启用本地 `browser.enabled`，打开时省略 `selection` | 既有观察、引用操作、截图、弹窗、人工交接、可选命名资料及文件传输 |
-| v2 / Chromium CDP | Linux x86_64，构建启用 `experimental-browser-bidi`，本地启用 `browser.enabled` 和 `browser.capability_v2`，显式选择 `cdp` | `semantic_dom_v1` 共同页面模型及会话声明的扩展 |
-| v2 / Firefox BiDi | 同一构建和策略，配置 `browser.firefox_executable` 的绝对路径，具备所需 Linux namespace 和 pidfd 能力，显式选择 `bidi` | 同一页面模型，后端差异由能力声明和覆盖范围表示 |
+| Chromium CDP | Linux x86_64，构建启用 `experimental-browser-bidi`，本地策略启用 `browser.enabled` 和 `browser.capability_v2`，设备上装有 Chromium | `semantic_dom_v1` 共同页面模型及会话声明的扩展 |
+| Firefox BiDi | 同一构建和策略，配置 `browser.firefox_executable` 的绝对路径，具备所需 Linux namespace 和 pidfd 能力 | 同一页面模型，后端差异由能力声明和覆盖范围表示 |
 
-浏览器功能默认关闭。Agent 使用设备上已安装的浏览器，Chromium 的本地路径由 `browser.executable` 指定或按平台规则查找。`device_info.capabilities.browser.version` 保持 `1`，`v2.backends[]` 中的 `stage: "candidate"` 表示设备允许尝试。`browser_open` 完成启动、文档身份和截图检查后才返回 `session_ready`。客户端按本次打开结果的 `capabilities` 选择功能，也可从 `browser_sessions` 取回 v2 会话能力。两个 v2 后端的 `observed_connection_address` 和 `network_isolation` 均为 `false`，要求严格连接地址检查的策略会在创建浏览器前拒绝。[选择与设备声明](../src/browser/selection.rs) · [会话能力](../src/browser/runtime/v2.rs)
+`open` 步骤目前总是启动 Chromium，Firefox 后端只有 Agent 内部的测试能选到。浏览器功能默认关闭。Agent 使用设备上已安装的浏览器，Chromium 的本地路径由 `browser.executable` 指定或按平台规则查找。`device_info.capabilities.browser` 的 `available` 和 `reason` 说明会话是否可用及原因，`v2.backends[]` 逐个后端给出同样的信息。其他平台和构建不编译会话运行时，报告 `reason: "platform_or_build_unsupported"`。策略中 `sites.private_networks` 为 `deny` 时报告 `browser_policy_unsupported`，同样不提供会话。
+
+[front.rs](../src/browser/runtime/v2/front.rs) 把三个操作的每个步骤转换为 [v2.rs](../src/browser/runtime/v2.rs) 中的会话操作。会话操作沿用旧公开工具的名称：`browser_observe`、`browser_act`、`browser_wait`、`browser_tabs`、`browser_control`、`browser_screenshot`、`browser_evidence`、`browser_inspect`、`browser_capture`。下文出现这些名称及其参数（`selection`、`control_epoch`、`ref`、`cursor`、`format` 等）时，指的是这些内部会话操作：它们只能由 `front.rs` 和 Agent 内部的测试调用，不能从连接上到达，MCP 客户端也看不到。`browser_sessions`、`browser_profiles` 和 `browser_guidance` 已经没有对应的实现。下文各节写于旧工具公开的时期，其中由客户端直接调用这些工具的步骤，现在由 `front.rs` 在一次 `browser_do` 或 `browser_read` 内完成。
 
 Linux 上的 Firefox 会话归 Agent 进程所有。守护进程用 pidfd 等待 Agent 或浏览器命名空间的 PID 1 退出。发起 RPC 的工作线程在空闲时回收，用户仍可继续操作原页面。Agent 退出时，守护进程终止并回收该命名空间。守护进程意外退出时，内核通知命名空间的 PID 1 退出。[进程归属与回收](../src/browser/process/firefox.rs)
-
-如果任务依赖特定扩展，先查设备上的候选后端，再核对打开后的会话。例如，将卡片拖到另一列需要 `ref_drag`。
-
-1. 调用 `browser_guidance`，传入 `{"device_id":"example-device","topic":"open","include_extensions":true}`。在返回的 `variants` 中查找 `extensions.ref_drag == 1` 的候选项。同一任务需要多种能力时，在同一个候选项内逐项核对。`null` 表示该候选没有可用的已知版本。诊断任务还可以在同一候选项的 `task_event_categories` 中检查 `console` 或 `network`。
-2. 将该项完整的 `selection` 传给一次 `browser_open`。确认实际会话返回的 `selection` 与所选项相符，并检查 `capabilities.extensions.ref_drag` 的 `version == 1` 且 `available == true`，再从新观察中选择两端。打开响应丢失时按原操作回执找回会话。
-
-下面是显式选择 Chromium 的 `browser_open` 参数。将 `device_id` 替换为账户中已绑定的设备 ID。`selection` 只接受所示三个字段，`backend` 也可取 `bidi`。后端在会话内固定，打开失败会报告原因。
-
-```json
-{
-  "device_id": "example-device",
-  "selection": {
-    "version": 2,
-    "observation_profile": "semantic_dom_v1",
-    "backend": "cdp"
-  }
-}
-```
 
 ## 从公开工具定位到源码
 
@@ -38,8 +23,8 @@ Linux 上的 Firefox 会话归 Agent 进程所有。守护进程用 pidfd 等待
 | --- | --- |
 | Server `contracts/mcp/v1/tools-list.json`、`apps/core/src/mcp.rs`、`mcp_tools.rs`、`runtime.rs` | Gate/Core 使用公开工具目录。Core 绑定已认证主体、设备连接与 Agent 实例，处理准入、计量、操作回执及返回前的授权检查 |
 | Server `apps/core/src/browser/{guidance,evidence,presentation}.rs` | 分别生成能力指引、核对诊断结果、选择完整或增量的 MCP 响应。Core 不持有原生页面节点 |
-| [Agent RPC](../src/rpc.rs)、[会话运行时](../src/browser/runtime.rs)、[v2 路由](../src/browser/runtime/v2.rs)、[控制权](../src/browser/control.rs) | Agent 持有会话、活动 tab、控制代次和原生资源，分别在提交输入和交付结果时检查控制权 |
-| [v1 页面](../src/browser/page.rs)、[v2 共同算法](../src/browser/semantic/page.rs)、[隔离环境中的固定页面程序](../src/browser/semantic/program.js) | 采集 DOM、计算名称与记录、签发引用、复核操作目标。v2 的记录和输入语义在此统一 |
+| [Agent RPC](../src/rpc.rs)、[操作入口](../src/browser/runtime.rs)、[AI 的三个操作](../src/browser/runtime/v2/front.rs)、[会话操作](../src/browser/runtime/v2.rs)、[控制权](../src/browser/control.rs) | Agent 持有会话、活动 tab、控制代次和原生资源，分别在提交输入和交付结果时检查控制权 |
+| [共同算法](../src/browser/semantic/page.rs)、[隔离环境中的固定页面程序](../src/browser/semantic/program.js) | 采集 DOM、计算名称与记录、签发引用、复核操作目标。两种后端的记录和输入语义在此统一 |
 | [CDP](../src/browser/engine/cdp)、[BiDi](../src/browser/engine/bidi)、[进程监督](../src/browser/process) | 处理协议事件、文档和脚本执行环境（realm）的身份、原生输入、待决命令、资源释放与所属进程退出 |
 | [人工控制](../src/browser/runtime/human.rs)、[文件批准](../src/browser/runtime/file_approval.rs)、[私有文件](../src/browser/files)、[资料](../src/browser/profiles.rs) | Business 的 `Browser.vue`、`BrowserFileApproval.vue` 和文件页面通过经认证的人工接口访问这些资源 |
 
@@ -195,7 +180,7 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked \
 scripts/browser-scenarios-agent-browser.sh /opt/google/chrome/chrome
 ```
 
-第一条命令经 Agent RPC 驱动 v2/CDP 会话，逐项断言并打印每个场景的调用次数、返回字节数和写入；设置 `RDH_SCENARIO_REPORT` 可把结果存为 JSON，设置 `RDH_SCENARIO_ONLY=sort,pager` 只运行列出的第二批场景，设置 `RDH_SCENARIO_DUMP` 可把每次调用的回复逐行追加到指定文件。这里统计的是 Agent 发给 Core 的字节数，Core 交给 MCP 客户端之前还会省略[与请求重复的字段](#不写出的固定内容)。第二条用 `agent-browser` 驱动同一批页面，每个场景输出一行 JSON 供对照，需要 `python3` 和已安装的 `agent-browser`。新增场景时加一个页面、在 [场景测试](../tests/browser_scenarios.rs) 中加一段步骤和断言，并在对照脚本中加同样的步骤。
+第一条命令经 Agent RPC 用 `browser_do` 驱动 Chromium 会话，逐项断言并打印每个场景的调用次数、返回字节数和写入；设置 `RDH_SCENARIO_REPORT` 可把结果存为 JSON，设置 `RDH_SCENARIO_ONLY=sort,pager` 只运行列出的第二批场景，设置 `RDH_SCENARIO_DUMP` 可把每次调用的回复逐行追加到指定文件。这里统计的是 Agent 发给 Core 的字节数，Core 交给 MCP 客户端之前还会省略[与请求重复的字段](#不写出的固定内容)。第二条用 `agent-browser` 驱动同一批页面，每个场景输出一行 JSON 供对照，需要 `python3` 和已安装的 `agent-browser`。新增场景时加一个页面、在 [场景测试](../tests/browser_scenarios.rs) 中加一段步骤和断言，并在对照脚本中加同样的步骤。
 
 ### 用拖放移动看板卡片
 
@@ -347,14 +332,14 @@ v2 会话收到 `unknown` 结果后暂停，由调用方确认页面状态再恢
 
 `browser.persistent_profiles`、`browser.uploads`、`browser.downloads` 分别启用，默认均关闭。独立文件批准还需设备的 `capabilities.browser.extensions.file_authorization` 版本 1 可用。用户从 `files_url` 或会话列表进入“批准文件使用”，确认 tab、目标 origin 和本地文件。AI 保留控制，批准后从 `browser_files` 取得授权，用最新主文档文件输入 ref 执行 `attach_file`。Agent 在原生派发前持久化消费。旧版租约上传仍可用于已接管的会话。文件字节只走授权的人工接口。[文件批准](../src/browser/runtime/file_approval.rs) · [上传存储与消费](../src/browser/files/upload.rs)
 
-下载接收原始 HTTP 200 附件响应，要求唯一 `Content-Length` 且无压缩编码。Firefox 在私有 namespace 内处理原下载，取消进行中的下载影响整个会话。Chromium 的取消范围为单文件。`cancellation_scope` 告知用户影响范围，收到取消请求后继续核对终态。命名资料绑定主体与后端，v1、v2 Chromium、v2 Firefox 各自独占。[文件与下载](../src/browser/files) · [资料命名空间](../src/browser/profiles.rs)
+下载接收原始 HTTP 200 附件响应，要求唯一 `Content-Length` 且无压缩编码。Firefox 在私有 namespace 内处理原下载，取消进行中的下载影响整个会话。Chromium 的取消范围为单文件。`cancellation_scope` 告知用户影响范围，收到取消请求后继续核对终态。命名资料绑定主体与后端，Chromium 和 Firefox 各自独占；`open` 步骤还不能指定资料，所以目前没有会话使用命名资料。[文件与下载](../src/browser/files) · [资料命名空间](../src/browser/profiles.rs)
 
 ## 资源边界与回退
 
 | 资源 | 当前上限 | 源码 |
 | --- | --- | --- |
-| 会话、tab、frame | 每设备 v1/v2 合计 2 个会话。每会话 8 个 tab。v2 32 个 frame | [runtime](../src/browser/runtime.rs)、[v2](../src/browser/runtime/v2.rs)、[types](../src/browser/semantic/types.rs) |
-| v1/CDP 拓扑与连接证据 | 页面最多 32 个 frame。会话最多 40 个附着子 target。连接地址证据最多 1,024 项并淘汰最旧记录 | [CDP page](../src/browser/engine/cdp/page.rs)、[session](../src/browser/engine/cdp/session.rs)、[runtime](../src/browser/runtime.rs) |
+| 会话、tab、frame | 每设备 2 个会话。每会话 8 个 tab、32 个 frame | [runtime](../src/browser/runtime.rs)、[v2](../src/browser/runtime/v2.rs)、[types](../src/browser/semantic/types.rs) |
+| CDP 拓扑 | 页面最多 32 个 frame | [CDP page](../src/browser/engine/cdp/page.rs) |
 | 观察 | 默认 200 节点/20,000 字符，最大 1,000/64,000。紧凑格式默认 1,000 节点。每段遍历 5,000 节点，待遍历队列 50,000 项 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 扫描与引用 | 每 frame 一个扫描、每扫描最多 1,000 强节点。空闲期 300 秒 | [page](../src/browser/semantic/page.rs)、[program](../src/browser/semantic/program.js) |
 | 命名与记录 | 名称 512 Unicode 标量、32 关联、16 层、256 命名节点。记录 256 节点/4,096 标量 | [program](../src/browser/semantic/program.js)、[types](../src/browser/semantic/types.rs) |
