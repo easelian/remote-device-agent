@@ -9,6 +9,11 @@ function(operation, args, other) {
   // An ephemeral index belongs to this bounded script call, not the retained
   // node registry. Incomplete lookup can show a name but cannot issue a ref.
   const idRoots=new Map();
+  // Asking a control for its labels is slow, and a page of many buttons asks it of each. A label is
+  // around its control or names it by id, so the ids that labels name are read once for each root.
+  const labelRoots=new Map();
+  const labelled=node=>{if(node.closest('label'))return true;if(!node.id)return false;const root=node.getRootNode();let named=labelRoots.get(root);
+    if(!named){named=new Set();for(const label of root.querySelectorAll('label[for]'))named.add(label.htmlFor);labelRoots.set(root,named);}return named.has(node.id);};
   const idsFor=root=>{if(idRoots.has(root))return idRoots.get(root);const ids=new Map(),walker=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT);let node,count=0;while((node=walker.nextNode())&&count<5000){count++;if(node.id){let entries=ids.get(node.id);if(!entries){entries=[];ids.set(node.id,entries);}if(entries.length<2)entries.push(node);}}const index={ids,complete:!node};idRoots.set(root,index);return index;};
   const forbidden = new Set(['generic','none','presentation','caption','code','deletion','emphasis','insertion','paragraph','strong','subscript','superscript']);
   const controls = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','spinbutton','slider','switch','menuitem','tab','option']);
@@ -216,7 +221,7 @@ function(operation, args, other) {
     let name = '', source = 'none';
     if (bounded(node.getAttribute('aria-labelledby'))) { name = associated(node,new Set(),0); if (name) source = 'aria-labelledby'; }
     if (!name && bounded(node.getAttribute('aria-label'))) { name = bounded(node.getAttribute('aria-label')); source = 'aria-label'; }
-    if (!name && ['input','textarea','select','button','meter','progress','output'].includes(node.localName) && node.labels?.length) {
+    if (!name && ['input','textarea','select','button','meter','progress','output'].includes(node.localName) && labelled(node) && node.labels?.length) {
       const labels = [];
       for (const label of node.labels) {
         if (++budget.refs > 32) { quality.add('name_reference_limit'); break; }
@@ -714,6 +719,9 @@ function(operation, args, other) {
       if (node.nodeType === Node.TEXT_NODE) {
         // White space between two pieces parts them.
         if (!norm(node.nodeValue)) { if (node.nodeValue) gap = true; continue; }
+        // Text looked for by its words is tested for them first: most of a long page fails here,
+        // before anything is asked about how it is drawn.
+        if (scan.query.find && !norm(prefix(node.nodeValue,513)).includes(scan.query.find)) continue;
         if (scan.query.filter==='interactive' || scan.query.filter==='text' || scan.query.filter==='drag_endpoints' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
         let inside=false;
         for (let p=node.parentElement;p;p=parent(p)) {const mapped=role(p);if(controls.has(mapped.role)||contentNames.has(mapped.role)){inside=true;break;}}
@@ -721,7 +729,6 @@ function(operation, args, other) {
         const owner=node.parentElement,box=owner.getBoundingClientRect();
         if (scan.query.filter==='viewport' && !(box.bottom>0&&box.right>0&&box.top<innerHeight&&box.left<innerWidth)) continue;
         const text=norm(prefix(node.nodeValue,513));
-        if (scan.query.find && !text.includes(scan.query.find)) continue;
         let row, next = null;
         if (counted) {
           // A compact read takes from the parent only what a line of text states, and reads
