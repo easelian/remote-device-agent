@@ -21,26 +21,19 @@ pub const MAX_PROFILES: usize = 16;
 )]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    V1,
     CdpV2,
     BidiV2,
 }
 impl Scope {
-    fn namespace(self) -> Option<&'static str> {
+    fn namespace(self) -> &'static str {
         match self {
-            Self::V1 => None,
-            Self::CdpV2 => Some("rdh-browser-profile-v2-chromium"),
-            Self::BidiV2 => Some("rdh-browser-profile-v2-firefox"),
+            Self::CdpV2 => "rdh-browser-profile-v2-chromium",
+            Self::BidiV2 => "rdh-browser-profile-v2-firefox",
         }
     }
     pub fn id(self, principal: &Principal, name: &str) -> String {
         crate::config::sha256_hex(
-            &serde_json::to_vec(&json!([
-                self.namespace().unwrap_or("rdh-browser-profile-v1"),
-                principal.owner,
-                name
-            ]))
-            .unwrap(),
+            &serde_json::to_vec(&json!([self.namespace(), principal.owner, name])).unwrap(),
         )
     }
 }
@@ -92,11 +85,6 @@ pub fn valid_name(name: &str) -> bool {
         && name.chars().count() <= 64
         && !name.chars().any(char::is_control)
 }
-pub fn id(principal: &Principal, name: &str) -> String {
-    crate::config::sha256_hex(
-        &serde_json::to_vec(&json!(["rdh-browser-profile-v1", principal.owner, name])).unwrap(),
-    )
-}
 fn private_dir(path: &Path) -> Result<()> {
     match storage::create_private_dir(path) {
         Ok(_) => Ok(()),
@@ -120,7 +108,7 @@ fn read(path: &Path, scope: Scope) -> Result<Metadata> {
             && s.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     };
-    if meta.namespace.as_deref() != scope.namespace()
+    if meta.namespace.as_deref() != Some(scope.namespace())
         || meta.version != 1
         || !hex(&meta.id)
         || !hex(&meta.owner)
@@ -152,9 +140,6 @@ impl Profiles {
             leased: self.leased.clone(),
             release: true,
         })
-    }
-    pub fn open(&self, root: &Path, principal: &Principal, name: &str) -> Result<NamedProfile> {
-        self.open_scoped(root, principal, name, Scope::V1)
     }
     pub fn open_scoped(
         &self,
@@ -194,7 +179,7 @@ impl Profiles {
                     &path.join("metadata.json"),
                     &serde_json::to_vec(&Metadata {
                         version: 1,
-                        namespace: scope.namespace().map(str::to_owned),
+                        namespace: Some(scope.namespace().to_owned()),
                         id,
                         owner: principal.owner.clone(),
                         user: principal.user.clone(),
@@ -214,9 +199,9 @@ impl Profiles {
             lease,
         })
     }
-    pub fn list(&self, root: &Path, principal: &Principal) -> Result<Value> {
-        self.list_scoped(root, principal, Scope::V1)
-    }
+    // Listing and deleting wait for a step that names a profile: `open` cannot
+    // ask for one yet, so no named profile is created either.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn list_scoped(&self, root: &Path, principal: &Principal, scope: Scope) -> Result<Value> {
         let _catalog = self.catalog.lock().unwrap();
         let directory = root.join("profiles");
@@ -241,15 +226,9 @@ impl Profiles {
             }
         }
         profiles.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        if scope == Scope::V1 {
-            Ok(json!({"profiles":profiles,"max_profiles_per_device":MAX_PROFILES}))
-        } else {
-            Ok(json!({"profiles":profiles,"max_profiles_per_namespace":MAX_PROFILES}))
-        }
+        Ok(json!({"profiles":profiles,"max_profiles_per_namespace":MAX_PROFILES}))
     }
-    pub fn delete(&self, root: &Path, principal: &Principal, name: &str) -> Result<Value> {
-        self.delete_scoped(root, principal, name, Scope::V1)
-    }
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn delete_scoped(
         &self,
         root: &Path,
@@ -284,7 +263,7 @@ impl Profiles {
 mod scoped_tests {
     use super::*;
     #[test]
-    fn named_namespaces_preserve_v1_identity_and_independent_exclusive_leases() {
+    fn named_namespaces_keep_separate_identities_and_exclusive_leases() {
         let root = std::env::temp_dir().join(format!(
             "rdh-scoped-profiles-{}",
             crate::random::hex_token::<12>().unwrap()
@@ -302,13 +281,8 @@ mod scoped_tests {
         };
         let profiles = Profiles::default();
         let mut ids = HashSet::new();
-        assert_eq!(Scope::V1.id(&principal, "same"), id(&principal, "same"));
         let mut leases = Vec::new();
-        for (directory, scope) in [
-            ("v1", Scope::V1),
-            ("chrome", Scope::CdpV2),
-            ("firefox", Scope::BidiV2),
-        ] {
+        for (directory, scope) in [("chrome", Scope::CdpV2), ("firefox", Scope::BidiV2)] {
             let path = root.join(directory);
             storage::create_private_dir(&path).unwrap();
             let lease = profiles
@@ -347,10 +321,10 @@ mod scoped_tests {
                     .list_scoped(
                         &path,
                         &principal,
-                        if scope == Scope::V1 {
-                            Scope::CdpV2
+                        if scope == Scope::CdpV2 {
+                            Scope::BidiV2
                         } else {
-                            Scope::V1
+                            Scope::CdpV2
                         }
                     )
                     .is_err()

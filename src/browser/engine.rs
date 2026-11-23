@@ -12,11 +12,10 @@ use std::{
 #[cfg(feature = "experimental-browser-bidi")]
 pub(crate) mod bidi;
 mod cdp;
+pub use cdp::launch::detect;
 #[cfg(feature = "experimental-browser-bidi")]
 #[allow(unused_imports)] // Internal profile is selected only by D3 acceptance until D4.
 pub(in crate::browser) use cdp::semantic as semantic_cdp;
-mod programs;
-pub use cdp::launch::detect;
 #[cfg(test)]
 pub mod testing;
 
@@ -47,25 +46,11 @@ impl FrameId {
         &self.0.key
     }
 }
-impl TabId {
-    pub fn v1(&self) -> &str {
-        &self.0.key
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     context: Context,
     key: i64,
-}
-#[derive(Clone, Debug)]
-pub struct Scan(Arc<ScanLease>);
-#[derive(Debug)]
-struct ScanLease {
-    context: Context,
-    object: String,
-    group: String,
-    closed: AtomicBool,
 }
 #[derive(Clone)]
 pub struct Frame {
@@ -73,44 +58,9 @@ pub struct Frame {
     pub id: FrameId,
     pub parent: Option<FrameId>,
     pub document: DocumentId,
-    pub url: String,
-    pub fragment: String,
     pub ancestors: Vec<(Context, FrameId)>,
 }
 
-/// Validated output of the fixed shared DOM programs, never protocol JSON.
-pub struct Found {
-    pub node: Node,
-    pub exposed: bool,
-    pub role: String,
-    pub name: String,
-    pub value: Value,
-    pub data: Option<Value>,
-}
-pub struct Accessible {
-    pub exposed: bool,
-    pub role: String,
-    pub name: String,
-    pub value: Value,
-}
-pub struct ReaderOptions {
-    pub interactive: bool,
-    pub viewport: bool,
-    pub find: Option<String>,
-    pub limit: usize,
-}
-pub struct ReaderStatus {
-    pub closed: bool,
-    pub changed: bool,
-    pub more: bool,
-}
-pub struct Batch {
-    pub nodes: Vec<Value>,
-    pub changed: bool,
-    pub scanned: usize,
-    pub matches: usize,
-    pub omitted: Vec<String>,
-}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f64,
@@ -171,6 +121,10 @@ pub struct DocumentRequest {
     pub handle: Request,
     pub context: Option<Context>,
     pub frame: FrameId,
+    /// Names the connection whose address `Event::Connection` reports. Nothing
+    /// compares the two yet: a policy that refuses private networks needs it,
+    /// and sessions are not offered under such a policy.
+    #[allow(dead_code)]
     pub network: NetworkId,
     pub url: String,
     pub responded: bool,
@@ -199,6 +153,7 @@ pub enum Event {
     Detached(Context),
     TargetChanged(TargetInfo),
     DocumentPaused(DocumentRequest),
+    #[allow(dead_code)] // See `DocumentRequest::network`.
     Connection {
         network: NetworkId,
         public: bool,
@@ -216,14 +171,6 @@ pub enum RequestDecision {
     Continue,
     Deny,
     Abort,
-}
-pub struct Navigation {
-    pub failed: bool,
-}
-pub enum FocusOutcome {
-    Inserted,
-    Stale,
-    Changed,
 }
 /// The payload stays charged while an event handler or derived request owns it.
 #[derive(Clone, Default)]
@@ -255,8 +202,6 @@ impl Events {
 /// Event handling can be tested with semantic events and a recording endpoint.
 /// Maintenance is restricted to the resource carried by an event or lease.
 pub trait SessionPort: Clone + Send + Sync + 'static {
-    fn connected(&self) -> bool;
-    fn stop(&self);
     fn initialize_context(
         &self,
         context: &Context,
@@ -300,76 +245,15 @@ pub trait TransferPort: SessionPort {
     ) -> impl Future<Output = Result<()>> + Send;
 }
 
-/// Read algorithms can run against a deterministic, protocol-free page source.
 pub trait PageReadPort: Sync {
     fn frames(
         &self,
         context: &Context,
         deadline: Instant,
     ) -> impl Future<Output = Result<Vec<Frame>>> + Send;
-    fn metadata(
-        &self,
-        frame: &Frame,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Value>> + Send;
-    fn open_reader(
-        &self,
-        frame: &Frame,
-        options: ReaderOptions,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Scan>> + Send;
-    fn reader_status(
-        &self,
-        reader: &Scan,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<ReaderStatus>> + Send;
-    fn collect(
-        &self,
-        reader: &Scan,
-        nodes: usize,
-        scan: usize,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Batch>> + Send;
-    fn ack(
-        &self,
-        reader: &Scan,
-        count: usize,
-        chars: usize,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<ReaderStatus>> + Send;
-    fn close_reader(&self, reader: &Scan, deadline: Instant) -> impl Future<Output = ()> + Send;
-    fn release_scratch(
-        &self,
-        context: &Context,
-        deadline: Instant,
-    ) -> impl Future<Output = ()> + Send;
-    fn locate(
-        &self,
-        frame: &Frame,
-        reader: &Scan,
-        index: u64,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Option<Found>>> + Send;
-    fn details_of(
-        &self,
-        reader: &Scan,
-        indexes: &[u64],
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Value>> + Send;
 }
 
 pub trait PageActionPort: PageReadPort {
-    fn details(
-        &self,
-        frame: &Frame,
-        node: &Node,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Value>> + Send;
-    fn accessibility(
-        &self,
-        node: &Node,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Vec<Accessible>>> + Send;
     fn layout(
         &self,
         context: &Context,
@@ -389,27 +273,15 @@ pub trait PageActionPort: PageReadPort {
         point: Point,
         deadline: Instant,
     ) -> impl Future<Output = Result<Hit>> + Send;
-    fn scroll(
-        &self,
-        frame: &Frame,
-        delta: f64,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Point>> + Send;
     fn scroll_into_view(
         &self,
         node: &Node,
         deadline: Instant,
     ) -> impl Future<Output = Result<()>> + Send;
-    fn focus(&self, node: &Node, deadline: Instant) -> impl Future<Output = Result<()>> + Send;
     fn click(
         &self,
         context: &Context,
         point: Point,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<()>> + Send;
-    fn select_all(
-        &self,
-        context: &Context,
         deadline: Instant,
     ) -> impl Future<Output = Result<()>> + Send;
     fn press(
@@ -418,27 +290,6 @@ pub trait PageActionPort: PageReadPort {
         key: &str,
         deadline: Instant,
     ) -> impl Future<Output = Result<()>> + Send;
-    fn insert_text(
-        &self,
-        context: &Context,
-        text: &str,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<()>> + Send;
-    fn select(
-        &self,
-        frame: &Frame,
-        node: &Node,
-        value: &str,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<bool>> + Send;
-    fn set_form_value(
-        &self,
-        frame: &Frame,
-        node: &Node,
-        value: &str,
-        apply: bool,
-        deadline: Instant,
-    ) -> impl Future<Output = Result<Option<bool>>> + Send;
     fn attach_file(
         &self,
         node: &Node,
@@ -448,25 +299,9 @@ pub trait PageActionPort: PageReadPort {
 }
 
 impl Engine {
-    pub fn authorized(&self, control: Arc<Control>, epoch: u64) -> Self {
-        Self {
-            backend: self.backend.authorized(control, epoch, false),
-        }
-    }
-    pub fn human(&self, control: Arc<Control>, epoch: u64) -> Self {
-        Self {
-            backend: self.backend.authorized(control, epoch, true),
-        }
-    }
-    pub fn track_effects(&self) -> (Self, Arc<AtomicBool>) {
-        let (backend, effect) = self.backend.track_effects();
-        (Self { backend }, effect)
-    }
+    #[cfg(test)]
     pub fn connected(&self) -> bool {
         self.backend.connected()
-    }
-    pub fn pending(&self) -> usize {
-        self.backend.pending()
     }
     pub fn stop(&self) {
         self.backend.stop();

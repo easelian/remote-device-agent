@@ -142,6 +142,10 @@ pub async fn launch(
         Some("disabled_by_local_policy") => "disabled in local policy",
         Some("browser_not_installed") => "no configured Chromium executable was found",
         Some("platform_not_supported") => "not supported on this platform",
+        Some("platform_or_build_unsupported") => "not supported on this platform by this build",
+        Some("browser_policy_unsupported") => {
+            "not offered while browser.sites.private_networks is \"deny\""
+        }
         Some("shell_enabled") => {
             "not offered while shell access is enabled (browser.shell_coexistence is \"deny\")"
         }

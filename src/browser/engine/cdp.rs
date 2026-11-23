@@ -60,13 +60,6 @@ impl Adapter {
         self.check(&node.context.0)?;
         Ok(node.key)
     }
-    fn scan<'a>(&self, scan: &'a Scan) -> Result<&'a ScanLease> {
-        self.check(&scan.0.context.0)?;
-        if scan.0.closed.load(Ordering::Acquire) {
-            return Err(Failure::new("browser_stale_reference"));
-        }
-        Ok(&scan.0)
-    }
     pub(super) fn authorized(&self, control: Arc<Control>, epoch: u64, human: bool) -> Self {
         Self {
             scope: self.scope,
@@ -175,10 +168,6 @@ impl Engine {
         self.backend.wire.test_metrics()
     }
 
-    #[cfg(test)]
-    pub(in crate::browser) fn focus_program() -> &'static str {
-        programs::INSERT
-    }
     pub fn from_private_channel<R, W>(read: R, write: W) -> Self
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -202,6 +191,7 @@ fn actionable() -> Failure {
 }
 /// A successful protocol envelope is not proof that its script ran. Keep the
 /// original content-free failure vocabulary while rejecting malformed results.
+#[cfg(test)]
 fn script_value(reply: Value) -> Result<Value> {
     if reply.get("exceptionDetails").is_some() {
         return Err(stale());
@@ -211,12 +201,4 @@ fn script_value(reply: Value) -> Result<Value> {
         .and_then(|v| v.get("value"))
         .cloned()
         .ok_or_else(stale)
-}
-fn status(reply: Value) -> Result<ReaderStatus> {
-    let value = script_value(reply)?;
-    Ok(ReaderStatus {
-        closed: value["closed"].as_bool().ok_or_else(stale)?,
-        changed: value["changed"] == true,
-        more: value["more"] == true,
-    })
 }

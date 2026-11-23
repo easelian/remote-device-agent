@@ -36,7 +36,7 @@ impl Downloads {
             principal: self.principal.clone(),
             session: self.session.clone(),
             tab,
-            origin: crate::browser::page::origin(url)?,
+            origin: crate::browser::address::origin(url)?,
             control: self.control.clone(),
         })
     }

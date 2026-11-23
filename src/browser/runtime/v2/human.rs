@@ -173,7 +173,7 @@ impl Browsers {
                     return Err(Failure::new("browser_stale_frame"));
                 }
                 let (_, meta) = page.access(true)?.metadata(deadline).await?;
-                let origin = crate::browser::page::origin(&meta.url)?;
+                let origin = crate::browser::address::origin(&meta.url)?;
                 let state = slot.control.state.lock().unwrap();
                 if *state != (epoch, true) {
                     return Err(Failure::new("browser_control_changed"));

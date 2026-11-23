@@ -252,39 +252,6 @@ impl Engine {
             .await
             .map(drop)
     }
-    pub async fn navigate(
-        &self,
-        context: &Context,
-        url: &str,
-        deadline: Instant,
-    ) -> Result<Navigation> {
-        let a = &self.backend;
-        let reply = a
-            .wire
-            .call(
-                Some(a.session(context)?),
-                Command::PageNavigate,
-                json!({"url":url}),
-                deadline,
-            )
-            .await?;
-        Ok(Navigation {
-            failed: reply.get("errorText").is_some(),
-        })
-    }
-    pub async fn stop_loading(&self, context: &Context, deadline: Instant) -> Result<()> {
-        let a = &self.backend;
-        a.wire
-            .cleanup()
-            .call(
-                Some(a.session(context)?),
-                Command::PageStopLoading,
-                json!({}),
-                deadline,
-            )
-            .await
-            .map(drop)
-    }
     pub async fn dialog(&self, context: &Context, accept: bool, deadline: Instant) -> Result<()> {
         let a = &self.backend;
         a.wire
@@ -318,12 +285,6 @@ impl Engine {
 }
 
 impl SessionPort for Engine {
-    fn connected(&self) -> bool {
-        Engine::connected(self)
-    }
-    fn stop(&self) {
-        Engine::stop(self)
-    }
     async fn initialize_context(
         &self,
         context: &Context,

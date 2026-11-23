@@ -74,9 +74,9 @@ fn validate(params: &Value) -> Result<&str> {
     if action == "file_upload_begin" {
         if !identifier(&params["tab_id"])
             || params["approved"] != true
-            || !params["source_origin"]
-                .as_str()
-                .is_some_and(|s| s.len() <= 2048 && page::origin(s).is_ok_and(|origin| origin == s))
+            || !params["source_origin"].as_str().is_some_and(|s| {
+                s.len() <= 2048 && address::origin(s).is_ok_and(|origin| origin == s)
+            })
             || !params["name"].as_str().is_some_and(|s| {
                 !s.trim().is_empty()
                     && !matches!(s, "." | "..")
@@ -204,109 +204,12 @@ impl Browsers {
             // browser session has closed or another controller has taken over.
             self.files.approval_step(principal, params, None)?
         } else {
-            #[cfg(all(
-                target_os = "linux",
-                target_arch = "x86_64",
-                feature = "experimental-browser-bidi"
-            ))]
-            if self.v2_contains(params) {
-                return self
-                    .v2_file_approval(params, principal, deadline)
-                    .await
-                    .and_then(bounded);
-            }
-            self.v1_file_approval(params, principal, deadline).await?
+            return self
+                .v2_file_approval(params, principal, deadline)
+                .await
+                .and_then(bounded);
         };
         bounded(value)
-    }
-    async fn v1_file_approval(
-        &self,
-        params: &Value,
-        principal: &Principal,
-        deadline: Instant,
-    ) -> Result<Value> {
-        let id = params["session_id"].as_str().unwrap();
-        let slot = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(id)
-            .filter(|s| s.user == principal.user)
-            .cloned()
-            .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
-        let session = slot
-            .session
-            .try_lock()
-            .map_err(|_| Failure::new("browser_busy"))?;
-        let epoch = slot.control.snapshot().0;
-        checked_control(&slot.control, params, epoch)?;
-        if session.human.is_some() {
-            return Err(Failure::new("browser_paused"));
-        }
-        {
-            let admission = self.admission.lock().unwrap();
-            if !admission.online || admission.closing || slot.closing.load(Ordering::Acquire) {
-                return Err(Failure::new("browser_paused"));
-            }
-        }
-        let process = session
-            .process
-            .as_ref()
-            .ok_or_else(|| Failure::new("browser_session_unavailable"))?;
-        let engine = process.engine.authorized(slot.control.clone(), epoch);
-        let ready = || {
-            if !engine.connected() {
-                Err(Failure::unknown("browser_lost"))
-            } else if engine.pending() != 0 {
-                Err(Failure::unknown("browser_input_pending"))
-            } else {
-                Ok(())
-            }
-        };
-        ready()?;
-        let target = session
-            .targets
-            .lock()
-            .unwrap()
-            .get(&session.active)
-            .filter(|t| t.ready && t.kind == ContextKind::Page && t.dialog.is_none())
-            .cloned()
-            .ok_or_else(|| Failure::new("browser_tab_unavailable"))?;
-        let origin = if params["action"] == "file_upload_chunk" {
-            String::new()
-        } else {
-            let frames = page::frame_tree(&engine, &target.session, deadline).await?;
-            let metadata = page::metadata(
-                &engine,
-                frames
-                    .first()
-                    .ok_or_else(|| Failure::new("browser_tab_unavailable"))?,
-                deadline,
-            )
-            .await?;
-            page::origin(metadata["url"].as_str().unwrap_or(""))?
-        };
-        let owner = files::Owner {
-            principal: Principal {
-                version: 1,
-                owner: slot.owner.clone(),
-                user: slot.user.clone(),
-                channel: "ai".into(),
-            },
-            session: id.into(),
-            tab: target.id,
-            origin,
-            control: slot.control.clone(),
-        };
-        apply(
-            &self.files,
-            &owner,
-            principal,
-            params,
-            epoch,
-            deadline,
-            ready,
-        )
     }
 }
 fn bounded(value: Value) -> Result<Value> {

@@ -50,7 +50,7 @@ impl Browsers {
             String::new()
         } else {
             let (_, metadata) = page.access(false)?.metadata(deadline).await?;
-            crate::browser::page::origin(&metadata.url)?
+            crate::browser::address::origin(&metadata.url)?
         };
         let owner = files::Owner {
             principal: Principal {

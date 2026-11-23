@@ -1,4 +1,4 @@
-//! Explicit capability v2 sessions. Legacy v1 algorithms remain in runtime.rs.
+//! Browser sessions and the operations on one that the three calls of the AI are built from.
 use super::*;
 use crate::browser::{
     selection::{Backend, Selection},
@@ -413,11 +413,6 @@ impl Browsers {
             })
             .collect()
     }
-    pub(super) fn v2_contains(&self, params: &Value) -> bool {
-        params["session_id"]
-            .as_str()
-            .is_some_and(|id| self.v2_sessions.lock().unwrap().contains_key(id))
-    }
     pub(super) async fn v2_open(
         &self,
         params: &Value,
@@ -484,16 +479,15 @@ impl Browsers {
             if !admission.online || admission.closing {
                 return Err(Failure::new("browser_paused"));
             }
-            let legacy = self.sessions.lock().unwrap();
             let mut sessions = self.v2_sessions.lock().unwrap();
-            if legacy.len() + sessions.len() >= MAX_SESSIONS {
+            if sessions.len() >= MAX_SESSIONS {
                 return Err(Failure::new("browser_session_limit"));
             }
             sessions.insert(id.clone(), slot.clone());
         }
         let mut session = slot.session.lock().await;
         let result=async {
-            let policy=sem::policy::Policy::new(self.settings.sites.clone());
+            let policy=sem::policy::Policy::with_lookup(self.settings.sites.clone(),self.lookup.clone());
             let named=profile_name.map(|name|self.profiles.open_scoped(&root,principal,name,selection.backend.profile_scope())).transpose()?;
             let data=process::SessionData {named,downloads:self.settings.downloads.then(||files::Downloads{files:self.files.clone(),principal:principal.clone(),session:id.clone(),control:slot.control.clone()})};
             let native=match selection.backend {
@@ -580,7 +574,7 @@ impl Browsers {
             slot.pause();
             return Err(Failure::unknown("browser_lost"));
         }
-        if slot.selection.backend != Backend::Cdp && super::ref_drag_request(operation, params) {
+        if slot.selection.backend != Backend::Cdp && ref_drag_request(operation, params) {
             return Err(Failure::new("browser_feature_unsupported"));
         }
         if operation == "browser_tabs" {

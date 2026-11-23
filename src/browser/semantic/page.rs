@@ -1858,7 +1858,7 @@ async fn perform<P: Port>(
             else {
                 return Err(types::decode());
             };
-            let origin = crate::browser::page::origin(&meta.url)?;
+            let origin = crate::browser::address::origin(&meta.url)?;
             inspect(port, element, deadline).await?;
             let path = attachment.consume(origin)?;
             port.input(

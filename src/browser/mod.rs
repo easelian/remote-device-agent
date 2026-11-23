@@ -1,23 +1,15 @@
 //! Opt-in browser sessions. The Hub supplies identity outside model arguments.
-#[cfg(not(any(
+#[cfg(not(all(
     target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
 )))]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(not(any(
+#[cfg(not(all(
     target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
 )))]
 use std::time::Instant;
 
@@ -25,14 +17,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(any(
     test,
-    not(any(
+    not(all(
         target_os = "linux",
-        target_os = "macos",
-        all(
-            windows,
-            feature = "experimental-windows-private-storage",
-            feature = "experimental-windows-processes"
-        )
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
     ))
 ))]
 use serde_json::json;
@@ -127,6 +115,14 @@ impl Coexistence {
     }
 }
 
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod selection;
 
 impl Settings {
@@ -225,6 +221,35 @@ pub mod sites;
         feature = "experimental-windows-processes"
     )
 ))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
+mod address;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    all(
+        windows,
+        feature = "experimental-windows-private-storage",
+        feature = "experimental-windows-processes"
+    )
+))]
+// Sessions run only where the v2 runtime is built. The parts below it are
+// still compiled for every platform that can hold browser storage, so that
+// they keep building there; without the runtime most of them have no caller.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod control;
 #[cfg(any(
     target_os = "linux",
@@ -235,6 +260,14 @@ mod control;
         feature = "experimental-windows-processes"
     )
 ))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod engine;
 #[cfg(any(
     target_os = "linux",
@@ -245,6 +278,14 @@ mod engine;
         feature = "experimental-windows-processes"
     )
 ))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod files;
 #[cfg(any(
     target_os = "linux",
@@ -255,6 +296,14 @@ mod files;
         feature = "experimental-windows-processes"
     )
 ))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod image;
 #[cfg(any(
     target_os = "linux",
@@ -265,16 +314,14 @@ mod image;
         feature = "experimental-windows-processes"
     )
 ))]
-mod page;
-#[cfg(any(
-    target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
-))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod process;
 #[cfg(any(
     target_os = "linux",
@@ -285,15 +332,19 @@ mod process;
         feature = "experimental-windows-processes"
     )
 ))]
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        feature = "experimental-browser-bidi"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod profiles;
-#[cfg(any(
+#[cfg(all(
     target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
 ))]
 mod runtime;
 #[cfg(all(
@@ -309,14 +360,10 @@ mod runtime;
     )
 ))]
 mod semantic;
-#[cfg(any(
+#[cfg(all(
     target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
 ))]
 pub use runtime::Browsers;
 
@@ -403,31 +450,37 @@ pub(crate) fn remove_binding(config: &std::path::Path, token: &str) -> crate::er
     Ok(())
 }
 
-#[cfg(not(any(
+#[cfg(not(all(
     target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
 )))]
 pub struct Browsers;
-#[cfg(not(any(
+#[cfg(not(all(
     target_os = "linux",
-    target_os = "macos",
-    all(
-        windows,
-        feature = "experimental-windows-private-storage",
-        feature = "experimental-windows-processes"
-    )
+    target_arch = "x86_64",
+    feature = "experimental-browser-bidi"
 )))]
 impl Browsers {
     pub fn new(_: &Settings, _: Option<&Path>, _: &str, _: Shell) -> Self {
         Self
     }
     pub fn info(&self) -> Value {
-        json!({"version":1,"available":false,"reason":"platform_not_supported"})
+        // Browser storage can exist on some of these platforms; sessions cannot.
+        let reason = if cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            all(
+                windows,
+                feature = "experimental-windows-private-storage",
+                feature = "experimental-windows-processes"
+            )
+        )) {
+            "platform_or_build_unsupported"
+        } else {
+            "platform_not_supported"
+        };
+        json!({"version":1,"available":false,"reason":reason})
     }
     pub fn release_stopped_storage(&self) {}
     pub fn resolve_with(&self, _: sites::Resolver) {}

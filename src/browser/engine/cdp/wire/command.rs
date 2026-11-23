@@ -1,5 +1,5 @@
-//! Closed CDP command vocabulary for the existing v1 adapter.
-//! This is protocol metadata, not the future cross-browser page interface.
+//! Closed CDP command vocabulary of the Chromium adapter.
+//! This is protocol metadata, not the cross-browser page interface.
 use crate::browser::control::Effect;
 
 #[derive(Clone, Copy)]
@@ -23,6 +23,8 @@ pub enum Command {
     DomGetDocument,
     #[cfg(feature = "experimental-browser-bidi")]
     DomRequestNode,
+    // Sent only by the wire's own tests since the v1 reader went.
+    #[cfg_attr(not(test), allow(dead_code))]
     DomFocus,
     DomGetContentQuads,
     DomGetFrameOwner,
@@ -64,10 +66,13 @@ pub enum Command {
     PageHandleJavaScriptDialog,
     PageNavigate,
     PageSetInterceptFileChooserDialog,
-    PageStopLoading,
     RuntimeCallFunction(Effect),
+    // Sent only by the wire's own tests since the v1 reader went.
+    #[cfg_attr(not(test), allow(dead_code))]
     RuntimeEvaluate(Effect),
     RuntimeReleaseObject,
+    // Sent only by the wire's own tests since the v1 reader went.
+    #[cfg_attr(not(test), allow(dead_code))]
     RuntimeReleaseObjectGroup,
     RuntimeRunIfWaitingForDebugger,
     #[cfg(feature = "experimental-browser-bidi")]
@@ -172,7 +177,6 @@ impl Command {
             Self::PageSetInterceptFileChooserDialog => {
                 ("Page.setInterceptFileChooserDialog", None, Block)
             }
-            Self::PageStopLoading => ("Page.stopLoading", None, Block),
             Self::RuntimeCallFunction(effect) => ("Runtime.callFunctionOn", effect, Block),
             Self::RuntimeEvaluate(effect) => ("Runtime.evaluate", effect, Block),
             Self::RuntimeReleaseObject => ("Runtime.releaseObject", None, Continue),

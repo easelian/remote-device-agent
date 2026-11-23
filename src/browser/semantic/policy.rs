@@ -129,10 +129,11 @@ pub(crate) struct Policy {
 }
 impl Policy {
     pub fn new(sites: Sites) -> Self {
-        Self {
-            sites,
-            lookup: Arc::new(Lookup::default()),
-        }
+        Self::with_lookup(sites, Arc::new(Lookup::default()))
+    }
+    /// A policy that asks where host names lead through a lookup it shares.
+    pub fn with_lookup(sites: Sites, lookup: Arc<Lookup>) -> Self {
+        Self { sites, lookup }
     }
     pub fn admit(&self, capabilities: Capabilities) -> Result<()> {
         if !capabilities.navigation_intercept
