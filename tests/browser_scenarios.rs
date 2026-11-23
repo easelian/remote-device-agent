@@ -1109,5 +1109,33 @@ async fn front_controls() {
             "{step}: {done}"
         );
     }
+    // A number is typed, a slider also answers to the keys a person would
+    // use, and a link within the page changes the address without loading.
+    let state = did(&mut peer, json!([{"open":site.url("state")}])).await;
+    assert!(
+        state.contains(" value=3: Quantity\n") && state.contains(" value=7 "),
+        "{state}"
+    );
+    let typed = did(
+        &mut peer,
+        json!([
+            {"fill":{"name":"Quantity"},"text":"42"},
+            {"press":"ArrowRight","on":{"name":"Volume"}},
+            {"click":{"name":"Show details"}},
+            {"wait":{"url":"#details"}},
+        ]),
+    )
+    .await;
+    assert!(!typed.contains('✗'), "{typed}");
+    let after = peer.call("browser_read", json!({})).await["result"]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        after.contains("/state.html#details\n")
+            && after.contains(" value=42: Quantity\n")
+            && after.contains(" value=8 "),
+        "{after}"
+    );
     assert_eq!(did(&mut peer, json!([{"close":true}])).await, "1 close");
 }
