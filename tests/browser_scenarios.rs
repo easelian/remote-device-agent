@@ -1366,6 +1366,14 @@ async fn front_plain() {
             && !opened.contains("<li> <a href=#first>"),
         "{opened}"
     );
+    // Words beside the link stay: such an item keeps its own line.
+    assert!(
+        opened
+            .lines()
+            .any(|line| line.starts_with("<li> <a href=#top>") && line.ends_with(" 10"))
+            && opened.contains(": Top 10 books\n"),
+        "{opened}"
+    );
     for (step, said) in [
         (
             json!({"check":{"name":"second box"},"on":false}),
@@ -1413,6 +1421,17 @@ async fn front_plain() {
         (
             json!({"click":{"name":"Close panel"}}),
             vec!["1 click button \"Close panel\"", "Panel closed"],
+        ),
+        // A click with the other button that the page does nothing with
+        // leaves nothing in the way of the next step.
+        (
+            json!({"click":{"name":"Add row"},"button":"right"}),
+            vec!["1 right-click button \"Add row\""],
+        ),
+        (json!({"click":{"name":"Add row"}}), vec![": Delete row"]),
+        (
+            json!({"click":{"name":"Delete row","nth":1}}),
+            vec!["1 click button \"Delete row\""],
         ),
         // The role "text" asks for the words, where a control is called the same.
         (

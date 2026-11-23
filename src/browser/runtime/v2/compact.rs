@@ -648,13 +648,16 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
                 && entries[0].identity != facts.node
                 && bare(&entries[0])
                 && entries[1].identity == facts.node
-                && entries[2..].iter().all(|entry| {
-                    if entry.tag == "#text" {
-                        facts.name.contains(entry.text.trim())
-                    } else {
-                        LAYOUT.contains(&entry.tag.as_str()) && bare(entry)
-                    }
-                })
+                && entries[2..]
+                    .iter()
+                    .all(|entry| entry.tag == "#text" || LAYOUT.contains(&entry.tag.as_str()) && bare(entry))
+                // All the words of the item are the control's name: words
+                // beside the control would be lost with the item's line.
+                && entries[2..]
+                    .iter()
+                    .filter(|entry| entry.tag == "#text")
+                    .flat_map(|entry| entry.text.split_whitespace())
+                    .eq(facts.name.split_whitespace())
                 && alone(at.checked_sub(1))
                 && alone((at + 1 < rows.len()).then_some(at + 1)))
             .then(|| {
