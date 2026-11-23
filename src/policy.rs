@@ -441,6 +441,21 @@ impl Policy {
                 ),
             });
         }
+        // A step is aimed by what the page says and answered with what it led
+        // to: working in a browser reads the page. A policy that withholds the
+        // reading withholds the work, as it did for an action that asked for
+        // the view after it.
+        if operation == "browser_do"
+            && self
+                .allowed
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains("browser_read"))
+        {
+            return Some(Denial {
+                code: "policy_operation_denied",
+                message: "Policy denied: browser_do requires browser_read".into(),
+            });
+        }
         if !WRITE_OPERATIONS.contains(&operation) {
             return None;
         }
@@ -573,6 +588,35 @@ mod tests {
             sidecar_path(Path::new("/tmp/device.json")),
             Path::new("/tmp/device.policy.json")
         );
+    }
+
+    #[test]
+    fn working_in_a_browser_requires_the_permission_to_read_it() {
+        let steps = json!({"steps":[{"click":{"name":"Save"}}],"read":"none"});
+        let parse = |allowed: Value| {
+            Policy::parse(
+                &json!({"version":1,"allowed_operations":allowed}),
+                &config(),
+            )
+            .unwrap()
+        };
+        let without = parse(json!(["browser_do", "browser_see"]));
+        let denial = without.denial("browser_do", &steps).unwrap();
+        assert_eq!(denial.code, "policy_operation_denied");
+        assert!(denial.message.ends_with("browser_do requires browser_read"));
+        // Reading and seeing need nothing but themselves.
+        assert!(without.denial("browser_see", &json!({})).is_none());
+        let reading = parse(json!(["browser_read"]));
+        assert!(reading.denial("browser_read", &json!({})).is_none());
+        assert!(reading.denial("browser_do", &steps).is_some());
+        assert!(
+            parse(json!(["browser_do", "browser_read"]))
+                .denial("browser_do", &steps)
+                .is_none()
+        );
+        // A policy that lists no operations allows them all.
+        let open = Policy::parse(&json!({"version":1}), &config()).unwrap();
+        assert!(open.denial("browser_do", &steps).is_none());
     }
 
     #[test]
