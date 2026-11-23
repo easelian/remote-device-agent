@@ -1328,7 +1328,11 @@ async fn act(
             "attach_file" => sem::Action::AttachFile(
                 attachment.ok_or_else(|| Failure::new("browser_upload_denied"))?,
             ),
-            "click" => sem::Action::Click,
+            "click" => match action["manner"].as_str() {
+                Some("double") => sem::Action::ClickAs(sem::types::Manner::Twice),
+                Some("right") => sem::Action::ClickAs(sem::types::Manner::Other),
+                _ => sem::Action::Click,
+            },
             "hover" => sem::Action::Hover,
             "drag" => sem::Action::Drag {
                 target: drag_target.ok_or_else(|| Failure::new("browser_invalid_params"))?,

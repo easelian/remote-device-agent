@@ -994,6 +994,26 @@ impl Semantic {
         }
         let world = self.world(frame, deadline).await?;
         let session = Some(self.adapter.session(&frame.session)?);
+        // What the browser hit may be a ::before or ::after of the element: a
+        // close button drawn by its own pseudo-element. No script can hold
+        // such a node, so the page is asked what lies at the point instead,
+        // which is the element the pseudo-element belongs to.
+        let described = self
+            .adapter
+            .wire
+            .call(
+                session,
+                Command::DomDescribeNode,
+                json!({"backendNodeId":self.adapter.node(&hit.node)?}),
+                deadline,
+            )
+            .await?;
+        if described["node"]["pseudoType"].as_str().is_some() {
+            let checked=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_hit"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token,"endpoint":endpoint,"at":{"x":point.x,"y":point.y}}}],"returnByValue":true}),deadline).await?;
+            return Ok(checked.get("exceptionDetails").is_none()
+                && checked["result"]["type"] == "string"
+                && checked["result"]["value"] == "true");
+        }
         let object=self.adapter.wire.call(session,Command::DomResolveNode,json!({"backendNodeId":self.adapter.node(&hit.node)?,"executionContextId":world,"objectGroup":"rdh-semantic-hit"}),deadline).await?;
         let object = object["object"]["objectId"].as_str().ok_or_else(stale)?;
         let checked=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_hit"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token,"endpoint":endpoint}},{"objectId":object}],"returnByValue":true}),deadline).await;
@@ -1366,9 +1386,13 @@ impl Port for Semantic {
         let native = self.native(frame)?;
         let session = self.adapter.session(&native.session)?;
         let hover = matches!(input, sem::NativeInput::Hover { .. });
-        let reuse_radio = match &input {
-            sem::NativeInput::Click { reuse_radio, .. } => *reuse_radio,
-            _ => None,
+        let (reuse_radio, manner) = match &input {
+            sem::NativeInput::Click {
+                reuse_radio,
+                manner,
+                ..
+            } => (*reuse_radio, *manner),
+            _ => (None, sem::types::Manner::Once),
         };
         match input {
             sem::NativeInput::Drag { source, target } => {
@@ -1407,14 +1431,29 @@ impl Port for Semantic {
                     sem::program::verify_reusable_submit(self, frame, radio, token, deadline)
                         .await?;
                 }
-                self.leased_pair(
-                    session,
-                    InputPair::Mouse,
-                    json!({"type":"mousePressed","x":x,"y":y,"button":"left","clickCount":1}),
-                    json!({"type":"mouseReleased","x":x,"y":y,"button":"left","clickCount":1}),
-                    deadline,
-                )
-                .await
+                let button = if manner == sem::types::Manner::Other {
+                    "right"
+                } else {
+                    "left"
+                };
+                let presses = if manner == sem::types::Manner::Twice {
+                    2
+                } else {
+                    1
+                };
+                // The second press of a pair says that it is the second, which
+                // is what makes the page hear a double click.
+                for count in 1..=presses {
+                    self.leased_pair(
+                        session,
+                        InputPair::Mouse,
+                        json!({"type":"mousePressed","x":x,"y":y,"button":button,"clickCount":count}),
+                        json!({"type":"mouseReleased","x":x,"y":y,"button":button,"clickCount":count}),
+                        deadline,
+                    )
+                    .await?;
+                }
+                Ok(())
             }
             sem::NativeInput::ReplaceText(text) => {
                 self.key_pair(

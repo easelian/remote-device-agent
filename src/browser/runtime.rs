@@ -663,6 +663,12 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
             "click" if action.get("read_native_validation").is_some() => {
                 &["kind", "ref", "read_native_validation"]
             }
+            "click" if action.get("manner").is_some() => {
+                if !matches!(action["manner"].as_str(), Some("double" | "right")) {
+                    return Err(Failure::new("browser_invalid_params"));
+                }
+                &["kind", "ref", "manner"]
+            }
             "click" => &["kind", "ref"],
             "hover" => &["kind", "ref"],
             "hover_submit_icon" => &["kind", "capture_id", "field_node_id", "source_node_id"],

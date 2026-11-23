@@ -220,6 +220,8 @@ pub(crate) enum Action {
     Scroll { delta: f64 },
     Hover,
     Click,
+    /// A click that is not one press of the main button.
+    ClickAs(types::Manner),
     Check(bool),
     ReplaceText(String),
     Press(Key),
@@ -233,7 +235,7 @@ impl Action {
         match self {
             Self::Scroll { .. } => Kind::Scroll,
             Self::Hover => Kind::Hover,
-            Self::Click => Kind::Click,
+            Self::Click | Self::ClickAs(_) => Kind::Click,
             Self::Check(_) => Kind::Check,
             Self::ReplaceText(_) => Kind::Fill,
             Self::Press(_) => Kind::Press,
@@ -1766,7 +1768,10 @@ async fn perform<P: Port>(
         return Err(Failure::new("browser_not_actionable"));
     }
     if facts.kind == "inferred"
-        && !matches!(action, Action::Click | Action::Press(_) | Action::Hover)
+        && !matches!(
+            action,
+            Action::Click | Action::ClickAs(_) | Action::Press(_) | Action::Hover
+        )
     {
         return Err(Failure::new("browser_not_actionable"));
     }
@@ -1906,7 +1911,11 @@ async fn perform<P: Port>(
                 .await;
             "native_hover"
         }
-        Action::Click | Action::Check(_) => {
+        Action::Click | Action::ClickAs(_) | Action::Check(_) => {
+            let manner = match &action {
+                Action::ClickAs(manner) => *manner,
+                _ => types::Manner::Once,
+            };
             let probe_armed = submit_validation != ValidationProbe::Disabled
                 && submit_probe_arm(
                     port,
@@ -1928,6 +1937,7 @@ async fn perform<P: Port>(
                     reuse_radio: element.reuse_radio,
                     x: facts.x,
                     y: facts.y,
+                    manner,
                 },
                 deadline,
             )

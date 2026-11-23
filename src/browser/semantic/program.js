@@ -232,10 +232,20 @@ function(operation, args, other) {
       let next = node.nextSibling;
       while (next && next.nodeType === Node.TEXT_NODE && !norm(next.nodeValue)) next = next.nextSibling;
       if (next && next.nodeType === Node.TEXT_NODE) { name = scalars(bounded(next.nodeValue)).slice(0,200).join(''); if (name) source = 'adjacent'; }
+      // Or by the words of the element right after it, where that is only words and names no other field.
+      else if (next && next.nodeType === Node.ELEMENT_NODE && ['label','span'].includes(next.localName) && !next.control && !next.querySelector('input,select,textarea,button,a[href]')) {
+        name = scalars(text(next)).slice(0,200).join(''); if (name) source = 'adjacent';
+      }
     }
     if (!name && node.localName === 'input' && ['button','submit','reset'].includes(node.type) && node.hasAttribute('value')) { name = bounded(node.value); if (name) source = 'value'; }
     if (!name && contentNames.has(mapped.role)) { name = text(node); if (name) source = 'content'; }
     if (!name) { name = bounded(node.getAttribute('title')); if (name) source = 'title'; }
+    // A link or button that says nothing itself is called by what the first thing in it is called, as an arrow
+    // drawn by a titled box is. A field is not: what it holds is its value.
+    if (!name && ['link','button','menuitem','tab'].includes(mapped.role)) {
+      const inner = node.querySelector('[aria-label],[title]');
+      if (inner) { name = bounded(inner.getAttribute('aria-label') || inner.getAttribute('title')); if (name) source = 'inner'; }
+    }
     if (scalars(name).length > 512) { name = scalars(name).slice(0,512).join(''); quality.add('name_character_limit'); }
     return {name,source,quality:Array.from(quality).sort()};
   }
@@ -750,7 +760,7 @@ function(operation, args, other) {
       // nothing marks it as a control: a listener added by script cannot be seen from here.
       let worded = false;
       if (scan.query.filter==='text' && scan.query.find && (state.plain.has(node) || role(node).kind==='text' || role(node).role==='img')
-          && !node.closest('a[href],button,label,select,textarea,[role=button],[role=link]') && node.textContent.length<=4096 && visible(node)) {
+          && !node.closest('a[href],button,select,textarea,[role=button],[role=link]') && !node.closest('label')?.control && node.textContent.length<=4096 && visible(node)) {
         // A picture holds its words in what it is called.
         const wanted = scan.query.find.toLowerCase(), holds = other => norm(other.textContent+' '+(other.getAttribute('alt')||'')+' '+(other.getAttribute('aria-label')||'')).toLowerCase().includes(wanted);
         if (holds(node) && !Array.from(node.children).some(holds)) { state.plain.add(node); worded = true; }
@@ -764,6 +774,11 @@ function(operation, args, other) {
       if (row && !endpoints && mapped.kind === 'aria' && mapped.role === 'menuitem') {
         const inner = node.querySelector('a[href],button');
         if (inner && norm(inner.textContent) === row.name) row = null;
+      }
+      // A picture that is all a link or button holds gives that control its name and is not listed again.
+      if (row && !endpoints && mapped.role === 'img' && mapped.kind === 'native') {
+        const holder = node.closest('a[href],button');
+        if (holder && !norm(holder.textContent)) row = null;
       }
       if (row) {
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
@@ -913,7 +928,10 @@ function(operation, args, other) {
   }
   if(operation==='native_hit'){
     const node=target();if(!node||!node.isConnected)return result(false);
-    for(let item=other,depth=0;item&&depth<64;item=parent(item),depth++){
+    // Asked with a point, for a hit on a pseudo-element: the element found there is the one it belongs to.
+    const root=node.getRootNode();
+    const first=other||(args.at?(root.elementFromPoint?root:document).elementFromPoint(args.at.x,args.at.y):null);
+    for(let item=first,depth=0;item&&depth<64;item=parent(item),depth++){
       if(item===node)return result(true);
       if(controls.has(role(item).role)||item.localName==='label'||args.endpoint&&endpointMarker(item))return result(false);
     }

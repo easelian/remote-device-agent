@@ -1166,6 +1166,9 @@ impl Port for Semantic {
                         .map_err(failure)
                         .map(drop)
                 }
+                sem::NativeInput::Click { manner, .. } if manner != sem::types::Manner::Once => {
+                    Err(Failure::new("browser_feature_unsupported"))
+                }
                 sem::NativeInput::Hover { node } | sem::NativeInput::Click { node, .. } => {
                     let submit_node = node;
                     let geometry = owned.target(frame, node, deadline).await?;

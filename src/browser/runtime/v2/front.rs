@@ -150,7 +150,9 @@ fn advice(code: &str) -> &'static str {
         "browser_stale_reference" => {
             "what that reference stood for cannot be found; describe the target by name or read the page again"
         }
-        "browser_not_actionable" => "the element is hidden, disabled or covered right now",
+        "browser_not_actionable" => {
+            "the element is hidden, disabled or covered right now; browser_read with what \"styles\" and find says what covers it"
+        }
         "browser_dialog_open" => {
             "a dialog is open; answer it with {\"dialog\":\"accept\"} or {\"dialog\":\"dismiss\"}"
         }
@@ -337,11 +339,7 @@ fn taking(verb: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
-fn choose(
-    target: &Target,
-    all: &[Candidate],
-    taking: &[&str],
-) -> std::result::Result<usize, Stop> {
+fn choose(target: &Target, all: &[Candidate], taking: &[&str]) -> std::result::Result<usize, Stop> {
     let Target::Described {
         name,
         role,
@@ -476,6 +474,7 @@ impl<'a> Step<'a> {
             return Err(invalid());
         }
         let extra: &[&str] = match *verb {
+            "click" => &["button", "count"],
             "fill" => &["text"],
             "select" => &["value"],
             "check" => &["on"],
@@ -496,6 +495,23 @@ impl<'a> Step<'a> {
         step.targets()?;
         let text = |key: &str| map.get(key).and_then(Value::as_str).ok_or_else(invalid);
         match *verb {
+            "click" => {
+                // One press of the main button unless the step says otherwise;
+                // a double click with the other button is not a thing pages hear.
+                let right = match map.get("button").map(Value::as_str) {
+                    None | Some(Some("left")) => false,
+                    Some(Some("right")) => true,
+                    _ => return Err(invalid()),
+                };
+                let twice = match map.get("count").map(Value::as_u64) {
+                    None | Some(Some(1)) => false,
+                    Some(Some(2)) => true,
+                    _ => return Err(invalid()),
+                };
+                if right && twice {
+                    return Err(invalid());
+                }
+            }
             "open" => drop(text("open")?),
             "fill" => drop(text("text")?),
             "select" => drop(text("value")?),
@@ -562,6 +578,12 @@ impl<'a> Step<'a> {
     fn action(&self, references: &[String]) -> Value {
         let first = references.first().cloned().unwrap_or_default();
         match self.verb {
+            "click" if self.map.get("button") == Some(&json!("right")) => {
+                json!({"kind":"click","ref":first,"manner":"right"})
+            }
+            "click" if self.map.get("count") == Some(&json!(2)) => {
+                json!({"kind":"click","ref":first,"manner":"double"})
+            }
             "click" | "hover" => json!({"kind":self.verb,"ref":first}),
             "fill" => json!({"kind":"fill","ref":first,"text":self.map["text"]}),
             "select" => json!({"kind":"select","ref":first,"value":self.map["value"]}),
@@ -1050,16 +1072,24 @@ impl Call<'_> {
                         written.push(target.written());
                     }
                 },
-                Target::Described { name, role, .. } => {
+                Target::Described {
+                    name,
+                    role,
+                    within,
+                    nth,
+                } => {
                     // Words that name no control may still be something that takes
                     // clicks. The search for them replaces the references found so
                     // far, so it is made only for a step with a single target.
+                    // The role "text" asks for the words themselves, where a
+                    // control is called the same.
+                    let words = role.as_deref() == Some("text");
                     let worded;
                     let chosen = match choose(target, &found, taking) {
                         Err(stop)
                             if stop.code == "browser_target_not_found"
                                 && targets.len() == 1
-                                && role.is_none()
+                                && (role.is_none() || words)
                                 && !name.is_empty() =>
                         {
                             let read = self
@@ -1070,8 +1100,17 @@ impl Call<'_> {
                                         "max_nodes":1000,"max_chars":64000}),
                                 )
                                 .await?;
-                            worded = candidates(&read);
-                            &worded[choose(target, &worded, taking)?]
+                            worded = candidates(&read)
+                                .into_iter()
+                                .filter(|candidate| !words || candidate.role == "inferred")
+                                .collect::<Vec<_>>();
+                            let plain = Target::Described {
+                                name: name.clone(),
+                                role: None,
+                                within: within.clone(),
+                                nth: *nth,
+                            };
+                            &worded[choose(&plain, &worded, taking)?]
                         }
                         other => &found[other?],
                     };
@@ -1512,6 +1551,24 @@ impl Call<'_> {
         let mut stopped = None;
         let mut done = 0;
         let last = steps.len() - 1;
+        // What the page reported between two calls is none of these steps' doing.
+        if let Some(id) = &session {
+            self.journal(id).await;
+            self.bodies(id).await;
+            // A request whose answer has not ended is kept back once, for
+            // its answer to be told with it. Here nothing more is awaited:
+            // what was kept back is asked for again and told as it is.
+            let mut earlier = self.problems(id, "  ");
+            let kept = self.problems(id, "  ");
+            match kept.split_once('\n') {
+                Some((_, lines)) if !earlier.is_empty() => earlier.push_str(lines),
+                _ => earlier.push_str(&kept),
+            }
+            if !earlier.is_empty() {
+                text.push_str("before these steps\n");
+                text.push_str(&earlier);
+            }
+        }
         for (index, step) in steps.iter().enumerate() {
             let number = index + 1;
             let before = session
@@ -1588,7 +1645,8 @@ impl Call<'_> {
                         }
                         let shown = view["text"].as_str().unwrap_or("");
                         let mut body = if shown.trim().is_empty() {
-                            "  (something was removed from the page; nothing else changed)\n".to_owned()
+                            "  (something was removed from the page; nothing else changed)\n"
+                                .to_owned()
                         } else {
                             format!("  changed{notes}:\n")
                         };
@@ -1864,7 +1922,8 @@ impl Call<'_> {
                 let until = self.patience();
                 let (mut done, written) = loop {
                     let attempt: std::result::Result<_, Stop> = async {
-                        let (references, written) = self.resolve(&id, &targets, again, step.verb).await?;
+                        let (references, written) =
+                            self.resolve(&id, &targets, again, step.verb).await?;
                         let mut params = json!({"action":if as_value {
                             json!({"kind":"select","ref":references[0],"value":step.map["text"]})
                         } else {
@@ -1963,7 +2022,16 @@ impl Call<'_> {
                         None => format!("scroll by {by}"),
                     }
                 } else {
-                    format!("{verb} {}", written.join(" to "))
+                    let said = match verb {
+                        "click"
+                            if step.map.contains_key("button") && step.map["button"] == "right" =>
+                        {
+                            "right-click"
+                        }
+                        "click" if step.map.get("count") == Some(&json!(2)) => "double-click",
+                        _ => verb,
+                    };
+                    format!("{said} {}", written.join(" to "))
                 };
                 // A dialog the step raised keeps every later step from running.
                 let dialog = self.dialog(&id);
@@ -2117,6 +2185,9 @@ mod tests {
             json!({"tab":"new"}),
             json!({"close":true}),
             json!({"click":{"role":"button"}}),
+            json!({"click":"r1","button":"right"}),
+            json!({"click":"r1","count":2}),
+            json!({"click":"r1","button":"left","count":1}),
         ] {
             assert!(Step::parse(&valid).is_ok(), "{valid}");
         }
@@ -2125,6 +2196,10 @@ mod tests {
             json!({"click":"r1","fill":"r2","text":"x"}),
             json!({"click":"r1","text":"x"}),
             json!({"click":{"in":"Draft"}}),
+            json!({"click":"r1","button":"middle"}),
+            json!({"click":"r1","count":3}),
+            json!({"click":"r1","button":"right","count":2}),
+            json!({"hover":"r1","count":2}),
             json!({"click":{"name":"","role":"button"}}),
             json!({"click":{"name":"Save","near":"x"}}),
             json!({"fill":"r1"}),

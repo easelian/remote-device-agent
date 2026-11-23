@@ -998,7 +998,8 @@ async fn front_references() {
 /// Carries out the calls of a file against a real browser and prints every
 /// reply with its size and time: the way to try the interface on a site by
 /// hand. RDH_EXPLORE names the file, a JSON array of [operation, params];
-/// ["sleep", {"ms": 500}] lets time pass between two calls.
+/// ["sleep", {"ms": 500}] lets time pass between two calls. RDH_EXPLORE_PROXY
+/// names the proxy the browser is to ask through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires RDH_BROWSER_EXECUTABLE, RDH_EXPLORE and a sandbox-capable native host"]
 async fn front_explore() {
@@ -1016,7 +1017,12 @@ async fn front_explore() {
     rdh_agent::storage::create_private_dir(&temp.0).unwrap();
     let mut peer = policy_peer(
         &temp.0,
-        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+        match std::env::var("RDH_EXPLORE_PROXY") {
+            // A device that reaches other sites only through a proxy.
+            Ok(proxy) => json!({"enabled":true,"capability_v2":true,"executable":executable,
+                "proxy":{"server":proxy}}),
+            Err(_) => json!({"enabled":true,"capability_v2":true,"executable":executable}),
+        },
     );
     for (operation, params) in calls {
         if operation == "sleep" {
@@ -1337,7 +1343,7 @@ async fn front_plain() {
     // that only wraps a link is that link; a container is not called by
     // what the controls in it say.
     assert!(
-        opened.contains(": Username\n") && !opened.contains("tag=label"),
+        opened.contains(": Username\n") && !opened.contains("tag=label: Username"),
         "{opened}"
     );
     assert!(
@@ -1345,6 +1351,21 @@ async fn front_plain() {
         "{opened}"
     );
     assert!(!opened.contains("Reports Yearly"), "{opened}");
+    // A box is also named by a label that merely follows it. A picture that
+    // is all a link holds is listed once, as the link; a link that says
+    // nothing is called by the titled box in it; and a list item that holds
+    // one link is one line.
+    assert!(opened.contains(" unchecked: water plants\n"), "{opened}");
+    assert!(
+        opened.contains(" href=#logo: Home logo\n") && !opened.contains("img alt=\"Home logo\""),
+        "{opened}"
+    );
+    assert!(opened.contains(" href=#vote: upvote\n"), "{opened}");
+    assert!(
+        opened.contains(" href=#first: First section\n")
+            && !opened.contains("<li> <a href=#first>"),
+        "{opened}"
+    );
     for (step, said) in [
         (
             json!({"check":{"name":"second box"},"on":false}),
@@ -1375,6 +1396,36 @@ async fn front_plain() {
             json!({"click":{"name":"Reports"}}),
             vec!["1 click link \"Reports\""],
         ),
+        // A click is one press of the main button unless the step says more.
+        (
+            json!({"click":{"name":"Editable cell"}}),
+            vec!["1 click ", "Cell chosen"],
+        ),
+        (
+            json!({"click":{"name":"Editable cell"},"count":2}),
+            vec!["1 double-click ", "Editing cell"],
+        ),
+        (
+            json!({"click":{"name":"Menu box"},"button":"right"}),
+            vec!["1 right-click ", "Menu shown"],
+        ),
+        // A button whose face is drawn by a pseudo-element of its own.
+        (
+            json!({"click":{"name":"Close panel"}}),
+            vec!["1 click button \"Close panel\"", "Panel closed"],
+        ),
+        // The role "text" asks for the words, where a control is called the same.
+        (
+            json!({"click":{"name":"water plants","role":"text"},"count":2}),
+            vec!["1 double-click inferred \"water plants\"", "Editing plants"],
+        ),
+        (
+            json!({"check":{"name":"water plants"}}),
+            vec![
+                "1 check checkbox \"water plants\"",
+                " checked: water plants",
+            ],
+        ),
     ] {
         let done = did(&mut peer, json!([step])).await;
         assert!(
@@ -1396,6 +1447,18 @@ async fn front_plain() {
     assert!(
         burst.matches(" GET /fail?n=").count() == 1 && burst.contains(" more like it: n"),
         "{burst}"
+    );
+    // What the page reports between two calls is told ahead of the next
+    // call's steps, not as the doing of its first.
+    let late = did(&mut peer, json!([{"click":{"name":"Late"}}])).await;
+    assert!(!late.contains("problems:"), "{late}");
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    let after = did(&mut peer, json!([{"click":{"name":"Add row"}}])).await;
+    assert!(
+        after.starts_with("before these steps\n  problems:\n    n")
+            && after.contains(" GET /fail?late=1 fetch")
+            && after.contains("\n1 click button \"Add row\"\n"),
+        "{after}"
     );
     // A page is scrolled as far as is asked.
     let far = did(

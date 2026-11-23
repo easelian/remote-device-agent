@@ -451,6 +451,16 @@ impl Batch {
     }
 }
 
+/// How the pointer is pressed on what it clicks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Manner {
+    #[default]
+    Once,
+    /// Twice in a row, as opens an item or starts editing it in place.
+    Twice,
+    /// With the other button, as opens a menu of the page's own.
+    Other,
+}
 #[derive(Clone, Debug)]
 pub(crate) enum NativeInput {
     SelectFile {
@@ -463,6 +473,7 @@ pub(crate) enum NativeInput {
         reuse_radio: Option<u64>,
         x: f64,
         y: f64,
+        manner: Manner,
     },
     ReplaceText(String),
     Press(Key),

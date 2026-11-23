@@ -1,6 +1,6 @@
 <!doctype html><meta charset="utf-8"><title>Plain</title>
 <!-- Markup as older sites write it: nothing labelled, nothing declared, the behaviour all in script and style. -->
-<style>.fig .cap{display:none}.fig:hover .cap{display:block}.col{width:80px;height:60px;border:1px solid #888;display:inline-block}label{cursor:pointer}</style>
+<style>.fig .cap{display:none}.fig:hover .cap{display:block}.col{width:80px;height:60px;border:1px solid #888;display:inline-block}label{cursor:pointer}.cross{width:40px;height:40px;position:relative;border:0}.cross:after{content:'\00d7';display:block;height:100%}</style>
 <h1>Plain markup</h1>
 <form onsubmit="return false"><input type="checkbox"> first box<br><input type="checkbox" checked> second box</form>
 <p><select id="pick"><option value="">Choose</option><option value="1">One</option><option value="2">Two</option></select></p>
@@ -9,6 +9,12 @@
 <p><label for="user">Username</label> <input id="user"></p>
 <ul role="menu" tabindex="0"><li role="menuitem"><a href="#m1">Reports</a><ul role="menu"><li role="menuitem"><a href="#m2">Yearly</a></li></ul></li></ul>
 <p><button type="button" id="add">Add row</button> <button type="button" id="burst">Burst</button></p><div id="rows"></div>
+<ul id="todo"><li><input type="checkbox"><label id="plants">water plants</label></li></ul>
+<p><a href="#logo"><img alt="Home logo" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></a>
+<a href="#vote"><span title="upvote" style="display:inline-block;width:12px;height:12px;background:#888"></span></a></p>
+<ul id="nav"><li><a href="#first">First section</a></li><li><a href="#second">Second section</a></li></ul>
+<p><button type="button" id="late">Late</button> <button type="button" class="cross" id="cross" aria-label="Close panel"></button></p>
+<p><span id="cell" tabindex="0">Editable cell</span> <span id="box" tabindex="0">Menu box</span></p>
 <p id="out">Nothing yet</p>
 <div style="height:6000px"></div><p id="far">Far below</p>
 <script>
@@ -20,5 +26,11 @@ for(const col of document.querySelectorAll('.col')){
 }
 document.getElementById('add').onclick=()=>{const made=document.createElement('button');made.type='button';made.textContent='Delete row';made.onclick=()=>made.remove();document.getElementById('rows').append(made);};
 document.getElementById('burst').onclick=()=>{for(const n of [1,2,3])fetch('/fail?n='+n).catch(()=>{});};
+document.getElementById('plants').ondblclick=()=>{document.getElementById('out').textContent='Editing plants';};
+document.getElementById('cross').onclick=()=>{document.getElementById('out').textContent='Panel closed';};
+document.getElementById('late').onclick=()=>{setTimeout(()=>fetch('/fail?late=1').catch(()=>{}),300);};
+document.getElementById('cell').ondblclick=()=>{document.getElementById('out').textContent='Editing cell';};
+document.getElementById('cell').onclick=event=>{if(event.detail===1)document.getElementById('out').textContent='Cell chosen';};
+document.getElementById('box').oncontextmenu=event=>{event.preventDefault();document.getElementById('out').textContent='Menu shown';};
 addEventListener('scroll',()=>{if(scrollY>2500)document.getElementById('out').textContent='Scrolled far';});
 </script>

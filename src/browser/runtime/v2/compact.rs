@@ -619,6 +619,54 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
         }
         start = end;
     }
+    // A list item or row that holds one control and nothing else is that
+    // control: a menu of links reads as a line to a link, not as two.
+    let lone: Vec<Option<sem::Facts>> = (0..rows.len())
+        .map(|at| {
+            let facts = &rows[at].facts;
+            let entries = &facts.record.entries;
+            let alone = |other: Option<usize>| {
+                other.is_none_or(|other| {
+                    rows[other].context != rows[at].context || root(other) != root(at)
+                })
+            };
+            let bare = |entry: &sem::Entry| {
+                attributes(entry, false).next().is_none()
+                    && entry.text.is_empty()
+                    && entry.value.as_deref().is_none_or(str::is_empty)
+                    && !entry.checked
+            };
+            (records[at].is_some()
+                && !address[at]
+                && full[at].get("ref").is_some()
+                && !is_text(facts)
+                && facts.record.complete
+                && facts.record.limits.is_empty()
+                && facts.name_quality.is_empty()
+                && entries.len() >= 2
+                && record_element(&entries[0])
+                && entries[0].identity != facts.node
+                && bare(&entries[0])
+                && entries[1].identity == facts.node
+                && entries[2..].iter().all(|entry| {
+                    if entry.tag == "#text" {
+                        facts.name.contains(entry.text.trim())
+                    } else {
+                        LAYOUT.contains(&entry.tag.as_str()) && bare(entry)
+                    }
+                })
+                && alone(at.checked_sub(1))
+                && alone((at + 1 < rows.len()).then_some(at + 1)))
+            .then(|| {
+                let mut own = facts.clone();
+                own.record.entries.remove(0);
+                own
+            })
+        })
+        .collect();
+    (0..rows.len())
+        .filter(|&at| lone[at].is_some())
+        .for_each(|at| records[at] = None);
     // The text of a label is the name of the control it labels.
     let labelled: HashSet<(sem::Context, &str)> = rows
         .iter()
@@ -717,7 +765,12 @@ pub(super) fn write(value: &mut Value, rows: &[sem::Row], full: &[Value], frames
         };
         lines.push(format!(
             "{indent}{}",
-            node(facts, &full[position], address[position], site(position))
+            node(
+                lone[position].as_ref().unwrap_or(facts),
+                &full[position],
+                address[position],
+                site(position)
+            )
         ));
     }
     value["format"] = "compact_v1".into();
