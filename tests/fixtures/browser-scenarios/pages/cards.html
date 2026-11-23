@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Cards</title>
+<style>.card{cursor:pointer;position:relative;width:300px;height:100px;margin:8px;border:1px solid #888}
+.card *{position:absolute;margin:0} .chip{width:120px;border:1px solid #888}</style>
+<h1>Orders</h1>
+<div class="card" onclick="note('Opened order 12')"><h3 style="top:0;left:4px">Order 12</h3>
+<p style="top:40px;left:0;width:300px;height:20px">Shipped to Ada</p>
+<button type="button" style="right:4px;bottom:4px;width:90px;height:20px" onclick="event.stopPropagation();note('Removed order 12')">Remove 12</button></div>
+<div class="card" onclick="note('Opened order 13')"><span style="top:0;left:4px">Order 13</span>
+<button type="button" style="top:30px;left:100px;width:100px;height:40px" onclick="event.stopPropagation();note('Removed order 13')">Remove 13</button></div>
+<div class="chip" tabindex="0" onkeydown="if(event.key==='Enter')note('Chip chosen')">Chip</div>
+<p id="out">Nothing yet</p><p id="count">0 actions</p>
+<script>let n=0;function note(what){document.getElementById('out').textContent=what;document.getElementById('count').textContent=++n+' actions';}</script>

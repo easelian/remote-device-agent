@@ -1,0 +1,38 @@
+<!doctype html><meta charset="utf-8"><title>Controls</title>
+<style>.hand{cursor:pointer} table{table-layout:fixed;width:600px}</style>
+<h1>Controls</h1>
+<p><a href="#here">Plain link</a> <a>Anchor without address</a> <button type="button">Plain button</button></p>
+<p><label>Name <input value="Ada"></label> <label>Tint <input type="color" value="#336699"></label>
+<label>Day <input type="date" value="2026-01-02"></label> <label>Level <input type="range" min="0" max="10" value="4"></label>
+<input type="hidden" name="token" value="t"></p>
+<p><label>Notes <textarea>draft</textarea></label> <label>Size <select><option>Small</option><option>Large</option></select></label>
+<label>Tags <select multiple size="2"><option>Red</option><option>Blue</option></select></label></p>
+<details><summary>More options</summary><p>Shown when opened</p></details>
+<div contenteditable="true">Edit me <b>boldly</b></div>
+<div contenteditable="true" role="textbox" aria-label="Labelled editor">Type here</div>
+<div role="button" tabindex="0">Role button</div>
+<div role="grid" aria-label="Sheet"><div role="row"><div role="gridcell" tabindex="-1">Grid cell</div></div></div>
+<ul role="tree" aria-label="Files"><li role="treeitem" tabindex="0">Tree item</li></ul>
+<ul role="menu" aria-label="View"><li role="menuitemcheckbox" aria-checked="true" tabindex="0">Show grid</li><li role="menuitemradio" aria-checked="false" tabindex="-1">Compact</li><li role="menuitem" tabindex="-1">Reset view</li></ul>
+<div role="tablist"><div role="tab" aria-selected="true" tabindex="0">First tab</div></div>
+<p onclick="note('paragraph')">Paragraph with handler</p>
+<p id="scripted">Paragraph with listener</p>
+<div class="hand">Hand cursor block <span>with inner text</span></div>
+<div tabindex="0">Focusable block</div>
+<table><thead><tr><th class="hand" onclick="note('header')">Sortable header</th><th>Plain header</th></tr></thead>
+<tbody><tr><td>Plain cell</td><td class="hand">Clickable cell</td></tr></tbody></table>
+<svg class="hand" width="20" height="20" viewBox="0 0 20 20"><title>Icon button</title><circle cx="10" cy="10" r="8"/></svg>
+<img class="hand" alt="Picture button" width="20" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+<a class="hand" onclick="note('anchor')">Anchor with handler</a>
+<a id="wired">Anchor with listener</a>
+<i class="hand" aria-hidden="true" style="display:inline-block;width:16px;height:16px"></i>
+<pre tabindex="0" style="overflow:auto;max-height:40px">Scrollable code</pre>
+<div role="tabpanel" tabindex="0">Panel text</div>
+<div role="region" aria-label="Notes">Region text</div>
+<p>Plain paragraph</p>
+<a href="#inner" class="hand"><span class="hand">Link with inner span</span></a>
+<button type="button"><span style="cursor:pointer">Button with inner span</span></button>
+<div class="hand"><a href="#only">Wrapped link</a></div>
+<p id="out"></p>
+<script>function note(what){document.getElementById('out').textContent='Noted '+what;}
+for(const id of ['scripted','wired'])document.getElementById(id).addEventListener('click',()=>note(id));</script>

@@ -156,6 +156,9 @@ fn advice(code: &str) -> &'static str {
             "this field takes a secret that only a person may type; {\"pause\":true} hands the browser to them"
         }
         "browser_dialog_unavailable" => "no dialog is open",
+        "browser_value_rejected" => {
+            "this field does not take that value: a date is YYYY-MM-DD, a time HH:MM, a colour #rrggbb, a slider a number within its range"
+        }
         "browser_input_pending" => {
             "an earlier input has not finished; a dialog may be waiting for an answer"
         }
@@ -1712,11 +1715,18 @@ impl Call<'_> {
                     .iter()
                     .any(|target| matches!(target, Target::Described { .. }));
                 let mut again = false;
+                // A date, a time, a colour and a slider take no typing: their
+                // value is set, as a list's is.
+                let mut as_value = false;
                 let until = self.patience();
                 let (mut done, written) = loop {
                     let attempt: std::result::Result<_, Stop> = async {
                         let (references, written) = self.resolve(&id, &targets, again).await?;
-                        let mut params = json!({"action":step.action(&references)});
+                        let mut params = json!({"action":if as_value {
+                            json!({"kind":"select","ref":references[0],"value":step.map["text"]})
+                        } else {
+                            step.action(&references)
+                        }});
                         if wants_view && step.acts() {
                             params["after_action_view"] = true.into();
                         }
@@ -1756,6 +1766,23 @@ impl Call<'_> {
                     }
                     .await;
                     match attempt {
+                        Err(stop)
+                            if verb == "fill"
+                                && !as_value
+                                && stop.code == "browser_not_actionable"
+                                && stop.state == "not_sent" =>
+                        {
+                            as_value = true;
+                            again = true;
+                            described = true;
+                        }
+                        Err(stop) if as_value && stop.code == "browser_invalid_params" => {
+                            break Err(Stop {
+                                code: "browser_value_rejected",
+                                state: "not_sent",
+                                detail: String::new(),
+                            })?;
+                        }
                         // A reference that the page has outlived is looked for
                         // once more, by what it stood for.
                         Err(stop)

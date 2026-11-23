@@ -163,6 +163,9 @@ function(operation, args, other) {
         if (item.nodeType === Node.TEXT_NODE) {if(item.nodeValue.length>8192)quality.add('name_character_limit');result += prefix(item.nodeValue,4097);}
         else if (item.nodeType === Node.ELEMENT_NODE) {
           if (['script','style','template','noscript'].includes(item.localName)) continue;
+          // What a field inside a label holds is its value, not part of the
+          // label: a list's options and the text typed into a text area.
+          if (item !== root && ['select','textarea','datalist'].includes(item.localName)) continue;
           if (item.localName === 'img' && item.hasAttribute('alt')) result += bounded(item.getAttribute('alt'));
           else if (item.localName === 'br') result += ' ';
           else for (let child = item.lastChild; child; child = child.previousSibling) {if(pending.length+budget.nodes>=256){quality.add('name_node_limit');break;}pending.push(child);}
@@ -365,6 +368,18 @@ function(operation, args, other) {
         if (part.width < 1 || part.height < 1 || part.right <= 0 || part.bottom <= 0 || part.left >= innerWidth || part.top >= innerHeight) continue;
         const [px,py] = middle(part);
         if (lands(px,py)) { x = px; y = py; hit = true; break; }
+      }
+    }
+    if (!hit && box.width >= 16 && box.height >= 16) {
+      // A card that takes clicks often has a button of its own at its middle.
+      // The click then goes to a place near its edge that is the card's alone.
+      const middleOne = root.elementFromPoint ? root.elementFromPoint(x,y) : document.elementFromPoint(x,y);
+      if (middleOne && middleOne !== node && node.contains(middleOne)) {
+        const left = Math.max(0,box.left)+6, right = Math.min(innerWidth,box.right)-6;
+        const top = Math.max(0,box.top)+6, bottom = Math.min(innerHeight,box.bottom)-6;
+        for (const [px,py] of [[left,top],[right,top],[left,bottom],[right,bottom],[(left+right)/2,top],[(left+right)/2,bottom],[left,(top+bottom)/2],[right,(top+bottom)/2]]) {
+          if (lands(px,py)) { x = px; y = py; hit = true; break; }
+        }
       }
     }
     let shown = box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;

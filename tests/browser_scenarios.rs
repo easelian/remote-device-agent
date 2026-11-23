@@ -992,3 +992,122 @@ async fn front_references() {
     let closed = said(&mut peer, "browser_do", json!({"steps":[{"close":true}]})).await;
     assert_eq!(closed, "1 close");
 }
+
+/// Fields that take no typing, elements that take clicks without being
+/// controls, and the names a label gives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_controls() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    async fn did(peer: &mut Peer, steps: Value) -> String {
+        let reply = peer.call("browser_do", json!({"steps":steps})).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+
+    // A date, a time, a colour and a slider are given their value by fill,
+    // and the page hears of the change as it does from a person.
+    let opened = did(&mut peer, json!([{"open":site.url("picked")}])).await;
+    assert!(
+        opened.contains(" value=2026-01-02 type=date: Day\n"),
+        "{opened}"
+    );
+    for (name, value, heard) in [
+        ("Day", "2026-03-04", "Changed day 2026-03-04"),
+        ("Hour", "09:30", "Changed hour 09:30"),
+        ("Tint", "#112233", "Changed tint #112233"),
+        ("Level", "7", "Changed level 7"),
+    ] {
+        let filled = did(&mut peer, json!([{"fill":{"name":name},"text":value}])).await;
+        assert!(
+            filled.starts_with("1 fill ") && filled.contains(heard),
+            "{name}: {filled}"
+        );
+    }
+    for (name, value) in [("Day", "not a date"), ("Level", "70"), ("Tint", "red")] {
+        let refused = did(&mut peer, json!([{"fill":{"name":name},"text":value}])).await;
+        assert!(
+            refused.starts_with("✗ 1 fill: browser_value_rejected — "),
+            "{name}: {refused}"
+        );
+    }
+    let kept = did(&mut peer, json!([{"wait":{"text":"Changed level 7"}}])).await;
+    assert!(!kept.contains('✗'), "{kept}");
+
+    // A card that takes clicks is clicked where it is the card's own, also
+    // when a button of its own lies at its middle.
+    let cards = did(&mut peer, json!([{"open":site.url("cards")}])).await;
+    assert!(cards.contains(": Order 13 Remove 13\n"), "{cards}");
+    for (step, heard) in [
+        (json!({"click":{"name":"Order 12"}}), "Opened order 12"),
+        (json!({"click":{"name":"Remove 13"}}), "Removed order 13"),
+        (json!({"click":{"name":"Order 13"}}), "Opened order 13"),
+        (json!({"press":"Enter","on":{"name":"Chip"}}), "Chip chosen"),
+    ] {
+        let done = did(&mut peer, json!([step])).await;
+        assert!(
+            !done.contains('✗') && done.contains(heard),
+            "{step}: {done}"
+        );
+    }
+
+    // A label names its field without what the field holds.
+    let controls = did(&mut peer, json!([{"open":site.url("controls")}])).await;
+    for line in [
+        " value=Small: Size\n",
+        " type=textarea: Notes\n",
+        " type=select-multiple: Tags\n",
+    ] {
+        assert!(controls.contains(line), "{line:?} in {controls}");
+    }
+    assert!(
+        !controls.contains("SmallLarge") && !controls.contains("Notes draft"),
+        "{controls}"
+    );
+    for (step, heard) in [
+        (
+            json!({"click":{"name":"Paragraph with handler"}}),
+            "Noted paragraph",
+        ),
+        (json!({"click":{"name":"Sortable header"}}), "Noted header"),
+        (
+            json!({"click":{"name":"Anchor with handler"}}),
+            "Noted anchor",
+        ),
+        (
+            json!({"click":{"name":"More options"}}),
+            "Shown when opened",
+        ),
+        (
+            json!({"select":{"name":"Size"},"value":"Large"}),
+            " value=Large: Size",
+        ),
+        (
+            json!({"fill":{"name":"Notes"},"text":"final"}),
+            " value=final type=textarea: Notes",
+        ),
+        (
+            json!({"fill":{"name":"Labelled editor"},"text":"typed"}),
+            " value=typed editable: Labelled editor",
+        ),
+    ] {
+        let done = did(&mut peer, json!([step])).await;
+        assert!(
+            !done.contains('✗') && done.contains(heard),
+            "{step}: {done}"
+        );
+    }
+    assert_eq!(did(&mut peer, json!([{"close":true}])).await, "1 close");
+}

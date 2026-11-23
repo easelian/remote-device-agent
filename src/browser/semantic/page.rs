@@ -1796,11 +1796,14 @@ async fn perform<P: Port>(
             }
         }
         Action::SetFormValue(value) => {
-            if value.len() > 4096 || facts.sensitive || facts.readonly {
-                return Err(Failure::new("browser_invalid_params"));
-            }
-            if !actionability::native_form(&facts) {
+            // What the element is comes before what it is asked to hold: a
+            // field that takes no value this way, or none at all, is not one
+            // that was given a wrong value.
+            if !actionability::native_form(&facts) || facts.readonly {
                 return Err(Failure::new("browser_not_actionable"));
+            }
+            if value.len() > 4096 || facts.sensitive {
+                return Err(Failure::new("browser_invalid_params"));
             }
             if !matches!(
                 port.program(

@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>Picked</title>
+<h1>Booking</h1>
+<p><label>Day <input type="date" value="2026-01-02" onchange="note('day '+this.value)"></label>
+<label>Hour <input type="time" value="08:00" onchange="note('hour '+this.value)"></label>
+<label>Tint <input type="color" value="#336699" onchange="note('tint '+this.value)"></label>
+<label>Level <input type="range" min="0" max="10" value="4" onchange="note('level '+this.value)"></label></p>
+<p id="out">Nothing yet</p>
+<script>function note(what){document.getElementById('out').textContent='Changed '+what;}</script>

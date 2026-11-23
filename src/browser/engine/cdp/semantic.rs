@@ -952,6 +952,54 @@ impl Semantic {
             key,
         })
     }
+    /// Whether a click at this place of the frame reaches the element: the
+    /// element itself, or something inside it that is no control of its own.
+    #[allow(clippy::too_many_arguments)]
+    async fn reaches(
+        &self,
+        frame: &Frame,
+        node: &Node,
+        marker: &sem::Marker,
+        token: u64,
+        endpoint: bool,
+        point: Point,
+        deadline: Instant,
+    ) -> Result<bool> {
+        let hit = self
+            .engine()
+            .hit_at(&frame.session, point, deadline)
+            .await?;
+        if hit.frame != frame.id {
+            return Ok(false);
+        }
+        if hit.node == *node {
+            return Ok(true);
+        }
+        let world = self.world(frame, deadline).await?;
+        let session = Some(self.adapter.session(&frame.session)?);
+        let object=self.adapter.wire.call(session,Command::DomResolveNode,json!({"backendNodeId":self.adapter.node(&hit.node)?,"executionContextId":world,"objectGroup":"rdh-semantic-hit"}),deadline).await?;
+        let object = object["object"]["objectId"].as_str().ok_or_else(stale)?;
+        let checked=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_hit"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token,"endpoint":endpoint}},{"objectId":object}],"returnByValue":true}),deadline).await;
+        let released = self
+            .adapter
+            .wire
+            .cleanup()
+            .call(
+                session,
+                Command::RuntimeReleaseObject,
+                json!({"objectId":object}),
+                deadline.max(Instant::now() + std::time::Duration::from_secs(1)),
+            )
+            .await;
+        if released.is_err() {
+            self.adapter.stop();
+            return Err(Failure::unknown("browser_cleanup_pending"));
+        }
+        let checked = checked?;
+        Ok(checked.get("exceptionDetails").is_none()
+            && checked["result"]["type"] == "string"
+            && checked["result"]["value"] == "true")
+    }
     async fn point(
         &self,
         frame: &Frame,
@@ -963,39 +1011,34 @@ impl Semantic {
     ) -> Result<Point> {
         let engine = self.engine();
         let quad = engine.quad(node, deadline).await?;
-        let point = Point {
+        let mut point = Point {
             x: (quad[0] + quad[2] + quad[4] + quad[6]) / 4.,
             y: (quad[1] + quad[3] + quad[5] + quad[7]) / 4.,
         };
-        let hit = engine.hit_at(&frame.session, point, deadline).await?;
-        if hit.frame != frame.id {
-            return Err(actionable());
-        }
-        if hit.node != *node {
+        if !self
+            .reaches(frame, node, marker, token, endpoint, point, deadline)
+            .await?
+        {
+            // The middle of the element belongs to a control inside it, as the
+            // button of a card that takes clicks itself. The page program
+            // knows a place that is the element's alone.
             let world = self.world(frame, deadline).await?;
             let session = Some(self.adapter.session(&frame.session)?);
-            let object=self.adapter.wire.call(session,Command::DomResolveNode,json!({"backendNodeId":self.adapter.node(&hit.node)?,"executionContextId":world,"objectGroup":"rdh-semantic-hit"}),deadline).await?;
-            let object = object["object"]["objectId"].as_str().ok_or_else(stale)?;
-            let checked=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"native_hit"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token,"endpoint":endpoint}},{"objectId":object}],"returnByValue":true}),deadline).await;
-            let released = self
-                .adapter
-                .wire
-                .cleanup()
-                .call(
-                    session,
-                    Command::RuntimeReleaseObject,
-                    json!({"objectId":object}),
-                    deadline.max(Instant::now() + std::time::Duration::from_secs(1)),
-                )
-                .await;
-            if released.is_err() {
-                self.adapter.stop();
-                return Err(Failure::unknown("browser_cleanup_pending"));
+            let found=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"geometry"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token}}],"returnByValue":true}),deadline).await?;
+            let place: Value = found["result"]["value"]
+                .as_str()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .unwrap_or(Value::Null);
+            let (Some(x), Some(y)) = (place["x"].as_f64(), place["y"].as_f64()) else {
+                return Err(actionable());
+            };
+            if place["hit"] != true || (x == point.x && y == point.y) {
+                return Err(actionable());
             }
-            let checked = checked?;
-            if checked.get("exceptionDetails").is_some()
-                || checked["result"]["type"] != "string"
-                || checked["result"]["value"] != "true"
+            point = Point { x, y };
+            if !self
+                .reaches(frame, node, marker, token, endpoint, point, deadline)
+                .await?
             {
                 return Err(actionable());
             }
