@@ -503,7 +503,7 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     if let Some(filter) = map.get("filter")
         && !matches!(
             filter.as_str(),
-            Some("all" | "interactive" | "viewport" | "drag_endpoints")
+            Some("all" | "interactive" | "viewport" | "drag_endpoints" | "text")
         )
     {
         return Err(Failure::new("browser_invalid_params"));
@@ -1049,10 +1049,10 @@ mod tests {
     fn an_observation_is_asked_for_part_of_a_page_only_where_it_starts() {
         let invalid = Err("browser_invalid_params");
         assert_eq!(observation(json!({})), Ok(()));
-        for filter in ["all", "interactive", "viewport"] {
+        for filter in ["all", "interactive", "viewport", "text"] {
             assert_eq!(observation(json!({"filter":filter})), Ok(()), "{filter}");
         }
-        assert_eq!(observation(json!({"filter":"text"})), invalid);
+        assert_eq!(observation(json!({"filter":"words"})), invalid);
         assert_eq!(observation(json!({"filter":true})), invalid);
         // A continuation keeps what its sequence began with.
         let cursor = "0123456789abcdef0123456789abcdef";

@@ -164,6 +164,8 @@ pub(crate) enum Filter {
     Interactive,
     Viewport,
     DragEndpoints,
+    /// Controls, and with them the smallest elements that hold the words looked for.
+    Text,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]

@@ -301,7 +301,14 @@ fn candidates(observation: &Value) -> Vec<Candidate> {
                     .or(node["tag"].as_str())
                     .unwrap_or("")
                     .to_owned(),
-                name: node["name"].as_str().unwrap_or("").trim().to_owned(),
+                // A field nothing names is known by what it holds.
+                name: [node["name"].as_str(), node["value"].as_str()]
+                    .into_iter()
+                    .flatten()
+                    .map(str::trim)
+                    .find(|text| !text.is_empty())
+                    .unwrap_or("")
+                    .to_owned(),
                 record,
             })
         })
@@ -344,6 +351,16 @@ fn choose(target: &Target, all: &[Candidate]) -> std::result::Result<usize, Stop
             .filter(|(_, candidate)| fits(candidate) && grade(candidate))
             .map(|(index, _)| index)
             .collect();
+        // An element that only looks as if it took clicks gives way to a
+        // control of the same name: it is that control's wrapping or inside.
+        let found = if found.iter().any(|index| all[*index].role != "inferred") {
+            found
+                .into_iter()
+                .filter(|index| all[*index].role != "inferred")
+                .collect()
+        } else {
+            found
+        };
         match (found.len(), nth) {
             (0, _) => continue,
             (1, None | Some(1)) => return Ok(found[0]),
@@ -984,8 +1001,30 @@ impl Call<'_> {
                         written.push(target.written());
                     }
                 },
-                Target::Described { .. } => {
-                    let chosen = &found[choose(target, &found)?];
+                Target::Described { name, role, .. } => {
+                    // Words that name no control may still be something that takes
+                    // clicks. The search for them replaces the references found so
+                    // far, so it is made only for a step with a single target.
+                    let worded;
+                    let chosen = match choose(target, &found) {
+                        Err(stop)
+                            if stop.code == "browser_target_not_found"
+                                && targets.len() == 1
+                                && role.is_none() =>
+                        {
+                            let read = self
+                                .inner(
+                                    id,
+                                    "browser_observe",
+                                    json!({"filter":"text","find":name,
+                                        "max_nodes":1000,"max_chars":64000}),
+                                )
+                                .await?;
+                            worded = candidates(&read);
+                            &worded[choose(target, &worded)?]
+                        }
+                        other => &found[other?],
+                    };
                     references.push(chosen.reference.clone());
                     let mut text = format!("{} {:?}", chosen.role, chosen.name);
                     if let Target::Described {
@@ -1345,6 +1384,11 @@ impl Call<'_> {
                     if let Some(value) = map.get(from) {
                         query[to] = value.clone();
                     }
+                }
+                // A page is not read in less than this; a smaller wish gets
+                // the smallest reading there is instead of a refusal.
+                if let Some(wished) = query["max_chars"].as_u64() {
+                    query["max_chars"] = wished.max(1024).into();
                 }
                 self.page(&id, query).await?
             }

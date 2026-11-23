@@ -1151,6 +1151,7 @@ async fn observe_frames(
                 Some("interactive") => sem::Filter::Interactive,
                 Some("viewport") => sem::Filter::Viewport,
                 Some("drag_endpoints") => sem::Filter::DragEndpoints,
+                Some("text") => sem::Filter::Text,
                 _ => sem::Filter::All,
             },
             find: params["find"].as_str().map(str::to_owned),

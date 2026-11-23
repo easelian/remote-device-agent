@@ -993,6 +993,139 @@ async fn front_references() {
     assert_eq!(closed, "1 close");
 }
 
+/// A long page is read in parts that follow one another, a search reads only
+/// what holds the words, and a frame from another site is read with the page
+/// around it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE, python3 and a sandbox-capable native host"]
+async fn front_reading() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    async fn said(peer: &mut Peer, operation: &str, params: Value) -> String {
+        let reply = peer.call(operation, params.clone()).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{params}: {reply}"))
+            .to_owned()
+    }
+    fn orders(text: &str) -> Vec<&str> {
+        text.match_indices("Order G")
+            .filter_map(|(at, _)| text.get(at + 6..at + 11))
+            .collect()
+    }
+    fn cursor(text: &str) -> Option<String> {
+        let rest = text.lines().last()?.strip_prefix("more: ")?;
+        Some(rest.split(' ').next()?.to_owned())
+    }
+
+    said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("big")}],"read":"none"}),
+    )
+    .await;
+    let first = said(&mut peer, "browser_read", json!({"what":"page"})).await;
+    assert!(first.starts_with("Two thousand rows — http://"), "{first}");
+    assert!(
+        first.lines().last().unwrap().ends_with("% read)"),
+        "{first}"
+    );
+    let second = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"page","more":cursor(&first).unwrap()}),
+    )
+    .await;
+    let (one, two) = (orders(&first), orders(&second));
+    assert_eq!(one.first(), Some(&"G0001"), "{first}");
+    assert!(
+        !two.is_empty() && one.last() < two.first() && cursor(&second).is_some(),
+        "{:?} then {:?}",
+        one.last(),
+        two.first()
+    );
+    let found = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"page","find":"Order G1500"}),
+    )
+    .await;
+    assert_eq!(orders(&found), ["G1500"], "{found}");
+    assert!(found.len() < 400 && cursor(&found).is_none(), "{found}");
+    let short = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"page","max_chars":600}),
+    )
+    .await;
+    assert!(
+        short.len() < first.len() && cursor(&short).is_some(),
+        "{short}"
+    );
+
+    // The frame's content reads as part of the page, and is searched with it.
+    let framed = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("xframe")},{"wait":{"text":"Order X2"}}]}),
+    )
+    .await;
+    assert!(!framed.contains('✗'), "{framed}");
+    let whole = said(&mut peer, "browser_read", json!({"what":"page"})).await;
+    assert!(
+        whole.contains("Summary: 2 open")
+            && whole.contains("Order X1")
+            && whole.contains("Order X2"),
+        "{whole}"
+    );
+    let inner = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"page","find":"Order X2"}),
+    )
+    .await;
+    assert!(
+        inner.contains("Order X2") && !inner.contains("Order X1") && !inner.contains("Summary"),
+        "{inner}"
+    );
+
+    // Asked for by its words, something that is no control is listed with a
+    // reference to act on.
+    said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"open":site.url("cards")}],"read":"none"}),
+    )
+    .await;
+    let worded = said(
+        &mut peer,
+        "browser_read",
+        json!({"what":"page","filter":"text","find":"Quiet row 14"}),
+    )
+    .await;
+    let line = worded
+        .lines()
+        .find(|line| line.ends_with(": Quiet row 14"))
+        .unwrap_or_else(|| panic!("{worded}"));
+    let reference = line.split(['[', ']']).nth(1).unwrap();
+    let clicked = said(
+        &mut peer,
+        "browser_do",
+        json!({"steps":[{"click":reference}]}),
+    )
+    .await;
+    assert!(clicked.contains("Opened quiet row 14"), "{clicked}");
+}
+
 /// Fields that take no typing, elements that take clicks without being
 /// controls, and the names a label gives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1055,6 +1188,16 @@ async fn front_controls() {
         (json!({"click":{"name":"Remove 13"}}), "Removed order 13"),
         (json!({"click":{"name":"Order 13"}}), "Opened order 13"),
         (json!({"press":"Enter","on":{"name":"Chip"}}), "Chip chosen"),
+        // Nothing on the page says these take clicks: only a script listens.
+        (
+            json!({"click":{"name":"Quiet row 14"}}),
+            "Opened quiet row 14",
+        ),
+        (
+            json!({"click":{"name":"Delegated item 16"}}),
+            "Picked Delegated item 16",
+        ),
+        (json!({"click":{"name":"quiet row 14"}}), "7 actions"),
     ] {
         let done = did(&mut peer, json!([step])).await;
         assert!(
@@ -1062,6 +1205,13 @@ async fn front_controls() {
             "{step}: {done}"
         );
     }
+    // Words that are nowhere on the page name nothing, and words inside a
+    // control do not make a second target of what the control holds.
+    let absent = did(&mut peer, json!([{"click":{"name":"Order 99"}}])).await;
+    assert!(
+        absent.starts_with("✗ 1 click: browser_target_not_found"),
+        "{absent}"
+    );
 
     // A label names its field without what the field holds.
     let controls = did(&mut peer, json!([{"open":site.url("controls")}])).await;
@@ -1087,6 +1237,14 @@ async fn front_controls() {
             "Noted anchor",
         ),
         (
+            json!({"click":{"name":"Paragraph with listener"}}),
+            "Noted scripted",
+        ),
+        (
+            json!({"click":{"name":"Anchor with listener"}}),
+            "Noted wired",
+        ),
+        (
             json!({"click":{"name":"More options"}}),
             "Shown when opened",
         ),
@@ -1108,6 +1266,28 @@ async fn front_controls() {
             !done.contains('✗') && done.contains(heard),
             "{step}: {done}"
         );
+    }
+    // A field nothing names is known by what it holds, and what is typed
+    // into it comes back as that field alone, not as the page around it.
+    let edited = did(
+        &mut peer,
+        json!([{"fill":{"name":"Edit me boldly"},"text":"plain"}]),
+    )
+    .await;
+    assert!(
+        edited.starts_with("1 fill textbox ")
+            && edited.contains(" value=plain")
+            && !edited.contains("Plain button")
+            && edited.len() < 300,
+        "{edited}"
+    );
+    // A control and something around or inside it that reads the same.
+    for (name, written) in [
+        ("Button with inner span", "1 click button "),
+        ("Wrapped link", "1 click link "),
+    ] {
+        let done = did(&mut peer, json!([{"click":{"name":name}}])).await;
+        assert!(done.starts_with(written), "{name}: {done}");
     }
     // A number is typed, a slider also answers to the keys a person would
     // use, and a link within the page changes the address without loading.

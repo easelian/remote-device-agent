@@ -8,5 +8,9 @@
 <div class="card" onclick="note('Opened order 13')"><span style="top:0;left:4px">Order 13</span>
 <button type="button" style="top:30px;left:100px;width:100px;height:40px" onclick="event.stopPropagation();note('Removed order 13')">Remove 13</button></div>
 <div class="chip" tabindex="0" onkeydown="if(event.key==='Enter')note('Chip chosen')">Chip</div>
+<div id="plain"><span>Quiet</span> <b>row 14</b></div>
+<ul id="list"><li>Delegated <em>item 15</em></li><li>Delegated <em>item 16</em></li></ul>
 <p id="out">Nothing yet</p><p id="count">0 actions</p>
-<script>let n=0;function note(what){document.getElementById('out').textContent=what;document.getElementById('count').textContent=++n+' actions';}</script>
+<script>document.getElementById('plain').addEventListener('click',()=>note('Opened quiet row 14'));
+document.getElementById('list').addEventListener('click',event=>note('Picked '+event.target.closest('li').textContent));
+let n=0;function note(what){document.getElementById('out').textContent=what;document.getElementById('count').textContent=++n+' actions';}</script>

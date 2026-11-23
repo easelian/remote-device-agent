@@ -16,7 +16,7 @@ function(operation, args, other) {
   const picked = new Set(['date','time','datetime-local','month','week','color','range']);
   let state = globalThis[SLOT];
   if (!state || state.document !== document) {
-    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null, dirty:new Set(), dirtyLimit:false, removed:false};
+    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null, dirty:new Set(), dirtyLimit:false, removed:false, plain:new WeakSet()};
     // The evidence program in this isolated realm uses the same boundaries for record waits.
     // A fallback-only record role is opaque: never attribute its text to an outer record.
     const recordRoles = new Set(['row','listitem','article','option']);
@@ -79,9 +79,14 @@ function(operation, args, other) {
         if (record.type === 'attributes') {
           if (shown.has(record.attributeName) || record.attributeName.startsWith('aria-')) mark(record.target);
         } else if (record.type === 'characterData') {
-          mark(record.target.parentNode);
+          // Editing rebalances the white space next to what it deletes, also outside the
+          // field. Text that is blank now shows nothing; at most something went away.
+          if (norm(record.target.nodeValue)) mark(record.target.parentNode); else state.removed = true;
         } else {
-          for (const added of record.addedNodes) mark(added.nodeType === Node.ELEMENT_NODE ? added : record.target);
+          for (const added of record.addedNodes) {
+            if (added.nodeType === Node.ELEMENT_NODE) mark(added);
+            else if (added.nodeType !== Node.TEXT_NODE || norm(added.nodeValue)) mark(record.target);
+          }
           if (record.removedNodes.length) {
             state.removed = true;
             // What remains of a record that lost a part is worth showing; a bare container is not.
@@ -98,7 +103,9 @@ function(operation, args, other) {
     // by a style rule or a script, usually sits beside the control, so its container is read again.
     for (const kind of ['input','change']) addEventListener(kind, event => {
       const control = event.composedPath()[0];
-      if (control && control.nodeType === Node.ELEMENT_NODE) mark(control.parentNode);
+      if (!control || control.nodeType !== Node.ELEMENT_NODE) return;
+      // What is typed into an editing host alters the host itself: it has no property to depend on.
+      mark(control.isContentEditable ? control : control.parentNode);
     }, true);
     state.observer.observe(document, {subtree:true,childList:true,characterData:true,attributes:true});
   }
@@ -148,6 +155,8 @@ function(operation, args, other) {
       const outer = parent(node);
       if (!outer || getComputedStyle(outer).cursor !== 'pointer') return {role:'inferred',kind:'inferred'};
     }
+    // An element once asked for by its text stays a target: nothing on the page says it takes clicks.
+    if (!explicit && state.plain.has(node)) return {role:'inferred',kind:'inferred'};
     return {role:explicit ? 'unsupported' : '',kind:explicit ? 'aria' : 'text'};
   };
   function nameOf(node, mapped) {
@@ -680,7 +689,7 @@ function(operation, args, other) {
       if (node.nodeType === Node.TEXT_NODE) {
         // White space between two pieces parts them.
         if (!norm(node.nodeValue)) { if (node.nodeValue) gap = true; continue; }
-        if (scan.query.filter==='interactive' || scan.query.filter==='drag_endpoints' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
+        if (scan.query.filter==='interactive' || scan.query.filter==='text' || scan.query.filter==='drag_endpoints' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
         let inside=false;
         for (let p=node.parentElement;p;p=parent(p)) {const mapped=role(p);if(controls.has(mapped.role)||contentNames.has(mapped.role)){inside=true;break;}}
         if (inside) continue;
@@ -722,14 +731,22 @@ function(operation, args, other) {
       if (scan.total) scan.elements++;
       if (['script','style','template','noscript'].includes(node.localName)) continue;
       const endpoints = scan.query.filter === 'drag_endpoints';
+      // Asked for by text, the smallest element that holds the words is listed although
+      // nothing marks it as a control: a listener added by script cannot be seen from here.
+      let worded = false;
+      if (scan.query.filter==='text' && scan.query.find && (state.plain.has(node) || role(node).kind==='text')
+          && !node.closest('a[href],button,label,select,textarea,[role=button],[role=link]') && node.textContent.length<=4096 && visible(node)) {
+        const wanted = scan.query.find.toLowerCase(), holds = other => norm(other.textContent).toLowerCase().includes(wanted);
+        if (holds(node) && !Array.from(node.children).some(holds)) { state.plain.add(node); worded = true; }
+      }
       const mapped = endpoints ? null : role(node);
       const inViewport = () => { const box=node.getBoundingClientRect(); return box.bottom>0 && box.right>0 && box.top<innerHeight && box.left<innerWidth; };
-      const ordinary = mapped && mapped.role && (scan.query.filter!=='interactive'||controls.has(mapped.role)||mapped.role==='heading'||mapped.role==='inferred'||mapped.kind==='scrollable');
+      const ordinary = mapped && mapped.role && ((scan.query.filter!=='interactive'&&scan.query.filter!=='text')||controls.has(mapped.role)||mapped.role==='heading'||mapped.role==='inferred'||mapped.kind==='scrollable');
       const row = endpoints ? endpointFacts(node) :
         ordinary && visible(node) && (scan.query.filter !== 'viewport' || inViewport()) ? facts(node, mapped) : null;
       if (row) {
         const search=row.record.entries.map(entry=>[entry.text,entry.value||'',...entry.attributes.filter(pair=>['aria-label','alt','title'].includes(pair[0])).map(pair=>pair[1])].join(' ')).join(' ');
-        const match = !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
+        const match = worded || !scan.query.find || norm(search).includes(scan.query.find) || row.name.includes(scan.query.find);
         if (match) {
           if (counted && !endpoints && row.record.entries.length && row.record.entries[0].identity===row.node && node.localName!=='select' && state.recordKind(node)!=='record') flat.add(row);
           const price = cost(row), length = price.length;
