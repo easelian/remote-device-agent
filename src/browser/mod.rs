@@ -37,21 +37,11 @@ use serde_json::Value;
 ))]
 use serde_json::json;
 
+/// Everything a peer may ask of the browser. A session is opened, driven and
+/// closed through `browser_do`; no other name reaches a session.
 pub const OPERATIONS: &[&str] = &[
-    "browser_open",
-    "browser_sessions",
-    "browser_profiles",
     "browser_files",
-    "browser_tabs",
-    "browser_observe",
-    "browser_inspect",
-    "browser_evidence",
-    "browser_screenshot",
-    "browser_act",
-    "browser_wait",
-    "browser_control",
     "browser_human",
-    "browser_capture",
     "browser_do",
     "browser_read",
     "browser_see",
@@ -84,13 +74,7 @@ pub fn run_internal_supervisor() -> Option<crate::error::Result<()>> {
     )))]
     None
 }
-pub const MUTATIONS: &[&str] = &[
-    "browser_open",
-    "browser_act",
-    "browser_control",
-    "browser_capture",
-    "browser_do",
-];
+pub const MUTATIONS: &[&str] = &["browser_do"];
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]

@@ -9,19 +9,7 @@ use crate::error::{Error, Result};
 use crate::storage;
 
 pub const KNOWN_OPERATIONS: &[&str] = &[
-    "browser_open",
-    "browser_sessions",
-    "browser_profiles",
     "browser_files",
-    "browser_tabs",
-    "browser_observe",
-    "browser_inspect",
-    "browser_capture",
-    "browser_evidence",
-    "browser_screenshot",
-    "browser_act",
-    "browser_wait",
-    "browser_control",
     "browser_human",
     "browser_do",
     "browser_read",
@@ -453,15 +441,6 @@ impl Policy {
                 ),
             });
         }
-        if operation == "browser_act"
-            && let Some(allowed) = &self.allowed
-            && let Some(missing) = browser_action_permission_denial(params, allowed)
-        {
-            return Some(Denial {
-                code: "policy_operation_denied",
-                message: format!("Policy denied: this browser action requires {missing}"),
-            });
-        }
         if !WRITE_OPERATIONS.contains(&operation) {
             return None;
         }
@@ -549,30 +528,6 @@ impl Policy {
         json!({"allowed_operations": self.allowed, "readonly_roots":self.readonly_roots, "protected_paths":self.protected_paths()})
     }
 }
-fn browser_action_permission_denial(
-    params: &Value,
-    allowed: &BTreeSet<String>,
-) -> Option<&'static str> {
-    let action = &params["action"];
-    let capture = params.get("pre_action_diagnostics").is_some();
-    let native_validation = action["read_native_validation"] == true;
-    let visual = matches!(
-        action["kind"].as_str(),
-        Some("visual_click" | "visual_hover" | "visual_drag")
-    );
-    [
-        ("browser_observe", params.get("after_action_view").is_some()),
-        ("browser_capture", capture),
-        // The private submit-validation hint is never allowed to bypass the
-        // evidence permission: it produces a diagnostic disclosure.
-        ("browser_evidence", capture || native_validation),
-        ("browser_screenshot", visual),
-    ]
-    .into_iter()
-    .find_map(|(operation, required)| {
-        (required && !allowed.contains(operation)).then_some(operation)
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -618,82 +573,6 @@ mod tests {
             sidecar_path(Path::new("/tmp/device.json")),
             Path::new("/tmp/device.policy.json")
         );
-    }
-
-    #[test]
-    fn submit_validation_hint_cannot_bypass_evidence_permission() {
-        let permissions = ["browser_act", "browser_screenshot"];
-        let policy = Policy::parse(
-            &json!({"version":1,"allowed_operations":permissions}),
-            &config(),
-        )
-        .unwrap();
-        let action = json!({"action":{"kind":"click","ref":"r","read_native_validation":true}});
-        assert_eq!(
-            policy.denial("browser_act", &action).map(|d| d.code),
-            Some("policy_operation_denied")
-        );
-        let allowed = Policy::parse(
-            &json!({"version":1,"allowed_operations":["browser_act","browser_evidence"]}),
-            &config(),
-        )
-        .unwrap();
-        assert!(allowed.denial("browser_act", &action).is_none());
-    }
-
-    #[test]
-    fn every_visual_action_requires_screenshot_permission() {
-        for kind in ["visual_click", "visual_hover", "visual_drag"] {
-            let policy = Policy::parse(
-                &json!({"version":1,"allowed_operations":["browser_act"]}),
-                &config(),
-            )
-            .unwrap();
-            let action = json!({"action":{"kind":kind}});
-            assert_eq!(
-                policy.denial("browser_act", &action).map(|d| d.code),
-                Some("policy_operation_denied")
-            );
-        }
-    }
-
-    #[test]
-    fn ordinary_ref_click_has_no_extra_policy_requirement() {
-        let policy = Policy::parse(
-            &json!({"version":1,"allowed_operations":["browser_act"]}),
-            &config(),
-        )
-        .unwrap();
-        assert!(
-            policy
-                .denial("browser_act", &json!({"action":{"kind":"click","ref":"r"}}))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn action_diagnostics_require_both_diagnostic_permissions() {
-        let click = json!({"action":{"kind":"click","ref":"r"}});
-        let mut captured = click.clone();
-        captured["pre_action_diagnostics"] = json!({"categories":["console"]});
-        let permissions = ["browser_act", "browser_capture", "browser_evidence"];
-        for missing in [None, Some("browser_capture"), Some("browser_evidence")] {
-            let allowed: Vec<_> = permissions
-                .into_iter()
-                .filter(|op| Some(*op) != missing)
-                .collect();
-            let policy = Policy::parse(
-                &json!({"version":1, "allowed_operations":allowed}),
-                &config(),
-            )
-            .unwrap();
-            assert!(policy.denial("browser_act", &click).is_none());
-            let denial = policy.denial("browser_act", &captured);
-            assert_eq!(
-                denial.map(|d| d.code),
-                missing.map(|_| "policy_operation_denied")
-            );
-        }
     }
 
     #[test]

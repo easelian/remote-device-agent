@@ -485,18 +485,9 @@ impl Runtime {
         operations.extend_from_slice(SEARCH_OPERATIONS);
         operations.extend_from_slice(PROCESS_OPERATIONS);
         let browser = self.browsers.info();
-        if browser["available"] == true || browser["v2"]["available"] == true {
-            operations.extend(BROWSER_OPERATIONS.iter().copied().filter(|operation| {
-                !matches!(
-                    *operation,
-                    "browser_inspect"
-                        | "browser_evidence"
-                        | "browser_capture"
-                        | "browser_do"
-                        | "browser_read"
-                        | "browser_see"
-                ) || browser["v2"]["available"] == true
-            }));
+        // Sessions exist only in the v2 runtime, so nothing is offered without it.
+        if browser["v2"]["available"] == true {
+            operations.extend_from_slice(BROWSER_OPERATIONS);
         }
         if self.startup.is_some() {
             operations.extend_from_slice(STARTUP_OPERATIONS);
@@ -950,12 +941,11 @@ impl Runtime {
             );
             return Ok(());
         }
-        let semaphore = if operation == "browser_control"
-            || operation == "browser_human"
-                && matches!(
-                    params.get("action").and_then(Value::as_str),
-                    Some("claim" | "release" | "close")
-                ) {
+        let semaphore = if operation == "browser_human"
+            && matches!(
+                params.get("action").and_then(Value::as_str),
+                Some("claim" | "release" | "close")
+            ) {
             &self.browser_control
         } else if BROWSER_OPERATIONS.contains(&operation) {
             &self.browser_work
