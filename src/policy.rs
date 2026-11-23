@@ -8,6 +8,25 @@ use crate::config::DeviceConfig;
 use crate::error::{Error, Result};
 use crate::storage;
 
+/// Browser operations that no longer exist. A policy written for an earlier
+/// Agent may still list them: it loads, and they allow nothing. None of them
+/// stands for one of the operations there are now, which a policy has to name
+/// itself.
+const RETIRED_OPERATIONS: &[&str] = &[
+    "browser_open",
+    "browser_sessions",
+    "browser_profiles",
+    "browser_tabs",
+    "browser_observe",
+    "browser_inspect",
+    "browser_capture",
+    "browser_evidence",
+    "browser_screenshot",
+    "browser_act",
+    "browser_wait",
+    "browser_control",
+];
+
 pub const KNOWN_OPERATIONS: &[&str] = &[
     "browser_files",
     "browser_human",
@@ -229,9 +248,10 @@ impl Policy {
             let mut allowed: BTreeSet<_> = strings(
                 map.get("allowed_operations"),
                 "allowed_operations",
-                KNOWN_OPERATIONS.len(),
+                KNOWN_OPERATIONS.len() + RETIRED_OPERATIONS.len(),
             )?
             .into_iter()
+            .filter(|op| !RETIRED_OPERATIONS.contains(&op.as_str()))
             .collect();
             if allowed
                 .iter()
@@ -617,6 +637,39 @@ mod tests {
         // A policy that lists no operations allows them all.
         let open = Policy::parse(&json!({"version":1}), &config()).unwrap();
         assert!(open.denial("browser_do", &steps).is_none());
+    }
+
+    #[test]
+    fn a_policy_that_lists_operations_of_an_earlier_agent_loads_and_they_allow_nothing() {
+        let policy = Policy::parse(
+            &json!({"version":1,"allowed_operations":
+                ["read_file","browser_open","browser_act","browser_observe","browser_screenshot"]}),
+            &config(),
+        )
+        .unwrap();
+        assert!(policy.denial("read_file", &json!({})).is_none());
+        // What took their place is not allowed on their account.
+        for operation in ["browser_do", "browser_read", "browser_see", "browser_act"] {
+            assert!(
+                policy.denial(operation, &json!({})).is_some(),
+                "{operation}"
+            );
+        }
+        let described = policy.describe()["allowed_operations"].to_string();
+        assert!(!described.contains("browser_"), "{described}");
+        assert!(
+            RETIRED_OPERATIONS
+                .iter()
+                .all(|op| !KNOWN_OPERATIONS.contains(op))
+        );
+        // A name that never was an operation is still a mistake.
+        assert!(
+            Policy::parse(
+                &json!({"version":1,"allowed_operations":["browser_fly"]}),
+                &config()
+            )
+            .is_err()
+        );
     }
 
     #[test]

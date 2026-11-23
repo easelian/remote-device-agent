@@ -111,7 +111,7 @@ shell 权限和浏览器会话是两个独立的开关。设备两者都开时�
 
 AI 通过三个操作使用浏览器。`browser_do` 执行一串步骤，例如打开页面、点击、填写、等待和关闭会话；`browser_read` 读取页面、标签页、会话或诊断信息；`browser_see` 取得当前视口的截图。参数、回复格式和每种失败的处理方法见[面向 AI 的浏览器接口](browser-ai-interface-zhCN.md)。
 
-此前的 `browser_open`、`browser_observe`、`browser_act`、`browser_control` 等操作已经删除，Agent 把这些名称当作未知操作拒绝。本地策略的 `allowed_operations` 中如果还列着其中任何一个，策略文件无法加载，需要先删掉这些名称。
+此前的 `browser_open`、`browser_observe`、`browser_act`、`browser_control` 等操作已经删除，Agent 把这些名称当作未知操作拒绝。本地策略的 `allowed_operations` 中如果还列着其中某些名称，策略文件照常加载，但这些名称不再允许任何操作，也不代表取代它们的新操作：要使用浏览器，需要在列表里写上 `browser_do`、`browser_read`、`browser_see` 中所需的名称，其中 `browser_do` 必须与 `browser_read` 一起允许。
 
 当前支持普通文本框、原生单选下拉框、复选框、链接、按钮、页面滚动、标签页及受支持的 frame。日期、时间、颜色和滑块按值填写，值须符合该字段自身的格式，例如 `2026-03-04`、`09:30`、`#ff8800`、`7`。密码框不能由 AI 填写：这一步以 `browser_sensitive_input` 失败，文本不会发到页面。密码和验证码应在人工网页输入，不放进 AI 工具参数。
 
