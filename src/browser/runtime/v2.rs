@@ -497,9 +497,17 @@ impl Browsers {
             let port=native.port();session.native=Some(native);*slot.port.lock().unwrap()=Some(port.clone());
             if slot.closing.load(Ordering::Acquire)||slot.control.snapshot()!=(1,false){return Err(Failure::new("browser_control_changed"));}
             let page=sem::Page::new(port.clone());
-            // Handshake includes a real document stamp and bounded native JPEG.
-            // No external navigation happens until the required surface works.
-            capture(&page.access(false)?,deadline).await?;
+            // The handshake reads a real document stamp, between two readings
+            // of the frames that must agree. No external navigation happens
+            // before it. The picture a person watches is not taken here: it
+            // costs every session some 40 ms, and a browser that cannot draw
+            // one says so to the person who asks for it.
+            {
+                let reader=page.access(false)?;
+                let before=reader.frames(deadline).await?;
+                reader.metadata(deadline).await?;
+                if !same_frames(&before,&reader.frames(deadline).await?){return Err(Failure::new("browser_stale_frame"));}
+            }
             if let Some(url)=params["url"].as_str(){let url=url.to_owned();page.command(false,false,deadline,move|p|async move{p.navigate(&url,deadline).await}).await?;}
             if slot.control.snapshot()!=(1,false){return Err(Failure::unknown("browser_control_changed"));}
             session.active=port.tab_id()?;
