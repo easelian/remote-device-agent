@@ -341,14 +341,43 @@ function(operation, args, other) {
     if (!node || !node.isConnected || node.ownerDocument !== document) return null;
     mapped = mapped || role(node);
     const name = nameOf(node,mapped), box = node.getBoundingClientRect();
-    const x = (Math.max(0,box.left)+Math.min(innerWidth,box.right))/2;
-    const y = (Math.max(0,box.top)+Math.min(innerHeight,box.bottom))/2;
+    const middle = part => [(Math.max(0,part.left)+Math.min(innerWidth,part.right))/2,(Math.max(0,part.top)+Math.min(innerHeight,part.bottom))/2];
+    let [x,y] = middle(box);
     const root = node.getRootNode();
-    const top = root.elementFromPoint ? root.elementFromPoint(x,y) : document.elementFromPoint(x,y);
-    let hit = top === node || !!top && node.contains(top);
-    for (let inner = top; hit && inner && inner !== node; inner = parent(inner)) {
-      const childRole = role(inner);
-      if (controls.has(childRole.role) || inner.localName === 'label' || endpoint && endpointMarker(inner)) hit = false;
+    // Whether a click at this point reaches the element itself.
+    const lands = (px,py) => {
+      const top = root.elementFromPoint ? root.elementFromPoint(px,py) : document.elementFromPoint(px,py);
+      let reached = top === node || !!top && node.contains(top);
+      for (let inner = top; reached && inner && inner !== node; inner = parent(inner)) {
+        const childRole = role(inner);
+        if (controls.has(childRole.role) || inner.localName === 'label' || endpoint && endpointMarker(inner)) reached = false;
+      }
+      return reached;
+    };
+    let hit = lands(x,y);
+    if (!hit) {
+      // Text that wraps is drawn as one box per line, and the middle of the
+      // box around them all can lie on other text. The click goes to the
+      // first of its boxes that takes it.
+      const parts = node.getClientRects();
+      for (let index = 0; parts.length > 1 && index < Math.min(parts.length,8); index++) {
+        const part = parts[index];
+        if (part.width < 1 || part.height < 1 || part.right <= 0 || part.bottom <= 0 || part.left >= innerWidth || part.top >= innerHeight) continue;
+        const [px,py] = middle(part);
+        if (lands(px,py)) { x = px; y = py; hit = true; break; }
+      }
+    }
+    let shown = box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+    if (shown && !hit) {
+      // Inside the window, yet a container that scrolls or clips may have it
+      // out of sight: then it is not covered, it has to be scrolled to.
+      for (let outer = parent(node), depth = 0; outer && depth < 64; outer = parent(outer), depth++) {
+        if (outer.nodeType !== 1) continue;
+        const style = getComputedStyle(outer);
+        if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+        const frame = outer.getBoundingClientRect();
+        if (x < frame.left || x >= frame.right || y < frame.top || y >= frame.bottom) { shown = false; break; }
+      }
     }
     const record = material(node,mapped);
     const value = valueOf(node);
@@ -361,7 +390,7 @@ function(operation, args, other) {
       sensitive:sensitive(node),checked:!!node.checked || node.getAttribute('aria-checked') === 'true',
       tag:node.localName,input_type:node.type || '',visible:visible(node),hit,
       x:Number.isFinite(x) ? x : 0,y:Number.isFinite(y) ? y : 0,
-      in_view:box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+      in_view:shown,
       record};
   }
   // The proof stays in the isolated realm. Reject any DOM mutation in the
@@ -439,6 +468,17 @@ function(operation, args, other) {
   const push = (pending,node,omitted) => {
     if (pending.length>=50000) { omitted.add('traversal_limit'); return false; }
     pending.push(node); return true;
+  };
+  // Queues the children of an element from `first` on, to be read in page
+  // order. An element with very many children is queued a stretch at a time,
+  // with a marker that stands for the rest: what the limit of the queue cuts
+  // off is then the end of the page and never its beginning.
+  const queue = (pending,first,omitted) => {
+    const stretch = [];
+    let child = first;
+    for (; child && stretch.length < 2000; child = child.nextSibling) stretch.push(child);
+    if (child && !push(pending,{rest:child},omitted)) return;
+    for (let index = stretch.length-1; index >= 0; index--) if (!push(pending,stretch[index],omitted)) break;
   };
   const result = value => JSON.stringify(value);
   if (operation === 'view_revision') {
@@ -619,7 +659,9 @@ function(operation, args, other) {
       return {length,root};
     };
     while (scan.pending.length && rows.length < args.nodes && count < 5000) {
-      const node = scan.pending.pop(); count++; scan.scanned++;
+      const node = scan.pending.pop();
+      if (node.rest) { queue(scan.pending,node.rest,omitted); continue; }
+      count++; scan.scanned++;
       if (node.nodeType === Node.TEXT_NODE) {
         // White space between two pieces parts them.
         if (!norm(node.nodeValue)) { if (node.nodeValue) gap = true; continue; }
@@ -682,9 +724,9 @@ function(operation, args, other) {
       }
       if (node.shadowRoot) {
         state.observer.observe(node.shadowRoot,{subtree:true,childList:true,characterData:true,attributes:true});
-        for (let child = node.shadowRoot.lastChild; child; child = child.previousSibling) if(!push(scan.pending,child,omitted))break;
+        queue(scan.pending,node.shadowRoot.firstChild,omitted);
       }
-      for (let child = node.lastChild; child; child = child.previousSibling) if(!push(scan.pending,child,omitted))break;
+      queue(scan.pending,node.firstChild,omitted);
     }
     try { rememberSubmitPairs(rows); } catch { /* Optional for ordinary observations. */ }
     scan.sequence++;

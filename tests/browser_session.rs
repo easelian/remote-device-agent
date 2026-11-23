@@ -929,7 +929,12 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     }
     // A long page is read a part at a time, and the reply says there is more.
     let large = peer.does(json!([{"open":format!("{url}large")}])).await;
-    assert!(large.contains("\ntext: bounded text\n"), "{large}");
+    // A page of very many paragraphs is read from its beginning.
+    assert!(
+        large.contains("/large\nheading: Large page\ntext: bounded text\n"),
+        "{}",
+        large.lines().take(6).collect::<Vec<_>>().join(" | ")
+    );
     assert!(large.len() < 96000, "{}", large.len());
     assert!(
         large.lines().last().unwrap().starts_with("more: "),
@@ -976,9 +981,16 @@ async fn browser_rpc_task_ownership_recovery_and_cleanup() {
     assert_eq!(dialog["steps_done"], 2, "{dialog}");
     let text = dialog["text"].as_str().unwrap();
     assert!(
-        text.contains("a alert dialog opened: \"Synthetic dialog\"")
+        text.contains("an alert dialog opened: \"Synthetic dialog\"")
             && text.contains("\nnot run: 3–3"),
         "{text}"
+    );
+    // Opening another address is no way round the dialog either.
+    let around = peer.steps(json!([{"open":format!("{url}human")}])).await;
+    assert_eq!(
+        failure(&around),
+        ("browser_dialog_open", "not_sent"),
+        "{around}"
     );
     let blocked = peer.steps(json!([{"click":{"name":"Open dialog"}}])).await;
     assert_eq!(
@@ -1683,7 +1695,7 @@ async fn a_navigation_that_gets_no_answer_leaves_the_session_usable() {
 /// A link wrapped over two lines is hit where the click lands: on its first
 /// fragment, not at the center of a box that also covers other text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails: the click on a link that wraps over two lines is refused as browser_not_actionable; requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn a_link_wrapped_over_two_lines_is_clicked() {
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
     let temp = Temp(std::env::temp_dir().join(format!(
@@ -1770,7 +1782,7 @@ async fn a_target_below_the_viewport_is_scrolled_to_and_clicked() {
 
 /// A button scrolled out of an inner container is brought into view there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails: the click on a button scrolled out of an inner container is refused as browser_not_actionable, and the reading does not mark it as out of view; requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
 async fn a_target_scrolled_out_of_its_container_is_clicked() {
     let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
     let temp = Temp(std::env::temp_dir().join(format!(
@@ -1943,14 +1955,13 @@ async fn metadata_addresses_are_refused_however_the_browser_is_led_to_them() {
 
     // A page the caller may open redirects there. A request has left the browser
     // by then, so the outcome is uncertain, and the reply says so. The step is
-    // reported as a navigation that failed; that the policy stopped it is what
-    // the tab shows.
+    // reported as refused by the site policy, which is what stopped it.
     let denied = peer
         .run(json!({"tab":first_tab,"steps":[{"open":format!("{origin}/redirect")}]}))
         .await;
     assert_eq!(
         failure(&denied),
-        ("browser_navigation_failed", "unknown"),
+        ("browser_site_denied", "unknown"),
         "{denied}"
     );
     assert!(

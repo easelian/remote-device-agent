@@ -293,6 +293,8 @@ long tasks: 2 totalling 380ms, the longest 210ms after 1.2s
 
 实现位于 [front.rs](../src/browser/runtime/v2/front.rs)。每个步骤转换为 [v2.rs](../src/browser/runtime/v2.rs) 中的会话操作执行。这些会话操作沿用旧操作的名称（`browser_observe`、`browser_act`、`browser_wait` 等），但只在 Agent 内部按名称调用，不能从连接上到达。站点策略、人工接管和文件批准在会话操作及其下层生效。`browser_do` 需要回执，`browser_read` 和 `browser_see` 不需要。
 
+设备策略用 `allowed_operations` 限制操作时，允许 `browser_do` 必须同时允许 `browser_read`：步骤按页面内容定位，回复里也带页面内容，所以不允许读取的策略同样不允许操作。`browser_see` 只需要它自己。
+
 `drag` 和 `upload` 两种步骤只做了参数检查，还没有在真实浏览器上验证。
 
 ## 测量

@@ -1545,6 +1545,13 @@ impl Call<'_> {
         wants_view: bool,
     ) -> std::result::Result<(String, Value, bool), Stop> {
         let verb = step.verb;
+        // Nothing but an answer, or closing the session, gets past a dialog.
+        if verb == "open"
+            && let Some(id) = session.as_ref()
+            && self.dialog(id).is_some()
+        {
+            return Err(Failure::new("browser_dialog_open").into());
+        }
         if verb == "open" {
             let url = step.map["open"].as_str().unwrap_or("");
             let id = match session.clone() {
@@ -1784,8 +1791,14 @@ impl Call<'_> {
                 if let Some(dialog) = &dialog {
                     let _ = write!(
                         line,
-                        "\n  a {} dialog opened: {:?} — answer it with {{\"dialog\":\"accept\"}} or {{\"dialog\":\"dismiss\"}}",
-                        dialog.kind, dialog.message
+                        "\n  {} {} dialog opened: {:?} — answer it with {{\"dialog\":\"accept\"}} or {{\"dialog\":\"dismiss\"}}",
+                        if dialog.kind.starts_with(['a', 'e', 'i', 'o', 'u']) {
+                            "an"
+                        } else {
+                            "a"
+                        },
+                        dialog.kind,
+                        dialog.message
                     );
                 }
                 Ok((line, done["after_action_view"].take(), dialog.is_some()))

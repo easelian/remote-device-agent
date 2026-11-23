@@ -696,8 +696,16 @@ impl Semantic {
             }
             reply => reply?,
         };
-        if reply.get("errorText").is_some() {
-            return Err(Failure::unknown("browser_navigation_failed"));
+        if let Some(error) = reply["errorText"].as_str() {
+            // Only the site policy blocks a request on the client's behalf
+            // here: the address itself passed, and one it led to did not.
+            return Err(Failure::unknown(
+                if error.contains("ERR_BLOCKED_BY_CLIENT") {
+                    "browser_site_denied"
+                } else {
+                    "browser_navigation_failed"
+                },
+            ));
         }
         loop {
             let native = self.engine().page_frames(&self.root, deadline).await?;
