@@ -883,10 +883,19 @@ impl Browsers {
                     } else {
                         session.invalidate();
                         let mut retries = 0;
+                        let mut sampled = false;
+                        // The waiting ends a little before the call does, so the
+                        // last look at the page has time to come back.
+                        let limit = deadline
+                            - Duration::from_millis(300)
+                                .min(deadline.saturating_duration_since(Instant::now()) / 2);
                         loop {
                             match sample_wait_condition(&page, params, deadline).await {
                                 Ok(Some(result)) => break Ok(result),
-                                Ok(None) => retries = 0,
+                                Ok(None) => {
+                                    retries = 0;
+                                    sampled = true;
+                                }
                                 // Reload may replace the execution context during this read.
                                 Err(error)
                                     if can_retry_read(
@@ -899,9 +908,21 @@ impl Browsers {
                                     tokio::time::sleep(READ_BACKOFF).await;
                                     continue;
                                 }
+                                // The last look ran out of time. A look alters nothing,
+                                // and the page was seen without the condition before it,
+                                // so that is what is told.
+                                Err(error)
+                                    if sampled
+                                        && matches!(
+                                            error.code,
+                                            "browser_deadline" | "browser_timeout_unknown"
+                                        ) =>
+                                {
+                                    break Err(Failure::new("browser_condition_timeout"));
+                                }
                                 Err(error) => break Err(error),
                             }
-                            if Instant::now() + Duration::from_millis(100) >= deadline {
+                            if Instant::now() + Duration::from_millis(100) >= limit {
                                 break Err(Failure::new("browser_condition_timeout"));
                             }
                             tokio::time::sleep(Duration::from_millis(100)).await;
