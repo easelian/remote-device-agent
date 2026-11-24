@@ -358,6 +358,7 @@ pub(crate) fn interactive(role: &str) -> bool {
             | "menuitem"
             | "tab"
             | "option"
+            | "treeitem"
     )
 }
 

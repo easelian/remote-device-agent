@@ -383,11 +383,18 @@ fn chosen(
             })
     };
     // An exact name beats one that differs in case, which beats one that only
-    // contains the words asked for.
-    let grades: [&dyn Fn(&Candidate) -> bool; 3] = [
+    // contains the words asked for. Last comes a field of the kind the verb
+    // acts on that has the words beside it: a box called nothing of use, with
+    // its label written next to it.
+    let grades: [&dyn Fn(&Candidate) -> bool; 4] = [
         &|candidate| candidate.name == *name,
         &|candidate| candidate.name.to_lowercase() == lower,
         &|candidate| candidate.name.to_lowercase().contains(&lower),
+        &|candidate| {
+            !lower.is_empty()
+                && taking.contains(&candidate.role.as_str())
+                && candidate.record.to_lowercase().contains(&lower)
+        },
     ];
     let narrowed = |grade: &dyn Fn(&Candidate) -> bool| {
         let found: Vec<usize> = all
@@ -1142,6 +1149,8 @@ impl Call<'_> {
         let recalled: Vec<Meaning> = targets.iter().filter_map(meant).collect();
         // The matches on pages of the search that were passed over.
         let mut passed = 0;
+        // What was met disabled: it cannot be aimed at, and is not missing either.
+        let mut inert: Vec<(String, String)> = Vec::new();
         let found = if described.is_empty() && recalled.is_empty() {
             Vec::new()
         } else {
@@ -1175,6 +1184,14 @@ impl Call<'_> {
             for _ in 0..SEARCH_PAGES {
                 let read = self.inner(id, "browser_observe", query).await?;
                 found.extend(candidates(&read));
+                for node in read["nodes"].as_array().into_iter().flatten() {
+                    if node["ref"].is_null() && node["enabled"] == false {
+                        inert.push((
+                            node["role"].as_str().unwrap_or("").to_owned(),
+                            node["name"].as_str().unwrap_or("").trim().to_owned(),
+                        ));
+                    }
+                }
                 // Only the last page's references can be used, so a target on
                 // an earlier page is looked for again by a narrower search.
                 let Some(cursor) = read["next_cursor"].as_str() else {
@@ -1264,6 +1281,24 @@ impl Call<'_> {
                             if stop.code == "browser_target_ambiguous" && targets.len() == 1 =>
                         {
                             Err(self.told_apart(id, target, &found, taking, stop).await)
+                        }
+                        other => other,
+                    };
+                    let picked = match picked {
+                        Err(stop) if stop.code == "browser_target_not_found" => {
+                            match inert.iter().find(|(kind, called)| {
+                                role.as_ref()
+                                    .is_none_or(|role| kind.eq_ignore_ascii_case(role))
+                                    && !name.is_empty()
+                                    && called.eq_ignore_ascii_case(name)
+                            }) {
+                                Some((kind, called)) => Err(Stop {
+                                    code: "browser_not_actionable",
+                                    state: "not_sent",
+                                    detail: format!("{kind} {called:?} is disabled"),
+                                }),
+                                None => Err(stop),
+                            }
                         }
                         other => other,
                     };

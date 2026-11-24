@@ -16,8 +16,8 @@ function(operation, args, other) {
     if(!named){named=new Set();for(const label of root.querySelectorAll('label[for]'))named.add(label.htmlFor);labelRoots.set(root,named);}return named.has(node.id);};
   const idsFor=root=>{if(idRoots.has(root))return idRoots.get(root);const ids=new Map(),walker=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT);let node,count=0;while((node=walker.nextNode())&&count<5000){count++;if(node.id){let entries=ids.get(node.id);if(!entries){entries=[];ids.set(node.id,entries);}if(entries.length<2)entries.push(node);}}const index={ids,complete:!node};idRoots.set(root,index);return index;};
   const forbidden = new Set(['generic','none','presentation','caption','code','deletion','emphasis','insertion','paragraph','strong','subscript','superscript']);
-  const controls = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','spinbutton','slider','switch','menuitem','tab','option']);
-  const contentNames = new Set(['button','link','checkbox','radio','switch','menuitem','tab','option','heading','inferred']);
+  const controls = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','spinbutton','slider','switch','menuitem','tab','option','treeitem']);
+  const contentNames = new Set(['button','link','checkbox','radio','switch','menuitem','tab','option','treeitem','heading','inferred']);
   const picked = new Set(['date','time','datetime-local','month','week','color','range']);
   let state = globalThis[SLOT];
   if (!state || state.document !== document) {
@@ -323,6 +323,12 @@ function(operation, args, other) {
         if (!scopes.length && kind === 'ambiguous' && current !== node) scopes.push(node);
         scopes.push(current);
       }
+    }
+    // A box that no label names, alone with a few words in its parent, is read with them:
+    // they are what a person takes for its label, whatever the box calls itself.
+    if (!scopes.length && node.localName === 'input' && ['checkbox','radio'].includes(node.type) && !labelled(node)) {
+      const holder = node.parentElement;
+      if (holder && holder.querySelectorAll('input,select,textarea,button,a[href]').length === 1 && holder.textContent.length <= 200 && norm(holder.textContent)) scopes.push(holder);
     }
     if (!scopes.length) scopes.push(node);
     let ownerList;

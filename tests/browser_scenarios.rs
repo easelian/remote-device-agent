@@ -1408,6 +1408,33 @@ async fn front_real() {
         did(&mut peer, json!([{"click":{"role":"button","nth":nth}}])).await;
     }
     assert_eq!(site.writes("big"), ["G0003", "G0700", "G0990"]);
+    // An item of a tree is a control called by its own words, not by all
+    // that is under it.
+    let widgets = did(&mut peer, json!([{"open":site.url("real-widgets")}])).await;
+    assert!(widgets.contains("kind=aria: Projects\n"), "{widgets}");
+    let tree = did(&mut peer, json!([{"click":{"name":"Projects"}}])).await;
+    assert!(
+        tree.starts_with("1 click treeitem \"Projects\"") && tree.contains("project-1.docx"),
+        "{tree}"
+    );
+    // A link that is there but disabled is said to be so, not to be missing.
+    let disabled = did(&mut peer, json!([{"click":{"name":"Previous"}}])).await;
+    assert!(
+        disabled.contains("browser_not_actionable") && disabled.contains("is disabled"),
+        "{disabled}"
+    );
+    // A box that calls itself the same as its neighbours is found by the
+    // label written beside it.
+    let box_ = did(&mut peer, json!([{"check":{"name":"College"}}])).await;
+    assert!(box_.contains("Education: 2"), "{box_}");
+    // Not mended yet: a box moved by mouse events alone, as jQuery UI moves
+    // it, is no end of a drag. When it becomes one, the page says "Dropped!".
+    let dragged = did(
+        &mut peer,
+        json!([{"drag":{"name":"Drag me"},"to":{"name":"Drop here"}}]),
+    )
+    .await;
+    assert!(dragged.contains("browser_target_not_found"), "{dragged}");
     // Words that never come end the wait as a condition that timed out.
     let never = did(&mut peer, json!([{"wait":{"text":"never there"}}])).await;
     assert!(never.contains("browser_condition_timeout"), "{never}");

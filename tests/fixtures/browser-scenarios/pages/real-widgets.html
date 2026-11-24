@@ -1,0 +1,24 @@
+<!doctype html><meta charset=utf-8><title>Widgets met on real sites</title>
+<!-- A tree as the ARIA practices guide builds it (w3.org); a pager whose first link is disabled
+     (datatables.net); radio buttons that all call themselves the same, with the label written
+     beside each (formy-project.herokuapp.com); a box dragged by mouse events alone (jqueryui.com). -->
+<h1>Widgets</h1>
+<ul role=tree aria-label="My Documents" id=tree>
+<li role=treeitem aria-expanded=false tabindex=0><span>Projects</span><ul role=group style="display:none"><li role=treeitem tabindex=-1>project-1.docx</li><li role=treeitem tabindex=-1>project-2.docx</li></ul></li>
+<li role=treeitem aria-expanded=false tabindex=-1><span>Reports</span><ul role=group style="display:none"><li role=treeitem tabindex=-1>report-1.docx</li></ul></li>
+</ul>
+<nav aria-label=Pages><a role=link aria-disabled=true>Previous</a> <a role=link tabindex=0 id=next>Next</a></nav>
+<div><input type=radio name=edu value=1 aria-label="Radio button"> High School</div>
+<div><input type=radio name=edu value=2 aria-label="Radio button"> College</div>
+<div><input type=radio name=edu value=3 aria-label="Radio button"> Grad School</div>
+<output id=edu>Education: none</output>
+<div id=drag class=ui-draggable style="position:relative;width:90px;height:40px;background:#cde">Drag me</div>
+<div id=drop class=ui-droppable style="width:160px;height:80px;border:1px solid #888;margin-top:60px">Drop here</div>
+<script>
+document.getElementById('tree').addEventListener('click',e=>{const item=e.target.closest('[role=treeitem]'),group=item&&item.querySelector('[role=group]');if(!group)return;const open=item.getAttribute('aria-expanded')!=='true';item.setAttribute('aria-expanded',open);group.style.display=open?'':'none';});
+for(const box of document.querySelectorAll('input[name=edu]'))box.addEventListener('change',()=>{document.getElementById('edu').textContent='Education: '+box.value;});
+const drag=document.getElementById('drag'),drop=document.getElementById('drop');let held=null;
+drag.addEventListener('mousedown',e=>{held=[e.clientX,e.clientY];e.preventDefault();});
+addEventListener('mousemove',e=>{if(held){drag.style.left=(e.clientX-held[0])+'px';drag.style.top=(e.clientY-held[1])+'px';}});
+addEventListener('mouseup',e=>{if(!held)return;held=null;const box=drop.getBoundingClientRect();if(e.clientX>=box.left&&e.clientX<=box.right&&e.clientY>=box.top&&e.clientY<=box.bottom)drop.textContent='Dropped!';});
+</script>

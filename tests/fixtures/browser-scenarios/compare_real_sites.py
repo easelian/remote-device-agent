@@ -18,6 +18,7 @@ TASKS = [
  ('dynamic', T + 'dynamic_loading/2', [('click', 'Start', None), ('wait', 'Hello World!', None)], 'Hello World!'),
  ('add-remove', T + 'add_remove_elements/', [('click', 'Add Element', None), ('click', 'Add Element', None), ('click', 'Delete', None)], 'Delete'),
  ('wikipedia', 'https://en.wikipedia.org/wiki/Main_Page', [('fill', 'Search Wikipedia', 'Ada Lovelace'), ('press', 'Search Wikipedia', 'Enter')], 'Analytical Engine'),
+ ('datatables', 'https://datatables.net/examples/basic_init/zero_configuration.html', [('fill', 'Search:', 'London')], 'filtered from 57'),
  ('books', 'https://books.toscrape.com/', [('click', 'Mystery', None), ('click', 'next', None)], 'Page 2 of 2'),
 ]
 mode = sys.argv[1]

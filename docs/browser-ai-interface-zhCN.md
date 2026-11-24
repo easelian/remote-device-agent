@@ -63,6 +63,7 @@
 - **正在移动的元素**：滑入的面板、展开中的菜单里的元素，等它停下来再操作，最多等 1 秒。1 秒后仍在移动的元素以 `browser_not_actionable` 失败。
 - **不是控件却能点击的元素**：带 `onclick`、不小于 0 的 `tabindex` 或手形光标的元素在读页面时标为 `inferred`，可以按名称 `click`、`hover` 或对它 `press`。中间有自己按钮的卡片，点击落在卡片上不属于那个按钮的位置。
 - **只用脚本绑定了点击事件的元素**：没有上述任何标志时，读页面只把它当作文字，但仍然可以按文字点击。描述里的 `name` 找不到控件时，改为寻找包含这段文字的最小元素并把它当作目标，回复里它的角色是 `inferred`。这段文字必须占该元素文字的大部分：元素的文字不超过它的三倍长，或不比它多出 20 个字符。只是顺带提到这段文字的段落不算。这种寻找只在描述没有写 `role`、且这一步只有一个目标时进行（`drag` 的两端不适用）。
+- **自称没有用处的勾选框和单选框**：框没有 `label`，和几个字单独放在同一个父元素里时，这几个字算作它所在的记录，读页面时写在它上面一行；`check` 按这几个字也能找到它，即使它用 `aria-label` 给自己起了别的名字。
 - **没有标签的勾选框和单选框**：名称取紧跟在它后面的文字，例如 `<input type="checkbox"> 记住我` 的名称是“记住我”。后面紧跟的是一个只含文字、没有关联其他字段的 `label` 或 `span` 时，取它的文字。
 - **自己没有文字的链接和按钮**：名称取它里面第一个带 `aria-label` 或 `title` 的元素的说明，例如用带 `title` 的方块画出的箭头。
 - **只包着一张图片的链接或按钮**：只列一行，名称是图片的 `alt`，图片不再单独列出。
@@ -98,6 +99,8 @@
 ```
 
 候选的写法完全相同时，每一行改为注明它是第几个、在哪个标题下面、是否在视口之外，例如 `nth 2: button "Details" under "Shipped" (offscreen)`。
+
+目标存在但被禁用时，这一步以 `browser_not_actionable` 失败，下一行写明哪个元素被禁用，而不是报找不到。
 
 用描述定位的步骤会等待：目标还没出现，或页面正在重绘时，最多重试 4 秒。因此大多数情况下不需要显式的 `wait` 步骤。
 
@@ -428,6 +431,10 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked --features 
 | 等不到的文字有时报成截止错误 | the-internet | `real-docs.html` | 报 `browser_condition_timeout` |
 | `nth` 按搜索的每一页分别计数，靠后的序号找不到 | 本机的 `big` 页面 | `big.html` | 按 `role` 加 `nth` 点到第 990 个按钮 |
 | 输入框被裁掉、藏在滑块里的滑条，`fill` 报不可操作 | MUI | `real-docs.html` | `fill` 之后页面显示新的值 |
+| 树的条目被当成一个名称包含全部子项的可点击元素，且没有引用 | w3.org 的 ARIA 示例 | `real-widgets.html` | 条目的角色是 `treeitem`，名称只有自己的文字，点击后展开 |
+| 被禁用的翻页链接报成“找不到” | datatables.net | `real-widgets.html` | 报 `browser_not_actionable`，并写明它被禁用 |
+| 单选框都自称 “Radio button”，真正的标签写在旁边，按标签找不到 | formy-project.herokuapp.com | `real-widgets.html` | 按旁边的文字勾选到对应的单选框 |
+| 只靠鼠标事件拖动的元素不能作为 `drag` 的两端（**未修**） | jqueryui.com | `real-widgets.html` | 目前断言报 `browser_target_not_found`；修好后页面应显示 “Dropped!” |
 | 长页面上找一行要读三遍，每遍都很慢 | 本机的 `big` 任务 | `big.html` | `front_pool` 的 `big` 任务（只验结果，不验耗时） |
 
 “等不到的文字”和“读三遍”两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。
