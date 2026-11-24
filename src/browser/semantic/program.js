@@ -185,7 +185,9 @@ function(operation, args, other) {
     }
     if (value) return {role:value,kind:'native'};
     if ((!explicit || explicit === 'region') && scrollable(node)) return {role:explicit || 'generic',kind:'scrollable'};
-    if (node.hasAttribute('tabindex') || node.hasAttribute('onclick')) return {role:'inferred',kind:'inferred'};
+    // A tabindex below zero only lets a script move the focus there, as to the main part of a page
+    // after a link that skips to it. It does not say the element takes clicks.
+    if (node.hasAttribute('tabindex') && node.tabIndex >= 0 || node.hasAttribute('onclick')) return {role:'inferred',kind:'inferred'};
     // The pointer cursor is inherited, so only the element it starts at is listed.
     // A label that names a field is read as that field's name; the field is what takes the click.
     if (getComputedStyle(node).cursor === 'pointer' && !(node.localName === 'label' && node.control)) {
@@ -793,6 +795,8 @@ function(operation, args, other) {
     // controls alone, passes over most nodes cheaply, and a page of highlighted code has tens of
     // thousands of them: it goes on for as long as 80 ms allow.
     const narrowed = !!scan.query.find || scan.query.filter === 'interactive', until = performance.now() + 80;
+    const pieced = new WeakSet();
+    const briefs = new WeakMap(), brief = element => { let known = briefs.get(element); if (known === undefined) { known = element.textContent.length <= 512; briefs.set(element, known); } return known; };
     while (scan.pending.length && rows.length < args.nodes && (count < 5000 || narrowed && count < 50000 && ((count & 255) || performance.now() < until))) {
       const node = scan.pending.pop();
       if (node.rest) { queue(scan.pending,node.rest,omitted); continue; }
@@ -802,14 +806,27 @@ function(operation, args, other) {
         if (!norm(node.nodeValue)) { if (node.nodeValue) gap = true; continue; }
         // Text looked for by its words is tested for them first: most of a long page fails here,
         // before anything is asked about how it is drawn.
-        if (scan.query.find && !norm(prefix(node.nodeValue,513)).includes(scan.query.find)) continue;
+        // A sentence a script wrote in pieces, with no element between them, is looked through whole
+        // and listed once.
+        let sentence = null;
+        if (scan.query.find) {
+          const holder = node.parentElement;
+          if (holder && holder.childNodes.length > 1 && !holder.firstElementChild && holder.textContent.length <= 512) {
+            if (pieced.has(holder)) continue;
+            sentence = norm(holder.textContent);
+          }
+          if (!(sentence ?? norm(prefix(node.nodeValue,513))).includes(scan.query.find)) continue;
+          if (sentence !== null) pieced.add(holder);
+        }
         if (scan.query.filter==='interactive' || scan.query.filter==='text' || scan.query.filter==='drag_endpoints' || !norm(node.nodeValue) || !node.parentElement || !visible(node.parentElement)) continue;
         let inside=false;
-        for (let p=node.parentElement;p;p=parent(p)) {const mapped=role(p);if(controls.has(mapped.role)||contentNames.has(mapped.role)){inside=true;break;}}
+        // Text inside a control is that control's name. Inside something that merely takes clicks it is so
+        // only while the name can hold it all: a whole section that takes clicks still has its text read.
+        for (let p=node.parentElement;p;p=parent(p)) {const mapped=role(p);if(controls.has(mapped.role)||contentNames.has(mapped.role)&&(mapped.role!=='inferred'||brief(p))){inside=true;break;}}
         if (inside) continue;
         const owner=node.parentElement,box=owner.getBoundingClientRect();
         if (scan.query.filter==='viewport' && !(box.bottom>0&&box.right>0&&box.top<innerHeight&&box.left<innerWidth)) continue;
-        const text=norm(prefix(node.nodeValue,513));
+        const text=sentence ?? norm(prefix(node.nodeValue,513));
         let row, next = null;
         if (counted) {
           // A compact read takes from the parent only what a line of text states, and reads

@@ -275,7 +275,10 @@ impl Candidate {
 impl Candidate {
     /// The text of the record around the element, without its own name.
     fn around(&self) -> String {
-        let rest = self.record.replace(&self.name, " ");
+        let rest = self
+            .record
+            .replace(&self.name, " ")
+            .replace(['\u{200b}', '\u{feff}'], " ");
         rest.split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -1044,47 +1047,58 @@ impl Call<'_> {
         if distinct.len() == lines.len() {
             return stop;
         }
-        let Ok(read) = self
-            .inner(
-                id,
-                "browser_observe",
-                json!({"filter":"interactive","format":"search","max_nodes":1000,"max_chars":64000}),
-            )
-            .await
-        else {
-            return stop;
-        };
-        // A button that is all its heading says comes under the heading before.
+        // A heading that is all one of these matches says is that match's own
+        // line, not the part of the page it comes under: a heading counts
+        // once something else has followed it.
         let mut heading = String::new();
-        let mut earlier = String::new();
+        let mut pending: Option<String> = None;
         let mut places = Vec::new();
-        for node in read["nodes"].as_array().into_iter().flatten() {
-            let role = node["role"]
-                .as_str()
-                .filter(|role| !role.is_empty())
-                .or(node["tag"].as_str())
-                .unwrap_or("");
-            let name = [node["name"].as_str(), node["value"].as_str()]
-                .into_iter()
-                .flatten()
-                .map(str::trim)
-                .find(|text| !text.is_empty())
-                .unwrap_or("");
-            if role == "heading" {
-                if !found.iter().any(|index| all[*index].name == name) {
-                    earlier = name.chars().take(60).collect();
+        let mut query =
+            json!({"filter":"interactive","format":"search","max_nodes":1000,"max_chars":64000});
+        for _ in 0..SEARCH_PAGES {
+            let Ok(read) = self.inner(id, "browser_observe", query).await else {
+                return stop;
+            };
+            for node in read["nodes"].as_array().into_iter().flatten() {
+                let role = node["role"]
+                    .as_str()
+                    .filter(|role| !role.is_empty())
+                    .or(node["tag"].as_str())
+                    .unwrap_or("");
+                let name = [node["name"].as_str(), node["value"].as_str()]
+                    .into_iter()
+                    .flatten()
+                    .map(str::trim)
+                    .find(|text| !text.is_empty())
+                    .unwrap_or("");
+                if role == "heading" {
+                    if let Some(passed) = pending.take() {
+                        heading = passed;
+                    }
+                    pending = Some(name.chars().take(60).collect());
+                    continue;
                 }
-                heading = name.chars().take(60).collect();
-            } else if node["ref"].is_string()
-                && found
+                if !node["ref"].is_string() {
+                    continue;
+                }
+                let wanted = found
                     .iter()
-                    .any(|index| all[*index].role == role && all[*index].name == name)
-            {
-                let under = if heading == name { &earlier } else { &heading };
-                places.push((under.clone(), node["in_view"] == true));
+                    .any(|index| all[*index].role == role && all[*index].name == name);
+                if let Some(passed) = pending.take()
+                    && !(wanted && passed == name.chars().take(60).collect::<String>())
+                {
+                    heading = passed;
+                }
+                if wanted {
+                    places.push((heading.clone(), node["in_view"] == true));
+                }
             }
+            let Some(cursor) = read["next_cursor"].as_str() else {
+                break;
+            };
+            query = json!({"cursor":cursor,"format":"search"});
         }
-        if read["next_cursor"].is_string() || places.len() != found.len() {
+        if places.len() != found.len() {
             return stop;
         }
         let mut detail = format!("{} match", found.len());
@@ -1356,7 +1370,23 @@ impl Call<'_> {
     /// The page as a full compact reading, under its title and address.
     async fn page(&self, id: &str, mut query: Value) -> Result<String> {
         query["format"] = "compact".into();
-        let read = self.inner(id, "browser_observe", query).await?;
+        let whole = query.get("find").is_none() && query.get("cursor").is_none();
+        let mut read = self.inner(id, "browser_observe", query.clone()).await?;
+        // A document that has only just replaced another has nothing in it
+        // yet, not even a title. It is given two seconds to arrive before it
+        // is told as empty.
+        let arrived = self.deadline.min(Instant::now() + Duration::from_secs(2));
+        while whole
+            && read["text"].as_str().is_none_or(str::is_empty)
+            && read["page"]["title"].as_str().is_none_or(str::is_empty)
+            && read["page"]["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("http"))
+            && Instant::now() + Duration::from_millis(150) < arrived
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            read = self.inner(id, "browser_observe", query.clone()).await?;
+        }
         let mut text = format!(
             "{} — {}\n{}",
             read["page"]["title"].as_str().unwrap_or(""),
@@ -1840,6 +1870,12 @@ impl Call<'_> {
             && done > 0
             && let Some(id) = session.as_ref().filter(|id| self.slot(id).is_ok())
             && stopped.as_ref().is_none_or(|stop| stop.state != "unknown")
+            // A step that matched several elements has listed them: that is
+            // what the next call needs, and the page would only bury it.
+            && (read == "page"
+                || stopped
+                    .as_ref()
+                    .is_none_or(|stop| stop.code != "browser_target_ambiguous"))
             // A page behind a dialog cannot be read until the dialog is answered.
             && self.dialog(id).is_none()
         {

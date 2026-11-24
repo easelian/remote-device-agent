@@ -1,0 +1,26 @@
+<!doctype html><meta charset=utf-8><title>A page of documentation</title>
+<!-- Found on mui.com, getbootstrap.com and the-internet. The main part can be given the focus by a
+     script and takes no clicks; a sentence is written in pieces; highlighted code is tens of
+     thousands of nodes; the same control is shown again under every heading. -->
+<a href=#main>Skip to content</a>
+<nav id=nav></nav>
+<main id=main tabindex=-1>
+<h1>Select</h1>
+<div id=chosen></div><button id=pick type=button>Pick</button>
+<p>If closed, it will not appear on subsequent page loads.</p>
+<pre id=code></pre>
+<h2><a href=#basic>Basic select</a></h2>
+<div role=combobox tabindex=0 aria-expanded=false aria-label=Age onclick="this.setAttribute('aria-expanded','true')">Ten</div>
+<h2><a href=#variants>Variants</a></h2>
+<div role=combobox tabindex=0 aria-expanded=false aria-label=Age>Ten</div>
+<div role=combobox tabindex=0 aria-expanded=false aria-label=Age>Ten</div>
+<h2>Example</h2><h3><button type=button>Item #2</button></h3>
+<h2>Flush</h2><h3><button type=button>Item #2</button></h3>
+<a href=/drip/plain.html>Slow page</a>
+</main>
+<script>
+document.getElementById('nav').innerHTML=Array.from({length:300},(_,i)=>'<a href=#n'+i+'>Chapter '+i+'</a>').join(' ');
+document.getElementById('code').innerHTML=Array.from({length:30000},(_,i)=>'<span>tok'+i+'</span>').join(' ');
+const chosen=document.getElementById('chosen');chosen.append('Selected: ','user02');
+document.getElementById('pick').onclick=()=>{chosen.lastChild.nodeValue='username';};
+</script>

@@ -1,0 +1,25 @@
+<!doctype html><meta charset=utf-8><title>Dialogs of a component library</title>
+<!-- Found on getbootstrap.com and mui.com. A dialog marks the body, fades a backdrop in and only
+     then shows itself; a drawer slides in from outside the window. -->
+<style>
+.backdrop{position:fixed;inset:0;background:#000;opacity:0;transition:opacity .15s linear}.backdrop.show{opacity:.5}
+#dlg{display:none;position:fixed;top:40px;left:40px;background:#fff;padding:20px;z-index:2;transform:translateY(-50px);transition:transform .3s ease-out}#dlg.show{transform:none}
+#drawer{position:fixed;top:0;left:0;bottom:0;width:240px;background:#eee;z-index:2;transform:translateX(-100%);visibility:hidden;transition:transform .225s ease-out}#drawer.open{transform:none;visibility:visible}
+.modal-open{overflow:hidden}
+</style>
+<div id=app><h1>Components</h1>
+<button id=o type=button>Launch dialog</button> <button id=d type=button>Open drawer</button>
+<nav id=nav></nav></div>
+<div id=dlg role=dialog><h2>Dialog title</h2><button id=c type=button>Understood</button></div>
+<div id=drawer role=dialog><button type=button>Inbox</button><button type=button>Starred</button></div>
+<script>
+const app=document.getElementById('app'),dlg=document.getElementById('dlg'),body=document.body;
+document.getElementById('nav').innerHTML=Array.from({length:300},(_,i)=>'<a href=#n'+i+'>Section '+i+'</a>').join(' ');
+document.getElementById('o').onclick=()=>{
+  body.classList.add('modal-open');body.style.overflow='hidden';body.style.paddingRight='15px';app.setAttribute('aria-hidden','true');
+  const shade=document.createElement('div');shade.className='backdrop';body.append(shade);shade.offsetHeight;shade.classList.add('show');
+  shade.addEventListener('transitionend',()=>{dlg.style.display='block';dlg.offsetHeight;dlg.classList.add('show');},{once:true});
+};
+document.getElementById('c').onclick=()=>{dlg.classList.remove('show');dlg.style.display='none';document.querySelector('.backdrop').remove();body.classList.remove('modal-open');body.style.overflow='';body.style.paddingRight='';app.removeAttribute('aria-hidden');};
+document.getElementById('d').onclick=()=>document.getElementById('drawer').classList.add('open');
+</script>

@@ -1313,6 +1313,96 @@ async fn front_proxy() {
     );
 }
 
+/// What trials on real sites ran into, each rebuilt as a page that is served
+/// from this machine. The comment in each page says where it was met.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires RDH_BROWSER_EXECUTABLE and a sandbox-capable native host"]
+async fn front_real() {
+    let executable = std::env::var("RDH_BROWSER_EXECUTABLE").unwrap();
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "rdh-browser-front-test-{}",
+        random::hex_token::<8>().unwrap()
+    )));
+    rdh_agent::storage::create_private_dir(&temp.0).unwrap();
+    let mut peer = policy_peer(
+        &temp.0,
+        json!({"enabled":true,"capability_v2":true,"executable":executable}),
+    );
+    let site = Site::start();
+    async fn did(peer: &mut Peer, steps: Value) -> String {
+        let reply = peer.call("browser_do", json!({"steps":steps})).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+    async fn read(peer: &mut Peer, params: Value) -> String {
+        let reply = peer.call("browser_read", params).await;
+        reply["result"]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .to_owned()
+    }
+    // A dialog that comes after its backdrop has faded in is told with the
+    // step that opened it, and the page behind it is not. A drawer is read
+    // once it has slid into view.
+    did(&mut peer, json!([{"open":site.url("real-dialog")}])).await;
+    let dialog = did(&mut peer, json!([{"click":{"name":"Launch dialog"}}])).await;
+    assert!(
+        dialog.contains(": Understood") && !dialog.contains("Section 5"),
+        "{dialog}"
+    );
+    let drawer = did(
+        &mut peer,
+        json!([{"click":{"name":"Understood"}},{"click":{"name":"Open drawer"}}]),
+    )
+    .await;
+    assert!(
+        drawer.contains("]: Inbox") && !drawer.contains("offscreen: Inbox"),
+        "{drawer}"
+    );
+    // Text in a main part that only a script can give the focus is read, and
+    // a sentence written in pieces is found whole.
+    let docs = did(&mut peer, json!([{"open":site.url("real-docs")}])).await;
+    assert!(docs.contains("text: Selected: user02\n"), "{docs}");
+    let found = read(&mut peer, json!({"what":"page","find":"Selected: u"})).await;
+    assert!(found.contains("text: Selected: user02"), "{found}");
+    let picked = did(&mut peer, json!([{"click":{"name":"Pick"}}])).await;
+    assert!(picked.contains("Selected: username"), "{picked}");
+    // A control asked for by its role is reached past thirty thousand nodes
+    // of highlighted code.
+    let listed = did(&mut peer, json!([{"click":{"role":"combobox","nth":1}}])).await;
+    assert!(
+        listed.starts_with("1 click combobox \"Age\"") && listed.contains("aria-expanded=true"),
+        "{listed}"
+    );
+    // Controls of one name are told apart by their headings, a heading that
+    // is only a link of its own name included, and one that is the control
+    // itself left out. The page is not sent along with the list.
+    let alike = did(&mut peer, json!([{"click":{"name":"Age"}}])).await;
+    assert!(
+        alike.contains("nth 1: combobox \"Age\" in \"Ten\" under \"Basic select\"")
+            && alike.contains("nth 2: combobox \"Age\" in \"Ten\" under \"Variants\"")
+            && !alike.contains("--- page"),
+        "{alike}"
+    );
+    let headed = did(&mut peer, json!([{"click":{"name":"Item #2"}}])).await;
+    assert!(
+        headed.contains("nth 1: button \"Item #2\" under \"Example\"")
+            && headed.contains("nth 2: button \"Item #2\" under \"Flush\""),
+        "{headed}"
+    );
+    // A paragraph that says "closed" is not a thing called Close.
+    let close = did(&mut peer, json!([{"click":{"name":"Close"}}])).await;
+    assert!(close.contains("browser_target_not_found"), "{close}");
+    // A document that is slow to arrive is waited for, not told as empty.
+    let slow = did(&mut peer, json!([{"click":{"name":"Slow page"}}])).await;
+    assert!(slow.contains(": Username\n"), "{slow}");
+    // Words that never come end the wait as a condition that timed out.
+    let never = did(&mut peer, json!([{"wait":{"text":"never there"}}])).await;
+    assert!(never.contains("browser_condition_timeout"), "{never}");
+}
+
 /// Pages as older sites write them: boxes named only by the words beside
 /// them, a list with no label, a caption a style rule shows on hover, boxes
 /// that are dragged onto one another, and a page that fails to load.
