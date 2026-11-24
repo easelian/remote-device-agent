@@ -44,7 +44,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, json.dumps(writes).encode())
         if path.startswith("/slow/"):
             # An answer that takes as many milliseconds as the address says.
-            time.sleep(min(int(path[len("/slow/"):] or 0), 5000) / 1000)
+            time.sleep(min(int(path[len("/slow/"):] or 0), 30000) / 1000)
             return self.reply(200, b"{}")
         if path.startswith("/drip/"):
             # The document is begun, and the rest of it comes most of a second later.

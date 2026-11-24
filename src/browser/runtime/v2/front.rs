@@ -1992,6 +1992,7 @@ impl Call<'_> {
         }
         if verb == "open" {
             let url = step.map["open"].as_str().unwrap_or("");
+            let began = Instant::now();
             let id = match session.clone() {
                 Some(id) => {
                     self.inner(
@@ -2039,8 +2040,14 @@ impl Call<'_> {
                     id
                 }
             };
+            // The page was taken as it was once it had loaded long enough.
+            let slow = if began.elapsed() >= Duration::from_millis(7500) {
+                "; it had not finished loading, and what is there so far can be read"
+            } else {
+                ""
+            };
             return Ok((
-                format!("open {url} (session {})", &id[..6]),
+                format!("open {url} (session {}){slow}", &id[..6]),
                 Value::Null,
                 false,
             ));

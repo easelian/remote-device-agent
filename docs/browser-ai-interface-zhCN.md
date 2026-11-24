@@ -179,6 +179,8 @@ not run: 3–3
 
 ### 页面打不开
 
+页面的文档已经到达、却被广告或统计脚本拖着一直加载不完时，`open` 等 8 秒后按当前内容返回，这一步的行尾注明 `it had not finished loading`，会话保留，页面可以照常读取和操作。调用的期限更短时，在期限之前返回。
+
 `open` 失败时，错误码下面一行是原因：浏览器给出的网络错误（例如 `net::ERR_CONNECTION_REFUSED`），或者 `the host name leads to no address`（域名解析不到地址，此时请求没有发出）。站点策略拒绝的地址仍然报 `browser_site_denied`。
 
 ```
@@ -443,6 +445,7 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked --features 
 | 第一个匹配项太大、放不进一次读取时，整次查找返回空 | demowebshop.tricentis.com、MUI | `real-widgets.html` | 同上一行的填写：查找越过表单所在的大列表项 |
 | 面板被隐藏而不是被移除时，报成没有可见变化 | jqueryui.com 的对话框 | `real-widgets.html` | 报有内容被移除 |
 | 输入框被隐藏、由标签画成按钮的单选框不能勾选 | jqueryui.com 的 checkboxradio | `real-widgets.html` | `check` 之后页面显示 “City: rome” |
+| 页面一直加载不完，打开它的调用超过期限后失败，会话也没了 | ant.design、mui.com | `real-slowload.html` 加 `/slow/` | 打开在 8 秒后返回，回复注明没加载完并附上页面，会话可以继续用 |
 | 长页面上找一行要读三遍，每遍都很慢 | 本机的 `big` 任务 | `big.html` | `front_pool` 的 `big` 任务（只验结果，不验耗时） |
 
 “等不到的文字”和“读三遍”两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。

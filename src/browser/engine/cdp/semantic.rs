@@ -724,6 +724,11 @@ impl Semantic {
                 },
             ));
         }
+        // A page whose document has arrived may go on loading for as long as
+        // an advertisement or a tracker keeps it waiting. After eight seconds,
+        // or when the call is about to run out, it is taken as it is: what is
+        // there can be read and used, and the session is kept.
+        let enough = give_up.min(Instant::now() + std::time::Duration::from_secs(8));
         loop {
             let native = self.engine().page_frames(&self.root, deadline).await?;
             if let Some(top) = native.first() {
@@ -736,7 +741,8 @@ impl Semantic {
                     if matches!(
                         self.run(top, world, &Program::Ready, deadline).await?,
                         Output::Applied(Some(true))
-                    ) {
+                    ) || Instant::now() >= enough
+                    {
                         return Ok(());
                     }
                 }

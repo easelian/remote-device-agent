@@ -1451,6 +1451,15 @@ async fn front_real() {
     )
     .await;
     assert!(dragged.contains("Dropped!"), "{dragged}");
+    // A page that goes on loading is taken as it is after eight seconds: the
+    // reply says so and has the page, and the session is there to work on.
+    let slow = did(&mut peer, json!([{"open":site.url("real-slowload")}])).await;
+    assert!(
+        slow.contains("had not finished loading") && slow.contains("]: Browse"),
+        "{slow}"
+    );
+    let browsed = did(&mut peer, json!([{"click":{"name":"Browse"}}])).await;
+    assert!(browsed.contains("Opened the catalogue"), "{browsed}");
     // Words that never come end the wait as a condition that timed out.
     let never = did(&mut peer, json!([{"wait":{"text":"never there"}}])).await;
     assert!(never.contains("browser_condition_timeout"), "{never}");
