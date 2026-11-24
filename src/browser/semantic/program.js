@@ -851,7 +851,10 @@ function(operation, args, other) {
           && !node.closest('a[href],button,select,textarea,[role=button],[role=link]') && !node.closest('label')?.control && node.textContent.length<=4096 && visible(node)) {
         // A picture holds its words in what it is called.
         const wanted = scan.query.find.toLowerCase(), holds = other => norm(other.textContent+' '+(other.getAttribute('alt')||'')+' '+(other.getAttribute('aria-label')||'')).toLowerCase().includes(wanted);
-        if (holds(node) && !Array.from(node.children).some(holds)) { state.plain.add(node); worded = true; }
+        // The words have to be most of what the element says. A paragraph that mentions them in
+        // passing is not what was asked for, and clicking it would be a guess.
+        const said = other => norm(other.textContent+' '+(other.getAttribute('alt')||'')+' '+(other.getAttribute('aria-label')||'')).length;
+        if (holds(node) && !Array.from(node.children).some(holds) && said(node) <= Math.max(3*wanted.length, wanted.length+20)) { state.plain.add(node); worded = true; }
       }
       const mapped = endpoints ? null : role(node);
       const inViewport = () => { const box=node.getBoundingClientRect(); return box.bottom>0 && box.right>0 && box.top<innerHeight && box.left<innerWidth; };

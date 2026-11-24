@@ -1344,7 +1344,7 @@ async fn front_plain() {
     let dialog = did(&mut peer, json!([{"click":{"name":"Open dialog"}}])).await;
     assert!(
         dialog.contains("Confirm order")
-            && dialog.contains("]: Understood")
+            && dialog.contains(": Understood")
             && !dialog.contains("Section 5")
             && !dialog.contains("more changed"),
         "{dialog}"
@@ -1355,6 +1355,13 @@ async fn front_plain() {
     )
     .await;
     assert!(menu.contains(": Account"), "{menu}");
+    // Buttons that read alike are told apart by the heading each comes under.
+    let alike = did(&mut peer, json!([{"click":{"name":"Details"}}])).await;
+    assert!(
+        alike.contains("nth 1: button \"Details\" under \"Pending\"")
+            && alike.contains("nth 2: button \"Details\" under \"Shipped\""),
+        "{alike}"
+    );
     let opened = did(&mut peer, json!([{"open":site.url("plain")}])).await;
     assert!(opened.contains(" unchecked: first box\n"), "{opened}");
     // A label is its field's name, not a second thing to click; a menu item

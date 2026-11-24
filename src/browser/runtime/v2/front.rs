@@ -340,6 +340,25 @@ fn taking(verb: &str) -> &'static [&'static str] {
     }
 }
 fn choose(target: &Target, all: &[Candidate], taking: &[&str]) -> std::result::Result<usize, Stop> {
+    chosen(target, all, taking, false)
+}
+/// The elements a description matches best, in the order of the page.
+fn matching(target: &Target, all: &[Candidate], taking: &[&str]) -> Vec<usize> {
+    match chosen(target, all, taking, true) {
+        Err(stop) if stop.code == "matches" => stop
+            .detail
+            .split(' ')
+            .filter_map(|index| index.parse().ok())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+fn chosen(
+    target: &Target,
+    all: &[Candidate],
+    taking: &[&str],
+    only_matches: bool,
+) -> std::result::Result<usize, Stop> {
     let Target::Described {
         name,
         role,
@@ -367,7 +386,7 @@ fn choose(target: &Target, all: &[Candidate], taking: &[&str]) -> std::result::R
         &|candidate| candidate.name.to_lowercase() == lower,
         &|candidate| candidate.name.to_lowercase().contains(&lower),
     ];
-    for grade in grades {
+    let narrowed = |grade: &dyn Fn(&Candidate) -> bool| {
         let found: Vec<usize> = all
             .iter()
             .enumerate()
@@ -387,14 +406,31 @@ fn choose(target: &Target, all: &[Candidate], taking: &[&str]) -> std::result::R
         };
         // An element that only looks as if it took clicks gives way to a
         // control of the same name: it is that control's wrapping or inside.
-        let found = if found.iter().any(|index| all[*index].role != "inferred") {
+        if found.iter().any(|index| all[*index].role != "inferred") {
             found
                 .into_iter()
                 .filter(|index| all[*index].role != "inferred")
-                .collect()
+                .collect::<Vec<usize>>()
         } else {
             found
-        };
+        }
+    };
+    for grade in grades {
+        let found = narrowed(grade);
+        if only_matches {
+            if found.is_empty() {
+                continue;
+            }
+            return Err(Stop {
+                code: "matches",
+                state: "not_sent",
+                detail: found
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            });
+        }
         match (found.len(), nth) {
             (0, _) => continue,
             (1, None | Some(1)) => return Ok(found[0]),
@@ -986,6 +1022,86 @@ impl Call<'_> {
                     .min(self.deadline.saturating_duration_since(Instant::now()) / 2),
         )
     }
+    /// Matches that read alike are told apart by where they are: each is given
+    /// its place among them, the heading it comes under, and whether it is in
+    /// view. The page is read once more for that, so it is done only when the
+    /// lines would otherwise be the same.
+    async fn told_apart(
+        &self,
+        id: &str,
+        target: &Target,
+        all: &[Candidate],
+        taking: &[&str],
+        stop: Stop,
+    ) -> Stop {
+        let found = matching(target, all, taking);
+        let lines: Vec<String> = found
+            .iter()
+            .take(MAX_CANDIDATES)
+            .map(|index| all[*index].line())
+            .collect();
+        let distinct: std::collections::HashSet<&String> = lines.iter().collect();
+        if distinct.len() == lines.len() {
+            return stop;
+        }
+        let Ok(read) = self
+            .inner(
+                id,
+                "browser_observe",
+                json!({"filter":"interactive","format":"search","max_nodes":1000,"max_chars":64000}),
+            )
+            .await
+        else {
+            return stop;
+        };
+        // A button that is all its heading says comes under the heading before.
+        let mut heading = String::new();
+        let mut earlier = String::new();
+        let mut places = Vec::new();
+        for node in read["nodes"].as_array().into_iter().flatten() {
+            let role = node["role"]
+                .as_str()
+                .filter(|role| !role.is_empty())
+                .or(node["tag"].as_str())
+                .unwrap_or("");
+            let name = [node["name"].as_str(), node["value"].as_str()]
+                .into_iter()
+                .flatten()
+                .map(str::trim)
+                .find(|text| !text.is_empty())
+                .unwrap_or("");
+            if role == "heading" {
+                if !found.iter().any(|index| all[*index].name == name) {
+                    earlier = name.chars().take(60).collect();
+                }
+                heading = name.chars().take(60).collect();
+            } else if node["ref"].is_string()
+                && found
+                    .iter()
+                    .any(|index| all[*index].role == role && all[*index].name == name)
+            {
+                let under = if heading == name { &earlier } else { &heading };
+                places.push((under.clone(), node["in_view"] == true));
+            }
+        }
+        if read["next_cursor"].is_string() || places.len() != found.len() {
+            return stop;
+        }
+        let mut detail = format!("{} match", found.len());
+        for (place, (line, (heading, seen))) in lines.iter().zip(&places).enumerate() {
+            let _ = write!(detail, "\n  nth {}: {}", place + 1, line.trim_start());
+            if !heading.is_empty() {
+                let _ = write!(detail, " under {heading:?}");
+            }
+            if !seen {
+                detail.push_str(" (offscreen)");
+            }
+        }
+        if found.len() > MAX_CANDIDATES {
+            let _ = write!(detail, "\n  … and {} more", found.len() - MAX_CANDIDATES);
+        }
+        Stop { detail, ..stop }
+    }
     /// The references of a step's targets, all taken from one observation.
     /// With `again`, a reference is not used as it is but looked for by what
     /// it stood for: the page has redrawn since it was given out.
@@ -1091,7 +1207,15 @@ impl Call<'_> {
                     // control is called the same.
                     let words = role.as_deref() == Some("text");
                     let worded;
-                    let chosen = match choose(target, &found, taking) {
+                    let picked = match choose(target, &found, taking) {
+                        Err(stop)
+                            if stop.code == "browser_target_ambiguous" && targets.len() == 1 =>
+                        {
+                            Err(self.told_apart(id, target, &found, taking, stop).await)
+                        }
+                        other => other,
+                    };
+                    let chosen = match picked {
                         Err(stop)
                             if stop.code == "browser_target_not_found"
                                 && targets.len() == 1
