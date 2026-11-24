@@ -24,6 +24,11 @@
 <label for=paris style="display:inline-block;padding:6px 12px;border:1px solid #888">Paris</label><input type=radio name=city id=paris style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">
 <label for=rome style="display:inline-block;padding:6px 12px;border:1px solid #888">Rome</label><input type=radio name=city id=rome style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">
 <output id=city>City: none</output>
+<!-- A list a library builds from a button and a list of options (mui.com, material.angular.dev,
+     radix-ui.com): there is no select element whose value could be set. -->
+<div id=fruit role=combobox tabindex=0 aria-haspopup=listbox aria-expanded=false aria-label=Fruit style="display:inline-block;border:1px solid #888;padding:4px 10px">Apple</div>
+<ul id=fruits role=listbox aria-label=Fruit style="display:none;border:1px solid #888;width:120px;padding:0;margin:0"><li role=option style="list-style:none;padding:4px">Apple</li><li role=option style="list-style:none;padding:4px">Banana</li><li role=option style="list-style:none;padding:4px">Cherry</li></ul>
+<output id=picked>Fruit: Apple</output>
 <div id=drag class=ui-draggable style="position:relative;width:90px;height:40px;background:#cde">Drag me</div>
 <div id=drop class=ui-droppable style="width:160px;height:80px;border:1px solid #888;margin-top:60px">Drop here</div>
 <script>
@@ -33,6 +38,9 @@ document.getElementById('country').innerHTML=Array.from({length:300},(_,i)=>'<op
 document.getElementById('cont').onclick=()=>{fetch('/slow/500').then(()=>{document.getElementById('said').textContent='Saved for '+document.getElementById('first').value;});};
 document.getElementById('hide').onclick=()=>{document.getElementById('note').style.display='none';};
 for(const box of document.querySelectorAll('input[name=city]'))box.addEventListener('change',()=>{document.getElementById('city').textContent='City: '+box.id;});
+const fruit=document.getElementById('fruit'),fruits=document.getElementById('fruits');
+fruit.onclick=()=>{const open=fruits.style.display==='none';fruits.style.display=open?'':'none';fruit.setAttribute('aria-expanded',open);};
+fruits.onclick=e=>{const option=e.target.closest('[role=option]');if(!option)return;fruit.textContent=option.textContent;fruits.style.display='none';fruit.setAttribute('aria-expanded','false');document.getElementById('picked').textContent='Fruit: '+option.textContent;};
 const drag=document.getElementById('drag'),drop=document.getElementById('drop');let held=null;
 drag.addEventListener('mousedown',e=>{held=[e.clientX,e.clientY];e.preventDefault();});
 addEventListener('mousemove',e=>{if(held){drag.style.left=(e.clientX-held[0])+'px';drag.style.top=(e.clientY-held[1])+'px';}});

@@ -164,7 +164,7 @@ fn advice(code: &str) -> &'static str {
         }
         "browser_dialog_unavailable" => "no dialog is open",
         "browser_value_rejected" => {
-            "this field does not take that value: a date is YYYY-MM-DD, a time HH:MM, a colour #rrggbb, a slider a number within its range"
+            "this field does not take that value: a date is YYYY-MM-DD, a time HH:MM, a colour #rrggbb, a slider a number within its range, a list one of its options"
         }
         "browser_input_pending" => {
             "an earlier input has not finished; a dialog may be waiting for an answer"
@@ -257,6 +257,8 @@ impl Meanings {
 /// One element of a structured observation, as far as matching needs it.
 struct Candidate {
     reference: String,
+    /// The element's own tag, which tells a list the browser draws from one a page builds.
+    tag: String,
     role: String,
     name: String,
     record: String,
@@ -305,6 +307,7 @@ fn candidates(observation: &Value) -> Vec<Candidate> {
             Some(Candidate {
                 meaning: Meaning::of(node),
                 reference: node["ref"].as_str()?.to_owned(),
+                tag: node["tag"].as_str().unwrap_or("").to_owned(),
                 role: node["role"]
                     .as_str()
                     .filter(|role| !role.is_empty())
@@ -650,6 +653,8 @@ impl<'a> Step<'a> {
 }
 
 struct Call<'a> {
+    /// The tag of the element the latest described target turned out to be.
+    aimed: std::sync::Mutex<String>,
     browsers: &'a Browsers,
     principal: &'a Principal,
     deadline: Instant,
@@ -1332,6 +1337,7 @@ impl Call<'_> {
                         other => &found[other?],
                     };
                     references.push(chosen.reference.clone());
+                    *self.aimed.lock().unwrap() = chosen.tag.clone();
                     let mut text = if chosen.name.is_empty() {
                         chosen.role.clone()
                     } else {
@@ -1501,6 +1507,7 @@ impl Browsers {
             })
             .transpose()?;
         let call = Call {
+            aimed: std::sync::Mutex::new(String::new()),
             browsers: self,
             principal,
             deadline,
@@ -2163,6 +2170,10 @@ impl Call<'_> {
                 // A date, a time, a colour and a slider take no typing: their
                 // value is set, as a list's is.
                 let mut as_value = false;
+                // A list a page builds itself, of a library's making, has no
+                // value to set: it is opened and the option is clicked, as a
+                // person does it.
+                let mut by_list = false;
                 let until = self.patience();
                 let (mut done, written) = loop {
                     let attempt: std::result::Result<_, Stop> = async {
@@ -2170,10 +2181,12 @@ impl Call<'_> {
                             self.resolve(&id, &targets, again, step.verb).await?;
                         let mut params = json!({"action":if as_value {
                             json!({"kind":"select","ref":references[0],"value":step.map["text"]})
+                        } else if by_list {
+                            json!({"kind":"click","ref":references[0]})
                         } else {
                             step.action(&references)
                         }});
-                        if wants_view && step.acts() {
+                        if wants_view && step.acts() && !by_list {
                             params["after_action_view"] = true.into();
                         }
                         // A dialog the page raises holds the input open until it
@@ -2208,10 +2221,67 @@ impl Call<'_> {
                                 }
                             }
                         };
+                        if !by_list {
+                            return Ok((done, written));
+                        }
+                        // The list is open, or opening. Its option is the one
+                        // called by the value asked for; it is given two
+                        // seconds to appear.
+                        let wanted = step.map["value"].as_str().unwrap_or("").to_owned();
+                        let appear = self.deadline.min(Instant::now() + Duration::from_secs(2));
+                        let option = loop {
+                            let mut found = None;
+                            for role in ["option", "menuitem"] {
+                                let asked = [Target::Described {
+                                    name: wanted.clone(),
+                                    role: Some(role.to_owned()),
+                                    within: None,
+                                    nth: None,
+                                }];
+                                match self.resolve(&id, &asked, false, "click").await {
+                                    Ok((references, _)) => {
+                                        found = references.into_iter().next();
+                                        break;
+                                    }
+                                    Err(stop) if stop.code == "browser_target_not_found" => {}
+                                    Err(stop) => return Err(stop),
+                                }
+                            }
+                            match found {
+                                Some(option) => break option,
+                                None if Instant::now() < appear => tokio::time::sleep(RETRY).await,
+                                None => {
+                                    return Err(Stop {
+                                        code: "browser_value_rejected",
+                                        state: "not_sent",
+                                        detail: format!(
+                                            "the list was opened and has no option called {wanted:?}"
+                                        ),
+                                    });
+                                }
+                            }
+                        };
+                        let mut params = json!({"action":{"kind":"click","ref":option}});
+                        if wants_view {
+                            params["after_action_view"] = true.into();
+                        }
+                        let done = self.inner(&id, "browser_act", params).await?;
                         Ok((done, written))
                     }
                     .await;
                     match attempt {
+                        Err(stop)
+                            if verb == "select"
+                                && !by_list
+                                && stop.state == "not_sent"
+                                && matches!(
+                                    stop.code,
+                                    "browser_not_actionable" | "browser_invalid_params"
+                                )
+                                && *self.aimed.lock().unwrap() != "select" =>
+                        {
+                            by_list = true;
+                        }
                         Err(stop)
                             if verb == "fill"
                                 && !as_value
@@ -2310,6 +2380,7 @@ mod tests {
         ]
         .into_iter()
         .map(|(reference, role, name, record)| Candidate {
+            tag: String::new(),
             reference: reference.into(),
             role: role.into(),
             name: name.into(),

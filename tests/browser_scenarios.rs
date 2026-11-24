@@ -1443,6 +1443,24 @@ async fn front_real() {
     // through the label.
     let city = did(&mut peer, json!([{"check":{"name":"Rome"}}])).await;
     assert!(city.contains("City: rome"), "{city}");
+    // A list a library builds itself is opened and its option clicked. An
+    // option it does not have is said to be missing, with the list left open.
+    let picked = did(
+        &mut peer,
+        json!([{"select":{"name":"Fruit"},"value":"Banana"}]),
+    )
+    .await;
+    assert!(picked.contains("Fruit: Banana"), "{picked}");
+    let missing = did(
+        &mut peer,
+        json!([{"select":{"name":"Fruit"},"value":"Durian"}]),
+    )
+    .await;
+    assert!(
+        missing.contains("browser_value_rejected") && missing.contains("no option called"),
+        "{missing}"
+    );
+    did(&mut peer, json!([{"press":"Escape","on":{"name":"Fruit","role":"combobox"}},{"click":{"name":"Fruit","role":"combobox"}}])).await;
     // A box that a script moves by following the mouse, as jQuery UI does,
     // is dragged by pressing, moving and letting go.
     let dragged = did(
