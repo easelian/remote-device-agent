@@ -1337,6 +1337,24 @@ async fn front_plain() {
             .unwrap_or_else(|| panic!("{reply}"))
             .to_owned()
     }
+    // A dialog opened by marking the body: what is told is the dialog, not
+    // the three hundred links behind it. A class on the body that a style
+    // rule uses to show a menu still has the menu told.
+    did(&mut peer, json!([{"open":site.url("layer")}])).await;
+    let dialog = did(&mut peer, json!([{"click":{"name":"Open dialog"}}])).await;
+    assert!(
+        dialog.contains("Confirm order")
+            && dialog.contains("]: Understood")
+            && !dialog.contains("Section 5")
+            && !dialog.contains("more changed"),
+        "{dialog}"
+    );
+    let menu = did(
+        &mut peer,
+        json!([{"click":{"name":"Understood"}},{"click":{"name":"Open menu"}}]),
+    )
+    .await;
+    assert!(menu.contains(": Account"), "{menu}");
     let opened = did(&mut peer, json!([{"open":site.url("plain")}])).await;
     assert!(opened.contains(" unchecked: first box\n"), "{opened}");
     // A label is its field's name, not a second thing to click; a menu item

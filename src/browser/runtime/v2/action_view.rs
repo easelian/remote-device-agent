@@ -8,6 +8,8 @@ use super::*;
 
 /// How long the page is left alone after an input before it is looked at.
 const PAUSE: Duration = Duration::from_millis(20);
+/// How long a movement on the page is waited for before the page is looked at as it is.
+const SETTLE: Duration = Duration::from_millis(700);
 
 async fn revisions(
     port: &native::Port,
@@ -64,6 +66,33 @@ async fn read(
     tokio::time::sleep(PAUSE).await;
     if revisions(&reader, &frames, deadline).await? != initial {
         tokio::time::sleep(PAUSE).await;
+    }
+    // What is on its way in or out is waited for: a dialog that comes after
+    // its backdrop has faded in, a drawer that slides. What follows one such
+    // movement is given a moment to begin.
+    let settled = deadline.min(Instant::now() + SETTLE);
+    let mut moved = false;
+    loop {
+        let mut left = 0;
+        for frame in &frames {
+            if let sem::program::Output::Revision(rest) = reader
+                .program(frame, sem::program::Program::Settling, deadline)
+                .await?
+            {
+                left = left.max(rest);
+            }
+        }
+        let now = Instant::now();
+        if now >= settled || left == 0 && !moved {
+            break;
+        }
+        moved = left > 0;
+        let pause = if moved {
+            Duration::from_millis(left) + PAUSE
+        } else {
+            PAUSE
+        };
+        tokio::time::sleep(pause.min(settled - now)).await;
     }
     let (mut view, _) = observe_frames(
         session,

@@ -35,6 +35,8 @@ pub(crate) enum Program {
         y: f64,
     },
     VisualRevision,
+    /// How many milliseconds what is being drawn in or out will go on.
+    Settling,
     ViewRevision(Marker),
     VisualPath {
         x: f64,
@@ -479,6 +481,7 @@ impl Program {
             Self::NativeFrameFocused => ("native_focused_frame", json!({})),
             Self::FrameAtPoint { x, y } => ("frame_at_point", json!({"x":x,"y":y})),
             Self::VisualRevision => ("visual_revision", json!({})),
+            Self::Settling => ("settling", json!({})),
             Self::ViewRevision(marker) => ("view_revision", json!(marker)),
             Self::VisualPath { x, y, to_x, to_y } => (
                 "visual_path",
@@ -655,7 +658,7 @@ impl Program {
                 marker.validate()?;
                 Ok(Output::Marker(marker))
             }
-            Self::VisualRevision => Ok(Output::Revision(parse(text)?)),
+            Self::VisualRevision | Self::Settling => Ok(Output::Revision(parse(text)?)),
             Self::ViewRevision(_) => Ok(Output::ViewRevision(parse(text)?)),
             Self::Vitals => {
                 if text.len() > 4096 {

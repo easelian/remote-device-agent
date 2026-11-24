@@ -21,7 +21,7 @@ function(operation, args, other) {
   const picked = new Set(['date','time','datetime-local','month','week','color','range']);
   let state = globalThis[SLOT];
   if (!state || state.document !== document) {
-    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null, dirty:new Set(), dirtyLimit:false, removed:false, plain:new WeakSet()};
+    state = {document, realm:Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join(''), restoration:0, serial:0, identities:new WeakMap(), nodes:new Map(), scan:null, revision:0,expires:0,timer:null, dirty:new Set(), light:new Map(), dirtyLimit:false, removed:false, plain:new WeakSet()};
     // The evidence program in this isolated realm uses the same boundaries for record waits.
     // A fallback-only record role is opaque: never attribute its text to an outer record.
     const recordRoles = new Set(['row','listitem','article','option']);
@@ -73,17 +73,47 @@ function(operation, args, other) {
     // not change what a reader sees or can operate are not recorded.
     const shown = new Set(['class','style','hidden','open','disabled','checked','selected','value','src','href','title','alt','role','inert','data-state']);
     const skipped = new Set(['script','style','head','meta','link','title','noscript','template']);
-    const mark = node => {
+    // A page that opens a dialog also alters the element around everything: it stops the page
+    // scrolling, or marks the rest as background. That shows nothing new inside the element, and
+    // reading all of it again would bury what did change. Such an alteration is kept apart as
+    // light, with the classes it switched; whether a class shows anything is settled when read.
+    const mark = (node, light) => {
       if (node && node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) node = node.host;
       if (!node || node.nodeType !== Node.ELEMENT_NODE || skipped.has(node.localName)) return;
       if (state.dirty.size >= 64 && !state.dirty.has(node)) { state.dirtyLimit = true; return; }
+      if (!light) state.light.delete(node);
+      else if (!state.dirty.has(node)) state.light.set(node, new Set(light));
+      else if (state.light.has(node)) for (const token of light) state.light.get(node).add(token);
       state.dirty.add(node);
+    };
+    const declared = text => { const map = new Map(); for (const part of (text||'').split(';')) { const at = part.indexOf(':'); if (at > 0) map.set(part.slice(0,at).trim().toLowerCase(), part.slice(at+1).trim()); } return map; };
+    // What a page sets on a container to hold it still while something lies over it.
+    const still = /^(overflow(-[xy])?|(padding|margin)(-(left|right|top|bottom|inline-start|inline-end))?|scrollbar-gutter|touch-action|overscroll-behavior(-[xy])?|position|top|left|right|width)$/;
+    // On any other element only the room kept for a scroll bar is taken so.
+    const spaced = /^(overflow(-[xy])?|(padding|margin)(-(left|right|inline-start|inline-end))?|scrollbar-gutter)$/;
+    const lightly = record => {
+      const target = record.target, name = record.attributeName;
+      if (target.getRootNode() !== document) return null;
+      const outermost = target === document.body || target === document.documentElement;
+      if (name === 'aria-hidden' || name === 'inert') return [];
+      if (name === 'style') {
+        const before = declared(record.oldValue), after = declared(target.getAttribute('style'));
+        for (const key of new Set([...before.keys(),...after.keys()])) if (before.get(key) !== after.get(key) && !(outermost ? still : spaced).test(key)) return null;
+        return [];
+      }
+      if (name === 'class') {
+        // A class on a small element is often all that says it was chosen: it is told as altered.
+        if (!outermost && target.getElementsByTagName('*').length <= 200) return null;
+        const before = new Set((record.oldValue||'').split(/\s+/).filter(Boolean)), after = new Set((target.getAttribute('class')||'').split(/\s+/).filter(Boolean));
+        return [...before,...after].filter(token => before.has(token) !== after.has(token));
+      }
+      return null;
     };
     state.mark = mark;
     state.track = records => {
       for (const record of records) {
         if (record.type === 'attributes') {
-          if (shown.has(record.attributeName) || record.attributeName.startsWith('aria-')) mark(record.target);
+          if (shown.has(record.attributeName) || record.attributeName.startsWith('aria-')) mark(record.target, lightly(record));
         } else if (record.type === 'characterData') {
           // Editing rebalances the white space next to what it deletes, also outside the
           // field. Text that is blank now shows nothing; at most something went away.
@@ -113,7 +143,7 @@ function(operation, args, other) {
       // What is typed into an editing host alters the host itself: it has no property to depend on.
       mark(control.isContentEditable ? control : control.parentNode);
     }, true);
-    state.observer.observe(document, {subtree:true,childList:true,characterData:true,attributes:true});
+    state.observer.observe(document, {subtree:true,childList:true,characterData:true,attributes:true,attributeOldValue:true});
   }
   if(state.expires&&performance.now()>=state.expires){state.clearNodes();state.scan=null;state.expires=0;clearTimeout(state.timer);state.timer=null;}
   const retain=()=>{clearTimeout(state.timer);state.expires=performance.now()+300000;state.timer=setTimeout(()=>{state.clearNodes();state.scan=null;state.expires=0;state.timer=null;},300000);};
@@ -540,6 +570,28 @@ function(operation, args, other) {
     return result(ready && args.realm === state.realm && args.restoration === state.restoration && args.url === location.href ? state.revision : null);
   }
   if (operation === 'visual_revision') return result(state.revision);
+  if (operation === 'settling') {
+    // A panel sliding in, a backdrop fading before its dialog comes: how long that will go on.
+    // What only changes colour, what never ends, and a small thing with nothing in it, as the
+    // ripple under a pressed button, are not waited for.
+    let left = 0;
+    try {
+      const moving = /^(all|opacity|transform|translate|scale|rotate|height|width|max-height|max-width|top|left|right|bottom|inset|visibility|display|clip-path)/;
+      for (const animation of document.getAnimations()) {
+        const effect = animation.effect, target = effect && effect.target;
+        if (animation.playState !== 'running' || !target || effect.pseudoElement) continue;
+        if (animation.transitionProperty !== undefined && !moving.test(animation.transitionProperty)) continue;
+        const end = effect.getComputedTiming().endTime, rest = (end - (animation.currentTime || 0)) / (animation.playbackRate || 1);
+        if (!Number.isFinite(rest) || rest <= 0 || rest > 1000) continue;
+        if (!norm(target.textContent) && !target.querySelector('img,input,button,a,select,textarea')) {
+          const box = target.getBoundingClientRect();
+          if (box.width * box.height < innerWidth * innerHeight / 4) continue;
+        }
+        left = Math.max(left, rest);
+      }
+    } catch { /* A browser without this says nothing is moving. */ }
+    return result(Math.ceil(left));
+  }
   if (operation === 'stamp') return result(stamp());
   if (operation === 'ready') return result(document.readyState === 'complete');
   if (operation === 'stats') return result({nodes:state.nodes.size,scans:state.scan?1:0,pending:state.scan?.pending.length||0});
@@ -549,8 +601,33 @@ function(operation, args, other) {
     if (args.changed === true) {
       // Widen each altered element to the record around it, drop regions inside other regions, and read in page order.
       const regions = [];
+      // Whether a style rule lets one of these classes alter anything but the element that has it.
+      // A sheet that cannot be read is taken to do so.
+      const reaches = tokens => {
+        if (!tokens.size) return false;
+        const marks = Array.from(tokens, token => '.' + CSS.escape(token));
+        let budget = 30000;
+        const within = rules => {
+          for (const rule of rules) {
+            if (--budget < 0) return true;
+            const selector = rule.selectorText;
+            if (selector) for (const part of selector.split(',')) for (const wanted of marks) {
+              for (let at = part.indexOf(wanted); at >= 0; at = part.indexOf(wanted, at + 1)) {
+                const rest = part.slice(at + wanted.length);
+                if (/^[\w-]/.test(rest)) continue;
+                if (/[\s>+~]\s*\S/.test(rest)) return true;
+              }
+            }
+            if (rule.cssRules && rule.cssRules.length && within(rule.cssRules)) return true;
+          }
+          return false;
+        };
+        try { for (const sheet of [...document.styleSheets,...(document.adoptedStyleSheets||[])]) if (within(sheet.cssRules)) return true; } catch { return true; }
+        return false;
+      };
       for (const element of state.dirty) {
         if (!element.isConnected) continue;
+        if (state.light.has(element) && !reaches(state.light.get(element))) continue;
         let region = element, depth = 0;
         for (let current = element; current && depth++ < 64; current = parent(current)) {
           if (state.recordKind(current) === 'record') { region = current; break; }
@@ -579,7 +656,7 @@ function(operation, args, other) {
       state.scan = {pending:document.documentElement ? [document.documentElement] : [],query:args,revision:state.revision,sequence:0,scanned:0,
         elements:0,total:args.compact===true ? document.getElementsByTagName('*').length : 0};
     }
-    state.dirty.clear(); state.dirtyLimit = false; state.removed = false;
+    state.dirty.clear(); state.light.clear(); state.dirtyLimit = false; state.removed = false;
     return result(stamp());
   }
   if (operation === 'next') {
@@ -798,7 +875,7 @@ function(operation, args, other) {
         }
       }
       if (node.shadowRoot) {
-        state.observer.observe(node.shadowRoot,{subtree:true,childList:true,characterData:true,attributes:true});
+        state.observer.observe(node.shadowRoot,{subtree:true,childList:true,characterData:true,attributes:true,attributeOldValue:true});
         queue(scan.pending,node.shadowRoot.firstChild,omitted);
       }
       queue(scan.pending,node.firstChild,omitted);

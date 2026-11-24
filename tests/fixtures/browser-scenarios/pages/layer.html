@@ -1,0 +1,15 @@
+<!doctype html><meta charset=utf-8><title>Layers</title>
+<!-- A dialog and a menu opened the way component libraries do it: by marking the body. -->
+<style>#dlg,#menu{display:none}.menu-open #menu{display:block}.modal-open{overflow:hidden}</style>
+<div id=app><h1>Shop</h1>
+<button id=o type=button>Open dialog</button><button id=m type=button aria-expanded=false>Open menu</button>
+<div id=menu><a href=#account>Account</a></div>
+<nav id=nav></nav></div>
+<div id=dlg role=dialog><h2>Confirm order</h2><button id=c type=button>Understood</button></div>
+<script>
+const app=document.getElementById('app'),dlg=document.getElementById('dlg'),body=document.body;
+document.getElementById('nav').innerHTML=Array.from({length:300},(_,i)=>'<a href=#n'+i+'>Section '+i+'</a>').join(' ');
+document.getElementById('o').onclick=()=>{body.classList.add('modal-open');body.style.overflow='hidden';body.style.paddingRight='15px';app.setAttribute('aria-hidden','true');dlg.style.display='block';};
+document.getElementById('c').onclick=()=>{body.classList.remove('modal-open');body.style.overflow='';body.style.paddingRight='';app.removeAttribute('aria-hidden');dlg.style.display='none';};
+document.getElementById('m').onclick=e=>{body.classList.add('menu-open');e.target.setAttribute('aria-expanded','true');};
+</script>
