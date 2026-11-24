@@ -2,7 +2,8 @@ use super::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-pub(crate) const SOURCE: &str = include_str!("program.js");
+/// The program as `build.rs` writes it out: without comments and indentation.
+pub(crate) const SOURCE: &str = include_str!(concat!(env!("OUT_DIR"), "/program.js"));
 
 pub(crate) async fn verify_reusable_submit<P: Port>(
     port: &P,

@@ -13,7 +13,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const SOURCE: &str = include_str!("evidence.js");
+/// The program as `build.rs` writes it out: without comments and indentation.
+pub(crate) const SOURCE: &str = include_str!(concat!(env!("OUT_DIR"), "/evidence.js"));
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_ELEMENTS: usize = 5_000;
 pub(crate) const MAX_TEXT_NODES: usize = 10_000;

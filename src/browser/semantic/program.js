@@ -334,7 +334,9 @@ function(operation, args, other) {
       const box = node.localName === 'input' && ['checkbox','radio'].includes(node.type);
       const pressed = node.localName === 'button' || node.localName === 'a' && node.hasAttribute('href') || ['button','link'].includes(explicitRole(node));
       const holder = node.parentElement;
-      if ((box && !labelled(node) || pressed) && holder && holder !== document.body && holder.textContent.length <= 200
+      // The parent is sized up by what costs least first: most controls sit in something large.
+      if ((box || pressed) && holder && holder !== document.body && holder.childElementCount <= 6 && holder.getElementsByTagName('*').length <= 12
+          && (pressed || !labelled(node)) && holder.textContent.length <= 200
           && holder.querySelectorAll('input,select,textarea,button,a[href],[role=button],[role=link]').length === 1
           && norm(holder.textContent) !== norm(node.textContent)) scopes.push(holder);
     }
