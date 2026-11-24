@@ -439,7 +439,7 @@ impl Batch {
         self.stamp.validate()?;
         if self.rows.len() > nodes
             || self.characters > characters
-            || self.scanned > 5000
+            || self.scanned > 50000
             || self.omitted.len() > 32
         {
             return Err(decode());

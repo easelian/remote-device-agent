@@ -1015,7 +1015,7 @@ impl Call<'_> {
         } else {
             // The search is narrowed by the words that say most: those of the
             // record around the target, or else its name.
-            let mut query = json!({"max_nodes":1000,"max_chars":64000});
+            let mut query = json!({"max_nodes":1000,"max_chars":64000,"format":"search"});
             if verb == "drag" {
                 // What can be dragged, and where it can be dropped, is listed
                 // apart from the controls, and only such an element is taken.
@@ -1026,6 +1026,12 @@ impl Call<'_> {
                 let words = within.as_ref().unwrap_or(name);
                 if !words.is_empty() {
                     query["find"] = words.clone().into();
+                } else if matches!(described[0], Target::Described { role: Some(role), .. } if role != "text")
+                {
+                    // Asked for by its role alone, it is looked for among the
+                    // controls: the text of a long page would use up the
+                    // search before the control is reached.
+                    query["filter"] = "interactive".into();
                 }
             } else if let ([], [meaning]) = (described.as_slice(), recalled.as_slice())
                 && !meaning.name.is_empty()
@@ -1050,7 +1056,7 @@ impl Call<'_> {
                     break;
                 }
                 found.clear();
-                query = json!({"cursor":cursor});
+                query = json!({"cursor":cursor,"format":"search"});
             }
             found
         };
@@ -1096,7 +1102,7 @@ impl Call<'_> {
                                 .inner(
                                     id,
                                     "browser_observe",
-                                    json!({"filter":"text","find":name,
+                                    json!({"filter":"text","find":name,"format":"search",
                                         "max_nodes":1000,"max_chars":64000}),
                                 )
                                 .await?;

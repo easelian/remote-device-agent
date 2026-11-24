@@ -409,7 +409,9 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     }
     if map
         .get("format")
-        .is_some_and(|format| format != "compact" || map.contains_key("presentation"))
+        .is_some_and(|format| {
+            format != "compact" && format != "search" || map.contains_key("presentation")
+        })
     {
         return Err(Failure::new("browser_invalid_params"));
     }

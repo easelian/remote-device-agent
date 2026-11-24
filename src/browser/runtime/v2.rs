@@ -1185,7 +1185,7 @@ async fn observe_frames(
             },
             find: params["find"].as_str().map(str::to_owned),
             within,
-            compact: params["format"] == "compact",
+            compact: matches!(params["format"].as_str(), Some("compact" | "search")),
             // Set only by the view after an action; public requests cannot carry it.
             changed: params["changed"] == true,
         }
@@ -1273,7 +1273,12 @@ async fn observe_frames(
                 max_chars,
             )
         });
-    if compact {
+    // A search is budgeted as a compact read is, so that a page of it holds as
+    // many elements, and is given the elements themselves to choose among.
+    let search = params["format"] == "search";
+    if search {
+        value["nodes"] = nodes.into();
+    } else if compact {
         // The frames already group the nodes, so the separate overview is left out.
         compact::write(&mut value, &result.rows, &nodes, before);
         compact::trim(&mut value);

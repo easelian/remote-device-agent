@@ -789,7 +789,11 @@ function(operation, args, other) {
       }
       return {length,root};
     };
-    while (scan.pending.length && rows.length < args.nodes && count < 5000) {
+    // A read that lists everything looks at 5000 nodes at a time. One that looks for words, or for
+    // controls alone, passes over most nodes cheaply, and a page of highlighted code has tens of
+    // thousands of them: it goes on for as long as 80 ms allow.
+    const narrowed = !!scan.query.find || scan.query.filter === 'interactive', until = performance.now() + 80;
+    while (scan.pending.length && rows.length < args.nodes && (count < 5000 || narrowed && count < 50000 && ((count & 255) || performance.now() < until))) {
       const node = scan.pending.pop();
       if (node.rest) { queue(scan.pending,node.rest,omitted); continue; }
       count++; scan.scanned++;
