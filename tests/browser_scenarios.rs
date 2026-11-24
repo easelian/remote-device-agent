@@ -1427,14 +1427,14 @@ async fn front_real() {
     // label written beside it.
     let box_ = did(&mut peer, json!([{"check":{"name":"College"}}])).await;
     assert!(box_.contains("Education: 2"), "{box_}");
-    // Not mended yet: a box moved by mouse events alone, as jQuery UI moves
-    // it, is no end of a drag. When it becomes one, the page says "Dropped!".
+    // A box that a script moves by following the mouse, as jQuery UI does,
+    // is dragged by pressing, moving and letting go.
     let dragged = did(
         &mut peer,
         json!([{"drag":{"name":"Drag me"},"to":{"name":"Drop here"}}]),
     )
     .await;
-    assert!(dragged.contains("browser_target_not_found"), "{dragged}");
+    assert!(dragged.contains("Dropped!"), "{dragged}");
     // Words that never come end the wait as a condition that timed out.
     let never = did(&mut peer, json!([{"wait":{"text":"never there"}}])).await;
     assert!(never.contains("browser_condition_timeout"), "{never}");

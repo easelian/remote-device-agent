@@ -396,6 +396,11 @@ function(operation, args, other) {
   const dropRoles = new Set(['region','list','listbox','group']);
   function endpointMarker(node) {
     if (node.draggable && node.getAttribute('draggable')?.toLowerCase() === 'true') return 'drag_source';
+    // A library that moves an element by following the mouse marks what it moves and where it
+    // may be let go. Such an element is dragged by pressing, moving and releasing alone.
+    const marks = typeof node.className === 'string' ? ' ' + node.className + ' ' : '';
+    if (/ (ui-draggable|ui-sortable-handle|cdk-drag|react-draggable) /.test(marks) || node.hasAttribute('data-rbd-draggable-id') || node.hasAttribute('data-rfd-draggable-id')) return 'pointer_source';
+    if (/ (ui-droppable|ui-sortable|cdk-drop-list) /.test(marks) || node.hasAttribute('data-rbd-droppable-id') || node.hasAttribute('data-rfd-droppable-id')) return 'drop_target';
     const effect = norm(node.getAttribute('aria-dropeffect')).toLowerCase();
     return dropRoles.has(explicitRole(node)) || node.hasAttribute('ondrop') || effect && effect !== 'none' ? 'drop_target' : '';
   }

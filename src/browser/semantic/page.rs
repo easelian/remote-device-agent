@@ -2103,7 +2103,10 @@ async fn perform<P: Port>(
     Ok(acknowledgement)
 }
 fn is_drag_endpoint(facts: &Facts) -> bool {
-    matches!(facts.kind.as_str(), "drag_source" | "drop_target")
+    matches!(
+        facts.kind.as_str(),
+        "drag_source" | "pointer_source" | "drop_target"
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2112,6 +2115,8 @@ pub(crate) struct DragEndpoint {
     pub fingerprint: [u8; 32],
     pub x: f64,
     pub y: f64,
+    /// Moved by following the mouse, not by the browser's own drag and drop.
+    pub pointer: bool,
 }
 impl DragEndpoint {
     fn from_element(element: &Element) -> Self {
@@ -2120,6 +2125,7 @@ impl DragEndpoint {
             fingerprint: element.fingerprint,
             x: element.facts.x,
             y: element.facts.y,
+            pointer: element.facts.kind == "pointer_source",
         }
     }
 }
@@ -2160,8 +2166,11 @@ pub(crate) async fn check_drag_endpoints<P: Port>(
         || source_now.y != source.y
         || target_now.x != target.x
         || target_now.y != target.y
-        || source_now.kind != "drag_source"
-        || !matches!(target_now.kind.as_str(), "drop_target" | "drag_source")
+        || !matches!(source_now.kind.as_str(), "drag_source" | "pointer_source")
+        || !matches!(
+            target_now.kind.as_str(),
+            "drop_target" | "drag_source" | "pointer_source"
+        )
         || !source_now.endpoint_eligible()
         || !target_now.endpoint_eligible()
         || !source_now.visible
@@ -2184,10 +2193,13 @@ async fn perform_drag<P: Port>(
     if source.frame.context != target.frame.context
         || source.frame.document != target.frame.document
         || source.frame.realm != target.frame.realm
-        || source.facts.kind != "drag_source"
+        || !matches!(source.facts.kind.as_str(), "drag_source" | "pointer_source")
         // What can be dragged in a list that is sorted by dragging is also
         // where another of them is dropped; only a script says so.
-        || !matches!(target.facts.kind.as_str(), "drop_target" | "drag_source")
+        || !matches!(
+            target.facts.kind.as_str(),
+            "drop_target" | "drag_source" | "pointer_source"
+        )
         || !source.facts.endpoint_eligible()
         || !target.facts.endpoint_eligible()
     {

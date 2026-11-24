@@ -804,6 +804,14 @@ impl Semantic {
         if dx.abs().max(dy.abs()) < 8.0 {
             return Err(actionable());
         }
+        if source.pointer {
+            // The page moves the element itself as the mouse moves, so there
+            // is no drag of the browser's to arm, and the source is not where
+            // it was once the pointer has left: press, move and let go.
+            return self
+                .visual_drag(start.x, start.y, dest.x, dest.y, deadline)
+                .await;
+        }
         let wire = &self.adapter.wire;
         wire.call(
             Some(session),

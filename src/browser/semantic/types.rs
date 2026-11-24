@@ -298,8 +298,10 @@ impl Facts {
         self.eligible()
     }
     pub fn endpoint_eligible(&self) -> bool {
-        matches!(self.kind.as_str(), "drag_source" | "drop_target")
-            && self.enabled
+        matches!(
+            self.kind.as_str(),
+            "drag_source" | "pointer_source" | "drop_target"
+        ) && self.enabled
             && self.visible
             && !self.sensitive
             && !self.editable

@@ -48,7 +48,7 @@
 | `{"check": 目标, "on": true}` | 勾选或取消勾选，`on` 省略时为勾选 |
 | `{"press": 键名, "on": 目标}` | 在目标上按键，例如 `Enter` |
 | `{"scroll": 像素, "in": 目标}` | 纵向滚动，一步最多 100000 像素。省略 `in` 时滚动整个页面 |
-| `{"drag": 目标, "to": 目标}` | 拖到另一个元素上。两端只在可拖放的元素里找：带 `draggable="true"` 的元素可以作为起点，也可以作为落点；声明了放置角色或 `ondrop` 的元素只能作为落点 |
+| `{"drag": 目标, "to": 目标}` | 拖到另一个元素上。两端只在可拖放的元素里找：带 `draggable="true"` 的元素可以作为起点，也可以作为落点；声明了放置角色或 `ondrop` 的元素只能作为落点。由脚本跟着鼠标移动的元素也可以拖：带 jQuery UI、Angular CDK、react-draggable 或 react-beautiful-dnd 标记的元素是起点，它们标出的放置区是落点，这种拖动是按下、移动、松开，不经过浏览器自己的拖放 |
 | `{"upload": 目标, "grant": 授权}` | 把用户批准的文件交给文件输入框 |
 | `{"wait": {"text": 文本}}` | 等到页面出现这段文字。也可写 `{"url": 片段}` |
 | `{"dialog": "accept"}` | 回答浏览器对话框，或写 `"dismiss"` |
@@ -434,7 +434,7 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked --features 
 | 树的条目被当成一个名称包含全部子项的可点击元素，且没有引用 | w3.org 的 ARIA 示例 | `real-widgets.html` | 条目的角色是 `treeitem`，名称只有自己的文字，点击后展开 |
 | 被禁用的翻页链接报成“找不到” | datatables.net | `real-widgets.html` | 报 `browser_not_actionable`，并写明它被禁用 |
 | 单选框都自称 “Radio button”，真正的标签写在旁边，按标签找不到 | formy-project.herokuapp.com | `real-widgets.html` | 按旁边的文字勾选到对应的单选框 |
-| 只靠鼠标事件拖动的元素不能作为 `drag` 的两端（**未修**） | jqueryui.com | `real-widgets.html` | 目前断言报 `browser_target_not_found`；修好后页面应显示 “Dropped!” |
+| 只靠鼠标事件拖动的元素不能作为 `drag` 的两端 | jqueryui.com | `real-widgets.html` | `drag` 之后页面显示 “Dropped!” |
 | 长页面上找一行要读三遍，每遍都很慢 | 本机的 `big` 任务 | `big.html` | `front_pool` 的 `big` 任务（只验结果，不验耗时） |
 
 “等不到的文字”和“读三遍”两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。
