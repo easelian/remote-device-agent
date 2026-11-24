@@ -8,6 +8,12 @@
 <h1>Select</h1>
 <div id=chosen></div><button id=pick type=button>Pick</button>
 <p>If closed, it will not appear on subsequent page loads.</p>
+<!-- A slider as MUI draws it: the input that holds the value is clipped away inside the thumb. -->
+<span style="position:relative;display:inline-block;width:200px;height:4px;padding:13px 0">
+<span style="position:absolute;width:100%;height:4px;background:#ccc"></span>
+<span id=thumb style="position:absolute;left:30%;width:20px;height:20px;border-radius:50%;background:#06c;transform:translate(-50%,-8px)">
+<input id=volume type=range min=0 max=100 value=30 aria-label=Volume style="border:0;clip:rect(0 0 0 0);height:100%;margin:-1px;overflow:hidden;padding:0;position:absolute;white-space:nowrap;width:100%;direction:ltr">
+</span></span> <output id=vol>Volume is 30</output>
 <pre id=code></pre>
 <h2><a href=#basic>Basic select</a></h2>
 <div role=combobox tabindex=0 aria-expanded=false aria-label=Age onclick="this.setAttribute('aria-expanded','true')">Ten</div>
@@ -21,6 +27,7 @@
 <script>
 document.getElementById('nav').innerHTML=Array.from({length:300},(_,i)=>'<a href=#n'+i+'>Chapter '+i+'</a>').join(' ');
 document.getElementById('code').innerHTML=Array.from({length:30000},(_,i)=>'<span>tok'+i+'</span>').join(' ');
+document.getElementById('volume').addEventListener('input',e=>{document.getElementById('vol').textContent='Volume is '+e.target.value;document.getElementById('thumb').style.left=e.target.value+'%';});
 const chosen=document.getElementById('chosen');chosen.append('Selected: ','user02');
 document.getElementById('pick').onclick=()=>{chosen.lastChild.nodeValue='username';};
 </script>

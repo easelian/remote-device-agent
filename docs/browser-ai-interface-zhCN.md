@@ -58,7 +58,7 @@
 
 ### 特殊的输入框和可点击的元素
 
-- **日期、时间、颜色和滑块**：`fill` 直接给它们赋值，页面会收到与用户操作相同的 `input` 和 `change` 事件。值的写法是日期 `YYYY-MM-DD`、时间 `HH:MM`、颜色 `#rrggbb`、滑块为范围内的数字。值不合适时步骤以 `browser_value_rejected` 失败，字段不变。
+- **日期、时间、颜色和滑块**：`fill` 直接给它们赋值，滑块的输入框被裁掉、由周围的元素画出来时也一样，页面会收到与用户操作相同的 `input` 和 `change` 事件。值的写法是日期 `YYYY-MM-DD`、时间 `HH:MM`、颜色 `#rrggbb`、滑块为范围内的数字。值不合适时步骤以 `browser_value_rejected` 失败，字段不变。
 - **只读的输入框**：`fill` 以 `browser_not_actionable` 失败，但可以 `click`，例如点开页面自己的日期选择器。
 - **正在移动的元素**：滑入的面板、展开中的菜单里的元素，等它停下来再操作，最多等 1 秒。1 秒后仍在移动的元素以 `browser_not_actionable` 失败。
 - **不是控件却能点击的元素**：带 `onclick`、不小于 0 的 `tabindex` 或手形光标的元素在读页面时标为 `inferred`，可以按名称 `click`、`hover` 或对它 `press`。中间有自己按钮的卡片，点击落在卡片上不属于那个按钮的位置。
@@ -426,9 +426,11 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked --features 
 | 点 `Close` 点到了一段含 “closed” 的说明 | the-internet | `real-docs.html` | 报 `browser_target_not_found` |
 | 点击后跳到的文档还没到达，被读成空页面 | 维基百科 | `real-docs.html` 加 `/drip/` | 回复里有新页面的内容 |
 | 等不到的文字有时报成截止错误 | the-internet | `real-docs.html` | 报 `browser_condition_timeout` |
+| `nth` 按搜索的每一页分别计数，靠后的序号找不到 | 本机的 `big` 页面 | `big.html` | 按 `role` 加 `nth` 点到第 990 个按钮 |
+| 输入框被裁掉、藏在滑块里的滑条，`fill` 报不可操作 | MUI | `real-docs.html` | `fill` 之后页面显示新的值 |
 | 长页面上找一行要读三遍，每遍都很慢 | 本机的 `big` 任务 | `big.html` | `front_pool` 的 `big` 任务（只验结果，不验耗时） |
 
-最后两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。还没有修、因此也还没有用例的问题：`nth` 按搜索的每一页分别计数；MUI 的滑块用 `fill` 赋值时报“不可操作”。
+“等不到的文字”和“读三遍”两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。
 
 一次点击、填写或选择的 60 毫秒里有两段等待。操作之前隔 20 毫秒取两次元素的位置，位置不变才操作。操作之后等 20 毫秒再读页面的变化；页面在这 20 毫秒里又变了，就再等 20 毫秒。
 

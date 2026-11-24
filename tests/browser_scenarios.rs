@@ -1369,6 +1369,9 @@ async fn front_real() {
     assert!(found.contains("text: Selected: user02"), "{found}");
     let picked = did(&mut peer, json!([{"click":{"name":"Pick"}}])).await;
     assert!(picked.contains("Selected: username"), "{picked}");
+    // A slider whose input is clipped away inside its thumb is still set.
+    let slid = did(&mut peer, json!([{"fill":{"name":"Volume"},"text":"70"}])).await;
+    assert!(slid.contains("Volume is 70"), "{slid}");
     // A control asked for by its role is reached past thirty thousand nodes
     // of highlighted code.
     let listed = did(&mut peer, json!([{"click":{"role":"combobox","nth":1}}])).await;
@@ -1398,6 +1401,13 @@ async fn front_real() {
     // A document that is slow to arrive is waited for, not told as empty.
     let slow = did(&mut peer, json!([{"click":{"name":"Slow page"}}])).await;
     assert!(slow.contains(": Username\n"), "{slow}");
+    // The place of a match is counted through a page too long for one read
+    // of the search.
+    did(&mut peer, json!([{"open":site.url("big")}])).await;
+    for nth in [3, 700, 990] {
+        did(&mut peer, json!([{"click":{"role":"button","nth":nth}}])).await;
+    }
+    assert_eq!(site.writes("big"), ["G0003", "G0700", "G0990"]);
     // Words that never come end the wait as a condition that timed out.
     let never = did(&mut peer, json!([{"wait":{"text":"never there"}}])).await;
     assert!(never.contains("browser_condition_timeout"), "{never}");

@@ -1140,6 +1140,8 @@ impl Call<'_> {
             .filter(|target| matches!(target, Target::Described { .. }))
             .collect();
         let recalled: Vec<Meaning> = targets.iter().filter_map(meant).collect();
+        // The matches on pages of the search that were passed over.
+        let mut passed = 0;
         let found = if described.is_empty() && recalled.is_empty() {
             Vec::new()
         } else {
@@ -1178,6 +1180,34 @@ impl Call<'_> {
                 let Some(cursor) = read["next_cursor"].as_str() else {
                     break;
                 };
+                // A place among the matches counts those on the pages before.
+                if let (
+                    [
+                        Target::Described {
+                            name,
+                            role,
+                            within,
+                            nth: Some(nth),
+                        },
+                    ],
+                    true,
+                ) = (targets, recalled.is_empty())
+                {
+                    let bare = Target::Described {
+                        name: name.clone(),
+                        role: role.clone(),
+                        within: within.clone(),
+                        nth: None,
+                    };
+                    let here = matching(&bare, &found, taking).len();
+                    if *nth <= passed + here {
+                        break;
+                    }
+                    passed += here;
+                    found.clear();
+                    query = json!({"cursor":cursor,"format":"search"});
+                    continue;
+                }
                 if targets.iter().all(|target| match (target, meant(target)) {
                     (_, Some(meaning)) => recall(&meaning, &found).is_ok(),
                     (Target::Described { .. }, _) => choose(target, &found, taking).is_ok(),
@@ -1214,6 +1244,14 @@ impl Call<'_> {
                     within,
                     nth,
                 } => {
+                    let nth = &nth.map(|nth| nth.saturating_sub(passed).max(1));
+                    let aimed = Target::Described {
+                        name: name.clone(),
+                        role: role.clone(),
+                        within: within.clone(),
+                        nth: *nth,
+                    };
+                    let target = &aimed;
                     // Words that name no control may still be something that takes
                     // clicks. The search for them replaces the references found so
                     // far, so it is made only for a step with a single target.

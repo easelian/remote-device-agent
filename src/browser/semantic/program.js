@@ -453,6 +453,15 @@ function(operation, args, other) {
         }
       }
     }
+    if (!hit && node.localName === 'input' && node.type === 'range' && node.parentElement) {
+      // A slider drawn by the elements around it keeps its input clipped away inside the thumb.
+      // It is reached where the thumb is: the value is given to the input itself.
+      const holder = node.parentElement, around = holder.getBoundingClientRect();
+      if (around.width >= 4 && around.height >= 4) {
+        const [px,py] = middle(around), top = root.elementFromPoint ? root.elementFromPoint(px,py) : document.elementFromPoint(px,py);
+        if (top && (top === holder || holder.contains(top))) { x = px; y = py; hit = true; }
+      }
+    }
     let shown = box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
     if (shown && !hit) {
       // Inside the window, yet a container that scrolls or clips may have it
