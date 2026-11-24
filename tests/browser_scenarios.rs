@@ -1495,6 +1495,17 @@ async fn front_real() {
     );
     let browsed = did(&mut peer, json!([{"click":{"name":"Browse"}}])).await;
     assert!(browsed.contains("Opened the catalogue"), "{browsed}");
+    // A list that draws only the rows in sight, in a box with no name: it
+    // is scrolled by scrolling in one of its rows, and the row that comes
+    // into sight is then there to click.
+    did(&mut peer, json!([{"open":site.url("real-virtual")}])).await;
+    let rows = did(
+        &mut peer,
+        json!([{"scroll":10000,"in":{"name":"Message #3"}},
+            {"click":{"name":"Open","in":"Message #402"}}]),
+    )
+    .await;
+    assert!(rows.contains("Opened message 402"), "{rows}");
     // Words that never come end the wait as a condition that timed out.
     let never = did(&mut peer, json!([{"wait":{"text":"never there"}}])).await;
     assert!(never.contains("browser_condition_timeout"), "{never}");

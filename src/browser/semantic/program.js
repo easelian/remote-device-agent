@@ -327,11 +327,16 @@ function(operation, args, other) {
         scopes.push(current);
       }
     }
-    // A box that no label names, alone with a few words in its parent, is read with them:
-    // they are what a person takes for its label, whatever the box calls itself.
-    if (!alone && !scopes.length && node.localName === 'input' && ['checkbox','radio'].includes(node.type) && !labelled(node)) {
+    // A control alone with a few words in its parent is read with them. For a box that no label
+    // names they are what a person takes for its label, whatever the box calls itself; for a
+    // button they tell it from the same button of the next row, in a list built of plain boxes.
+    if (!alone && !scopes.length) {
+      const box = node.localName === 'input' && ['checkbox','radio'].includes(node.type);
+      const pressed = node.localName === 'button' || node.localName === 'a' && node.hasAttribute('href') || ['button','link'].includes(explicitRole(node));
       const holder = node.parentElement;
-      if (holder && holder.querySelectorAll('input,select,textarea,button,a[href]').length === 1 && holder.textContent.length <= 200 && norm(holder.textContent)) scopes.push(holder);
+      if ((box && !labelled(node) || pressed) && holder && holder !== document.body && holder.textContent.length <= 200
+          && holder.querySelectorAll('input,select,textarea,button,a[href],[role=button],[role=link]').length === 1
+          && norm(holder.textContent) !== norm(node.textContent)) scopes.push(holder);
     }
     if (!scopes.length) scopes.push(node);
     let ownerList;
@@ -1102,10 +1107,20 @@ function(operation, args, other) {
   }
   if (operation === 'scroll_target') {
     const node = target();
-    if (!scrollable(node) || disabled(node) || !Number.isFinite(args.delta) || Math.abs(args.delta) > 100000) return result(null);
-    const before = node.scrollTop;
-    node.scrollBy({top:args.delta,behavior:'instant'});
-    return result(node.scrollTop !== before);
+    if (!node || !node.isConnected || !Number.isFinite(args.delta) || Math.abs(args.delta) > 100000) return result(null);
+    // Asked to scroll in something that does not scroll itself, a row of a list say, the list it
+    // is in is scrolled: the nearest element around it that has more than it shows, named or
+    // not, and failing that the page.
+    let box = node;
+    if (!scrollable(node)) {
+      const more = element => { const style = getComputedStyle(element); return (style.overflowY === 'auto' || style.overflowY === 'scroll') && element.scrollHeight > element.clientHeight; };
+      for (box = node; box && !more(box); box = parent(box));
+      if (!box) box = document.scrollingElement || document.documentElement;
+    }
+    if (disabled(box)) return result(null);
+    const before = box.scrollTop;
+    box.scrollBy({top:args.delta,behavior:'instant'});
+    return result(box.scrollTop !== before);
   }
   if (operation === 'scroll') {
     const node=target(); if (!node || !node.isConnected) return result(false);

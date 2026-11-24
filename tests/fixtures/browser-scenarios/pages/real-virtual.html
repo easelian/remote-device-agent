@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>A list that draws only the rows in sight</title>
+<!-- Met on material.angular.dev (CDK virtual scroll) and bvaughn.github.io/react-virtualized: the
+     box that scrolls has no name and no role of a control, and only the rows in sight exist. -->
+<h1>Messages</h1>
+<div id=view style="height:200px;overflow-y:auto;border:1px solid #888;width:320px"><div id=space style="position:relative"></div></div>
+<p id=said></p>
+<script>
+const view=document.getElementById('view'),space=document.getElementById('space'),H=25,N=2000;
+space.style.height=N*H+'px';
+const draw=()=>{const first=Math.floor(view.scrollTop/H);space.innerHTML=Array.from({length:10},(_,i)=>first+i).filter(i=>i<N).map(i=>'<div style="position:absolute;top:'+i*H+'px;height:'+H+'px">Message #'+i+' <button type=button data-i='+i+'>Open</button></div>').join('');};
+view.addEventListener('scroll',draw);draw();
+space.addEventListener('click',e=>{if(e.target.dataset.i)document.getElementById('said').textContent='Opened message '+e.target.dataset.i;});
+</script>

@@ -103,10 +103,10 @@ pub(crate) fn requirements(facts: &Facts, kind: ActionKind, top_level: bool) -> 
         && (facts.kind != "inferred"
             || matches!(
                 kind,
-                ActionKind::Click | ActionKind::Press | ActionKind::Hover
+                ActionKind::Click | ActionKind::Press | ActionKind::Hover | ActionKind::Scroll
             ))
         && match kind {
-            ActionKind::Scroll => facts.kind == "scrollable",
+            ActionKind::Scroll => true,
             ActionKind::Hover => matches!(facts.kind.as_str(), "native" | "aria" | "inferred"),
             ActionKind::Fill => facts.editable && !special_input(facts),
             ActionKind::Check => matches!(facts.role.as_str(), "checkbox" | "radio" | "switch"),

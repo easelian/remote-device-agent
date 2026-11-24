@@ -1780,13 +1780,19 @@ async fn perform<P: Port>(
     let mut facts = inspect(port, element, deadline).await?;
     let kind = action.kind();
     let top_level = element.frame.parent.is_none() && element.ancestors.is_empty();
-    if (facts.kind == "scrollable") != matches!(action, Action::Scroll { .. }) {
+    // Anything can be scrolled in: what is scrolled is the list around it.
+    // What only scrolls takes nothing else.
+    if facts.kind == "scrollable" && !matches!(action, Action::Scroll { .. }) {
         return Err(Failure::new("browser_not_actionable"));
     }
     if facts.kind == "inferred"
         && !matches!(
             action,
-            Action::Click | Action::ClickAs(_) | Action::Press(_) | Action::Hover
+            Action::Click
+                | Action::ClickAs(_)
+                | Action::Press(_)
+                | Action::Hover
+                | Action::Scroll { .. }
         )
     {
         return Err(Failure::new("browser_not_actionable"));
