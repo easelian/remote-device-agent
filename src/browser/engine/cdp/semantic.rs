@@ -1055,21 +1055,32 @@ impl Semantic {
         deadline: Instant,
     ) -> Result<Point> {
         let engine = self.engine();
-        let quad = engine.quad(node, deadline).await?;
-        let mut point = Point {
-            x: (quad[0] + quad[2] + quad[4] + quad[6]) / 4.,
-            y: (quad[1] + quad[3] + quad[5] + quad[7]) / 4.,
+        // An element clipped away to nothing has no box to ask for: a box a
+        // library hides behind its label. The page program then says where
+        // it is reached, as it does for an element whose middle is not its own.
+        let boxed = match engine.quad(node, deadline).await {
+            Ok(quad) => Some(Point {
+                x: (quad[0] + quad[2] + quad[4] + quad[6]) / 4.,
+                y: (quad[1] + quad[3] + quad[5] + quad[7]) / 4.,
+            }),
+            Err(error) if error.code == "browser_not_actionable" => None,
+            Err(error) => return Err(error),
         };
-        if !self
-            .reaches(frame, node, marker, token, endpoint, point, deadline)
-            .await?
+        let mut point = boxed.unwrap_or(Point {
+            x: f64::NAN,
+            y: f64::NAN,
+        });
+        if boxed.is_none()
+            || !self
+                .reaches(frame, node, marker, token, endpoint, point, deadline)
+                .await?
         {
             // The middle of the element belongs to a control inside it, as the
             // button of a card that takes clicks itself. The page program
             // knows a place that is the element's alone.
             let world = self.world(frame, deadline).await?;
             let session = Some(self.adapter.session(&frame.session)?);
-            let found=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"geometry"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token}}],"returnByValue":true}),deadline).await?;
+            let found=self.adapter.wire.call(session,Command::RuntimeCallFunction(Effect::None),json!({"executionContextId":world,"functionDeclaration":sem::program::SOURCE,"arguments":[{"value":"geometry"},{"value":{"realm":marker.realm,"restoration":marker.restoration,"node":token,"session":true}}],"returnByValue":true}),deadline).await?;
             let place: Value = found["result"]["value"]
                 .as_str()
                 .and_then(|text| serde_json::from_str(text).ok())

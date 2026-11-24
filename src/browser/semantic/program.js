@@ -446,7 +446,7 @@ function(operation, args, other) {
       }
       return reached;
     };
-    let hit = lands(x,y);
+    let hit = lands(x,y), shown = null;
     if (!hit) {
       // Text that wraps is drawn as one box per line, and the middle of the
       // box around them all can lie on other text. The click goes to the
@@ -471,6 +471,16 @@ function(operation, args, other) {
         }
       }
     }
+    if (!hit && node.localName === 'input' && ['checkbox','radio'].includes(node.type) && labelled(node)) {
+      // A box that a library hides to draw its own in the label: a click on the label is a click
+      // on the box, so it is reached where its label is.
+      for (const label of Array.from(node.labels || []).slice(0,2)) {
+        const around = label.getBoundingClientRect();
+        if (around.width < 4 || around.height < 4 || !visible(label)) continue;
+        const [px,py] = middle(around), top = root.elementFromPoint ? root.elementFromPoint(px,py) : document.elementFromPoint(px,py);
+        if (top && (top === label || label.contains(top)) && !top.closest('a[href],button,select,textarea')) { x = px; y = py; hit = true; shown = around.left >= 0 && around.top >= 0 && around.right <= innerWidth && around.bottom <= innerHeight; break; }
+      }
+    }
     if (!hit && node.localName === 'input' && node.type === 'range' && node.parentElement) {
       // A slider drawn by the elements around it keeps its input clipped away inside the thumb.
       // It is reached where the thumb is: the value is given to the input itself.
@@ -480,7 +490,7 @@ function(operation, args, other) {
         if (top && (top === holder || holder.contains(top))) { x = px; y = py; hit = true; }
       }
     }
-    let shown = box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+    if (shown === null) shown = box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
     if (shown && !hit) {
       // Inside the window, yet a container that scrolls or clips may have it
       // out of sight: then it is not covered, it has to be scrolled to.
@@ -1043,7 +1053,12 @@ function(operation, args, other) {
   }
   if (operation === 'inspect') return result(facts(target()));
   if (operation === 'geometry') {
-    const f=facts(target());return result(f?{x:f.x,y:f.y,width:innerWidth,height:innerHeight,visible:f.visible,hit:f.hit,in_view:f.in_view}:null);
+    const f=facts(target());
+    // The browser places a point by the window its session draws. A frame of the same origin is drawn
+    // in its parent's window, so a point asked for in those terms is moved by where the frame lies.
+    let ox=0,oy=0;
+    if(args.session===true){try{for(let w=window;w.frameElement;w=w.parent){const r=w.frameElement.getBoundingClientRect();ox+=r.left+w.frameElement.clientLeft;oy+=r.top+w.frameElement.clientTop;}}catch{ox=0;oy=0;}}
+    return result(f?{x:f.x+ox,y:f.y+oy,width:innerWidth,height:innerHeight,visible:f.visible,hit:f.hit,in_view:f.in_view}:null);
   }
   if(operation==='native_frame'){
     const node=other;if(!node||!node.isConnected||node.ownerDocument!==document||!['iframe','frame'].includes(node.localName))return result(null);
@@ -1072,6 +1087,8 @@ function(operation, args, other) {
     const first=other||(args.at?(root.elementFromPoint?root:document).elementFromPoint(args.at.x,args.at.y):null);
     for(let item=first,depth=0;item&&depth<64;item=parent(item),depth++){
       if(item===node)return result(true);
+      // The label of a hidden box stands for the box: the click on it is passed on.
+      if(item.localName==='label'&&item.control===node&&node.localName==='input'&&['checkbox','radio'].includes(node.type))return result(true);
       if(controls.has(role(item).role)||item.localName==='label'||args.endpoint&&endpointMarker(item))return result(false);
     }
     return result(false);

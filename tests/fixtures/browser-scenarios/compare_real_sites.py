@@ -19,6 +19,7 @@ TASKS = [
  ('add-remove', T + 'add_remove_elements/', [('click', 'Add Element', None), ('click', 'Add Element', None), ('click', 'Delete', None)], 'Delete'),
  ('wikipedia', 'https://en.wikipedia.org/wiki/Main_Page', [('fill', 'Search Wikipedia', 'Ada Lovelace'), ('press', 'Search Wikipedia', 'Enter')], 'Analytical Engine'),
  ('datatables', 'https://datatables.net/examples/basic_init/zero_configuration.html', [('fill', 'Search:', 'London')], 'filtered from 57'),
+ ('shop', 'https://demowebshop.tricentis.com/books', [('click', 'Add to cart', None), ('click', 'Shopping cart', None), ('click', 'I agree with the terms of service and I adhere to them unconditionally', None), ('click', 'Checkout', None), ('click', 'Checkout as Guest', None)], 'Billing address'),
  ('books', 'https://books.toscrape.com/', [('click', 'Mystery', None), ('click', 'next', None)], 'Page 2 of 2'),
 ]
 mode = sys.argv[1]

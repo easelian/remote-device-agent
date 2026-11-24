@@ -1439,11 +1439,10 @@ async fn front_real() {
     // A panel that is hidden, not removed, has gone from the page all the same.
     let hidden = did(&mut peer, json!([{"click":{"name":"Dismiss"}}])).await;
     assert!(hidden.contains("something was removed"), "{hidden}");
-    // Not mended yet: a box hidden behind its own label, drawn as a button,
-    // is refused as covered. When it is ticked through the label, the page
-    // says "City: rome".
+    // A box hidden behind its own label, drawn as a button, is ticked
+    // through the label.
     let city = did(&mut peer, json!([{"check":{"name":"Rome"}}])).await;
-    assert!(city.contains("browser_not_actionable"), "{city}");
+    assert!(city.contains("City: rome"), "{city}");
     // A box that a script moves by following the mouse, as jQuery UI does,
     // is dragged by pressing, moving and letting go.
     let dragged = did(
