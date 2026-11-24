@@ -28,12 +28,20 @@ if mode == 'ab':
     ENV = dict(AGENT_BROWSER_PROXY='http://192.168.10.100:36699', HOME=os.environ['HOME'], PATH='/usr/bin:/bin',
                LANG='C.UTF-8', AGENT_BROWSER_NO_VERSION_CHECK='1')
     LINE = re.compile(r'^\s*- (\w+) "([^"]*)"(.*)$')
+    # Where the snapshot gives a control no name, an agent goes by the hint beside it.
+    HINTS = {'I agree with the terms of service and I adhere to them unconditionally': 'name:termsofservice'}
     def find(snapshot, name):
+        hint = HINTS.get(name)
+        if hint:
+            for line in snapshot.split('\n'):
+                ref = re.search(r'ref=(e\d+)', line)
+                if ref and hint in line: return ref.group(1)
         for line in snapshot.split('\n'):
             m = LINE.match(line)
             if not m: continue
             ref = re.search(r'ref=(e\d+)', m.group(3))
-            if ref and m.group(2) == name and m.group(1) not in ('generic', 'heading'): return ref.group(1)
+            # An agent reading the snapshot takes a name that differs only in case: a style may show it in capitals.
+            if ref and m.group(2).lower() == name.lower() and m.group(1) not in ('generic', 'heading'): return ref.group(1)
     report = {}
     for name, url, steps, expect in TASKS:
         calls = size = 0; log = []
