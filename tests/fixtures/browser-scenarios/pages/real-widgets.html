@@ -35,6 +35,9 @@
 <button id=rtrig type=button role=combobox aria-expanded=false aria-label=Food style="padding:6px 14px">Pick a food</button>
 <div id=rlist role=listbox aria-label=Food style="display:none;position:fixed;background:#fff;border:1px solid #888"><div role=option style="padding:6px 14px">Bread</div><div role=option style="padding:6px 14px">Cheese</div></div>
 <output id=rsaid>Food: none</output> <output id=rwhy></output>
+<!-- A click that also tells a tracker on another site, which is slow to answer (the-internet's
+     Optimizely calls, blocked behind a proxy). -->
+<button id=track type=button>Like</button> <span id=liked></span>
 <div id=drag class=ui-draggable style="position:relative;width:90px;height:40px;background:#cde">Drag me</div>
 <div id=drop class=ui-droppable style="width:160px;height:80px;border:1px solid #888;margin-top:60px">Drop here</div>
 <script>
@@ -57,6 +60,7 @@ const ropen=()=>{const box=rtrig.getBoundingClientRect();rlist.style.left=box.le
 rtrig.addEventListener('pointerdown',e=>{rtype=e.pointerType;if(e.button===0&&!e.ctrlKey&&e.pointerType==='mouse'){rdown={x:Math.round(e.pageX),y:Math.round(e.pageY)};ropen();e.preventDefault();}});
 rtrig.addEventListener('click',()=>{rtrig.focus();if(rtype!=='mouse')ropen();});
 rlist.addEventListener('pointerup',e=>{const option=e.target.closest('[role=option]');if(option&&e.pointerType==='mouse'&&!e.defaultPrevented){document.getElementById('rsaid').textContent='Food: '+option.textContent;rtrig.textContent=option.textContent;rclose('an option was taken');}});
+document.getElementById('track').onclick=()=>{fetch('http://localhost:'+location.port+'/slow/3000',{mode:'no-cors'}).catch(()=>{});document.getElementById('liked').textContent='Liked';};
 const drag=document.getElementById('drag'),drop=document.getElementById('drop');let held=null;
 drag.addEventListener('mousedown',e=>{held=[e.clientX,e.clientY];e.preventDefault();});
 addEventListener('mousemove',e=>{if(held){drag.style.left=(e.clientX-held[0])+'px';drag.style.top=(e.clientY-held[1])+'px';}});

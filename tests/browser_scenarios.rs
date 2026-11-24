@@ -1478,6 +1478,15 @@ async fn front_real() {
     )
     .await;
     assert!(food.contains("Food: Cheese"), "{food}");
+    // What a click tells another site is not waited for.
+    let began = std::time::Instant::now();
+    let liked = did(&mut peer, json!([{"click":{"name":"Like"}}])).await;
+    assert!(liked.contains("Liked"), "{liked}");
+    assert!(
+        began.elapsed() < std::time::Duration::from_millis(1500),
+        "{:?}",
+        began.elapsed()
+    );
     // A box that a script moves by following the mouse, as jQuery UI does,
     // is dragged by pressing, moving and letting go.
     let dragged = did(

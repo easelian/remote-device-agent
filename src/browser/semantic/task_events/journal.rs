@@ -386,6 +386,39 @@ fn size(bytes: u64) -> String {
     }
 }
 
+/// Whether two addresses belong to one site: the same host, or hosts that
+/// share their last two labels.
+fn same_site(one: &str, other: &str) -> bool {
+    fn site(address: &str) -> Option<String> {
+        let rest = address.split_once("://")?.1;
+        let host = rest.split(['/', '?', '#']).next()?;
+        let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+        let host = match host.strip_prefix('[') {
+            Some(v6) => return Some(v6.split(']').next()?.to_owned()),
+            None => host.split(':').next()?,
+        };
+        if host.is_empty() {
+            return None;
+        }
+        if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            return Some(host.to_owned());
+        }
+        let labels: Vec<&str> = host.rsplit('.').take(2).collect();
+        Some(
+            labels
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(".")
+                .to_ascii_lowercase(),
+        )
+    }
+    match (site(one), site(other)) {
+        (Some(one), Some(other)) => one == other,
+        _ => false,
+    }
+}
+
 pub(crate) fn span(ms: u64) -> String {
     if ms < 1000 {
         format!("{ms}ms")
@@ -618,6 +651,8 @@ impl Log {
     }
 
     /// How many requests a script made after that entry have no answer yet.
+    /// Only those to the page's own site count: what a click tells a tracker
+    /// elsewhere changes nothing on the page, and may never be answered.
     pub(crate) fn asking(&self, after: u64) -> usize {
         self.requests
             .iter()
@@ -625,6 +660,7 @@ impl Log {
                 // A script has its answer once the status is in: what follows
                 // of the body may never be read, and then never be done.
                 request.seq > after
+                    && same_site(&request.url, &self.page)
                     && request.status.is_none()
                     && request.ended.is_none()
                     && !request.canceled
