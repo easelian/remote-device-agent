@@ -639,6 +639,12 @@ impl Browsers {
             return Err(Failure::unknown("browser_input_pending"));
         }
         let wants_view = operation == "browser_act" && params["after_action_view"] == true;
+        // Where the page's requests stood before the input, so that what the
+        // input asked the site for can be waited for.
+        let asked = wants_view
+            .then(|| slot.journal.lock().unwrap().clone())
+            .flatten()
+            .and_then(|(_, sink)| Some((sink.journal_read(|log| log.latest())?, sink)));
         let mut prepared_presentation = None;
         let mut prepared_evidence = None;
         let result = async {
@@ -947,7 +953,8 @@ impl Browsers {
                         session.frames = frames;
                         session.observed_frames = observed;
                         session.reference_tab = Some(tab.clone());
-                        action_view::sample(&mut session, &page, &port, epoch, deadline).await
+                        action_view::sample(&mut session, &page, &port, epoch, deadline, asked)
+                            .await
                     } else {
                         json!({"state":"continue_observing","reason":"view_unavailable_or_changing"})
                     };

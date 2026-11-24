@@ -12,11 +12,27 @@
 <div><input type=radio name=edu value=2 aria-label="Radio button"> College</div>
 <div><input type=radio name=edu value=3 aria-label="Radio button"> Grad School</div>
 <output id=edu>Education: none</output>
+<!-- A checkout in steps (demowebshop.tricentis.com): each step is a list item that holds a whole
+     form, a country list of hundreds of options included. A request answers the button after
+     half a second, and the panel it closes is hidden, not removed. -->
+<ol id=steps><li><h2>Billing address</h2><form onsubmit="return false">
+<label for=first>First name:</label><input id=first> <label for=last>Last name:</label><input id=last>
+<label for=country>Country:</label><select id=country></select>
+<button id=cont type=button>Continue</button> <span id=said></span></form></li></ol>
+<div id=note style="background:#ffd">Free shipping this week <button id=hide type=button>Dismiss</button></div>
+<!-- A box hidden so that its label can be drawn as a button (jqueryui.com checkboxradio). -->
+<label for=paris style="display:inline-block;padding:6px 12px;border:1px solid #888">Paris</label><input type=radio name=city id=paris style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">
+<label for=rome style="display:inline-block;padding:6px 12px;border:1px solid #888">Rome</label><input type=radio name=city id=rome style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">
+<output id=city>City: none</output>
 <div id=drag class=ui-draggable style="position:relative;width:90px;height:40px;background:#cde">Drag me</div>
 <div id=drop class=ui-droppable style="width:160px;height:80px;border:1px solid #888;margin-top:60px">Drop here</div>
 <script>
 document.getElementById('tree').addEventListener('click',e=>{const item=e.target.closest('[role=treeitem]'),group=item&&item.querySelector('[role=group]');if(!group)return;const open=item.getAttribute('aria-expanded')!=='true';item.setAttribute('aria-expanded',open);group.style.display=open?'':'none';});
 for(const box of document.querySelectorAll('input[name=edu]'))box.addEventListener('change',()=>{document.getElementById('edu').textContent='Education: '+box.value;});
+document.getElementById('country').innerHTML=Array.from({length:300},(_,i)=>'<option value='+i+'>Country '+i+'</option>').join('');
+document.getElementById('cont').onclick=()=>{fetch('/slow/500').then(()=>{document.getElementById('said').textContent='Saved for '+document.getElementById('first').value;});};
+document.getElementById('hide').onclick=()=>{document.getElementById('note').style.display='none';};
+for(const box of document.querySelectorAll('input[name=city]'))box.addEventListener('change',()=>{document.getElementById('city').textContent='City: '+box.id;});
 const drag=document.getElementById('drag'),drop=document.getElementById('drop');let held=null;
 drag.addEventListener('mousedown',e=>{held=[e.clientX,e.clientY];e.preventDefault();});
 addEventListener('mousemove',e=>{if(held){drag.style.left=(e.clientX-held[0])+'px';drag.style.top=(e.clientY-held[1])+'px';}});

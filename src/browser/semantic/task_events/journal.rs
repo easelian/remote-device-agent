@@ -612,6 +612,27 @@ impl Log {
 
     /// The errors and failed requests not said before, oldest first, and how
     /// many more there were than `limit`. Each is said once.
+    /// The latest entry there is.
+    pub(crate) fn latest(&self) -> u64 {
+        self.next
+    }
+
+    /// How many requests a script made after that entry have no answer yet.
+    pub(crate) fn asking(&self, after: u64) -> usize {
+        self.requests
+            .iter()
+            .filter(|request| {
+                // A script has its answer once the status is in: what follows
+                // of the body may never be read, and then never be done.
+                request.seq > after
+                    && request.status.is_none()
+                    && request.ended.is_none()
+                    && !request.canceled
+                    && matches!(request.kind.as_str(), "xhr" | "fetch")
+            })
+            .count()
+    }
+
     pub(crate) fn problems(&mut self, limit: usize) -> (Vec<String>, usize) {
         let mut found: Vec<(u64, String)> = Vec::new();
         for line in self.lines.iter().filter(|line| !line.told && line.error()) {
@@ -643,8 +664,7 @@ impl Log {
                     request.status,
                     request.error
                 );
-                if let Some((_, _, others)) = alike.iter_mut().find(|(known, _, _)| *known == key)
-                {
+                if let Some((_, _, others)) = alike.iter_mut().find(|(known, _, _)| *known == key) {
                     others.push(request.seq);
                     continue;
                 }
@@ -663,7 +683,9 @@ impl Log {
                 for seq in others.iter().take(4) {
                     let _ = write!(found[at].1, " n{seq}");
                 }
-                found[at].1.push_str(if others.len() > 4 { " …)" } else { ")" });
+                found[at]
+                    .1
+                    .push_str(if others.len() > 4 { " …)" } else { ")" });
             }
         }
         for line in &mut self.lines {

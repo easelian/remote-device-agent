@@ -4,6 +4,7 @@
 Usage: server.py PORT
 
 GET  /<page>.html      a scenario page from the pages directory
+GET  /slow/<ms>        an empty answer after that many milliseconds
 GET  /drip/<page>.html the same page, its body held back for 0.7 s after the document begins
 POST /w/<scenario>     record one site write; the body is kept as text
 GET  /audit            every recorded write, by scenario, as JSON
@@ -41,6 +42,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/audit":
             with lock:
                 return self.reply(200, json.dumps(writes).encode())
+        if path.startswith("/slow/"):
+            # An answer that takes as many milliseconds as the address says.
+            time.sleep(min(int(path[len("/slow/"):] or 0), 5000) / 1000)
+            return self.reply(200, b"{}")
         if path.startswith("/drip/"):
             # The document is begun, and the rest of it comes most of a second later.
             page = PAGES / path[len("/drip/"):]

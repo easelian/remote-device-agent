@@ -125,10 +125,11 @@
 - 每个步骤占一行，行首是步骤序号。
 - `changed:` 下面是这一步改变的页面部分，带有可用于下一次调用的引用。
 - `(no visible change)` 表示动作已送达，但页面上看不出变化。
-- `(something was removed from the page; nothing else changed)` 表示这一步只让页面上的内容消失了，例如删除了一行。
+- `(something was removed from the page; nothing else changed)` 表示这一步只让页面上的内容消失了，例如删除了一行，或把一块面板隐藏了。
 - 最后一步改变了页面、却无法单独列出变化时，回复末尾在 `--- page` 之后附上整页内容。`open`、切换标签页、回答对话框、`wait`，以及跳转到另一个文档的点击都属于这种情况。
 - `read` 为 `page` 时总是附上整页，为 `none` 时不附页面内容。
 - 某一步因为匹配到多个元素而失败时，回复列出候选，不再附整页内容。
+- 输入触发了脚本请求（`fetch` 或 XHR）时，先等这些请求收到应答再读变化，最多等 2 秒。加入购物车、保存表单这类操作的结果因此写在这一步下面，下一步也不会抢在应答之前执行。
 - 页面上有东西正在滑入或淡入时，例如先淡入遮罩再出现的对话框、滑出的抽屉，先等它停下来再读变化，最多等 0.7 秒。只变颜色的过渡、不会结束的动画、按钮按下时的水波纹不等。
 - 打开对话框的页面通常还会改动包住整个页面的元素：给 `body` 加一个类、禁止它滚动，或者把其余部分标为 `aria-hidden`。这类改动不让里面的内容显示出新东西，所以不算作变化，回复里只列对话框本身。给 `body` 加的类如果被某条样式规则用来显示或隐藏别的元素，仍然按整页变化处理。
 
@@ -435,6 +436,11 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked --features 
 | 被禁用的翻页链接报成“找不到” | datatables.net | `real-widgets.html` | 报 `browser_not_actionable`，并写明它被禁用 |
 | 单选框都自称 “Radio button”，真正的标签写在旁边，按标签找不到 | formy-project.herokuapp.com | `real-widgets.html` | 按旁边的文字勾选到对应的单选框 |
 | 只靠鼠标事件拖动的元素不能作为 `drag` 的两端 | jqueryui.com | `real-widgets.html` | `drag` 之后页面显示 “Dropped!” |
+| 整个表单放在一个列表项里，里面的字段拿不到引用，无法操作 | demowebshop.tricentis.com 的结账页 | `real-widgets.html` | 按名称填写列表项里的字段成功，300 个选项的下拉框有引用 |
+| 点击触发的请求还没返回就执行了下一步，加入购物车后看到的购物车是空的 | demowebshop.tricentis.com | `real-widgets.html` 加 `/slow/` | 点击那一步的变化里有请求返回后才写上的文字 |
+| 第一个匹配项太大、放不进一次读取时，整次查找返回空 | demowebshop.tricentis.com、MUI | `real-widgets.html` | 同上一行的填写：查找越过表单所在的大列表项 |
+| 面板被隐藏而不是被移除时，报成没有可见变化 | jqueryui.com 的对话框 | `real-widgets.html` | 报有内容被移除 |
+| 输入框被隐藏、由标签画成按钮的单选框不能勾选（**未修**） | jqueryui.com 的 checkboxradio | `real-widgets.html` | 目前断言报 `browser_not_actionable`；修好后页面应显示 “City: rome” |
 | 长页面上找一行要读三遍，每遍都很慢 | 本机的 `big` 任务 | `big.html` | `front_pool` 的 `big` 任务（只验结果，不验耗时） |
 
 “等不到的文字”和“读三遍”两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。

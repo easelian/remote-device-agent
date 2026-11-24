@@ -309,12 +309,12 @@ function(operation, args, other) {
     if (result.length === 2 && result[1][1] !== '-1' && Number(result[0][1]) > Number(result[1][1])) return null;
     return result;
   }
-  function material(node, mapped) {
+  function material(node, mapped, alone) {
     // Scrolling needs the container identity, not the content of every mounted
     // option. All other refs keep their enclosing business record in the fingerprint.
-    const onlyContainer = mapped.kind === 'scrollable' && mapped.role === 'listbox';
+    const onlyContainer = alone === 'bare' || mapped.kind === 'scrollable' && mapped.role === 'listbox';
     const scopes = [], entries = [], ownerContext = [], limits = new Set();
-    if (!onlyContainer) {
+    if (!onlyContainer && !alone) {
       let depth = 0;
       for (let current = node; current; current = parent(current)) {
         if (++depth > 64) { limits.add('record_depth_limit'); break; }
@@ -326,7 +326,7 @@ function(operation, args, other) {
     }
     // A box that no label names, alone with a few words in its parent, is read with them:
     // they are what a person takes for its label, whatever the box calls itself.
-    if (!scopes.length && node.localName === 'input' && ['checkbox','radio'].includes(node.type) && !labelled(node)) {
+    if (!alone && !scopes.length && node.localName === 'input' && ['checkbox','radio'].includes(node.type) && !labelled(node)) {
       const holder = node.parentElement;
       if (holder && holder.querySelectorAll('input,select,textarea,button,a[href]').length === 1 && holder.textContent.length <= 200 && norm(holder.textContent)) scopes.push(holder);
     }
@@ -383,6 +383,13 @@ function(operation, args, other) {
         if (characters > 4096) { limits.add('record_character_limit'); destination.pop(); break; }
       }
     }
+    // A list item or table row that holds a whole form is no record of one field in it. Read for
+    // what is around a control, it runs into a limit and would leave the control without a
+    // reference: the control is then read by itself.
+    const over = limits.has('record_node_limit') || limits.has('record_character_limit');
+    if (!alone && scopes[0] !== node && over) return material(node, mapped, true);
+    // A list of hundreds of options is past the limit all by itself: it is known by itself alone.
+    if (alone === true && over && node.localName === 'select') return material(node, mapped, 'bare');
     return {entries, owner_context:ownerContext.length ? ownerContext : undefined, owner_list:ownerList,
       complete:limits.size === 0, limits:Array.from(limits).sort()};
   }
@@ -650,6 +657,8 @@ function(operation, args, other) {
       for (const element of state.dirty) {
         if (!element.isConnected) continue;
         if (state.light.has(element) && !reaches(state.light.get(element))) continue;
+        // What was altered and is not drawn any more has gone from the page as surely as what was taken out.
+        if (!element.getClientRects().length && getComputedStyle(element).display === 'none') { state.removed = true; continue; }
         let region = element, depth = 0;
         for (let current = element; current && depth++ < 64; current = parent(current)) {
           if (state.recordKind(current) === 'record') { region = current; break; }
@@ -872,7 +881,9 @@ function(operation, args, other) {
         row.node=identity(node);row.id='';row.role='text';row.kind='text';row.name=scalars(text).slice(0,512).join('');row.name_source='content';row.name_quality=[];row.value=null;
         if(node.nodeValue.length>1024 || scalars(text).length>512){row.name_quality.push('text_character_limit');omitted.add('text_character_limit');}
         const price=cost(row),length=price.length;
-        if(characters+length>args.characters||raw+price.raw>600000){scan.pending.push(node);if(!rows.length){scan.pending.pop();omitted.add('row_character_limit');}else rewind(price.root);break;}
+        // A row too large for any read is left out and said to be; the read goes on past it, so that
+        // one such row does not hide all that comes after.
+        if(characters+length>args.characters||raw+price.raw>600000){if(rows.length){scan.pending.push(node);rewind(price.root);break;}omitted.add('row_character_limit');continue;}
         share(row,price);rows.push(row);trail.push({node,length,raw:price.raw,root:price.root,key:0});characters+=length;raw+=price.raw;if(price.root)counted.add(price.root);
         if(next)next.row=row;run=next;gap=false;continue;
       }
@@ -914,8 +925,8 @@ function(operation, args, other) {
         if (match) {
           if (counted && !endpoints && row.record.entries.length && row.record.entries[0].identity===row.node && node.localName!=='select' && state.recordKind(node)!=='record') flat.add(row);
           const price = cost(row), length = price.length;
-          if (characters+length > args.characters || raw+price.raw > 600000) { scan.pending.push(node); if (!rows.length) { scan.pending.pop(); omitted.add('row_character_limit'); } else rewind(price.root); break; }
-          share(row,price); rows.push(row); trail.push({node,length,raw:price.raw,root:price.root,key:row.node}); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root);
+          if (characters+length > args.characters || raw+price.raw > 600000) { if (rows.length) { scan.pending.push(node); rewind(price.root); break; } omitted.add('row_character_limit'); }
+          else { share(row,price); rows.push(row); trail.push({node,length,raw:price.raw,root:price.root,key:row.node}); state.nodes.set(row.node,node); characters += length; raw += price.raw; if (price.root) counted.add(price.root); }
         }
       }
       if (node.shadowRoot) {

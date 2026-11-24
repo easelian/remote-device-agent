@@ -1446,12 +1446,10 @@ impl Call<'_> {
         let whole = query.get("find").is_none() && query.get("cursor").is_none();
         let mut read = self.inner(id, "browser_observe", query.clone()).await?;
         // A document that has only just replaced another has nothing in it
-        // yet, not even a title. It is given two seconds to arrive before it
-        // is told as empty.
+        // yet. It is given two seconds to arrive before it is told as empty.
         let arrived = self.deadline.min(Instant::now() + Duration::from_secs(2));
         while whole
             && read["text"].as_str().is_none_or(str::is_empty)
-            && read["page"]["title"].as_str().is_none_or(str::is_empty)
             && read["page"]["url"]
                 .as_str()
                 .is_some_and(|url| url.starts_with("http"))

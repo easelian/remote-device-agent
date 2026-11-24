@@ -1427,6 +1427,23 @@ async fn front_real() {
     // label written beside it.
     let box_ = did(&mut peer, json!([{"check":{"name":"College"}}])).await;
     assert!(box_.contains("Education: 2"), "{box_}");
+    // A field in a list item that holds a whole form has a reference and is
+    // filled. What its button asks the site for is waited for, so the step
+    // tells what the answer put on the page.
+    let saved = did(
+        &mut peer,
+        json!([{"fill":{"name":"First name"},"text":"Ada"},{"click":{"name":"Continue"}}]),
+    )
+    .await;
+    assert!(saved.contains("Saved for Ada"), "{saved}");
+    // A panel that is hidden, not removed, has gone from the page all the same.
+    let hidden = did(&mut peer, json!([{"click":{"name":"Dismiss"}}])).await;
+    assert!(hidden.contains("something was removed"), "{hidden}");
+    // Not mended yet: a box hidden behind its own label, drawn as a button,
+    // is refused as covered. When it is ticked through the label, the page
+    // says "City: rome".
+    let city = did(&mut peer, json!([{"check":{"name":"Rome"}}])).await;
+    assert!(city.contains("browser_not_actionable"), "{city}");
     // A box that a script moves by following the mouse, as jQuery UI does,
     // is dragged by pressing, moving and letting go.
     let dragged = did(
