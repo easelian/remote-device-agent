@@ -1395,6 +1395,14 @@ async fn front_real() {
             && headed.contains("nth 2: button \"Item #2\" under \"Flush\""),
         "{headed}"
     );
+    // A control named by another element is found and has a reference
+    // although thirty thousand elements come before what names it.
+    let mango = did(
+        &mut peer,
+        json!([{"click":{"name":"Mango","role":"option"}}]),
+    )
+    .await;
+    assert!(mango.contains("Took the mango"), "{mango}");
     // A paragraph that says "closed" is not a thing called Close.
     let close = did(&mut peer, json!([{"click":{"name":"Close"}}])).await;
     assert!(close.contains("browser_target_not_found"), "{close}");
@@ -1461,6 +1469,15 @@ async fn front_real() {
         "{missing}"
     );
     did(&mut peer, json!([{"press":"Escape","on":{"name":"Fruit","role":"combobox"}},{"click":{"name":"Fruit","role":"combobox"}}])).await;
+    // A list that opens when the mouse goes down on its button, lies over
+    // the button and takes an option when the mouse comes up, as Radix
+    // builds it.
+    let food = did(
+        &mut peer,
+        json!([{"select":{"name":"Food"},"value":"Cheese"}]),
+    )
+    .await;
+    assert!(food.contains("Food: Cheese"), "{food}");
     // A box that a script moves by following the mouse, as jQuery UI does,
     // is dragged by pressing, moving and letting go.
     let dragged = did(

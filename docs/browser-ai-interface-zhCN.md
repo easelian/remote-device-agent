@@ -450,11 +450,11 @@ RDH_BROWSER_EXECUTABLE=/opt/google/chrome/chrome cargo test --locked --features 
 | 输入框被隐藏、由标签画成按钮的单选框不能勾选 | jqueryui.com 的 checkboxradio | `real-widgets.html` | `check` 之后页面显示 “City: rome” |
 | 页面一直加载不完，打开它的调用超过期限后失败，会话也没了 | ant.design、mui.com | `real-slowload.html` 加 `/slow/` | 打开在 8 秒后返回，回复注明没加载完并附上页面，会话可以继续用 |
 | `select` 在组件库自己搭的下拉上失败 | MUI、Angular Material | `real-widgets.html` | 按选项名称选中；选项不存在时报 `browser_value_rejected` 并写明缺哪个选项 |
+| 由另一个元素命名（`aria-labelledby`）的控件，在长页面上拿不到引用 | radix-ui.com 的 Select | `real-docs.html` | 排在 3 万个元素之后的选项按名称点到 |
+| 按下鼠标就打开、盖在按钮上、抬起鼠标才选中的下拉 | radix-ui.com 的 Select | `real-widgets.html` | `select` 按选项名称选中 |
 | 长页面上找一行要读三遍，每遍都很慢 | 本机的 `big` 任务 | `big.html` | `front_pool` 的 `big` 任务（只验结果，不验耗时） |
 
 “等不到的文字”和“读三遍”两项是条件竞争和耗时，离线用例只能确认行为正确，不能保证每次都重现原来的失败。
-
-还没有查明、因此还没有用例的问题：Radix 的 Select（radix-ui.com 文档页）用 `click` 点不开，点击之后下拉仍是收起的，触发按钮随后被判为被遮挡。MUI 和 Angular Material 的下拉没有这个问题。
 
 一次点击、填写或选择的 60 毫秒里有两段等待。操作之前隔 20 毫秒取两次元素的位置，位置不变才操作。操作之后等 20 毫秒再读页面的变化；页面在这 20 毫秒里又变了，就再等 20 毫秒。
 

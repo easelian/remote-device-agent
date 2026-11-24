@@ -14,7 +14,10 @@ function(operation, args, other) {
   const labelRoots=new Map();
   const labelled=node=>{if(node.closest('label'))return true;if(!node.id)return false;const root=node.getRootNode();let named=labelRoots.get(root);
     if(!named){named=new Set();for(const label of root.querySelectorAll('label[for]'))named.add(label.htmlFor);labelRoots.set(root,named);}return named.has(node.id);};
-  const idsFor=root=>{if(idRoots.has(root))return idRoots.get(root);const ids=new Map(),walker=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT);let node,count=0;while((node=walker.nextNode())&&count<5000){count++;if(node.id){let entries=ids.get(node.id);if(!entries){entries=[];ids.set(node.id,entries);}if(entries.length<2)entries.push(node);}}const index={ids,complete:!node};idRoots.set(root,index);return index;};
+  // An id is looked up where it is asked for, by the browser's own index. Walking the page to
+  // collect them stopped at 5000 elements, and on a long page what a name points at lies
+  // further on: the control was then left without a reference.
+  const idsFor=root=>{if(idRoots.has(root))return idRoots.get(root);const found=new Map();const index={complete:true,ids:{get:id=>{let hit=found.get(id);if(!hit){hit=Array.from(root.querySelectorAll('[id="'+String(id).replace(/["\\]/g,'\\$&')+'"]')).slice(0,2);found.set(id,hit);}return hit;}}};idRoots.set(root,index);return index;};
   const forbidden = new Set(['generic','none','presentation','caption','code','deletion','emphasis','insertion','paragraph','strong','subscript','superscript']);
   const controls = new Set(['button','link','textbox','searchbox','combobox','checkbox','radio','spinbutton','slider','switch','menuitem','tab','option','treeitem']);
   const contentNames = new Set(['button','link','checkbox','radio','switch','menuitem','tab','option','treeitem','heading','inferred']);

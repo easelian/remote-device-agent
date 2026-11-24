@@ -29,6 +29,12 @@
 <div id=fruit role=combobox tabindex=0 aria-haspopup=listbox aria-expanded=false aria-label=Fruit style="display:inline-block;border:1px solid #888;padding:4px 10px">Apple</div>
 <ul id=fruits role=listbox aria-label=Fruit style="display:none;border:1px solid #888;width:120px;padding:0;margin:0"><li role=option style="list-style:none;padding:4px">Apple</li><li role=option style="list-style:none;padding:4px">Banana</li><li role=option style="list-style:none;padding:4px">Cherry</li></ul>
 <output id=picked>Fruit: Apple</output>
+<!-- A list as Radix builds it (radix-ui.com): it opens when the mouse goes down on the button, lies
+     over the button, takes an option when the mouse comes up on it, and closes when the window
+     loses the focus or is resized, or the mouse comes up elsewhere after moving. -->
+<button id=rtrig type=button role=combobox aria-expanded=false aria-label=Food style="padding:6px 14px">Pick a food</button>
+<div id=rlist role=listbox aria-label=Food style="display:none;position:fixed;background:#fff;border:1px solid #888"><div role=option style="padding:6px 14px">Bread</div><div role=option style="padding:6px 14px">Cheese</div></div>
+<output id=rsaid>Food: none</output> <output id=rwhy></output>
 <div id=drag class=ui-draggable style="position:relative;width:90px;height:40px;background:#cde">Drag me</div>
 <div id=drop class=ui-droppable style="width:160px;height:80px;border:1px solid #888;margin-top:60px">Drop here</div>
 <script>
@@ -41,6 +47,16 @@ for(const box of document.querySelectorAll('input[name=city]'))box.addEventListe
 const fruit=document.getElementById('fruit'),fruits=document.getElementById('fruits');
 fruit.onclick=()=>{const open=fruits.style.display==='none';fruits.style.display=open?'':'none';fruit.setAttribute('aria-expanded',open);};
 fruits.onclick=e=>{const option=e.target.closest('[role=option]');if(!option)return;fruit.textContent=option.textContent;fruits.style.display='none';fruit.setAttribute('aria-expanded','false');document.getElementById('picked').textContent='Fruit: '+option.textContent;};
+const rtrig=document.getElementById('rtrig'),rlist=document.getElementById('rlist');let rdown=null,rtype='';
+const rclose=why=>{if(rlist.style.display==='none')return;rlist.style.display='none';rtrig.setAttribute('aria-expanded','false');document.body.style.pointerEvents='';document.getElementById('rwhy').textContent='closed: '+why;};
+const ropen=()=>{const box=rtrig.getBoundingClientRect();rlist.style.left=box.left+'px';rlist.style.top=box.top+'px';rlist.style.display='block';rtrig.setAttribute('aria-expanded','true');document.body.style.pointerEvents='none';rlist.style.pointerEvents='auto';
+  let moved={x:0,y:0};const move=e=>{moved={x:Math.abs(Math.round(e.pageX)-rdown.x),y:Math.abs(Math.round(e.pageY)-rdown.y)};};
+  document.addEventListener('pointermove',move);
+  document.addEventListener('pointerup',e=>{if(moved.x<=10&&moved.y<=10)e.preventDefault();else if(!rlist.contains(e.target))rclose('the mouse came up elsewhere');document.removeEventListener('pointermove',move);},{capture:true,once:true});
+  addEventListener('blur',()=>rclose('the window lost the focus'),{once:true});addEventListener('resize',()=>rclose('the window was resized'),{once:true});};
+rtrig.addEventListener('pointerdown',e=>{rtype=e.pointerType;if(e.button===0&&!e.ctrlKey&&e.pointerType==='mouse'){rdown={x:Math.round(e.pageX),y:Math.round(e.pageY)};ropen();e.preventDefault();}});
+rtrig.addEventListener('click',()=>{rtrig.focus();if(rtype!=='mouse')ropen();});
+rlist.addEventListener('pointerup',e=>{const option=e.target.closest('[role=option]');if(option&&e.pointerType==='mouse'&&!e.defaultPrevented){document.getElementById('rsaid').textContent='Food: '+option.textContent;rtrig.textContent=option.textContent;rclose('an option was taken');}});
 const drag=document.getElementById('drag'),drop=document.getElementById('drop');let held=null;
 drag.addEventListener('mousedown',e=>{held=[e.clientX,e.clientY];e.preventDefault();});
 addEventListener('mousemove',e=>{if(held){drag.style.left=(e.clientX-held[0])+'px';drag.style.top=(e.clientY-held[1])+'px';}});
