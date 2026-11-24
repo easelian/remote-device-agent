@@ -1533,23 +1533,6 @@ fn decode_program(program: &Program, reply: Value) -> Result<Output> {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn exceptions_missing_null_and_nonfinite_values_are_not_empty_observations() {
-        for reply in [
-            json!({"exceptionDetails":{},"result":{"type":"string","value":"null"}}),
-            json!({"result":{"type":"undefined"}}),
-            json!({"result":{"type":"object","subtype":"null","value":null}}),
-            json!({"result":{"type":"number","unserializableValue":"NaN"}}),
-            json!({"result":{"type":"string","value":"{}"}}),
-        ] {
-            assert!(decode_program(&Program::Stamp, reply).is_err());
-        }
-    }
-}
-
 impl Semantic {
     pub async fn visual_target_allowed(
         &self,
@@ -1591,5 +1574,22 @@ impl Semantic {
             || node["shadowRoots"]
                 .as_array()
                 .is_some_and(|roots| roots.iter().any(|root| root["shadowRootType"] == "closed")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exceptions_missing_null_and_nonfinite_values_are_not_empty_observations() {
+        for reply in [
+            json!({"exceptionDetails":{},"result":{"type":"string","value":"null"}}),
+            json!({"result":{"type":"undefined"}}),
+            json!({"result":{"type":"object","subtype":"null","value":null}}),
+            json!({"result":{"type":"number","unserializableValue":"NaN"}}),
+            json!({"result":{"type":"string","value":"{}"}}),
+        ] {
+            assert!(decode_program(&Program::Stamp, reply).is_err());
+        }
     }
 }

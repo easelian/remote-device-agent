@@ -221,6 +221,7 @@ impl Attempt {
         self.published.clear();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn read(
         &mut self,
         sink: &Sink,
@@ -348,11 +349,11 @@ impl Attempt {
         }
         let explicit_rejection = fields.iter().any(|item| item.association.is_strong())
             || observed.as_ref().is_some_and(|item| {
-            matches!(
-                item.kind,
-                sem::SubmitFeedbackKind::FieldError | sem::SubmitFeedbackKind::RecordRejection
-            )
-        });
+                matches!(
+                    item.kind,
+                    sem::SubmitFeedbackKind::FieldError | sem::SubmitFeedbackKind::RecordRejection
+                )
+            });
         if status == 200 {
             let mut rejected = explicit_rejection;
             if !rejected

@@ -762,7 +762,11 @@ mod proxy_tests {
     #[test]
     fn a_proxy_is_an_address_without_a_user_and_a_list_of_hosts_reached_directly() {
         assert!(Settings::parse(None).unwrap().proxy.is_none());
-        for server in ["http://10.0.0.1:3128", "http://proxy.corp.example:8080/", "socks5://127.0.0.1:1080"] {
+        for server in [
+            "http://10.0.0.1:3128",
+            "http://proxy.corp.example:8080/",
+            "socks5://127.0.0.1:1080",
+        ] {
             assert!(parsed(json!({"server":server})).is_ok(), "{server}");
         }
         for server in [
@@ -779,7 +783,12 @@ mod proxy_tests {
         }
         assert!(parsed(json!({"bypass":[".corp.example"]})).is_err());
         assert!(parsed(json!({"server":"http://p:1","user":"u"})).is_err());
-        for bypass in [json!([""]), json!(["a b"]), json!(["x;y"]), json!(vec!["a"; 65])] {
+        for bypass in [
+            json!([""]),
+            json!(["a b"]),
+            json!(["x;y"]),
+            json!(vec!["a"; 65]),
+        ] {
             assert!(
                 parsed(json!({"server":"http://p:1","bypass":bypass})).is_err(),
                 "{bypass}"
@@ -797,10 +806,20 @@ mod proxy_tests {
                 "--proxy-bypass-list=.corp.example;*.lab.example;intranet;10.0.0.0/8"
             ]
         );
-        for host in ["corp.example", "wiki.Corp.Example.", "a.lab.example", "intranet"] {
+        for host in [
+            "corp.example",
+            "wiki.Corp.Example.",
+            "a.lab.example",
+            "intranet",
+        ] {
             assert!(proxy.bypasses(host), "{host}");
         }
-        for host in ["example", "notcorp.example", "intranet.example", "shop.example"] {
+        for host in [
+            "example",
+            "notcorp.example",
+            "intranet.example",
+            "shop.example",
+        ] {
             assert!(!proxy.bypasses(host), "{host}");
         }
     }

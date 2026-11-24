@@ -277,7 +277,7 @@ async fn native_dom_evidence_pending_bidi() {
 
 #[path = "accessibility_native_tests.rs"]
 mod accessibility;
-#[path = "styles_native_tests.rs"]
-mod styles_native_tests;
 #[path = "console_native_tests.rs"]
 mod console_native_tests;
+#[path = "styles_native_tests.rs"]
+mod styles_native_tests;

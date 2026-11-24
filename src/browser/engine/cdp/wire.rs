@@ -32,11 +32,11 @@ mod console_route;
 mod drag;
 #[cfg(all(test, feature = "experimental-browser-bidi"))]
 mod drag_tests;
-#[cfg(feature = "experimental-browser-bidi")]
-mod oversized_console;
 #[cfg(test)]
 mod event_tests;
 mod events;
+#[cfg(feature = "experimental-browser-bidi")]
+mod oversized_console;
 pub(in crate::browser::engine) use events::{EventLease, EventReceiver};
 #[cfg(test)]
 mod lease_tests;
@@ -230,12 +230,19 @@ impl Cdp {
         tokio::spawn(async move {
             let mut frame = Vec::new();
             #[cfg(feature = "experimental-browser-bidi")]
-            let mut discarding: Option<(oversized_console::Discard, Arc<console_route::Route>, Instant)> = None;
+            let mut discarding: Option<(
+                oversized_console::Discard,
+                Arc<console_route::Route>,
+                Instant,
+            )> = None;
             let mut chunk = [0u8; 16384];
             let mut cleanup_tick = tokio::time::interval(Duration::from_millis(100));
             'reader: loop {
                 #[cfg(feature = "experimental-browser-bidi")]
-                if discarding.as_ref().is_some_and(|(_, _, deadline)| Instant::now() >= *deadline) {
+                if discarding
+                    .as_ref()
+                    .is_some_and(|(_, _, deadline)| Instant::now() >= *deadline)
+                {
                     break;
                 }
                 let count = tokio::select! {
@@ -260,10 +267,14 @@ impl Cdp {
                     #[cfg(feature = "experimental-browser-bidi")]
                     if let Some((message, route, _)) = discarding.as_mut() {
                         if *byte == 0 {
-                            if !message.owned() { break 'reader; }
+                            if !message.owned() {
+                                break 'reader;
+                            }
                             route.fail();
                             discarding = None;
-                        } else if !message.push(*byte) { break 'reader; }
+                        } else if !message.push(*byte) {
+                            break 'reader;
+                        }
                         continue;
                     }
                     if *byte == 0 {
@@ -407,13 +418,18 @@ impl Cdp {
                                 let route = reader.console.lock().unwrap().clone();
                                 if let Some(route) = route
                                     && let Some(child) = route.child()
-                                    && let Some(mut message) = oversized_console::Discard::begin(&frame, &child)
+                                    && let Some(mut message) =
+                                        oversized_console::Discard::begin(&frame, &child)
                                     && message.push(*byte)
                                 {
                                     // No more payload is retained or decoded. The native session
                                     // suffix must confirm ownership before normal reads resume.
                                     frame.clear();
-                                    discarding = Some((message, route, Instant::now() + Duration::from_secs(2)));
+                                    discarding = Some((
+                                        message,
+                                        route,
+                                        Instant::now() + Duration::from_secs(2),
+                                    ));
                                     continue;
                                 }
                             }

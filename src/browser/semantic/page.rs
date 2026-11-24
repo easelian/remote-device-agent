@@ -217,7 +217,9 @@ impl<P> Clone for Page<P> {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
-    Scroll { delta: f64 },
+    Scroll {
+        delta: f64,
+    },
     Hover,
     Click,
     /// A click that is not one press of the main button.
@@ -227,7 +229,9 @@ pub(crate) enum Action {
     Press(Key),
     SetFormValue(String),
     AttachFile(crate::browser::files::Attachment),
-    Drag { target: Reference },
+    Drag {
+        target: Reference,
+    },
 }
 impl Action {
     fn kind(&self) -> actionability::ActionKind {
@@ -452,6 +456,7 @@ impl<P: Port> Page<P> {
         self.human(permit)?;
         Ok(observed)
     }
+    #[allow(clippy::too_many_arguments)]
     async fn observe_as(
         &self,
         query: Query,
@@ -821,7 +826,9 @@ impl<P: Port> Page<P> {
             return Err(Failure::new("browser_control_changed"));
         }
         if query.changed {
-            if state.generation != generation || state.refs.len() + refs.len() > MAX_NODES + most_nodes {
+            if state.generation != generation
+                || state.refs.len() + refs.len() > MAX_NODES + most_nodes
+            {
                 return Err(types::stale());
             }
             state.refs.extend(refs);

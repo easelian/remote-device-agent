@@ -190,7 +190,10 @@ async fn native_styles_reparent_and_claim_never_deliver_held_reply() {
     </script>"#;
     let (accepted, mut sockets) = tokio::sync::mpsc::channel(1);
     let app = axum::Router::new()
-        .route("/", axum::routing::get(|| async { axum::response::Html(PAGE) }))
+        .route(
+            "/",
+            axum::routing::get(|| async { axum::response::Html(PAGE) }),
+        )
         .route(
             "/control",
             axum::routing::get(move |ws: WebSocketUpgrade| {

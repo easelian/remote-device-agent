@@ -407,12 +407,9 @@ fn validate(operation: &str, params: &Value) -> Result<()> {
     if map.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err(Failure::new("browser_invalid_params"));
     }
-    if map
-        .get("format")
-        .is_some_and(|format| {
-            format != "compact" && format != "search" || map.contains_key("presentation")
-        })
-    {
+    if map.get("format").is_some_and(|format| {
+        format != "compact" && format != "search" || map.contains_key("presentation")
+    }) {
         return Err(Failure::new("browser_invalid_params"));
     }
     if let Some(presentation) = map.get("presentation") {

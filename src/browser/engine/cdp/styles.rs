@@ -178,10 +178,10 @@ async fn read_ancestors(
         if node["nodeType"] != 1 || node["nodeId"] != id {
             return Err(sem::types::stale());
         }
-        if let Some(roots) = node.get("shadowRoots") {
-            if !roots.as_array().ok_or_else(sem::types::decode)?.is_empty() {
-                return Err(Failure::new("browser_feature_unsupported"));
-            }
+        if let Some(roots) = node.get("shadowRoots")
+            && !roots.as_array().ok_or_else(sem::types::decode)?.is_empty()
+        {
+            return Err(Failure::new("browser_feature_unsupported"));
         }
     }
     let check = wire.call(Some(session), call, json!({
@@ -280,15 +280,14 @@ pub(super) async fn read(
                     .as_i64()
                     .filter(|id| *id > 0)
                     .ok_or_else(sem::types::stale)?;
-                wire
-                    .call(
-                        Some(&session),
-                        Command::CssGetMatchedStylesForNode,
-                        json!({"nodeId": id}),
-                        deadline,
-                    )
-                    .await
-                    .and_then(|matches| super::styles_project::project(&matches, property))
+                wire.call(
+                    Some(&session),
+                    Command::CssGetMatchedStylesForNode,
+                    json!({"nodeId": id}),
+                    deadline,
+                )
+                .await
+                .and_then(|matches| super::styles_project::project(&matches, property))
             }
         };
         // A native reply may arrive after DOM replacement. Compare the exact wrapper

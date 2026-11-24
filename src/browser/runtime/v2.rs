@@ -947,17 +947,17 @@ impl Browsers {
                 if let Some(fields) = receipt.as_object_mut() {
                     fields.remove("reusable_refs");
                 }
-                receipt["after_action_view"] =
-                    if let Some((references, frames, observed)) = session.carried.take() {
-                        session.references = references;
-                        session.frames = frames;
-                        session.observed_frames = observed;
-                        session.reference_tab = Some(tab.clone());
-                        action_view::sample(&mut session, &page, &port, epoch, deadline, asked)
-                            .await
-                    } else {
-                        json!({"state":"continue_observing","reason":"view_unavailable_or_changing"})
-                    };
+                receipt["after_action_view"] = if let Some((references, frames, observed)) =
+                    session.carried.take()
+                {
+                    session.references = references;
+                    session.frames = frames;
+                    session.observed_frames = observed;
+                    session.reference_tab = Some(tab.clone());
+                    action_view::sample(&mut session, &page, &port, epoch, deadline, asked).await
+                } else {
+                    json!({"state":"continue_observing","reason":"view_unavailable_or_changing"})
+                };
                 receipt["tab_id"] = tab.clone().into();
                 Ok(receipt)
             }
@@ -982,7 +982,8 @@ impl Browsers {
             // Input had already finished under this epoch before the optional read.
             // Discard that read if control changed while it was in progress.
             session.clear_references();
-            value["after_action_view"] = json!({"state":"continue_observing","reason":"control_changed"});
+            value["after_action_view"] =
+                json!({"state":"continue_observing","reason":"control_changed"});
         }
         value["session_id"] = id.into();
         value["control_epoch"] = epoch.into();
@@ -1302,19 +1303,13 @@ async fn observe_frames(
         value["next_cursor"] = id.into();
         // What a caller needs to choose between reading on and searching.
         if let Some([read, total]) = result.progress.filter(|[_, total]| *total > 0) {
-            value["coverage"]["read_percent"] =
-                (u64::from(read) * 100 / u64::from(total)).clamp(1, 99).into();
+            value["coverage"]["read_percent"] = (u64::from(read) * 100 / u64::from(total))
+                .clamp(1, 99)
+                .into();
         }
     }
     let prepared = if let Some(request) = params.get("presentation") {
-        let key = presentation::key(
-            &before,
-            &query,
-            &port.tab_id()?,
-            epoch,
-            max_nodes,
-            max_chars,
-        )?;
+        let key = presentation::key(before, &query, &port.tab_id()?, epoch, max_nodes, max_chars)?;
         Some(session.presentation.prepare(
             &mut value,
             &session.frames,
@@ -1327,6 +1322,7 @@ async fn observe_frames(
     };
     Ok((value, prepared))
 }
+#[allow(clippy::too_many_arguments)]
 async fn act(
     session: &mut Session,
     page: &sem::Page<native::Port>,

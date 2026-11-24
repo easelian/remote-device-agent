@@ -32,6 +32,7 @@ impl Capture {
             "max_ms":WINDOW.as_millis(),"max_events":MAX_EVENTS})
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn start(
         session: &Session,
         slot: &Slot,
@@ -143,7 +144,9 @@ impl Capture {
             "read_event" => json!({"event":capture.sink.event(params["sequence"].as_u64()
                 .ok_or_else(|| Failure::new("browser_invalid_params"))?)?}),
             "read_exception_location" => capture.sink.exception_location(
-                params["sequence"].as_u64().ok_or_else(|| Failure::new("browser_invalid_params"))?,
+                params["sequence"]
+                    .as_u64()
+                    .ok_or_else(|| Failure::new("browser_invalid_params"))?,
             )?,
             "read_requests" => {
                 if !capture.sink.wants_progress() {

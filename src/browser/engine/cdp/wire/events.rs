@@ -149,7 +149,7 @@ impl Inner {
                 value["params"]["response"]["status"]
                     .as_u64()
                     .and_then(|status| u16::try_from(status).ok())
-                    .map(|status| Fact::Response(status))
+                    .map(Fact::Response)
             }
             "Network.loadingFailed" if sink.wants_network() => Some(Fact::Failed(
                 if value["params"]["canceled"].as_bool().unwrap_or(false) {

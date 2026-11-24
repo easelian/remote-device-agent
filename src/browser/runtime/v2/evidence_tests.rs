@@ -16,7 +16,8 @@ fn frame() -> sem::Frame {
 }
 #[test]
 fn evidence_requests_are_closed_and_diagnostic_ids_are_not_refs() {
-    let escaped: Value = serde_json::from_str(r#"{"kind":"find_no\u0064es","text":"\u72b6态"}"#).unwrap();
+    let escaped: Value =
+        serde_json::from_str(r#"{"kind":"find_no\u0064es","text":"\u72b6态"}"#).unwrap();
     assert!(matches!(
         Query::parse(&escaped).unwrap(),
         Query::FindNodes {
@@ -265,9 +266,17 @@ fn record_matching_is_internal_and_requires_complete_coverage() {
         "anchor_text":"Order-42","expected_text":"Approved"});
     assert!(dom::Query::parse(&public).is_err());
     let request = dom::NativeQuery {
-        kind: "match_record", tag: None, role: None, text: None, node: Some(1),
-        limit: 1, elements: 256, text_nodes: 256, other_nodes: 256,
-        anchor_text: Some("Order-42".into()), expected_text: Some("Approved".into()),
+        kind: "match_record",
+        tag: None,
+        role: None,
+        text: None,
+        node: Some(1),
+        limit: 1,
+        elements: 256,
+        text_nodes: 256,
+        other_nodes: 256,
+        anchor_text: Some("Order-42".into()),
+        expected_text: Some("Approved".into()),
     };
     let mut result = json!({"kind":"match_record","matched":true,"coverage":{
         "visited_elements":2,"visited_text_nodes":2,"visited_other_nodes":0,
